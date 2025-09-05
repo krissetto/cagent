@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/docker/cagent/internal/config"
 	"github.com/docker/cagent/internal/telemetry"
@@ -129,7 +130,7 @@ We collect anonymous usage data to help improve cagent. To disable:
 }
 
 // setupLogging configures slog to write to a file instead of stdout/stderr when using the TUI.
-// By default, it appends to ~/.cagent/cagent.log. Users can override with --log-file.
+// By default, it writes to <dataDir>/logs/cagent-<timestamp>.log. Users can override with --log-file.
 func setupLogging(cmd *cobra.Command) error {
 	// Determine log file path
 	if logFilePath != "" {
@@ -183,11 +184,13 @@ func setupLogging(cmd *cobra.Command) error {
 	}
 	if useTUI {
 		dataDir := config.GetDataDir()
-		path := filepath.Join(dataDir, "cagent.log")
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		logsDir := filepath.Join(dataDir, "logs")
+		if err := os.MkdirAll(logsDir, 0o755); err != nil {
 			return err
 		}
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		timestamp := time.Now().Format("20060102-150405")
+		path := filepath.Join(logsDir, fmt.Sprintf("cagent-%s.log", timestamp))
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
 			return err
 		}
