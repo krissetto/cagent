@@ -3,7 +3,6 @@ package telemetry
 import (
 	"context"
 	"log/slog"
-	"os"
 	"sync"
 )
 
@@ -69,14 +68,8 @@ func ensureGlobalTelemetryInitialized() {
 		// Use the debug mode set by the root package via --debug flag
 		debugMode := globalTelemetryDebugMode
 
-		// Create logger with appropriate level based on debug mode
-		logLevel := slog.LevelInfo
-		if debugMode {
-			logLevel = slog.LevelDebug
-		}
-		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level: logLevel,
-		}))
+		// Use the global default logger configured by the root command
+		logger := slog.Default()
 
 		// Get telemetry enabled setting
 		enabled := GetTelemetryEnabled()

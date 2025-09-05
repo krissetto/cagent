@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/docker/cagent/internal/config"
 	"github.com/docker/cagent/internal/telemetry"
@@ -12,9 +13,11 @@ import (
 )
 
 var (
-	agentName  string
-	debugMode  bool
-	enableOtel bool
+	agentName   string
+	debugMode   bool
+	enableOtel  bool
+	logFilePath string
+	logFile     *os.File
 )
 
 // isFirstRun checks if this is the first time cagent is being run
@@ -47,15 +50,28 @@ func NewRootCmd() *cobra.Command {
 		Short: "cagent - AI agent runner",
 		Long:  `cagent is a command-line tool for running AI agents`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// Initialize logging before anything else so logs don't break TUI
+			if err := setupLogging(cmd); err != nil {
+				// If logging setup fails, fall back to stderr so we still get logs
+				slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+					Level: func() slog.Level {
+						if debugMode {
+							return slog.LevelDebug
+						}
+						return slog.LevelInfo
+					}(),
+				})))
+			}
 			if cmd.DisplayName() != "exec" && os.Getenv("CAGENT_HIDE_FEEDBACK_LINK") != "1" {
 				_, _ = cmd.OutOrStdout().Write([]byte("\nFor any feedback, please visit: " + FeedbackLink + "\n\n"))
 			}
 
 			telemetry.SetGlobalTelemetryDebugMode(debugMode)
-			if debugMode {
-				slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-					Level: slog.LevelDebug,
-				})))
+			return nil
+		},
+		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+			if logFile != nil {
+				_ = logFile.Close()
 			}
 			return nil
 		},
@@ -68,6 +84,7 @@ func NewRootCmd() *cobra.Command {
 	// Add persistent debug flag available to all commands
 	cmd.PersistentFlags().BoolVarP(&debugMode, "debug", "d", false, "Enable debug logging")
 	cmd.PersistentFlags().BoolVarP(&enableOtel, "otel", "o", false, "Enable OpenTelemetry tracing")
+	cmd.PersistentFlags().StringVar(&logFilePath, "log-file", "", "Path to log file (default: ~/.cagent/cagent.log)")
 
 	cmd.AddCommand(NewVersionCmd())
 	cmd.AddCommand(NewRunCmd())
@@ -109,4 +126,85 @@ We collect anonymous usage data to help improve cagent. To disable:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// setupLogging configures slog to write to a file instead of stdout/stderr when using the TUI.
+// By default, it appends to ~/.cagent/cagent.log. Users can override with --log-file.
+func setupLogging(cmd *cobra.Command) error {
+	// Determine log file path
+	if logFilePath != "" {
+		path := logFilePath
+		if path == "" {
+			dataDir := config.GetDataDir()
+			path = filepath.Join(dataDir, "cagent.log")
+		} else {
+			if path == "~" || strings.HasPrefix(path, "~/") {
+				homeDir, err := os.UserHomeDir()
+				if err == nil {
+					path = filepath.Join(homeDir, strings.TrimPrefix(path, "~/"))
+				}
+			} else if strings.HasPrefix(path, "~\\") { // Windows-style path expansion
+				homeDir, err := os.UserHomeDir()
+				if err == nil {
+					path = filepath.Join(homeDir, strings.TrimPrefix(path, "~\\"))
+				}
+			}
+		}
+
+		// Ensure directory exists
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+
+		// Open file for appending
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		logFile = f
+
+		// Configure slog default logger
+		level := slog.LevelInfo
+		if debugMode {
+			level = slog.LevelDebug
+		}
+		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: level})))
+		return nil
+	}
+
+	// Else, decide based on TUI flag: file when TUI is enabled, stderr otherwise
+	useTUI := false
+	if cmd != nil && cmd.Name() == "run" {
+		if f := cmd.Flags().Lookup("tui"); f != nil {
+			if v, err := cmd.Flags().GetBool("tui"); err == nil {
+				useTUI = v
+			}
+		}
+	}
+	if useTUI {
+		dataDir := config.GetDataDir()
+		path := filepath.Join(dataDir, "cagent.log")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		logFile = f
+		level := slog.LevelInfo
+		if debugMode {
+			level = slog.LevelDebug
+		}
+		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: level})))
+		return nil
+	}
+
+	// Default to stderr
+	level := slog.LevelInfo
+	if debugMode {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	return nil
 }

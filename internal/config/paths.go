@@ -15,3 +15,13 @@ func GetConfigDir() string {
 	}
 	return filepath.Join(homeDir, ".config", "cagent")
 }
+
+// GetDataDir returns the user's data directory for cagent (caches, content, logs)
+// Falls back to temp directory if home directory cannot be determined
+func GetDataDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), ".cagent")
+	}
+	return filepath.Join(homeDir, ".cagent")
+}
