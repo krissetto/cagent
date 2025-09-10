@@ -50,6 +50,21 @@ func (t *GatewayToolset) Instructions() string {
 func (t *GatewayToolset) configureOnce(ctx context.Context) error {
 	mcpServerName := gateway.ParseServerRef(t.ref)
 
+	// in a container?
+	inContainer := false
+
+	_, err := os.Stat("/.dockerenv")
+	if err == nil {
+		inContainer = true
+	}
+
+	if inContainer {
+		t.cmdToolset, err = NewToolsetRemote("http://gateway:8811", "streaming", nil, t.toolFilter)
+		if err != nil {
+			return fmt.Errorf("creating remote MCP toolset: %w", err)
+		}
+		return nil
+	}
 	// Check which secrets (env vars) are required by the MCP server.
 	secrets, err := gateway.RequiredEnvVars(ctx, mcpServerName, gateway.DockerCatalogURL)
 	if err != nil {

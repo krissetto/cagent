@@ -115,7 +115,15 @@ func checkRequiredEnvVars(ctx context.Context, cfg *latest.Config, env environme
 			for i := range agent.Toolsets {
 				toolSet := agent.Toolsets[i]
 
-				if toolSet.Type == "mcp" && toolSet.Ref != "" {
+				// in a container?
+				inContainer := false
+
+				_, err := os.Stat("/.dockerenv")
+				if err == nil {
+					inContainer = true
+				}
+
+				if !inContainer && toolSet.Type == "mcp" && toolSet.Ref != "" {
 					mcpServerName := gateway.ParseServerRef(toolSet.Ref)
 
 					secrets, err := gateway.RequiredEnvVars(ctx, mcpServerName, gateway.DockerCatalogURL)
