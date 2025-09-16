@@ -16,6 +16,8 @@ import (
 
 	"github.com/docker/cagent/pkg/agent"
 	"github.com/docker/cagent/pkg/chat"
+	"github.com/docker/cagent/pkg/environment"
+	"github.com/docker/cagent/pkg/model/provider"
 	"github.com/docker/cagent/pkg/modelsdev"
 	"github.com/docker/cagent/pkg/session"
 	"github.com/docker/cagent/pkg/team"
@@ -296,6 +298,7 @@ func (r *runtime) RunStream(ctx context.Context, sess *session.Session) <-chan E
 
 		model := a.Model()
 		modelID := model.ID()
+		isDMR := strings.HasPrefix(modelID, "dmr/")
 
 		defer r.finalizeEventChannel(ctx, sess, events)
 
@@ -455,9 +458,17 @@ func (r *runtime) RunStream(ctx context.Context, sess *session.Session) <-chan E
 			if m != nil {
 				contextLimit = m.Limit.Context
 			}
+			// If the active model has a user-configured max_tokens, pick the smallest
+			if config := model.Config(); config != nil && config.MaxTokens > 0 {
+				if contextLimit == 0 || config.MaxTokens < contextLimit {
+					contextLimit = config.MaxTokens
+				}
+			}
 			events <- TokenUsage(sess.InputTokens, sess.OutputTokens, sess.InputTokens+sess.OutputTokens, contextLimit, sess.Cost)
 
-			if m != nil && r.sessionCompaction {
+			slog.Debug("session compaction", "enabled", r.sessionCompaction, "modelID", modelID)
+			if (m != nil || isDMR) && r.sessionCompaction {
+				slog.Debug("Checking if session compaction is needed", "agent", a.Name(), "session_id", sess.ID, "input_tokens", sess.InputTokens, "output_tokens", sess.OutputTokens, "context_limit", contextLimit)
 				if sess.InputTokens+sess.OutputTokens > int(float64(contextLimit)*0.9) {
 					events <- SessionCompaction(sess.ID, "start")
 					r.Summarize(ctx, sess, events)
@@ -1058,9 +1069,23 @@ func (r *runtime) Summarize(ctx context.Context, sess *session.Session, events c
 	systemPrompt := "You are a helpful AI assistant that creates comprehensive summaries of conversations. You will be given a conversation history and asked to create a concise yet thorough summary that captures the key points, decisions made, and outcomes."
 	userPrompt := fmt.Sprintf("Based on the following conversation between a user and an AI assistant, create a comprehensive summary that captures:\n- The main topics discussed\n- Key information exchanged\n- Decisions made or conclusions reached\n- Important outcomes or results\n\nProvide a well-structured summary (2-4 paragraphs) that someone could read to understand what happened in this conversation. Return ONLY the summary text, nothing else.\n\nConversation history:%s\n\nGenerate a summary for this conversation:", conversationHistory.String())
 
+	// Create a new model with a higher max_tokens value to avoid potentially hitting it again.
+	//
+	// This can happen if the agent's previous response hit the max_token limit, since we try to summarize it right after.
+	// We'd get back an empty response if that were to happen.
+	summaryModel := r.CurrentAgent().Model()
+	if config := summaryModel.Config(); config != nil && config.MaxTokens > 0 {
+		summaryConfig := *config
+		summaryConfig.MaxTokens += 5000
+		if newModel, err := provider.New(ctx, &summaryConfig, environment.NewDefaultProvider(ctx)); err == nil {
+			summaryModel = newModel
+			slog.Debug("Added 5k to max_tokens limit for summarization purposes", "provider", config.Provider, "original_token_limit", config.MaxTokens)
+		}
+	}
+
 	newTeam := team.New(
 		team.WithID("summary-generator"),
-		team.WithAgents(agent.New("root", systemPrompt, agent.WithModel(r.CurrentAgent().Model()))),
+		team.WithAgents(agent.New("root", systemPrompt, agent.WithModel(summaryModel))),
 	)
 
 	summarySession := session.New(session.WithSystemMessage(systemPrompt))
@@ -1080,13 +1105,22 @@ func (r *runtime) Summarize(ctx context.Context, sess *session.Session, events c
 		return
 	}
 
+	slog.Debug(
+		"Session compaction token usage",
+		"session_id", sess.ID,
+		"input_tokens", summarySession.InputTokens,
+		"output_tokens", summarySession.OutputTokens,
+		"cost", summarySession.Cost,
+	)
+	// Attribute cost to parent session
+	sess.Cost += summarySession.Cost
+
 	summary := summarySession.GetLastAssistantMessageContent()
 	if summary == "" {
 		return
 	}
 	// Add the summary to the session as a summary item
 	sess.Messages = append(sess.Messages, session.Item{Summary: summary})
-	slog.Debug("Generated session summary", "session_id", sess.ID, "summary_length", len(summary))
 	events <- SessionSummary(sess.ID, summary)
 }
 

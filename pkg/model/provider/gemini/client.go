@@ -222,6 +222,15 @@ func (c *Client) buildConfig() *genai.GenerateContentConfig {
 	return config
 }
 
+// Config returns a copy of the model configuration
+func (c *Client) Config() *latest.ModelConfig {
+	if c == nil || c.config == nil {
+		return nil
+	}
+	configCopy := *c.config
+	return &configCopy
+}
+
 // convertToolsToGemini converts tools to Gemini format
 func convertToolsToGemini(requestTools []tools.Tool) []*genai.Tool {
 	if len(requestTools) == 0 {

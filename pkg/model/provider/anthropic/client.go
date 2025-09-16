@@ -189,6 +189,15 @@ func (c *Client) CreateChatCompletion(
 	return response.Content[0].Text, nil
 }
 
+// Config returns a copy of the model configuration
+func (c *Client) Config() *latest.ModelConfig {
+	if c == nil || c.config == nil {
+		return nil
+	}
+	configCopy := *c.config
+	return &configCopy
+}
+
 func convertMessages(messages []chat.Message) []anthropic.MessageParam {
 	var anthropicMessages []anthropic.MessageParam
 

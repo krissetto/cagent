@@ -332,6 +332,15 @@ func (c *Client) CreateChatCompletion(
 	return response.Choices[0].Message.Content, nil
 }
 
+// Config returns a copy of the model configuration
+func (c *Client) Config() *latest.ModelConfig {
+	if c == nil || c.config == nil {
+		return nil
+	}
+	configCopy := *c.config
+	return &configCopy
+}
+
 // isResponsesOnlyModel returns true for newer OpenAI models that use the Responses API
 // and expect max_completion_tokens/max_output_tokens instead of max_tokens
 func isResponsesOnlyModel(model string) bool {

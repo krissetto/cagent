@@ -52,6 +52,9 @@ type Provider interface {
 		ctx context.Context,
 		messages []chat.Message,
 	) (string, error)
+
+	// Config returns a copy of the model configuration
+	Config() *latest.ModelConfig
 }
 
 func New(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider, opts ...options.Opt) (Provider, error) {

@@ -391,6 +391,15 @@ func (c *Client) CreateChatCompletion(
 	return response.Choices[0].Message.Content, nil
 }
 
+// Config returns a copy of the model configuration
+func (c *Client) Config() *latest.ModelConfig {
+	if c == nil || c.config == nil {
+		return nil
+	}
+	configCopy := *c.config
+	return &configCopy
+}
+
 // sanitizeToolParameters ensures the tool parameter schema is safe for engines using Jinja-like templates.
 // In particular, it avoids shadowing built-in mapping methods like `keys()` by removing a literal "keys"
 // field from property schemas if present, and guarantees the outer structure is an object with a properties map.
