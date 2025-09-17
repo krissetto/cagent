@@ -78,9 +78,14 @@ func (s *SQLiteSessionStore) AddSession(ctx context.Context, session *Session) e
 		return err
 	}
 
+	maxByAgentJSON, err := json.Marshal(session.MaxIterationsByAgent)
+	if err != nil {
+		return err
+	}
+
 	_, err = s.db.ExecContext(ctx,
-		"INSERT INTO sessions (id, messages, tools_approved, input_tokens, output_tokens, title, send_user_message, max_iterations, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		session.ID, string(itemsJSON), session.ToolsApproved, session.InputTokens, session.OutputTokens, session.Title, session.SendUserMessage, session.MaxIterations, session.CreatedAt.Format(time.RFC3339))
+		"INSERT INTO sessions (id, messages, tools_approved, input_tokens, output_tokens, title, send_user_message, max_iterations_by_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		session.ID, string(itemsJSON), session.ToolsApproved, session.InputTokens, session.OutputTokens, session.Title, session.SendUserMessage, string(maxByAgentJSON), session.CreatedAt.Format(time.RFC3339))
 	return err
 }
 
@@ -91,12 +96,12 @@ func (s *SQLiteSessionStore) GetSession(ctx context.Context, id string) (*Sessio
 	}
 
 	row := s.db.QueryRowContext(ctx,
-		"SELECT id, messages, tools_approved, input_tokens, output_tokens, title, cost, send_user_message, max_iterations, created_at FROM sessions WHERE id = ?", id)
+		"SELECT id, messages, tools_approved, input_tokens, output_tokens, title, cost, send_user_message, max_iterations_by_agent, created_at FROM sessions WHERE id = ?", id)
 
-	var messagesJSON, toolsApprovedStr, inputTokensStr, outputTokensStr, titleStr, costStr, sendUserMessageStr, maxIterationsStr, createdAtStr string
+	var messagesJSON, toolsApprovedStr, inputTokensStr, outputTokensStr, titleStr, costStr, sendUserMessageStr, maxIterationsByAgentJSON, createdAtStr string
 	var sessionID string
 
-	err := row.Scan(&sessionID, &messagesJSON, &toolsApprovedStr, &inputTokensStr, &outputTokensStr, &titleStr, &costStr, &sendUserMessageStr, &maxIterationsStr, &createdAtStr)
+	err := row.Scan(&sessionID, &messagesJSON, &toolsApprovedStr, &inputTokensStr, &outputTokensStr, &titleStr, &costStr, &sendUserMessageStr, &maxIterationsByAgentJSON, &createdAtStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -146,34 +151,34 @@ func (s *SQLiteSessionStore) GetSession(ctx context.Context, id string) (*Sessio
 		return nil, err
 	}
 
-	maxIterations, err := strconv.Atoi(maxIterationsStr)
-	if err != nil {
-		return nil, err
-	}
-
 	createdAt, err := time.Parse(time.RFC3339, createdAtStr)
 	if err != nil {
 		return nil, err
 	}
 
+	maxIterByAgent := make(map[string]int)
+	if maxIterationsByAgentJSON != "" {
+		_ = json.Unmarshal([]byte(maxIterationsByAgentJSON), &maxIterByAgent)
+	}
+
 	return &Session{
-		ID:              sessionID,
-		Title:           titleStr,
-		Messages:        items,
-		ToolsApproved:   toolsApproved,
-		InputTokens:     inputTokens,
-		OutputTokens:    outputTokens,
-		Cost:            cost,
-		SendUserMessage: sendUserMessage,
-		MaxIterations:   maxIterations,
-		CreatedAt:       createdAt,
+		ID:                   sessionID,
+		Title:                titleStr,
+		Messages:             items,
+		ToolsApproved:        toolsApproved,
+		InputTokens:          inputTokens,
+		OutputTokens:         outputTokens,
+		Cost:                 cost,
+		SendUserMessage:      sendUserMessage,
+		MaxIterationsByAgent: maxIterByAgent,
+		CreatedAt:            createdAt,
 	}, nil
 }
 
 // GetSessions retrieves all sessions
 func (s *SQLiteSessionStore) GetSessions(ctx context.Context) ([]*Session, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, messages, tools_approved, input_tokens, output_tokens, title, cost, send_user_message, max_iterations, created_at FROM sessions ORDER BY created_at DESC")
+		"SELECT id, messages, tools_approved, input_tokens, output_tokens, title, cost, send_user_message, max_iterations_by_agent, created_at FROM sessions ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -181,10 +186,10 @@ func (s *SQLiteSessionStore) GetSessions(ctx context.Context) ([]*Session, error
 
 	sessions := make([]*Session, 0)
 	for rows.Next() {
-		var messagesJSON, toolsApprovedStr, inputTokensStr, outputTokensStr, titleStr, costStr, sendUserMessageStr, maxIterationsStr, createdAtStr string
+		var messagesJSON, toolsApprovedStr, inputTokensStr, outputTokensStr, titleStr, costStr, sendUserMessageStr, maxIterationsByAgentJSON, createdAtStr string
 		var sessionID string
 
-		err := rows.Scan(&sessionID, &messagesJSON, &toolsApprovedStr, &inputTokensStr, &outputTokensStr, &titleStr, &costStr, &sendUserMessageStr, &maxIterationsStr, &createdAtStr)
+		err := rows.Scan(&sessionID, &messagesJSON, &toolsApprovedStr, &inputTokensStr, &outputTokensStr, &titleStr, &costStr, &sendUserMessageStr, &maxIterationsByAgentJSON, &createdAtStr)
 		if err != nil {
 			return nil, err
 		}
@@ -231,27 +236,27 @@ func (s *SQLiteSessionStore) GetSessions(ctx context.Context) ([]*Session, error
 			return nil, err
 		}
 
-		maxIterations, err := strconv.Atoi(maxIterationsStr)
-		if err != nil {
-			return nil, err
-		}
-
 		createdAt, err := time.Parse(time.RFC3339, createdAtStr)
 		if err != nil {
 			return nil, err
 		}
 
+		maxByAgent := make(map[string]int)
+		if maxIterationsByAgentJSON != "" {
+			_ = json.Unmarshal([]byte(maxIterationsByAgentJSON), &maxByAgent)
+		}
+
 		session := &Session{
-			ID:              sessionID,
-			Title:           titleStr,
-			Messages:        items,
-			ToolsApproved:   toolsApproved,
-			InputTokens:     inputTokens,
-			OutputTokens:    outputTokens,
-			Cost:            cost,
-			SendUserMessage: sendUserMessage,
-			MaxIterations:   maxIterations,
-			CreatedAt:       createdAt,
+			ID:                   sessionID,
+			Title:                titleStr,
+			Messages:             items,
+			ToolsApproved:        toolsApproved,
+			InputTokens:          inputTokens,
+			OutputTokens:         outputTokens,
+			Cost:                 cost,
+			SendUserMessage:      sendUserMessage,
+			MaxIterationsByAgent: maxByAgent,
+			CreatedAt:            createdAt,
 		}
 
 		sessions = append(sessions, session)
@@ -294,9 +299,14 @@ func (s *SQLiteSessionStore) UpdateSession(ctx context.Context, session *Session
 		return err
 	}
 
+	maxByAgentJSON, err := json.Marshal(session.MaxIterationsByAgent)
+	if err != nil {
+		return err
+	}
+
 	result, err := s.db.ExecContext(ctx,
-		"UPDATE sessions SET messages = ?, title = ?, tools_approved = ?, input_tokens = ?, output_tokens = ?, cost = ?, send_user_message = ?, max_iterations = ? WHERE id = ?",
-		string(itemsJSON), session.Title, session.ToolsApproved, session.InputTokens, session.OutputTokens, session.Cost, session.SendUserMessage, session.MaxIterations, session.ID)
+		"UPDATE sessions SET messages = ?, title = ?, tools_approved = ?, input_tokens = ?, output_tokens = ?, cost = ?, send_user_message = ?, max_iterations_by_agent = ? WHERE id = ?",
+		string(itemsJSON), session.Title, session.ToolsApproved, session.InputTokens, session.OutputTokens, session.Cost, session.SendUserMessage, string(maxByAgentJSON), session.ID)
 	if err != nil {
 		return err
 	}

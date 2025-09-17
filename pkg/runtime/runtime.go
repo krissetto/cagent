@@ -207,8 +207,8 @@ func (r *runtime) RunStream(ctx context.Context, sess *session.Session) <-chan E
 		}
 
 		iteration := 0
-		// Use a runtime copy of maxIterations so we don't modify the session's persistent config
-		runtimeMaxIterations := sess.MaxIterations
+		// Resolve max iterations from the session on a per-agent basis
+		runtimeMaxIterations := sess.MaxIterationsFor(a.Name(), 0)
 		for {
 			// Check iteration limit
 			if runtimeMaxIterations > 0 && iteration >= runtimeMaxIterations {
@@ -843,7 +843,7 @@ func (r *runtime) handleTaskTransfer(ctx context.Context, sess *session.Session,
 	s := session.New(
 		session.WithSystemMessage(memberAgentTask),
 		session.WithUserMessage("", "Follow the default instructions"),
-		session.WithMaxIterations(sess.MaxIterations),
+		session.WithAgentMaxIterations(params.Agent, sess.MaxIterationsFor(params.Agent, 0)),
 	)
 	s.SendUserMessage = false
 	s.Title = "Transferred task"

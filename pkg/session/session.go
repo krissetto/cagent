@@ -58,9 +58,9 @@ type Session struct {
 	// SendUserMessage is a flag to indicate if the user message should be sent
 	SendUserMessage bool
 
-	// MaxIterations is the maximum number of agentic loop iterations to prevent infinite loops
-	// If 0, there is no limit
-	MaxIterations int `json:"max_iterations"`
+	// MaxIterationsByAgent allows setting the max iterations value for each agent within this session
+	// Keys are agent names; (0 = unlimited)
+	MaxIterationsByAgent map[string]int `json:"max_iterations_by_agent,omitempty"`
 
 	InputTokens  int     `json:"input_tokens"`
 	OutputTokens int     `json:"output_tokens"`
@@ -169,9 +169,13 @@ func WithSystemMessage(content string) Opt {
 	}
 }
 
-func WithMaxIterations(maxIterations int) Opt {
+// WithAgentMaxIterations sets a per-agent max iterations value on the session
+func WithAgentMaxIterations(agentName string, maxIterations int) Opt {
 	return func(s *Session) {
-		s.MaxIterations = maxIterations
+		if s.MaxIterationsByAgent == nil {
+			s.MaxIterationsByAgent = make(map[string]int)
+		}
+		s.MaxIterationsByAgent[agentName] = maxIterations
 	}
 }
 
@@ -181,13 +185,14 @@ func New(opts ...Opt) *Session {
 	slog.Debug("Creating new session", "session_id", sessionID)
 
 	s := &Session{
-		ID:              sessionID,
-		CreatedAt:       time.Now(),
-		Messages:        make([]Item, 0),
-		ToolsApproved:   false,
-		InputTokens:     0,
-		OutputTokens:    0,
-		SendUserMessage: true,
+		ID:                   sessionID,
+		CreatedAt:            time.Now(),
+		Messages:             make([]Item, 0),
+		ToolsApproved:        false,
+		InputTokens:          0,
+		OutputTokens:         0,
+		SendUserMessage:      true,
+		MaxIterationsByAgent: make(map[string]int),
 	}
 
 	for _, opt := range opts {
@@ -195,6 +200,19 @@ func New(opts ...Opt) *Session {
 	}
 
 	return s
+}
+
+// MaxIterationsFor resolves the max iterations value for the given agent name
+func (s *Session) MaxIterationsFor(agentName string, agentConfigMax int) int {
+	if s != nil && s.MaxIterationsByAgent != nil {
+		if v, ok := s.MaxIterationsByAgent[agentName]; ok && v > 0 {
+			return v
+		}
+	}
+	if agentConfigMax > 0 {
+		return agentConfigMax
+	}
+	return 0
 }
 
 func (s *Session) GetMessages(a *agent.Agent) []chat.Message {

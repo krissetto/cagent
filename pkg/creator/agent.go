@@ -234,7 +234,7 @@ func StreamCreateAgent(ctx context.Context, baseDir, prompt string, runConfig co
 
 	sess := session.New(
 		session.WithUserMessage("", prompt),
-		session.WithMaxIterations(maxIterations),
+		session.WithAgentMaxIterations("root", maxIterations),
 	)
 	sess.ToolsApproved = true
 

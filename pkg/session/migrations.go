@@ -200,6 +200,13 @@ func getAllMigrations() []Migration {
 			UpSQL:       `ALTER TABLE sessions ADD COLUMN max_iterations INTEGER DEFAULT 0`,
 			DownSQL:     `ALTER TABLE sessions DROP COLUMN max_iterations`,
 		},
+		{
+			ID:          8,
+			Name:        "008_switch_to_per_agent_max_iterations",
+			Description: "Add max_iterations_by_agent JSON column and drop legacy max_iterations column",
+			UpSQL:       `ALTER TABLE sessions ADD COLUMN max_iterations_by_agent TEXT DEFAULT '{}'; ALTER TABLE sessions DROP COLUMN max_iterations`,
+			DownSQL:     `ALTER TABLE sessions ADD COLUMN max_iterations INTEGER DEFAULT 0; ALTER TABLE sessions DROP COLUMN max_iterations_by_agent`,
+		},
 		// Add more migrations here as needed
 	}
 }
