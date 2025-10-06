@@ -898,10 +898,9 @@ func (r *runtime) handleTaskTransfer(ctx context.Context, sess *session.Session,
 	r.currentAgent = params.Agent
 	defer func() { r.currentAgent = ca }()
 
-	memberAgentTask := "You are a member of a team of agents. Your goal is to complete the following task:"
-	memberAgentTask += fmt.Sprintf("\n\n<task>\n%s\n</task>", params.Task)
+	subAgentTaskMessage := fmt.Sprintf("<task>\n%s\n</task>", params.Task)
 	if params.ExpectedOutput != "" {
-		memberAgentTask += fmt.Sprintf("\n\n<expected_output>\n%s\n</expected_output>", params.ExpectedOutput)
+		subAgentTaskMessage += fmt.Sprintf("\n\n<expected_output>\n%s\n</expected_output>", params.ExpectedOutput)
 	}
 
 	slog.Debug("Creating new session with parent session", "parent_session_id", sess.ID, "tools_approved", sess.ToolsApproved)
@@ -911,9 +910,14 @@ func (r *runtime) handleTaskTransfer(ctx context.Context, sess *session.Session,
 		subAgentMaxIter = child.MaxIterations()
 	}
 
+	subAgentSystemMessage := `You are a member of a team of agents and you are being delegated a task to complete.
+The first user message contains the task to be completed within <task> tags.
+If present, the <expected_output> tags specify the format or structure your response should follow.
+All subsequent user messages come from the actual user of the multi-agent system, not your parent agent.`
+
 	s := session.New(
-		session.WithSystemMessage(memberAgentTask),
-		session.WithUserMessage("", "Follow the default instructions"),
+		session.WithSystemMessage(subAgentSystemMessage),
+		session.WithUserMessage("", subAgentTaskMessage),
 		session.WithMaxIterations(subAgentMaxIter),
 	)
 	s.SendUserMessage = false
