@@ -27,10 +27,20 @@ type toolModel struct {
 	height int
 
 	app *app.App
+
+	// Rendering cache
+	cachedView   string
+	cachedWidth  int
+	cachedStatus types.ToolStatus
 }
 
 // SetSize implements Model.
 func (mv *toolModel) SetSize(width, height int) tea.Cmd {
+	// Invalidate cache if width changes
+	if mv.width != width {
+		mv.cachedView = ""
+		mv.cachedWidth = 0
+	}
 	mv.width = width
 	mv.height = height
 	return nil
@@ -96,6 +106,14 @@ func (mv *toolModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (mv *toolModel) View() string {
 	msg := mv.message
 
+	// Check if we can use cached rendering
+	// Don't cache pending/running tools (they have spinners)
+	canCache := msg.ToolStatus != types.ToolStatusPending && msg.ToolStatus != types.ToolStatusRunning
+
+	if canCache && mv.cachedView != "" && mv.cachedWidth == mv.width && mv.cachedStatus == msg.ToolStatus {
+		return mv.cachedView
+	}
+
 	slog.Debug("Rendering tool message", "status", msg.ToolStatus, "content", msg.Content, "args", msg.ToolCall.Function.Arguments)
 	slog.Debug("Tool definition", "name", msg.ToolDefinition.Name, "title", msg.ToolDefinition.Annotations.Title)
 	displayName := msg.ToolDefinition.DisplayName()
@@ -158,7 +176,16 @@ func (mv *toolModel) View() string {
 		}
 	}
 
-	return styles.BaseStyle.PaddingLeft(2).PaddingTop(1).Render(content + resultContent)
+	rendered := styles.BaseStyle.PaddingLeft(2).PaddingTop(1).Render(content + resultContent)
+
+	// Cache the result if applicable
+	if canCache {
+		mv.cachedView = rendered
+		mv.cachedWidth = mv.width
+		mv.cachedStatus = msg.ToolStatus
+	}
+
+	return rendered
 }
 
 func icon(status types.ToolStatus) string {

@@ -28,6 +28,10 @@ type messageModel struct {
 	height  int
 	focused bool
 	spinner spinner.Model
+
+	// Rendering cache
+	cachedView  string
+	cachedWidth int
 }
 
 // New creates a new message view
@@ -53,6 +57,9 @@ func (mv *messageModel) Init() tea.Cmd {
 
 func (mv *messageModel) SetMessage(msg *types.Message) {
 	mv.message = msg
+	// Invalidate cache when message changes
+	mv.cachedView = ""
+	mv.cachedWidth = 0
 }
 
 // Update handles messages and updates the message view state
@@ -74,58 +81,83 @@ func (mv *messageModel) View() string {
 // Render renders the message view content
 func (mv *messageModel) Render(width int) string {
 	msg := mv.message
+
+	// Check if we can use cached rendering
+	// Only cache static content that won't change between renders
+	// Allow caching for types that don't require content (separator, cancelled)
+	canCache := msg.Type != types.MessageTypeSpinner &&
+		(msg.Content != "" || msg.Type == types.MessageTypeSeparator || msg.Type == types.MessageTypeCancelled)
+
+	if canCache && mv.cachedView != "" && mv.cachedWidth == width {
+		return mv.cachedView
+	}
+
+	var rendered string
+
 	switch msg.Type {
 	case types.MessageTypeSpinner:
 		return mv.spinner.View()
 	case types.MessageTypeUser:
-		if rendered, err := markdown.NewRenderer(width - len(styles.UserMessageBorderStyle.Render(""))).Render(msg.Content); err == nil {
-			return styles.UserMessageBorderStyle.Render(strings.TrimRight(rendered, "\n\r\t "))
+		if r, err := markdown.NewRenderer(width - len(styles.UserMessageBorderStyle.Render(""))).Render(msg.Content); err == nil {
+			rendered = styles.UserMessageBorderStyle.Render(strings.TrimRight(r, "\n\r\t "))
+		} else {
+			rendered = msg.Content
 		}
 
-		return msg.Content
 	case types.MessageTypeAssistant:
 		if msg.Content == "" {
 			return mv.spinner.View()
 		}
 
 		text := senderPrefix(msg.Sender) + msg.Content
-		rendered, err := markdown.NewRenderer(width).Render(text)
+		r, err := markdown.NewRenderer(width).Render(text)
 		if err != nil {
-			return text
+			rendered = text
+		} else {
+			rendered = strings.TrimRight(r, "\n\r\t ")
 		}
 
-		return strings.TrimRight(rendered, "\n\r\t ")
 	case types.MessageTypeAssistantReasoning:
 		if msg.Content == "" {
 			return mv.spinner.View()
 		}
 		text := "Thinking: " + senderPrefix(msg.Sender) + msg.Content
 		// Render through the markdown renderer to ensure proper wrapping to width
-		rendered, err := markdown.NewRenderer(width).Render(text)
+		r, err := markdown.NewRenderer(width).Render(text)
 		if err != nil {
-			return styles.MutedStyle.Italic(true).Render(text)
+			rendered = styles.MutedStyle.Italic(true).Render(text)
+		} else {
+			// Strip ANSI from inner rendering so muted style fully applies
+			clean := stripANSI(strings.TrimRight(r, "\n\r\t "))
+			rendered = styles.MutedStyle.Italic(true).Render(clean)
 		}
-		// Strip ANSI from inner rendering so muted style fully applies
-		clean := stripANSI(strings.TrimRight(rendered, "\n\r\t "))
-		return styles.MutedStyle.Italic(true).Render(clean)
+
 	case types.MessageTypeShellOutput:
-		if rendered, err := markdown.NewRenderer(width).Render(fmt.Sprintf("```console\n%s\n```", msg.Content)); err == nil {
-			return strings.TrimRight(rendered, "\n\r\t ")
+		if r, err := markdown.NewRenderer(width).Render(fmt.Sprintf("```console\n%s\n```", msg.Content)); err == nil {
+			rendered = strings.TrimRight(r, "\n\r\t ")
+		} else {
+			rendered = msg.Content
 		}
-		return msg.Content
 	case types.MessageTypeSeparator:
-		return styles.MutedStyle.Render("•" + strings.Repeat("─", mv.width-3) + "•")
+		rendered = styles.MutedStyle.Render("•" + strings.Repeat("─", mv.width-3) + "•")
 	case types.MessageTypeCancelled:
-		return styles.WarningStyle.Render("⚠ stream cancelled ⚠")
+		rendered = styles.WarningStyle.Render("⚠ stream cancelled ⚠")
 	case types.MessageTypeError:
-		return styles.ErrorStyle.Render("│ " + msg.Content)
+		rendered = styles.ErrorStyle.Render("│ " + msg.Content)
 	case types.MessageTypeWarning:
-		return styles.WarningStyle.Render(msg.Content)
+		rendered = styles.WarningStyle.Render(msg.Content)
 	case types.MessageTypeSystem:
-		return styles.MutedStyle.Render("ℹ " + msg.Content)
+		rendered = styles.MutedStyle.Render("ℹ " + msg.Content)
 	default:
-		return msg.Content
+		rendered = msg.Content
 	}
+
+	if canCache {
+		mv.cachedView = rendered
+		mv.cachedWidth = width
+	}
+
+	return rendered
 }
 
 func senderPrefix(sender string) string {
@@ -150,6 +182,11 @@ func (mv *messageModel) Message() *types.Message {
 
 // SetSize sets the dimensions of the message view
 func (mv *messageModel) SetSize(width, height int) tea.Cmd {
+	// Invalidate cache if width changes (height doesn't affect rendering)
+	if mv.width != width {
+		mv.cachedView = ""
+		mv.cachedWidth = 0
+	}
 	mv.width = width
 	mv.height = height
 	return nil
