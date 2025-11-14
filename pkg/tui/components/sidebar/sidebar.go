@@ -3,6 +3,7 @@ package sidebar
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -24,23 +25,22 @@ const (
 	ModeHorizontal
 )
 
-// Model represents a sidebar component
 type Model interface {
 	layout.Model
 	layout.Sizeable
 
-	SetTokenUsage(usage *runtime.Usage)
+	SetTokenUsage(event *runtime.TokenUsageEvent)
 	SetTodos(toolCall tools.ToolCall) error
 	SetWorking(working bool) tea.Cmd
 	SetMode(mode Mode)
 	GetSize() (width, height int)
 }
 
-// model implements Model
 type model struct {
 	width        int
 	height       int
-	usage        *runtime.Usage
+	sessionUsage map[string]*runtime.Usage // sessionID -> latest usage (replaces, not accumulates)
+	sessionAgent map[string]string         // sessionID -> agentName
 	todoComp     *todotool.SidebarComponent
 	working      bool
 	mcpInit      bool
@@ -53,7 +53,8 @@ func New(manager *service.TodoManager) Model {
 	return &model{
 		width:        20,
 		height:       24,
-		usage:        &runtime.Usage{},
+		sessionUsage: make(map[string]*runtime.Usage),
+		sessionAgent: make(map[string]string),
 		todoComp:     todotool.NewSidebarComponent(manager),
 		spinner:      spinner.New(spinner.ModeSpinnerOnly),
 		sessionTitle: "New session",
@@ -64,8 +65,15 @@ func (m *model) Init() tea.Cmd {
 	return nil
 }
 
-func (m *model) SetTokenUsage(usage *runtime.Usage) {
-	m.usage = usage
+func (m *model) SetTokenUsage(event *runtime.TokenUsageEvent) {
+	if event == nil || event.Usage == nil || event.SessionID == "" || event.AgentContext.AgentName == "" {
+		return
+	}
+
+	// Store/replace by session ID (each event has cumulative totals for that session)
+	usage := *event.Usage
+	m.sessionUsage[event.SessionID] = &usage
+	m.sessionAgent[event.SessionID] = event.AgentContext.AgentName
 }
 
 func (m *model) SetTodos(toolCall tools.ToolCall) error {
@@ -144,13 +152,10 @@ func (m *model) View() string {
 
 func (m *model) horizontalView() string {
 	pwd := getCurrentWorkingDirectory()
-
-	wi := m.workingIndicator()
-	titleGapWidth := m.width - lipgloss.Width(m.sessionTitle) - lipgloss.Width(wi) - 2
-	title := fmt.Sprintf("%s%*s%s", m.sessionTitle, titleGapWidth, "", m.workingIndicator())
-
-	gapWidth := m.width - lipgloss.Width(pwd) - lipgloss.Width(m.tokenUsage()) - 2
-	return lipgloss.JoinVertical(lipgloss.Top, title, fmt.Sprintf("%s%*s%s", styles.MutedStyle.Render(pwd), gapWidth, "", m.tokenUsage()))
+	usageSummary := m.tokenUsageSummary()
+	gapWidth := m.width - lipgloss.Width(pwd) - lipgloss.Width(usageSummary) - 2
+	title := m.sessionTitle + " " + m.workingIndicator()
+	return lipgloss.JoinVertical(lipgloss.Top, title, fmt.Sprintf("%s%*s%s", styles.MutedStyle.Render(pwd), gapWidth, "", usageSummary))
 }
 
 func (m *model) verticalView() string {
@@ -160,8 +165,12 @@ func (m *model) verticalView() string {
 		topContent += styles.MutedStyle.Render(pwd) + "\n\n"
 	}
 
-	topContent += m.tokenUsage()
-	topContent += "\n" + m.workingIndicator()
+	// Show working indicator before usage so it doesn't jump around
+	if indicator := m.workingIndicator(); indicator != "" {
+		topContent += indicator + "\n\n"
+	}
+
+	topContent += m.tokenUsageDetails()
 
 	m.todoComp.SetSize(m.width)
 	todoContent := strings.TrimSuffix(m.todoComp.Render(), "\n")
@@ -198,18 +207,107 @@ func (m *model) workingIndicator() string {
 	return ""
 }
 
-func (m *model) tokenUsage() string {
-	totalTokens := m.usage.InputTokens + m.usage.OutputTokens
-	var usagePercent float64
-	if m.usage.ContextLimit > 0 {
-		usagePercent = (float64(m.usage.ContextLength) / float64(m.usage.ContextLimit)) * 100
+func (m *model) tokenUsageSummary() string {
+	if len(m.sessionUsage) == 0 {
+		return ""
 	}
 
-	percentageText := styles.MutedStyle.Render(fmt.Sprintf("%.0f%%", usagePercent))
-	totalTokensText := styles.SubtleStyle.Render(fmt.Sprintf("(%s)", formatTokenCount(totalTokens)))
-	costText := styles.MutedStyle.Render(fmt.Sprintf("$%.2f", m.usage.Cost))
+	var totalTokens int
+	var totalCost float64
+	var contextLimit int
+	var contextLength int
 
-	return fmt.Sprintf("%s %s %s", percentageText, totalTokensText, costText)
+	for _, usage := range m.sessionUsage {
+		totalTokens += usage.InputTokens + usage.OutputTokens
+		totalCost += usage.Cost
+		if usage.ContextLimit > contextLimit {
+			contextLimit = usage.ContextLimit
+		}
+		contextLength += usage.ContextLength
+	}
+
+	parts := []string{
+		fmt.Sprintf("%s tokens", formatTokenCount(totalTokens)),
+		fmt.Sprintf("$%.2f", totalCost),
+	}
+
+	// Only show context % if no delegation has occurred (single session only)
+	if len(m.sessionUsage) == 1 && contextLimit > 0 {
+		percent := (float64(contextLength) / float64(contextLimit)) * 100
+		parts = append(parts, fmt.Sprintf("Context: %.0f%%", percent))
+	}
+
+	return styles.SubtleStyle.Render(strings.Join(parts, " | "))
+}
+
+func (m *model) tokenUsageDetails() string {
+	if len(m.sessionUsage) == 0 {
+		return ""
+	}
+
+	// Aggregate by agent name from session data
+	agentUsage := make(map[string]*runtime.Usage)
+	for sessionID, usage := range m.sessionUsage {
+		agentName := m.sessionAgent[sessionID]
+		if agentName == "" {
+			continue
+		}
+
+		if existing, ok := agentUsage[agentName]; ok {
+			// Accumulate across different sessions
+			existing.InputTokens += usage.InputTokens
+			existing.OutputTokens += usage.OutputTokens
+			existing.Cost += usage.Cost
+		} else {
+			// First session for this agent
+			u := *usage
+			agentUsage[agentName] = &u
+		}
+	}
+
+	var builder strings.Builder
+	var totalTokens int
+	var totalCost float64
+	var contextLimit int
+	var contextLength int
+
+	for _, usage := range m.sessionUsage {
+		totalTokens += usage.InputTokens + usage.OutputTokens
+		totalCost += usage.Cost
+		if usage.ContextLimit > contextLimit {
+			contextLimit = usage.ContextLimit
+		}
+		contextLength += usage.ContextLength
+	}
+
+	builder.WriteString(styles.SubtleStyle.Render("Total Usage"))
+	builder.WriteString(fmt.Sprintf("\n  Tokens: %s | Cost: $%.2f", formatTokenCount(totalTokens), totalCost))
+
+	// Only show context % if no delegation has occurred (single session only)
+	if len(m.sessionUsage) == 1 && contextLimit > 0 {
+		percent := (float64(contextLength) / float64(contextLimit)) * 100
+		builder.WriteString(fmt.Sprintf(" | %.0f%%", percent))
+	}
+
+	// Show breakdown only when multiple agents have reported
+	if len(agentUsage) > 1 {
+		builder.WriteString("\n--------------------------------\n")
+		builder.WriteString(styles.SubtleStyle.Render("Agent Breakdown"))
+
+		names := make([]string, 0, len(agentUsage))
+		for name := range agentUsage {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		for _, name := range names {
+			usage := agentUsage[name]
+			tokens := usage.InputTokens + usage.OutputTokens
+			builder.WriteString(fmt.Sprintf("\n  %s: %s tokens | $%.2f", name, formatTokenCount(tokens), usage.Cost))
+		}
+	}
+
+	return builder.String()
 }
 
 // SetSize sets the dimensions of the component
