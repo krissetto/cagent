@@ -102,15 +102,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
+      - name: Get OIDC token
+        uses: docker/configure-credentials-action-internal@main # TODO(krissetto): use a specific version, not @main
+        id: docker_oidc
+        with:
+          env: prod
+          connection_id: d1548e92-9257-441a-b5f3-dcf6dca5ca17
+
       - name: Hub login
         if: github.event_name != 'pull_request'
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
-          username: ${{ vars.DOCKERPUBLICBOT_USERNAME }}
-          password: ${{ secrets.DOCKERPUBLICBOT_WRITE_PAT }}
+          username: docker
+          password: ${{ steps.docker_oidc.outputs.token }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          driver: cloud
+          endpoint: "${{ vars.DOCKER_ACCOUNT }}/${{ vars.CLOUD_BUILDER_NAME }}"
+          install: true
 
       - name: Docker metadata
         id: meta
