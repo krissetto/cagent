@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 
@@ -92,6 +94,10 @@ func migrateToLatestConfig(c any) (latest.Config, error) {
 }
 
 func validateConfig(cfg *latest.Config) error {
+	if err := validateProviders(cfg); err != nil {
+		return err
+	}
+
 	if cfg.Models == nil {
 		cfg.Models = map[string]latest.ModelConfig{}
 	}
@@ -107,6 +113,8 @@ func validateConfig(cfg *latest.Config) error {
 	if err := ensureModelsExist(cfg); err != nil {
 		return err
 	}
+
+	applyProviderDefaultsToModels(cfg)
 
 	for agentName := range cfg.Agents {
 		agent := cfg.Agents[agentName]
@@ -127,6 +135,120 @@ func validateConfig(cfg *latest.Config) error {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+// providerAPITypes are the allowed values for api_type in provider configs
+var providerAPITypes = map[string]bool{
+	"":                       true, // empty is allowed (defaults to openai_chatcompletions)
+	"openai_chatcompletions": true,
+	"openai_responses":       true,
+}
+
+// validateProviders validates all provider configurations
+func validateProviders(cfg *latest.Config) error {
+	if cfg.Providers == nil {
+		return nil
+	}
+
+	for name, provCfg := range cfg.Providers {
+		// Validate provider name
+		if err := validateProviderName(name); err != nil {
+			return fmt.Errorf("provider '%s': %w", name, err)
+		}
+
+		// Validate api_type
+		if !providerAPITypes[provCfg.APIType] {
+			return fmt.Errorf("provider '%s': invalid api_type '%s' (must be one of: openai_chatcompletions, openai_responses)", name, provCfg.APIType)
+		}
+
+		// base_url is required for custom providers
+		if provCfg.BaseURL == "" {
+			return fmt.Errorf("provider '%s': base_url is required", name)
+		}
+		if _, err := url.Parse(provCfg.BaseURL); err != nil {
+			return fmt.Errorf("provider '%s': invalid base_url '%s': %w", name, provCfg.BaseURL, err)
+		}
+
+		// token_key is optional - if not set, requests will be sent without bearer token
+	}
+
+	return nil
+}
+
+// validateProviderName validates that a provider name is valid
+func validateProviderName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("name cannot be empty")
+	}
+	if trimmed != name {
+		return fmt.Errorf("name cannot have leading or trailing whitespace")
+	}
+	if strings.Contains(name, "/") {
+		return fmt.Errorf("name cannot contain '/'")
+	}
+	return nil
+}
+
+// applyProviderDefaultsToModels applies provider defaults to all models in the config.
+// For each model that references a custom provider (defined in cfg.Providers),
+// it fills in base_url, token_key, and api_type from the provider config when not already set.
+func applyProviderDefaultsToModels(cfg *latest.Config) {
+	if len(cfg.Providers) == 0 {
+		return
+	}
+
+	for modelName, modelCfg := range cfg.Models {
+		provCfg, exists := cfg.Providers[modelCfg.Provider]
+		if !exists {
+			continue
+		}
+
+		slog.Debug("Applying custom provider defaults to model",
+			"model", modelName,
+			"provider", modelCfg.Provider,
+		)
+
+		// Apply base_url from provider if model doesn't have one
+		if modelCfg.BaseURL == "" && provCfg.BaseURL != "" {
+			modelCfg.BaseURL = provCfg.BaseURL
+			slog.Debug("Applied base_url from custom provider",
+				"model", modelName,
+				"base_url", provCfg.BaseURL,
+			)
+		}
+
+		// Apply token_key from provider if model doesn't have one
+		if modelCfg.TokenKey == "" && provCfg.TokenKey != "" {
+			modelCfg.TokenKey = provCfg.TokenKey
+			slog.Debug("Applied token_key from custom provider",
+				"model", modelName,
+				"token_key", provCfg.TokenKey,
+			)
+		}
+
+		// Initialize ProviderOpts if nil
+		if modelCfg.ProviderOpts == nil {
+			modelCfg.ProviderOpts = make(map[string]any)
+		}
+
+		// Apply api_type from provider if model doesn't have one set
+		// Default to "openai_chatcompletions" if provider doesn't specify api_type
+		if _, hasAPIType := modelCfg.ProviderOpts["api_type"]; !hasAPIType {
+			apiType := provCfg.APIType
+			if apiType == "" {
+				apiType = "openai_chatcompletions"
+			}
+			modelCfg.ProviderOpts["api_type"] = apiType
+			slog.Debug("Applied api_type from custom provider",
+				"model", modelName,
+				"api_type", apiType,
+			)
+		}
+
+		// Write back the modified model config
+		cfg.Models[modelName] = modelCfg
+	}
 }
 
 // validateSkillsConfiguration ensures that agents with skills enabled have the necessary tools

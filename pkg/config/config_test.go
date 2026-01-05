@@ -406,3 +406,141 @@ func TestApplyModelOverrides(t *testing.T) {
 		})
 	}
 }
+
+func TestProviders_DefaultsApplied(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Load(t.Context(), testfileSource("testdata/providers.yaml"))
+	require.NoError(t, err)
+
+	// Check that provider defaults are applied to custom_model
+	customModel := cfg.Models["custom_model"]
+	assert.Equal(t, "custom_provider", customModel.Provider)
+	assert.Equal(t, "gpt-4o", customModel.Model)
+	assert.Equal(t, "https://api.example.com/v1", customModel.BaseURL)
+	assert.Equal(t, "CUSTOM_API_KEY", customModel.TokenKey)
+	assert.Equal(t, "openai_chatcompletions", customModel.ProviderOpts["api_type"])
+}
+
+func TestProviders_ModelOverridesTakePrecedence(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Load(t.Context(), testfileSource("testdata/providers.yaml"))
+	require.NoError(t, err)
+
+	// Check that model-level overrides take precedence
+	overrideModel := cfg.Models["model_with_overrides"]
+	assert.Equal(t, "custom_provider", overrideModel.Provider)
+	assert.Equal(t, "https://override.example.com/v1", overrideModel.BaseURL)
+	assert.Equal(t, "OVERRIDE_API_KEY", overrideModel.TokenKey)
+	// api_type should still be set from provider since model didn't override it
+	assert.Equal(t, "openai_chatcompletions", overrideModel.ProviderOpts["api_type"])
+}
+
+func TestProviders_ShorthandSyntax(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Load(t.Context(), testfileSource("testdata/providers.yaml"))
+	require.NoError(t, err)
+
+	// Check that shorthand syntax creates a model entry with provider defaults
+	shorthandModel, exists := cfg.Models["custom_provider/gpt-4o-turbo"]
+	require.True(t, exists, "Shorthand model should be auto-registered")
+	assert.Equal(t, "custom_provider", shorthandModel.Provider)
+	assert.Equal(t, "gpt-4o-turbo", shorthandModel.Model)
+	assert.Equal(t, "https://api.example.com/v1", shorthandModel.BaseURL)
+	assert.Equal(t, "CUSTOM_API_KEY", shorthandModel.TokenKey)
+	assert.Equal(t, "openai_chatcompletions", shorthandModel.ProviderOpts["api_type"])
+}
+
+func TestProviders_Validation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		providers map[string]latest.ProviderConfig
+		wantErr   string
+	}{
+		{
+			name: "valid provider",
+			providers: map[string]latest.ProviderConfig{
+				"my_provider": {
+					APIType:  "openai_chatcompletions",
+					BaseURL:  "https://api.example.com/v1",
+					TokenKey: "MY_API_KEY",
+				},
+			},
+			wantErr: "",
+		},
+		{
+			name: "valid provider with responses api_type",
+			providers: map[string]latest.ProviderConfig{
+				"responses_provider": {
+					APIType: "openai_responses",
+					BaseURL: "https://api.example.com/v1",
+				},
+			},
+			wantErr: "",
+		},
+		{
+			name: "valid provider with empty api_type",
+			providers: map[string]latest.ProviderConfig{
+				"default_provider": {
+					BaseURL: "https://api.example.com/v1",
+				},
+			},
+			wantErr: "",
+		},
+		{
+			name: "missing base_url",
+			providers: map[string]latest.ProviderConfig{
+				"no_base_url": {
+					APIType: "openai_chatcompletions",
+				},
+			},
+			wantErr: "base_url is required",
+		},
+		{
+			name: "invalid api_type",
+			providers: map[string]latest.ProviderConfig{
+				"bad_provider": {
+					APIType: "invalid_api_type",
+					BaseURL: "https://api.example.com/v1",
+				},
+			},
+			wantErr: "invalid api_type 'invalid_api_type'",
+		},
+		{
+			name: "provider name with slash",
+			providers: map[string]latest.ProviderConfig{
+				"bad/name": {
+					APIType: "openai_chatcompletions",
+					BaseURL: "https://api.example.com/v1",
+				},
+			},
+			wantErr: "name cannot contain '/'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &latest.Config{
+				Providers: tt.providers,
+				Agents: map[string]latest.AgentConfig{
+					"root": {Model: "openai/gpt-4o"},
+				},
+			}
+
+			err := validateConfig(cfg)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

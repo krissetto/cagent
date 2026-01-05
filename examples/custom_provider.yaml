@@ -1,0 +1,53 @@
+# Example: Custom Provider Configuration
+#
+# This example demonstrates how to define and use custom providers in Cagent.
+# Custom providers allow you to connect to OpenAI-compatible APIs with reusable
+# configuration for base URLs, API tokens, and API schema types.
+
+version: "3"
+
+# Define custom providers with reusable configuration
+providers:
+  # Example: A custom OpenAI Chat Completions compatible API gateway
+  my_gateway:
+    api_type: openai_chatcompletions  # Use the Chat Completions API schema
+    base_url: https://api.example.com/
+    token_key: API_KEY_ENV_VAR_NAME  # Environment variable containing the API token
+
+  # Example: A custom OpenAI Responses compatible API gateway
+  responses_provider:
+    api_type: openai_responses
+    base_url: https://responses.example.com/
+    token_key: RESPONSES_API_KEY
+
+# Define models that use the custom providers
+models:
+  # Model using the custom gateway provider
+  gateway_gpt4o:
+    provider: my_gateway
+    model: gpt-4o
+    max_tokens: 32768
+    temperature: 0.7
+
+  # Model using the responses provider
+  responses_model:
+    provider: responses_provider
+    model: gpt-5
+    max_tokens: 16000
+
+# Define agents that use the models
+agents:
+  root:
+    model: responses_model
+    description: Main assistant using the custom gateway
+    instruction: |
+      You are a helpful AI assistant. Be concise and helpful in your responses.
+
+  # Example using shorthand syntax: provider_name/model_name
+  # The provider defaults (base_url, token_key, api_type) are automatically applied
+  subagent:
+    model: my_gateway/gpt-4o-mini
+    description: Sub-agent for specialized tasks
+    instruction: |
+      You are a specialized assistant for specific tasks.
+

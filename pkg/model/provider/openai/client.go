@@ -49,14 +49,22 @@ func NewClient(ctx context.Context, cfg *latest.ModelConfig, env environment.Pro
 
 	var clientFn func(context.Context) (*openai.Client, error)
 	if gateway := globalOptions.Gateway(); gateway == "" {
-		key := cmp.Or(cfg.TokenKey, "OPENAI_API_KEY")
-		authToken, _ := env.Get(ctx, key)
-		if authToken == "" {
-			return nil, fmt.Errorf("%s environment variable is required", key)
-		}
-
 		var clientOptions []option.RequestOption
-		clientOptions = append(clientOptions, option.WithAPIKey(authToken))
+
+		if cfg.TokenKey != "" {
+			// Explicit token_key configured - use that env var
+			authToken, _ := env.Get(ctx, cfg.TokenKey)
+			if authToken == "" {
+				return nil, fmt.Errorf("%s environment variable is required", cfg.TokenKey)
+			}
+			clientOptions = append(clientOptions, option.WithAPIKey(authToken))
+		} else if isCustomProvider(cfg) {
+			// Custom provider (has api_type in ProviderOpts) without token_key - no auth
+			slog.Debug("Custom provider with no token_key, sending requests without authentication",
+				"provider", cfg.Provider, "base_url", cfg.BaseURL)
+			clientOptions = append(clientOptions, option.WithAPIKey(""))
+		}
+		// Otherwise let the OpenAI SDK use its default behavior (OPENAI_API_KEY from env)
 
 		if cfg.Provider == "azure" {
 			// Azure configuration
@@ -80,7 +88,6 @@ func NewClient(ctx context.Context, cfg *latest.ModelConfig, env environment.Pro
 		httpClient := httpclient.NewHTTPClient()
 		clientOptions = append(clientOptions, option.WithHTTPClient(httpClient))
 
-		slog.Debug("OpenAI API key found, creating client")
 		client := openai.NewClient(clientOptions...)
 		clientFn = func(context.Context) (*openai.Client, error) {
 			return &client, nil
@@ -157,8 +164,22 @@ func (c *Client) CreateChatCompletionStream(
 		"message_count", len(messages),
 		"tool_count", len(requestTools))
 
-	if c.ModelConfig.Provider == "openai" && (strings.Contains(c.ModelConfig.Model, "-codex") || strings.Contains(c.ModelConfig.Model, "-pro")) {
+	// Check api_type from ProviderOpts to determine which schema to use.
+	// This allows custom providers to explicitly choose the API schema.
+	apiType := getAPIType(&c.ModelConfig)
+
+	switch apiType {
+	case "openai_responses":
+		// Force Responses API
+		slog.Debug("Using Responses API", "api_type", apiType, "model", c.ModelConfig.Model)
 		return c.CreateResponseStream(ctx, messages, requestTools)
+	case "openai_chatcompletions":
+		slog.Debug("Using Chat Completions API", "api_type", apiType, "model", c.ModelConfig.Model)
+	default:
+		// Preserve existing behavior: auto-detect based on model name
+		if c.ModelConfig.Provider == "openai" && (strings.Contains(c.ModelConfig.Model, "-codex") || strings.Contains(c.ModelConfig.Model, "-pro")) {
+			return c.CreateResponseStream(ctx, messages, requestTools)
+		}
 	}
 
 	if len(messages) == 0 {
@@ -780,6 +801,24 @@ func parseRerankScores(raw string, expected int) ([]float64, error) {
 	}
 
 	return nil, fmt.Errorf("invalid rerank JSON: %s", raw)
+}
+
+// getAPIType extracts the api_type from ProviderOpts if present.
+// Returns the api_type string or empty string if not set.
+func getAPIType(cfg *latest.ModelConfig) string {
+	if cfg == nil || cfg.ProviderOpts == nil {
+		return ""
+	}
+	if apiType, ok := cfg.ProviderOpts["api_type"].(string); ok {
+		return apiType
+	}
+	return ""
+}
+
+// isCustomProvider returns true if the config represents a custom provider
+// (defined in the providers: section). Custom providers have api_type set in ProviderOpts.
+func isCustomProvider(cfg *latest.ModelConfig) bool {
+	return getAPIType(cfg) != ""
 }
 
 // isResponsesOnlyModel returns true for newer OpenAI models that use the Responses API

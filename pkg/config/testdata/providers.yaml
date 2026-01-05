@@ -1,0 +1,33 @@
+version: "3"
+
+providers:
+  custom_provider:
+    api_type: openai_chatcompletions
+    base_url: https://api.example.com/v1
+    token_key: CUSTOM_API_KEY
+
+  responses_provider:
+    api_type: openai_responses
+    base_url: https://responses.example.com/v1
+    token_key: RESPONSES_API_KEY
+
+models:
+  custom_model:
+    provider: custom_provider
+    model: gpt-4o
+
+  # Model with its own overrides (should not be replaced by provider defaults)
+  model_with_overrides:
+    provider: custom_provider
+    model: gpt-4o-mini
+    base_url: https://override.example.com/v1
+    token_key: OVERRIDE_API_KEY
+
+agents:
+  root:
+    model: custom_model
+
+  # Shorthand syntax: should auto-materialize as a model
+  shorthand_agent:
+    model: custom_provider/gpt-4o-turbo
+

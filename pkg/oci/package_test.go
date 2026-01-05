@@ -1,6 +1,7 @@
 package oci
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -65,4 +66,58 @@ func TestPackageFileAsOCIToStoreInvalidTag(t *testing.T) {
 	require.NoError(t, err)
 	_, err = PackageFileAsOCIToStore(t.Context(), agentSource, "", store)
 	require.Error(t, err)
+}
+
+func TestPackageFileAsOCIToStore_WithProviders(t *testing.T) {
+	// Test that configs with providers are correctly marshalled when packaged
+	// This is important because configs without version get re-marshalled
+	agentFilename := filepath.Join(t.TempDir(), "test.yaml")
+	testContent := `providers:
+  my_gateway:
+    api_type: openai_chatcompletions
+    base_url: http://localhost:8080
+    token_key: MY_API_KEY
+
+agents:
+  root:
+    model: my_gateway/gpt-4o
+    description: Test agent
+`
+	require.NoError(t, os.WriteFile(agentFilename, []byte(testContent), 0o644))
+	store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
+	require.NoError(t, err)
+
+	agentSource, err := config.Resolve(agentFilename)
+	require.NoError(t, err)
+
+	tag := "test-providers:v1.0.0"
+	digest, err := PackageFileAsOCIToStore(t.Context(), agentSource, tag, store)
+	require.NoError(t, err)
+	assert.NotEmpty(t, digest)
+
+	t.Cleanup(func() {
+		_ = store.DeleteArtifact(digest)
+	})
+
+	// Pull the artifact and verify providers are preserved
+	img, err := store.GetArtifactImage(tag)
+	require.NoError(t, err)
+
+	layers, err := img.Layers()
+	require.NoError(t, err)
+	require.Len(t, layers, 1)
+
+	reader, err := layers[0].Uncompressed()
+	require.NoError(t, err)
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	require.NoError(t, err)
+
+	// Verify the providers section is present with correct keys
+	assert.Contains(t, string(data), "providers:")
+	assert.Contains(t, string(data), "my_gateway:")
+	assert.Contains(t, string(data), "api_type:")
+	assert.Contains(t, string(data), "base_url:")
+	assert.Contains(t, string(data), "token_key:")
 }

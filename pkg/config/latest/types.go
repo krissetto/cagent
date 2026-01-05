@@ -13,12 +13,27 @@ const Version = "3"
 
 // Config represents the entire configuration file
 type Config struct {
-	Version     string                 `json:"version,omitempty"`
-	Agents      map[string]AgentConfig `json:"agents,omitempty"`
-	Models      map[string]ModelConfig `json:"models,omitempty"`
-	RAG         map[string]RAGConfig   `json:"rag,omitempty"`
-	Metadata    Metadata               `json:"metadata,omitempty"`
-	Permissions *PermissionsConfig     `json:"permissions,omitempty"`
+	Version     string                    `json:"version,omitempty"`
+	Providers   map[string]ProviderConfig `json:"providers,omitempty"`
+	Agents      map[string]AgentConfig    `json:"agents,omitempty"`
+	Models      map[string]ModelConfig    `json:"models,omitempty"`
+	RAG         map[string]RAGConfig      `json:"rag,omitempty"`
+	Metadata    Metadata                  `json:"metadata,omitempty"`
+	Permissions *PermissionsConfig        `json:"permissions,omitempty"`
+}
+
+// ProviderConfig represents a reusable provider definition.
+// It allows users to define custom providers with default base URLs and token keys.
+// Models can reference these providers by name, inheriting the defaults.
+type ProviderConfig struct {
+	// APIType specifies which API schema to use. Supported values:
+	// - "openai_chatcompletions" (default): Use the OpenAI Chat Completions API
+	// - "openai_responses": Use the OpenAI Responses API
+	APIType string `json:"api_type,omitempty"`
+	// BaseURL is the base URL for the provider's API endpoint
+	BaseURL string `json:"base_url"`
+	// TokenKey is the environment variable name containing the API token
+	TokenKey string `json:"token_key,omitempty"`
 }
 
 // AgentConfig represents a single agent configuration
@@ -172,7 +187,7 @@ type Toolset struct {
 	// For the `filesystem` tool - post-edit commands
 	PostEdit []PostEditConfig `json:"post_edit,omitempty"`
 
-	APIConfig APIToolConfig `json:"api_config"`
+	APIConfig APIToolConfig `json:"api_config,omitempty"`
 
 	// For the `filesystem` tool - VCS integration
 	IgnoreVCS *bool `json:"ignore_vcs,omitempty"`

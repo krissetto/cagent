@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/cagent/cagent/blob/main/cagent-schema.json",
   "title": "Cagent Configuration",
-  "description": "Configuration schema for Cagent v2",
+  "description": "Configuration schema for Cagent v3",
   "type": "object",
   "properties": {
     "version": {
@@ -20,6 +20,13 @@
         "2",
         "3"
       ]
+    },
+    "providers": {
+      "type": "object",
+      "description": "Map of custom provider configurations. Providers define reusable defaults (base_url, token_key, api_type) that models can reference.",
+      "additionalProperties": {
+        "$ref": "#/definitions/ProviderConfig"
+      }
     },
     "agents": {
       "type": "object",
@@ -53,6 +60,42 @@
   },
   "additionalProperties": false,
   "definitions": {
+    "ProviderConfig": {
+      "type": "object",
+      "description": "Configuration for a custom model provider. Can be used for custom gateways",
+      "properties": {
+        "api_type": {
+          "type": "string",
+          "description": "The API schema type to use. Determines which API schema to use.",
+          "enum": [
+            "openai_chatcompletions",
+            "openai_responses"
+          ],
+          "default": "openai_chatcompletions",
+          "examples": [
+            "openai_chatcompletions",
+            "openai_responses"
+          ]
+        },
+        "base_url": {
+          "type": "string",
+          "description": "Base URL for the provider's API endpoint (required)",
+          "format": "uri",
+          "examples": [
+            "https://router.example.com/v1"
+          ]
+        },
+        "token_key": {
+          "type": "string",
+          "description": "Environment variable name containing the API token. If not set, requests will be sent without authentication.",
+          "examples": [
+            "CUSTOM_PROVIDER_API_KEY"
+          ]
+        }
+      },
+      "required": ["base_url"],
+      "additionalProperties": false
+    },
     "AgentConfig": {
       "type": "object",
       "description": "Configuration for a single agent",

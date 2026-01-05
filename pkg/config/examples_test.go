@@ -64,6 +64,10 @@ func TestParseExamples(t *testing.T) {
 				if len(model.Routing) > 0 {
 					continue
 				}
+				// Skip models that use custom providers (defined in cfg.Providers)
+				if _, isCustomProvider := cfg.Providers[model.Provider]; isCustomProvider {
+					continue
+				}
 
 				model, err := modelsStore.GetModel(t.Context(), model.Provider+"/"+model.Model)
 				require.NoError(t, err)
