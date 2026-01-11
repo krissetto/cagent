@@ -117,11 +117,27 @@ func (u *usageInfo) totalInput() int64 {
 	return u.inputTokens + u.cachedTokens + u.cacheWriteTokens
 }
 
+// cacheHitRate returns the percentage of input tokens served from cache (0-100)
+// Cache hit rate = cached / (cached + new input) - cache writes don't count as "input"
+func (u *usageInfo) cacheHitRate() float64 {
+	totalReadTokens := u.inputTokens + u.cachedTokens
+	if totalReadTokens == 0 {
+		return 0
+	}
+	return float64(u.cachedTokens) / float64(totalReadTokens) * 100
+}
+
+// hasCacheData returns true if there's any cache activity to report
+func (u *usageInfo) hasCacheData() bool {
+	return u.cachedTokens > 0 || u.cacheWriteTokens > 0
+}
+
 // costData holds aggregated cost data for display.
 type costData struct {
 	total             usageInfo
 	models            []usageInfo
 	messages          []usageInfo
+	tasks             []usageInfo // per-task usage for kruntime mode
 	hasPerMessageData bool
 }
 
@@ -191,68 +207,174 @@ func (d *costDialog) gatherCostData() costData {
 		}
 	}
 
+	// Gather per-task usage data (kruntime mode)
+	// In kruntime mode, task-based totals are authoritative because some messages
+	// (especially task_complete responses) may not have usage data attached.
+	var taskTotals usageInfo
+	for i, task := range d.session.Tasks {
+		// Only include tasks that have usage data
+		if task.InputTokens == 0 && task.OutputTokens == 0 && task.Cost == 0 {
+			continue
+		}
+
+		// Accumulate task totals
+		taskTotals.cost += task.Cost
+		taskTotals.inputTokens += task.InputTokens
+		taskTotals.outputTokens += task.OutputTokens
+		taskTotals.cachedTokens += task.CachedInputTokens
+		taskTotals.cacheWriteTokens += task.CacheWriteTokens
+
+		label := fmt.Sprintf("Task #%d", i+1)
+
+		data.tasks = append(data.tasks, usageInfo{
+			label:            label,
+			cost:             task.Cost,
+			inputTokens:      task.InputTokens,
+			outputTokens:     task.OutputTokens,
+			cachedTokens:     task.CachedInputTokens,
+			cacheWriteTokens: task.CacheWriteTokens,
+		})
+	}
+
+	// In kruntime mode, use task-based totals as they are more accurate.
+	// Message-based totals may be incomplete because some responses (like task_complete)
+	// don't have usage data attached to the session message.
+	if len(data.tasks) > 0 {
+		data.total = taskTotals
+	}
+
 	return data
 }
 
 func (d *costDialog) renderContent(contentWidth, maxHeight int) string {
 	data := d.gatherCostData()
 
-	// Build all lines
+	// Build all lines with improved visual hierarchy
 	lines := []string{
 		RenderTitle("Session Cost Details", contentWidth, styles.DialogTitleStyle),
 		RenderSeparator(contentWidth),
 		"",
-		sectionStyle.Render("Total"),
-		"",
-		accentStyle.Render(formatCost(data.total.cost)),
-		d.renderInputLine(data.total, true),
-		fmt.Sprintf("%s %s", labelStyle.Render("output:"), valueStyle.Render(formatTokenCount(data.total.outputTokens))),
-		"",
 	}
+
+	// Total section with clear visual prominence
+	lines = append(lines,
+		d.renderSectionHeader("Total"),
+		"",
+		fmt.Sprintf("  %s  %s",
+			costBadgeStyle.Render(fmt.Sprintf(" %s ", formatCost(data.total.cost))),
+			styles.MutedStyle.Render("estimated session cost")),
+		"",
+	)
+
+	// Token breakdown as clean table
+	lines = append(lines,
+		fmt.Sprintf("  %s  %s",
+			columnLabelStyle.Render("Input "),
+			columnValueStyle.Render(padTokens(formatTokenCount(data.total.totalInput())))),
+		fmt.Sprintf("  %s  %s",
+			columnLabelStyle.Render("Output"),
+			columnValueStyle.Render(padTokens(formatTokenCount(data.total.outputTokens)))),
+	)
+
+	// Show cache stats if there's cache activity
+	if data.total.hasCacheData() {
+		hitRate := data.total.cacheHitRate()
+		hitRateStyle := dimValueStyle
+		if hitRate >= 50 {
+			hitRateStyle = cacheHitHighStyle
+		} else if hitRate >= 20 {
+			hitRateStyle = cacheHitMedStyle
+		}
+		lines = append(lines,
+			"",
+			fmt.Sprintf("  %s  %s  %s",
+				columnLabelStyle.Render("Cache "),
+				hitRateStyle.Render(fmt.Sprintf("%5.1f%% hit", hitRate)),
+				dimValueStyle.Render(fmt.Sprintf("(%s cached, %s new, %s written)",
+					formatTokenCount(data.total.cachedTokens),
+					formatTokenCount(data.total.inputTokens),
+					formatTokenCount(data.total.cacheWriteTokens)))),
+		)
+	}
+	lines = append(lines, "")
 
 	// By Model Section
 	if len(data.models) > 0 {
-		lines = append(lines, sectionStyle.Render("By Model"), "")
+		lines = append(lines, d.renderSectionHeader("By Model"), "")
 		for _, m := range data.models {
-			lines = append(lines, d.renderUsageLine(m))
+			lines = append(lines, d.renderCompactUsageLine(m))
+		}
+		lines = append(lines, "")
+	}
+
+	// By Task Section (kruntime mode)
+	if len(data.tasks) > 0 {
+		lines = append(lines, d.renderSectionHeader("By Task"), "")
+		for _, t := range data.tasks {
+			lines = append(lines, d.renderTaskLines(t)...)
 		}
 		lines = append(lines, "")
 	}
 
 	// By Message Section
 	if len(data.messages) > 0 {
-		lines = append(lines, sectionStyle.Render("By Message"), "")
+		lines = append(lines, d.renderSectionHeader("By Message"), "")
 		for _, m := range data.messages {
-			lines = append(lines, d.renderUsageLine(m))
+			lines = append(lines, d.renderCompactUsageLine(m))
 		}
 		lines = append(lines, "")
 	} else if !data.hasPerMessageData && data.total.cost > 0 {
-		lines = append(lines, styles.MutedStyle.Render("Per-message breakdown not available for this session."), "")
+		lines = append(lines, styles.MutedStyle.Render("  Per-message breakdown not available."), "")
 	}
 
 	// Apply scrolling
 	return d.applyScrolling(lines, contentWidth, maxHeight)
 }
 
-func (d *costDialog) renderInputLine(u usageInfo, showBreakdown bool) string {
-	line := fmt.Sprintf("%s %s", labelStyle.Render("input:"), valueStyle.Render(formatTokenCount(u.totalInput())))
-	if showBreakdown && (u.cachedTokens > 0 || u.cacheWriteTokens > 0) {
-		line += valueStyle.Render(fmt.Sprintf(" (%s new + %s cached + %s cache write)",
-			formatTokenCount(u.inputTokens),
-			formatTokenCount(u.cachedTokens),
-			formatTokenCount(u.cacheWriteTokens)))
-	}
-	return line
+func (d *costDialog) renderSectionHeader(title string) string {
+	return fmt.Sprintf("%s %s", sectionBulletStyle.Render("▸"), sectionStyle.Render(title))
 }
 
-func (d *costDialog) renderUsageLine(u usageInfo) string {
-	return fmt.Sprintf("%s  %s %s  %s %s  %s",
-		accentStyle.Render(padRight(formatCostPadded(u.cost))),
-		labelStyle.Render("input:"),
-		valueStyle.Render(padRight(formatTokenCount(u.totalInput()))),
-		labelStyle.Render("output:"),
-		valueStyle.Render(padRight(formatTokenCount(u.outputTokens))),
-		accentStyle.Render(u.label))
+// renderCompactUsageLine renders a single-line usage summary with aligned columns
+func (d *costDialog) renderCompactUsageLine(u usageInfo) string {
+	return fmt.Sprintf("  %s  %s %s  %s %s  %s",
+		costStyle.Render(padCost(formatCost(u.cost))),
+		dimLabelStyle.Render("in"),
+		columnValueStyle.Render(padTokens(formatTokenCount(u.totalInput()))),
+		dimLabelStyle.Render("out"),
+		columnValueStyle.Render(padTokens(formatTokenCount(u.outputTokens))),
+		labelStyle.Render(u.label))
+}
+
+// renderTaskLines renders a task with cost, context size, output, and cache hit rate
+func (d *costDialog) renderTaskLines(u usageInfo) []string {
+	// Show: cost | context size | output tokens | cache hit% | task label
+	cacheStr := "  -  "
+	if u.hasCacheData() {
+		hitRate := u.cacheHitRate()
+		cacheStr = fmt.Sprintf("%4.0f%%", hitRate)
+		// Color based on hit rate
+		if hitRate >= 50 {
+			cacheStr = cacheHitHighStyle.Render(cacheStr)
+		} else if hitRate >= 20 {
+			cacheStr = cacheHitMedStyle.Render(cacheStr)
+		} else {
+			cacheStr = cacheHitLowStyle.Render(cacheStr)
+		}
+	} else {
+		cacheStr = dimValueStyle.Render(cacheStr)
+	}
+
+	return []string{
+		fmt.Sprintf("  %s  %s %s  %s %s  %s  %s",
+			costStyle.Render(padCost(formatCost(u.cost))),
+			dimLabelStyle.Render("ctx"),
+			columnValueStyle.Render(padTokens(formatTokenCount(u.totalInput()))),
+			dimLabelStyle.Render("out"),
+			columnValueStyle.Render(padTokens(formatTokenCount(u.outputTokens))),
+			cacheStr,
+			taskLabelStyle.Render(u.label)),
+	}
 }
 
 func (d *costDialog) applyScrolling(allLines []string, contentWidth, maxHeight int) string {
@@ -306,8 +428,15 @@ func (d *costDialog) renderPlainText() string {
 	if len(data.models) > 0 {
 		lines = append(lines, "By Model")
 		for _, m := range data.models {
-			lines = append(lines, fmt.Sprintf("%-8s  input: %-8s  output: %-8s  %s",
-				formatCostPadded(m.cost), formatTokenCount(m.totalInput()), formatTokenCount(m.outputTokens), m.label))
+			lines = append(lines, formatPlainTextUsageLine(m))
+		}
+		lines = append(lines, "")
+	}
+
+	if len(data.tasks) > 0 {
+		lines = append(lines, "By Task")
+		for _, t := range data.tasks {
+			lines = append(lines, formatPlainTextUsageLineExpanded(t)...)
 		}
 		lines = append(lines, "")
 	}
@@ -315,20 +444,47 @@ func (d *costDialog) renderPlainText() string {
 	if len(data.messages) > 0 {
 		lines = append(lines, "By Message")
 		for _, m := range data.messages {
-			lines = append(lines, fmt.Sprintf("%-8s  input: %-8s  output: %-8s  %s",
-				formatCostPadded(m.cost), formatTokenCount(m.totalInput()), formatTokenCount(m.outputTokens), m.label))
+			lines = append(lines, formatPlainTextUsageLine(m))
 		}
 	}
 
 	return strings.Join(lines, "\n")
 }
 
-// Styles
+// Styles for the cost dialog with improved visual hierarchy
 var (
-	sectionStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(styles.ColorTextSecondary))
-	labelStyle   = lipgloss.NewStyle().Bold(true)
-	valueStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorTextSecondary))
-	accentStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorHighlight))
+	// Section headers
+	sectionStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(styles.ColorWhite))
+	sectionBulletStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorHighlight))
+
+	// Cost badge for total
+	costBadgeStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(styles.ColorBackground)).
+			Background(lipgloss.Color(styles.ColorHighlight)).
+			Bold(true)
+
+	// Regular cost display
+	costStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorHighlight))
+
+	// Column labels and values
+	columnLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(styles.ColorTextSecondary))
+	columnValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorWhite))
+
+	// Dim labels and values for secondary info
+	dimLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorTextSecondary))
+	dimValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorMutedGray))
+
+	// Task and item labels
+	labelStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorTextPrimary))
+	taskLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorAccentBlue))
+
+	// Cache hit rate styles (color coded: green=good, yellow=ok, red=poor)
+	cacheHitHighStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorSuccessGreen))
+	cacheHitMedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorWarningYellow))
+	cacheHitLowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorErrorRed))
+
+	// Legacy styles for compatibility
+	accentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.ColorHighlight))
 )
 
 func formatCost(cost float64) string {
@@ -339,16 +495,6 @@ func formatCost(cost float64) string {
 		return fmt.Sprintf("$%.4f", cost)
 	}
 	return fmt.Sprintf("$%.2f", cost)
-}
-
-func formatCostPadded(cost float64) string {
-	if cost < 0.0001 {
-		return "$0.0000"
-	}
-	if cost < 0.01 {
-		return fmt.Sprintf("$%.4f", cost)
-	}
-	return fmt.Sprintf("$%.2f  ", cost)
 }
 
 func formatTokenCount(count int64) string {
@@ -362,10 +508,34 @@ func formatTokenCount(count int64) string {
 	}
 }
 
-func padRight(s string) string {
-	const width = 8
+// padCost pads cost strings to align columns (7 chars for "$X.XXXX")
+func padCost(s string) string {
+	const width = 7
 	if len(s) >= width {
 		return s
 	}
 	return s + strings.Repeat(" ", width-len(s))
+}
+
+// padTokens pads token count strings to align columns
+func padTokens(s string) string {
+	const width = 6
+	if len(s) >= width {
+		return s
+	}
+	return strings.Repeat(" ", width-len(s)) + s
+}
+
+// formatPlainTextUsageLine formats a usage line for plain text output
+func formatPlainTextUsageLine(u usageInfo) string {
+	return fmt.Sprintf("%-8s  in: %-8s  out: %-8s  %s",
+		padCost(formatCost(u.cost)), formatTokenCount(u.totalInput()), formatTokenCount(u.outputTokens), u.label)
+}
+
+// formatPlainTextUsageLineExpanded formats a task line for plain text output
+func formatPlainTextUsageLineExpanded(u usageInfo) []string {
+	return []string{
+		fmt.Sprintf("%-8s  ctx: %-8s  out: %-8s  %s",
+			padCost(formatCost(u.cost)), formatTokenCount(u.totalInput()), formatTokenCount(u.outputTokens), u.label),
+	}
 }

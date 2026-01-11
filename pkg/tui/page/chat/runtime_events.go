@@ -94,6 +94,14 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	case *runtime.ElicitationRequestEvent:
 		return true, p.handleElicitationRequest(msg)
+
+	// Task lifecycle events (kruntime mode) - forward to sidebar for display
+	case *runtime.TaskStartedEvent,
+		*runtime.TaskStateUpdatedEvent,
+		*runtime.TaskWaitingEvent,
+		*runtime.TaskCompletedEvent,
+		*runtime.TaskUsageEvent:
+		return true, p.forwardToSidebar(msg)
 	}
 
 	return false, nil

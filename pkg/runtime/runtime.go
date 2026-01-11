@@ -149,6 +149,7 @@ type LocalRuntime struct {
 	workingDir                  string   // Working directory for hooks execution
 	env                         []string // Environment variables for hooks execution
 	modelSwitcherCfg            *ModelSwitcherConfig
+	kruntime                    bool // Enable task-based context runtime
 }
 
 type streamResult struct {
@@ -212,6 +213,13 @@ func WithWorkingDir(dir string) Opt {
 func WithEnv(env []string) Opt {
 	return func(r *LocalRuntime) {
 		r.env = env
+	}
+}
+
+// WithKRuntime enables task-based context runtime mode
+func WithKRuntime(enabled bool) Opt {
+	return func(r *LocalRuntime) {
+		r.kruntime = enabled
 	}
 }
 
@@ -610,7 +618,7 @@ func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.S
 
 // RunStream starts the agent's interaction loop and returns a channel of events
 func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-chan Event {
-	slog.Debug("Starting runtime stream", "agent", r.currentAgent, "session_id", sess.ID)
+	slog.Debug("Starting runtime stream", "agent", r.currentAgent, "session_id", sess.ID, "kruntime", r.kruntime)
 	events := make(chan Event, 128)
 
 	go func() {
@@ -641,6 +649,21 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 		r.emitAgentWarnings(a, events)
 		r.configureToolsetHandlers(a, events)
 
+		defer r.finalizeEventChannel(ctx, sess, events)
+
+		// Generate title if needed (before diverging paths)
+		if sess.Title == "" {
+			r.titleGen.Generate(ctx, sess, events)
+		}
+
+		// Use kruntime task-based loop if enabled
+		if r.kruntime {
+			slog.Debug("Using kruntime task-based context", "agent", r.currentAgent, "session_id", sess.ID)
+			r.runTaskStream(ctx, sess, events, sessionSpan)
+			return
+		}
+
+		// Legacy runtime path
 		agentTools, err := r.getTools(ctx, a, sessionSpan, events)
 		if err != nil {
 			events <- Error(fmt.Sprintf("failed to get tools: %v", err))
@@ -656,13 +679,7 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 
 		events <- StreamStarted(sess.ID, a.Name())
 
-		defer r.finalizeEventChannel(ctx, sess, events)
-
 		r.registerDefaultTools()
-
-		if sess.Title == "" {
-			r.titleGen.Generate(ctx, sess, events)
-		}
 
 		iteration := 0
 		// Use a runtime copy of maxIterations so we don't modify the session's persistent config
@@ -985,12 +1002,13 @@ func (r *LocalRuntime) handleStream(ctx context.Context, stream chat.MessageStre
 			// Capture the usage for this specific message
 			messageUsage = response.Usage
 
+			var messageCost float64
 			if m != nil && m.Cost != nil {
-				cost := float64(response.Usage.InputTokens)*m.Cost.Input +
+				messageCost = (float64(response.Usage.InputTokens)*m.Cost.Input +
 					float64(response.Usage.OutputTokens)*m.Cost.Output +
 					float64(response.Usage.CachedInputTokens)*m.Cost.CacheRead +
-					float64(response.Usage.CacheWriteTokens)*m.Cost.CacheWrite
-				sess.Cost += cost / 1e6
+					float64(response.Usage.CacheWriteTokens)*m.Cost.CacheWrite) / 1e6
+				sess.Cost += messageCost
 			}
 
 			sess.InputTokens = response.Usage.InputTokens + response.Usage.CachedInputTokens + response.Usage.CacheWriteTokens
@@ -1001,6 +1019,27 @@ func (r *LocalRuntime) handleStream(ctx context.Context, stream chat.MessageStre
 				modelName = m.Name
 			}
 			telemetry.RecordTokenUsage(ctx, modelName, sess.InputTokens, sess.OutputTokens, sess.Cost)
+
+			// Attribute usage to the active task if present (kruntime mode)
+			if task := session.TaskFromContext(ctx); task != nil {
+				task.AddUsage(
+					response.Usage.InputTokens,
+					response.Usage.OutputTokens,
+					response.Usage.CachedInputTokens,
+					response.Usage.CacheWriteTokens,
+					messageCost,
+				)
+				// Emit task usage event with updated totals
+				events <- TaskUsageUpdate(
+					task.ID,
+					task.InputTokens,
+					task.OutputTokens,
+					task.CachedInputTokens,
+					task.CacheWriteTokens,
+					task.Cost,
+					a.Name(),
+				)
+			}
 		}
 
 		if len(response.Choices) == 0 {

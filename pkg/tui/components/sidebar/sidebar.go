@@ -59,6 +59,20 @@ type ragIndexingState struct {
 	spinner spinner.Spinner
 }
 
+// taskState tracks the current task for kruntime mode
+type taskState struct {
+	id     string
+	goal   string
+	state  string
+	status string // "active", "waiting", "completed"
+	// Usage tracking
+	inputTokens       int64
+	outputTokens      int64
+	cachedInputTokens int64
+	cacheWriteTokens  int64
+	cost              float64
+}
+
 // model implements Model
 type model struct {
 	width             int
@@ -87,6 +101,8 @@ type model struct {
 	workingAgent      string // Name of the agent currently working (empty if none)
 	scrollbar         *scrollbar.Model
 	workingDirectory  string
+	currentTask       *taskState // Current task for kruntime mode
+	completedTasks    int        // Count of completed tasks in this session
 }
 
 // Option is a functional option for configuring the sidebar.
@@ -227,6 +243,28 @@ func (m *model) LoadFromSession(sess *session.Session) {
 
 	// Session has content if it has messages or token usage
 	m.sessionHasContent = len(sess.Messages) > 0 || sess.InputTokens > 0 || sess.OutputTokens > 0
+
+	// Load task state for kruntime mode
+	if activeTask := sess.ActiveTask(); activeTask != nil {
+		status := "active"
+		if activeTask.IsWaiting() {
+			status = "waiting"
+		} else if activeTask.IsCompleted() {
+			status = "completed"
+		}
+		m.currentTask = &taskState{
+			id:                activeTask.ID,
+			goal:              activeTask.Goal,
+			state:             activeTask.State,
+			status:            status,
+			inputTokens:       activeTask.InputTokens,
+			outputTokens:      activeTask.OutputTokens,
+			cachedInputTokens: activeTask.CachedInputTokens,
+			cacheWriteTokens:  activeTask.CacheWriteTokens,
+			cost:              activeTask.Cost,
+		}
+	}
+	m.completedTasks = len(sess.CompletedTasks())
 }
 
 // formatTokenCount formats a token count with K/M suffixes for readability
@@ -347,6 +385,39 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		m.SetToolsetInfo(msg.AvailableTools, msg.Loading)
 		if msg.Loading {
 			return m, m.spinner.Init()
+		}
+		return m, nil
+	case *runtime.TaskStartedEvent:
+		m.currentTask = &taskState{
+			id:     msg.TaskID,
+			goal:   msg.Goal,
+			status: "active",
+		}
+		return m, nil
+	case *runtime.TaskStateUpdatedEvent:
+		if m.currentTask != nil && m.currentTask.id == msg.TaskID {
+			m.currentTask.state = msg.State
+		}
+		return m, nil
+	case *runtime.TaskWaitingEvent:
+		if m.currentTask != nil && m.currentTask.id == msg.TaskID {
+			m.currentTask.status = "waiting"
+		}
+		return m, nil
+	case *runtime.TaskCompletedEvent:
+		if m.currentTask != nil && m.currentTask.id == msg.TaskID {
+			m.currentTask.status = "completed"
+			m.completedTasks++
+		}
+		m.currentTask = nil // Clear current task
+		return m, nil
+	case *runtime.TaskUsageEvent:
+		if m.currentTask != nil && m.currentTask.id == msg.TaskID && msg.Usage != nil {
+			m.currentTask.inputTokens = msg.Usage.InputTokens
+			m.currentTask.outputTokens = msg.Usage.OutputTokens
+			m.currentTask.cachedInputTokens = msg.Usage.CachedInputTokens
+			m.currentTask.cacheWriteTokens = msg.Usage.CacheWriteTokens
+			m.currentTask.cost = msg.Usage.Cost
 		}
 		return m, nil
 	default:
@@ -478,6 +549,7 @@ func (m *model) renderSections(contentWidth int) []string {
 
 	appendSection(m.sessionInfo(contentWidth))
 	appendSection(m.tokenUsage(contentWidth))
+	appendSection(m.taskInfo(contentWidth)) // Task info for kruntime mode
 	appendSection(m.agentInfo(contentWidth))
 	appendSection(m.toolsetInfo(contentWidth))
 
@@ -594,12 +666,85 @@ func (m *model) tokenUsage(contentWidth int) string {
 
 	var tokenUsage strings.Builder
 	fmt.Fprintf(&tokenUsage, "%s", formatTokenCount(totalTokens))
-	if ctxText := m.contextPercent(); ctxText != "" {
-		fmt.Fprintf(&tokenUsage, " (%s)", ctxText)
+	// Only show context percentage when not in kruntime mode (no tasks),
+	// since kruntime resets context per task
+	if !m.isKRuntimeMode() {
+		if ctxText := m.contextPercent(); ctxText != "" {
+			fmt.Fprintf(&tokenUsage, " (%s)", ctxText)
+		}
 	}
 	fmt.Fprintf(&tokenUsage, " %s", styles.TabAccentStyle.Render("$"+formatCost(totalCost)))
 
 	return m.renderTab("Token Usage", tokenUsage.String(), contentWidth)
+}
+
+// taskInfo renders the current task section for kruntime mode
+func (m *model) taskInfo(contentWidth int) string {
+	// Only show if there's an active task or completed tasks
+	if m.currentTask == nil && m.completedTasks == 0 {
+		return ""
+	}
+
+	var lines []string
+
+	// Show current task status
+	if m.currentTask != nil {
+		var statusIcon string
+		var statusText string
+		switch m.currentTask.status {
+		case "active":
+			statusIcon = styles.TabAccentStyle.Render("▶")
+			statusText = "Active"
+		case "waiting":
+			statusIcon = styles.WarningStyle.Render("⏸")
+			statusText = "Waiting for input"
+		default:
+			statusIcon = styles.ActiveStyle.Render("✓")
+			statusText = "Completed"
+		}
+
+		lines = append(lines, fmt.Sprintf("%s %s", statusIcon, statusText))
+
+		// Show truncated goal
+		goal := m.currentTask.goal
+		maxGoalLen := contentWidth - 4
+		if len(goal) > maxGoalLen && maxGoalLen > 3 {
+			goal = goal[:maxGoalLen-3] + "..."
+		}
+		lines = append(lines, styles.MutedStyle.Render(goal))
+
+		// Show state if available
+		if m.currentTask.state != "" {
+			state := m.currentTask.state
+			maxStateLen := contentWidth - 2
+			if len(state) > maxStateLen && maxStateLen > 3 {
+				state = state[:maxStateLen-3] + "..."
+			}
+			lines = append(lines, "", styles.MutedStyle.Render(state))
+		}
+
+		// Show task token/cost totals if there's any usage
+		totalTaskTokens := m.currentTask.inputTokens + m.currentTask.outputTokens +
+			m.currentTask.cachedInputTokens + m.currentTask.cacheWriteTokens
+		if totalTaskTokens > 0 || m.currentTask.cost > 0 {
+			lines = append(lines, "")
+			usageLine := fmt.Sprintf("Tokens: %s  %s",
+				formatTokenCount(totalTaskTokens),
+				styles.TabAccentStyle.Render("$"+formatCost(m.currentTask.cost)))
+			lines = append(lines, usageLine)
+		}
+	}
+
+	// Show completed count
+	if m.completedTasks > 0 {
+		if len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		completedText := fmt.Sprintf("%s %d completed", styles.ActiveStyle.Render("✓"), m.completedTasks)
+		lines = append(lines, completedText)
+	}
+
+	return m.renderTab("Task", strings.Join(lines, "\n"), contentWidth)
 }
 
 // tokenUsageSummary returns a single-line summary for horizontal layout.
@@ -615,11 +760,21 @@ func (m *model) tokenUsageSummary() string {
 		totalCost += usage.Cost
 	}
 
-	if ctxText := m.contextPercent(); ctxText != "" {
-		return fmt.Sprintf("Tokens: %s | Cost: $%s | Context: %s", formatTokenCount(totalTokens), formatCost(totalCost), ctxText)
+	// Only show context percentage when not in kruntime mode (no tasks),
+	// since kruntime resets context per task
+	if !m.isKRuntimeMode() {
+		if ctxText := m.contextPercent(); ctxText != "" {
+			return fmt.Sprintf("Tokens: %s | Cost: $%s | Context: %s", formatTokenCount(totalTokens), formatCost(totalCost), ctxText)
+		}
 	}
 
 	return fmt.Sprintf("Tokens: %s | Cost: $%s", formatTokenCount(totalTokens), formatCost(totalCost))
+}
+
+// isKRuntimeMode returns true if we're in kruntime task-based mode
+// (indicated by having any tasks, active or completed)
+func (m *model) isKRuntimeMode() bool {
+	return m.currentTask != nil || m.completedTasks > 0
 }
 
 func (m *model) sessionInfo(contentWidth int) string {

@@ -272,6 +272,7 @@ func (f *runExecFlags) createLocalRuntimeAndSession(ctx context.Context, loadRes
 		runtime.WithCurrentAgent(f.agentName),
 		runtime.WithTracer(otel.Tracer(AppName)),
 		runtime.WithModelSwitcherConfig(modelSwitcherCfg),
+		runtime.WithKRuntime(f.runConfig.KRuntime),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating runtime: %w", err)

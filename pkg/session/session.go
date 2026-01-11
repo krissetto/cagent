@@ -95,6 +95,16 @@ type Session struct {
 	// CustomModelsUsed tracks custom models (provider/model format) used during this session.
 	// These are shown in the model picker for easy re-selection.
 	CustomModelsUsed []string `json:"custom_models_used,omitempty"`
+
+	// Tasks holds all tasks for this session (kruntime mode)
+	Tasks []*Task `json:"tasks,omitempty"`
+
+	// ActiveTaskID is the ID of the currently active task (kruntime mode)
+	ActiveTaskID string `json:"active_task_id,omitempty"`
+
+	// TaskSummaryCount is the number of recent task summaries to include in prompts (kruntime mode)
+	// Default is 3 if not set
+	TaskSummaryCount int `json:"task_summary_count,omitempty"`
 }
 
 // Permission mode constants
@@ -358,6 +368,13 @@ func WithPermissions(perms *PermissionsConfig) Opt {
 	}
 }
 
+// WithTaskSummaryCount sets the number of recent task summaries to include in prompts
+func WithTaskSummaryCount(count int) Opt {
+	return func(s *Session) {
+		s.TaskSummaryCount = count
+	}
+}
+
 // New creates a new agent session
 func New(opts ...Opt) *Session {
 	sessionID := uuid.New().String()
@@ -439,11 +456,11 @@ func (s *Session) GetMessages(a *agent.Agent) []chat.Message {
 	}
 	if wd != "" {
 		if a.AddEnvironmentInfo() {
-			content += "\n\n" + getEnvironmentInfo(wd)
+			content += "\n\n" + GetEnvironmentInfo(wd)
 		}
 
 		for _, prompt := range a.AddPromptFiles() {
-			additionalPrompt, err := readPromptFile(wd, prompt)
+			additionalPrompt, err := ReadPromptFile(wd, prompt)
 			if err != nil {
 				slog.Error("reading prompt file", "file", prompt, "error", err)
 				continue
@@ -590,6 +607,79 @@ func trimMessages(messages []chat.Message, maxItems int) []chat.Message {
 	}
 
 	return result
+}
+
+// Task management methods for kruntime mode
+
+// ActiveTask returns the currently active task, or nil if there is none
+func (s *Session) ActiveTask() *Task {
+	if s.ActiveTaskID == "" {
+		return nil
+	}
+	for _, t := range s.Tasks {
+		if t.ID == s.ActiveTaskID {
+			return t
+		}
+	}
+	return nil
+}
+
+// StartTask creates a new task with the given goal and sets it as active
+func (s *Session) StartTask(goal, originalMessage string) *Task {
+	task := NewTask(goal, originalMessage)
+	s.Tasks = append(s.Tasks, task)
+	s.ActiveTaskID = task.ID
+	return task
+}
+
+// GetTask returns a task by ID, or nil if not found
+func (s *Session) GetTask(id string) *Task {
+	for _, t := range s.Tasks {
+		if t.ID == id {
+			return t
+		}
+	}
+	return nil
+}
+
+// CompletedTasks returns all completed tasks
+func (s *Session) CompletedTasks() []*Task {
+	var completed []*Task
+	for _, t := range s.Tasks {
+		if t.IsCompleted() {
+			completed = append(completed, t)
+		}
+	}
+	return completed
+}
+
+// RecentTaskSummaries returns the N most recent completed task summaries.
+// N defaults to 3 if TaskSummaryCount is not set.
+func (s *Session) RecentTaskSummaries() []string {
+	completed := s.CompletedTasks()
+	n := s.TaskSummaryCount
+	if n <= 0 {
+		n = 3 // Default to 3 recent summaries
+	}
+
+	// Get the most recent N summaries
+	start := len(completed) - n
+	if start < 0 {
+		start = 0
+	}
+
+	summaries := make([]string, 0, n)
+	for i := start; i < len(completed); i++ {
+		if completed[i].Summary != "" {
+			summaries = append(summaries, completed[i].Summary)
+		}
+	}
+	return summaries
+}
+
+// ClearActiveTask clears the active task ID (used after task completion)
+func (s *Session) ClearActiveTask() {
+	s.ActiveTaskID = ""
 }
 
 // truncateOldToolContent replaces tool call arguments and tool results with

@@ -258,6 +258,7 @@ func (sm *SessionManager) runtimeForSession(ctx context.Context, sess *session.S
 		runtime.WithCurrentAgent(currentAgent),
 		runtime.WithManagedOAuth(false),
 		runtime.WithSessionStore(sm.sessionStore),
+		runtime.WithKRuntime(rc.KRuntime),
 	}
 	run, err := runtime.New(t, opts...)
 	if err != nil {

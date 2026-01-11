@@ -131,6 +131,11 @@ func (a *appModel) handleExportSession(filename string) (tea.Model, tea.Cmd) {
 }
 
 func (a *appModel) handleCompactSession(additionalPrompt string) (tea.Model, tea.Cmd) {
+	// Compaction is not available in kruntime mode since each task has its own context
+	sess := a.application.Session()
+	if sess != nil && (len(sess.Tasks) > 0 || sess.ActiveTaskID != "") {
+		return a, notification.ErrorCmd("Session compaction is not available in task-based mode. Each task manages its own context.")
+	}
 	return a, a.chatPage.CompactSession(additionalPrompt)
 }
 

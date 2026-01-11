@@ -235,5 +235,26 @@ func getAllMigrations() []Migration {
 			UpSQL:       `ALTER TABLE sessions ADD COLUMN custom_models_used TEXT DEFAULT '[]'`,
 			DownSQL:     `ALTER TABLE sessions DROP COLUMN custom_models_used`,
 		},
+		{
+			ID:          13,
+			Name:        "013_add_tasks_column",
+			Description: "Add tasks column to sessions table for kruntime task-based context",
+			UpSQL:       `ALTER TABLE sessions ADD COLUMN tasks TEXT DEFAULT '[]'`,
+			DownSQL:     `ALTER TABLE sessions DROP COLUMN tasks`,
+		},
+		{
+			ID:          14,
+			Name:        "014_add_active_task_id_column",
+			Description: "Add active_task_id column to sessions table for kruntime task-based context",
+			UpSQL:       `ALTER TABLE sessions ADD COLUMN active_task_id TEXT DEFAULT ''`,
+			DownSQL:     `ALTER TABLE sessions DROP COLUMN active_task_id`,
+		},
+		{
+			ID:          15,
+			Name:        "015_add_task_summary_count_column",
+			Description: "Add task_summary_count column to sessions table for kruntime task-based context",
+			UpSQL:       `ALTER TABLE sessions ADD COLUMN task_summary_count INTEGER DEFAULT 3`,
+			DownSQL:     `ALTER TABLE sessions DROP COLUMN task_summary_count`,
+		},
 	}
 }

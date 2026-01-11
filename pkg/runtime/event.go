@@ -502,3 +502,105 @@ func HookBlocked(toolCall tools.ToolCall, toolDefinition tools.Tool, message, ag
 		AgentContext:   AgentContext{AgentName: agentName},
 	}
 }
+
+// Task lifecycle events for kruntime mode
+
+// TaskStartedEvent is sent when a new task begins
+type TaskStartedEvent struct {
+	Type   string `json:"type"`
+	TaskID string `json:"task_id"`
+	Goal   string `json:"goal"`
+	AgentContext
+}
+
+func TaskStarted(taskID, goal, agentName string) Event {
+	return &TaskStartedEvent{
+		Type:         "task_started",
+		TaskID:       taskID,
+		Goal:         goal,
+		AgentContext: AgentContext{AgentName: agentName},
+	}
+}
+
+// TaskWaitingEvent is sent when a task is waiting for user input
+type TaskWaitingEvent struct {
+	Type     string `json:"type"`
+	TaskID   string `json:"task_id"`
+	Question string `json:"question"`
+	AgentContext
+}
+
+func TaskWaiting(taskID, question, agentName string) Event {
+	return &TaskWaitingEvent{
+		Type:         "task_waiting",
+		TaskID:       taskID,
+		Question:     question,
+		AgentContext: AgentContext{AgentName: agentName},
+	}
+}
+
+// TaskCompletedEvent is sent when a task is completed
+type TaskCompletedEvent struct {
+	Type    string `json:"type"`
+	TaskID  string `json:"task_id"`
+	Summary string `json:"summary"`
+	AgentContext
+}
+
+func TaskCompleted(taskID, summary, agentName string) Event {
+	return &TaskCompletedEvent{
+		Type:         "task_completed",
+		TaskID:       taskID,
+		Summary:      summary,
+		AgentContext: AgentContext{AgentName: agentName},
+	}
+}
+
+// TaskStateUpdatedEvent is sent when task state is updated
+type TaskStateUpdatedEvent struct {
+	Type   string `json:"type"`
+	TaskID string `json:"task_id"`
+	State  string `json:"state"`
+	AgentContext
+}
+
+func TaskStateUpdated(taskID, state, agentName string) Event {
+	return &TaskStateUpdatedEvent{
+		Type:         "task_state_updated",
+		TaskID:       taskID,
+		State:        state,
+		AgentContext: AgentContext{AgentName: agentName},
+	}
+}
+
+// TaskUsageEvent is sent when task usage is updated (after each model stream)
+type TaskUsageEvent struct {
+	Type   string     `json:"type"`
+	TaskID string     `json:"task_id"`
+	Usage  *TaskUsage `json:"usage"`
+	AgentContext
+}
+
+// TaskUsage contains cumulative token and cost totals for a task
+type TaskUsage struct {
+	InputTokens       int64   `json:"input_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	CachedInputTokens int64   `json:"cached_input_tokens"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens"`
+	Cost              float64 `json:"cost"`
+}
+
+func TaskUsageUpdate(taskID string, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, cost float64, agentName string) Event {
+	return &TaskUsageEvent{
+		Type:   "task_usage",
+		TaskID: taskID,
+		Usage: &TaskUsage{
+			InputTokens:       inputTokens,
+			OutputTokens:      outputTokens,
+			CachedInputTokens: cachedInputTokens,
+			CacheWriteTokens:  cacheWriteTokens,
+			Cost:              cost,
+		},
+		AgentContext: AgentContext{AgentName: agentName},
+	}
+}

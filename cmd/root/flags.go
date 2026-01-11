@@ -22,6 +22,7 @@ func addRuntimeConfigFlags(cmd *cobra.Command, runConfig *config.RuntimeConfig) 
 	cmd.PersistentFlags().StringSliceVar(&runConfig.EnvFiles, "env-from-file", nil, "Set environment variables from file")
 	cmd.PersistentFlags().BoolVar(&runConfig.GlobalCodeMode, "code-mode-tools", false, "Provide a single tool to call other tools via Javascript")
 	cmd.PersistentFlags().StringVar(&runConfig.WorkingDir, "working-dir", "", "Set the working directory for the session (applies to tools and relative paths)")
+	cmd.PersistentFlags().BoolVar(&runConfig.KRuntime, "kruntime", false, "Enable task-based context runtime (experimental)")
 }
 
 func setupWorkingDirectory(workingDir string) error {

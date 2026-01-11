@@ -16,7 +16,7 @@ func TestReadPromptFile(t *testing.T) {
 	err := os.WriteFile(filepath.Join(dir, "agents.md"), []byte("content"), 0o644)
 	require.NoError(t, err)
 
-	additionalPrompt, err := readPromptFile(dir, "agents.md")
+	additionalPrompt, err := ReadPromptFile(dir, "agents.md")
 	require.NoError(t, err)
 	assert.Equal(t, "content", additionalPrompt)
 }
@@ -32,7 +32,7 @@ func TestReadPromptFileParent(t *testing.T) {
 	err = os.Mkdir(child, 0o755)
 	require.NoError(t, err)
 
-	additionalPrompt, err := readPromptFile(child, "agents.md")
+	additionalPrompt, err := ReadPromptFile(child, "agents.md")
 	require.NoError(t, err)
 	assert.Equal(t, "content", additionalPrompt)
 }
@@ -51,7 +51,7 @@ func TestReadPromptFileReadFirst(t *testing.T) {
 	err = os.WriteFile(filepath.Join(child, "agents.md"), []byte("child"), 0o644)
 	require.NoError(t, err)
 
-	additionalPrompt, err := readPromptFile(child, "agents.md")
+	additionalPrompt, err := ReadPromptFile(child, "agents.md")
 	require.NoError(t, err)
 	assert.Equal(t, "child", additionalPrompt)
 }
@@ -61,7 +61,7 @@ func TestReadNoPromptFile(t *testing.T) {
 
 	dir := t.TempDir()
 
-	additionalPrompt, err := readPromptFile(dir, "agents.md")
+	additionalPrompt, err := ReadPromptFile(dir, "agents.md")
 	require.NoError(t, err)
 	assert.Empty(t, additionalPrompt)
 }

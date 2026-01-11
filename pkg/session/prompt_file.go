@@ -5,7 +5,8 @@ import (
 	"path/filepath"
 )
 
-func readPromptFile(workDir, filename string) (string, error) {
+// ReadPromptFile reads a prompt file by searching from workDir upward through parent directories
+func ReadPromptFile(workDir, filename string) (string, error) {
 	current, err := filepath.Abs(workDir)
 	if err != nil {
 		return "", err

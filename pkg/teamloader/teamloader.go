@@ -321,6 +321,11 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 		toolSets = append(toolSets, builtin.NewHandoffTool())
 	}
 
+	// Add task control tools when kruntime is enabled
+	if runConfig.KRuntime {
+		toolSets = append(toolSets, builtin.NewTaskControlTool())
+	}
+
 	// Wrap all tools in a single Code Mode toolset.
 	// This allows the agent to call multiple tools in a single response.
 	// It also allows to combine the results of multiple tools in a single response.

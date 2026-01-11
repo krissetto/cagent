@@ -20,6 +20,7 @@ type Config struct {
 	ModelsGateway  string
 	GlobalCodeMode bool
 	WorkingDir     string
+	KRuntime       bool // Enable task-based context runtime
 }
 
 func (runConfig *RuntimeConfig) Clone() *RuntimeConfig {
