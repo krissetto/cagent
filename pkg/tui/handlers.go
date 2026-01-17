@@ -11,6 +11,7 @@ import (
 
 	"github.com/docker/cagent/pkg/browser"
 	"github.com/docker/cagent/pkg/evaluation"
+	"github.com/docker/cagent/pkg/modelsdev"
 	mcptools "github.com/docker/cagent/pkg/tools/mcp"
 	"github.com/docker/cagent/pkg/tui/components/editor"
 	"github.com/docker/cagent/pkg/tui/components/notification"
@@ -191,6 +192,12 @@ func (a *appModel) handleToggleYolo() (tea.Model, tea.Cmd) {
 }
 
 func (a *appModel) handleToggleThinking() (tea.Model, tea.Cmd) {
+	// Check if the current model supports reasoning
+	currentModel := a.application.CurrentAgentModel()
+	if !modelsdev.ModelSupportsReasoning(context.Background(), currentModel) {
+		return a, notification.InfoCmd("Thinking/reasoning is not supported for the current model")
+	}
+
 	sess := a.application.Session()
 	sess.Thinking = !sess.Thinking
 	a.sessionState.SetThinking(sess.Thinking)

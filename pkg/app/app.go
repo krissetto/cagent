@@ -29,6 +29,7 @@ type App struct {
 	events             chan tea.Msg
 	throttleDuration   time.Duration
 	cancel             context.CancelFunc
+	currentAgentModel  string // Tracks the current agent's model ID from AgentInfoEvent
 }
 
 // Opt is an option for creating a new App.
@@ -103,6 +104,29 @@ func (a *App) Runtime() runtime.Runtime {
 // CurrentAgentCommands returns the commands for the active agent
 func (a *App) CurrentAgentCommands(ctx context.Context) types.Commands {
 	return a.runtime.CurrentAgentInfo(ctx).Commands
+}
+
+// CurrentAgentModel returns the model ID for the current agent.
+// Returns the tracked model from AgentInfoEvent, or falls back to session overrides.
+// Returns empty string if no model information is available (fail-open scenario).
+func (a *App) CurrentAgentModel() string {
+	if a.currentAgentModel != "" {
+		return a.currentAgentModel
+	}
+	// Fallback to session overrides
+	if a.session != nil && a.session.AgentModelOverrides != nil {
+		agentName := a.runtime.CurrentAgentName()
+		if modelRef, ok := a.session.AgentModelOverrides[agentName]; ok {
+			return modelRef
+		}
+	}
+	return ""
+}
+
+// TrackCurrentAgentModel updates the tracked model ID for the current agent.
+// This is called when AgentInfoEvent is received from the runtime.
+func (a *App) TrackCurrentAgentModel(model string) {
+	a.currentAgentModel = model
 }
 
 // CurrentMCPPrompts returns the available MCP prompts for the active agent

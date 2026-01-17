@@ -203,9 +203,10 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 
 	case *runtime.AgentInfoEvent:
-		// Track current agent
+		// Track current agent and model
 		a.currentAgent = msg.AgentName
 		a.sessionState.SetCurrentAgent(msg.AgentName)
+		a.application.TrackCurrentAgentModel(msg.Model)
 		// Forward to chat page
 		updated, cmd := a.chatPage.Update(msg)
 		a.chatPage = updated.(chat.Page)
