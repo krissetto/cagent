@@ -1,9 +1,11 @@
 package messages
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,6 +14,7 @@ import (
 	"github.com/docker/cagent/pkg/session"
 	"github.com/docker/cagent/pkg/tools"
 	"github.com/docker/cagent/pkg/tui/components/reasoningblock"
+	"github.com/docker/cagent/pkg/tui/core/layout"
 	"github.com/docker/cagent/pkg/tui/service"
 	"github.com/docker/cagent/pkg/tui/types"
 )
@@ -617,4 +620,48 @@ func TestLoadFromSessionMultipleStandaloneToolCallsWithContentAndResults(t *test
 	assert.Equal(t, "tool2", m.messages[2].ToolCall.Function.Name)
 	assert.Equal(t, "Second    result", m.messages[2].Content)
 	assert.Equal(t, types.ToolStatusCompleted, m.messages[2].ToolStatus)
+}
+
+// dynamicView is a stub layout.Model that changes its View output on Update
+// and returns a non-nil command (simulating spinner tick behavior).
+type dynamicView struct {
+	frame int
+}
+
+func (d *dynamicView) Init() tea.Cmd { return nil }
+func (d *dynamicView) Update(tea.Msg) (layout.Model, tea.Cmd) {
+	d.frame++
+	// Return a non-nil command to signal state change (like spinner.Tick)
+	return d, func() tea.Msg { return nil }
+}
+
+func (d *dynamicView) View() string {
+	return "frame-" + strconv.Itoa(d.frame)
+}
+func (d *dynamicView) SetSize(_, _ int) tea.Cmd { return nil }
+
+func TestRenderCacheInvalidatesOnChildUpdate(t *testing.T) {
+	t.Parallel()
+
+	sessionState := &service.SessionState{}
+	m := NewScrollableView(80, 24, sessionState).(*model)
+	m.SetSize(80, 24)
+
+	// Insert a dynamic view that changes on each Update
+	msg := types.Spinner()
+	m.messages = append(m.messages, msg)
+	m.views = append(m.views, &dynamicView{frame: 0})
+	m.renderDirty = true
+
+	// First render - should show frame-0
+	view1 := m.View()
+	assert.Contains(t, view1, "frame-0")
+
+	// Update with any message - dynamic view will increment frame and return a cmd
+	m.Update(struct{}{})
+
+	// Second render - cache should be invalidated, showing frame-1
+	view2 := m.View()
+	assert.Contains(t, view2, "frame-1")
+	assert.NotEqual(t, view1, view2, "View should change after Update with non-nil child cmd")
 }
