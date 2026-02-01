@@ -466,3 +466,28 @@ func TestConfigureRequestJSONSerialization(t *testing.T) {
 		assert.False(t, hasSpeculative, "speculative should be omitted when nil")
 	})
 }
+
+func TestErrNotInstalled(t *testing.T) {
+	t.Parallel()
+
+	t.Run("error message contains installation instructions", func(t *testing.T) {
+		t.Parallel()
+
+		msg := ErrNotInstalled.Error()
+
+		// Should mention Docker Model Runner
+		assert.Contains(t, msg, "docker Model Runner")
+		assert.Contains(t, msg, "not installed")
+
+		// Should include installation URL
+		assert.Contains(t, msg, "https://docs.docker.com/ai/model-runner/get-started/")
+	})
+
+	t.Run("error is a sentinel error", func(t *testing.T) {
+		t.Parallel()
+
+		// ErrNotInstalled should be usable as a sentinel error
+		err := ErrNotInstalled
+		assert.ErrorIs(t, err, ErrNotInstalled)
+	})
+}

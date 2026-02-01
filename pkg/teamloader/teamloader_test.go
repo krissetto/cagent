@@ -199,6 +199,29 @@ func TestToolsetInstructions(t *testing.T) {
 	require.Equal(t, expected, instructions)
 }
 
+func TestAutoModelFallbackError(t *testing.T) {
+	t.Parallel()
+
+	agentSource, err := config.Resolve("testdata/auto-model.yaml")
+	require.NoError(t, err)
+
+	// Use noEnvProvider to ensure no API keys are available,
+	// so DMR is the only fallback option.
+	runConfig := &config.RuntimeConfig{
+		EnvProviderForTests: &noEnvProvider{},
+	}
+
+	_, err = Load(t.Context(), agentSource, runConfig)
+	if err == nil {
+		// DMR is available and working - skip the error assertion
+		t.Skip("DMR is available, skipping ErrAutoModelFallback test")
+	}
+
+	// If loading failed, verify it's ErrAutoModelFallback
+	var autoErr *config.ErrAutoModelFallback
+	require.ErrorAs(t, err, &autoErr, "expected ErrAutoModelFallback when auto model selection fails")
+}
+
 func TestIsThinkingBudgetDisabled(t *testing.T) {
 	t.Parallel()
 
