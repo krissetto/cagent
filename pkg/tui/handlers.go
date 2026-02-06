@@ -14,9 +14,11 @@ import (
 	"github.com/docker/cagent/pkg/app"
 	"github.com/docker/cagent/pkg/browser"
 	"github.com/docker/cagent/pkg/evaluation"
+	"github.com/docker/cagent/pkg/history"
 	"github.com/docker/cagent/pkg/modelsdev"
 	"github.com/docker/cagent/pkg/tools"
 	mcptools "github.com/docker/cagent/pkg/tools/mcp"
+	"github.com/docker/cagent/pkg/tui/components/editor"
 	"github.com/docker/cagent/pkg/tui/components/notification"
 	"github.com/docker/cagent/pkg/tui/core"
 	"github.com/docker/cagent/pkg/tui/dialog"
@@ -32,16 +34,25 @@ func (a *appModel) applyKeyboardEnhancements() {
 	if a.keyboardEnhancements != nil {
 		updated, _ := a.chatPage.Update(*a.keyboardEnhancements)
 		a.chatPage = updated.(chat.Page)
+		editorModel, _ := a.editor.Update(*a.keyboardEnhancements)
+		a.editor = editorModel.(editor.Editor)
 	}
 }
 
 func (a *appModel) handleNewSession() (tea.Model, tea.Cmd) {
-	// Theme is now global - no per-session theme reset needed
 	a.application.NewSession()
 	sess := a.application.Session()
 	a.sessionState = service.NewSessionState(sess)
 	a.chatPage = chat.New(a.application, a.sessionState)
 	a.dialog = dialog.New()
+
+	// Create a fresh history store for the new session editor
+	historyStore, err := history.New()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize command history: %v\n", err)
+	}
+
+	a.editor = editor.New(a.application, historyStore)
 	a.applyKeyboardEnhancements()
 
 	return a, tea.Batch(
@@ -82,13 +93,17 @@ func (a *appModel) handleLoadSession(sessionID string) (tea.Model, tea.Cmd) {
 
 	slog.Debug("Loaded session from store", "session_id", sessionID, "model_overrides", sess.AgentModelOverrides)
 
-	// Theme is now global - no per-session theme switching needed
-
-	// Cancel current session and replace with loaded one
 	a.application.ReplaceSession(context.Background(), sess)
 	a.sessionState = service.NewSessionState(sess)
 	a.chatPage = chat.New(a.application, a.sessionState)
 	a.dialog = dialog.New()
+
+	historyStore, err := history.New()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize command history: %v\n", err)
+	}
+
+	a.editor = editor.New(a.application, historyStore)
 	a.applyKeyboardEnhancements()
 
 	return a, tea.Batch(
@@ -103,31 +118,24 @@ func (a *appModel) handleToggleSessionStar(sessionID string) (tea.Model, tea.Cmd
 		return a, notification.ErrorCmd("No session store configured")
 	}
 
-	// Get current session
 	currentSess := a.application.Session()
 
-	// Determine the new starred status
 	var newStarred bool
 	if currentSess != nil && currentSess.ID == sessionID {
-		// For current session, toggle from current state
 		newStarred = !currentSess.Starred
 		currentSess.Starred = newStarred
 		a.chatPage.SetSessionStarred(newStarred)
 
-		// Use UpdateSession (upsert) to ensure the session exists in DB before setting starred
-		// This handles the case where the session hasn't been persisted yet
 		if err := store.UpdateSession(context.Background(), currentSess); err != nil {
 			return a, notification.ErrorCmd(fmt.Sprintf("Failed to save session: %v", err))
 		}
 	} else {
-		// For non-current sessions (from session browser), fetch and toggle
 		sess, err := store.GetSession(context.Background(), sessionID)
 		if err != nil {
 			return a, notification.ErrorCmd(fmt.Sprintf("Failed to load session: %v", err))
 		}
 		newStarred = !sess.Starred
 
-		// Persist the starred status to database
 		if err := store.SetSessionStarred(context.Background(), sessionID, newStarred); err != nil {
 			return a, notification.ErrorCmd(fmt.Sprintf("Failed to update session: %v", err))
 		}
@@ -143,7 +151,6 @@ func (a *appModel) handleSetSessionTitle(title string) (tea.Model, tea.Cmd) {
 		}
 		return a, notification.ErrorCmd(fmt.Sprintf("Failed to set session title: %v", err))
 	}
-	// Title will be updated via SessionTitleEvent emitted by UpdateSessionTitle
 	return a, notification.SuccessCmd(fmt.Sprintf("Title set to: %s", title))
 }
 
@@ -157,7 +164,6 @@ func (a *appModel) handleRegenerateTitle() (tea.Model, tea.Cmd) {
 		return a, notification.ErrorCmd("Cannot regenerate title: no user message in session")
 	}
 
-	// Trigger regeneration - returns error if already in progress
 	if err := a.application.RegenerateSessionTitle(context.Background()); err != nil {
 		if errors.Is(err, app.ErrTitleGenerating) {
 			return a, notification.WarningCmd("Title is being generated, please wait")
@@ -165,7 +171,6 @@ func (a *appModel) handleRegenerateTitle() (tea.Model, tea.Cmd) {
 		return a, notification.ErrorCmd(fmt.Sprintf("Failed to regenerate title: %v", err))
 	}
 
-	// Show spinner while regenerating - the spinner will be cleared when SessionTitleEvent arrives
 	spinnerCmd := a.chatPage.SetTitleRegenerating(true)
 
 	return a, tea.Batch(spinnerCmd, notification.SuccessCmd("Regenerating title..."))
@@ -242,7 +247,6 @@ func (a *appModel) handleCycleAgent() (tea.Model, tea.Cmd) {
 		return a, notification.InfoCmd("No other agents available")
 	}
 
-	// Find the current agent index
 	currentIndex := -1
 	for i, agent := range availableAgents {
 		if agent.Name == a.sessionState.CurrentAgentName() {
@@ -251,7 +255,6 @@ func (a *appModel) handleCycleAgent() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Cycle to the next agent (wrap around to 0 if at the end)
 	nextIndex := (currentIndex + 1) % len(availableAgents)
 	return a.handleSwitchToAgentByIndex(nextIndex)
 }
@@ -277,7 +280,6 @@ func (a *appModel) handleToggleYolo() (tea.Model, tea.Cmd) {
 }
 
 func (a *appModel) handleToggleThinking() (tea.Model, tea.Cmd) {
-	// Check if the current model supports reasoning
 	currentModel := a.application.CurrentAgentModel()
 	if !modelsdev.ModelSupportsReasoning(context.Background(), currentModel) {
 		return a, notification.InfoCmd("Thinking/reasoning is not supported for the current model")
@@ -287,7 +289,6 @@ func (a *appModel) handleToggleThinking() (tea.Model, tea.Cmd) {
 	sess.Thinking = !sess.Thinking
 	a.sessionState.SetThinking(sess.Thinking)
 
-	// Persist the change to the database immediately
 	if store := a.application.SessionStore(); store != nil {
 		if err := store.UpdateSession(context.Background(), sess); err != nil {
 			return a, notification.ErrorCmd(fmt.Sprintf("Failed to save session: %v", err))
@@ -366,18 +367,14 @@ func (a *appModel) handleAgentCommand(command string) (tea.Model, tea.Cmd) {
 // File attachment handler
 
 func (a *appModel) handleAttachFile(filePath string) (tea.Model, tea.Cmd) {
-	// If a file path is provided and it's an existing file, attach it directly
 	if filePath != "" {
 		info, err := os.Stat(filePath)
 		if err == nil && !info.IsDir() {
-			// Insert the file reference into the editor using @filepath syntax
-			updated, cmd := a.chatPage.Update(messages.InsertFileRefMsg{FilePath: filePath})
-			a.chatPage = updated.(chat.Page)
-			return a, tea.Batch(cmd, notification.SuccessCmd("File attached: "+filePath))
+			a.editor.AttachFile(filePath)
+			return a, notification.SuccessCmd("File attached: " + filePath)
 		}
 	}
 
-	// Otherwise, open the file picker dialog
 	return a, core.CmdHandler(dialog.OpenDialogMsg{
 		Model: dialog.NewFilePickerDialog(filePath),
 	})
@@ -386,7 +383,6 @@ func (a *appModel) handleAttachFile(filePath string) (tea.Model, tea.Cmd) {
 // Model switching handlers
 
 func (a *appModel) handleOpenModelPicker() (tea.Model, tea.Cmd) {
-	// Check if model switching is supported
 	if !a.application.SupportsModelSwitching() {
 		return a, notification.InfoCmd("Model switching is not supported with remote runtimes")
 	}
@@ -415,26 +411,21 @@ func (a *appModel) handleChangeModel(modelRef string) (tea.Model, tea.Cmd) {
 // Theme handlers
 
 func (a *appModel) handleOpenThemePicker() (tea.Model, tea.Cmd) {
-	// Get available themes
 	themeRefs, err := styles.ListThemeRefs()
 	if err != nil {
 		return a, notification.ErrorCmd(fmt.Sprintf("Failed to list themes: %v", err))
 	}
 
-	// Get the currently active global theme
 	currentTheme := styles.CurrentTheme()
 	currentRef := currentTheme.Ref
 
-	// Build theme choices
 	var choices []dialog.ThemeChoice
-
 	for _, ref := range themeRefs {
 		theme, loadErr := styles.LoadTheme(ref)
 		if loadErr != nil {
 			continue
 		}
 
-		// Use YAML name, or filename as fallback
 		name := theme.Name
 		if name == "" {
 			name = strings.TrimPrefix(ref, styles.UserThemePrefix)
@@ -455,24 +446,18 @@ func (a *appModel) handleOpenThemePicker() (tea.Model, tea.Cmd) {
 }
 
 func (a *appModel) handleChangeTheme(themeRef string) (tea.Model, tea.Cmd) {
-	// Skip if selecting the already-persisted theme - preview already applied it visually,
-	// so no need for notification, cache invalidation, or re-persisting.
 	if styles.GetPersistedThemeRef() == themeRef {
 		return a, nil
 	}
 
-	// Load and apply the theme
 	theme, err := styles.LoadTheme(themeRef)
 	if err != nil {
 		return a, notification.ErrorCmd(fmt.Sprintf("Failed to load theme: %v", err))
 	}
 
 	styles.ApplyTheme(theme)
-
-	// Invalidate caches synchronously
 	a.invalidateCachesForThemeChange()
 
-	// Persist to user config (global setting)
 	if err := styles.SaveThemeToUserConfig(themeRef); err != nil {
 		slog.Warn("Failed to save theme to user config", "theme", themeRef, "error", err)
 	}
@@ -483,43 +468,31 @@ func (a *appModel) handleChangeTheme(themeRef string) (tea.Model, tea.Cmd) {
 	)
 }
 
-// handleThemePreview applies a theme temporarily for live preview (without persisting).
 func (a *appModel) handleThemePreview(themeRef string) (tea.Model, tea.Cmd) {
-	// Skip if already on this theme - no need to invalidate caches
 	if current := styles.CurrentTheme(); current != nil && current.Ref == themeRef {
 		return a, nil
 	}
 
-	// Load and apply the theme (without persisting)
 	theme, err := styles.LoadTheme(themeRef)
 	if err != nil {
-		// Silently fail for preview - don't show error notification
 		return a, nil
 	}
 
 	styles.ApplyTheme(theme)
-
-	// Apply theme changed logic synchronously to ensure View() renders with updated styles
 	return a.applyThemeChanged()
 }
 
-// handleThemeCancelPreview restores the original theme when the user cancels the theme picker.
 func (a *appModel) handleThemeCancelPreview(originalRef string) (tea.Model, tea.Cmd) {
-	// Skip if already on the original theme - no need to invalidate caches
 	if current := styles.CurrentTheme(); current != nil && current.Ref == originalRef {
 		return a, nil
 	}
 
-	// Load and apply the original theme
 	theme, err := styles.LoadTheme(originalRef)
 	if err != nil {
-		// Fall back to default theme if original can't be loaded
 		theme = styles.DefaultTheme()
 	}
 
 	styles.ApplyTheme(theme)
-
-	// Apply theme changed logic (invalidates caches, updates watcher, forwards messages)
 	return a.applyThemeChanged()
 }
 
@@ -537,23 +510,19 @@ func (a *appModel) handleStartSpeak() (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// Start transcription
 	transcriptCh := make(chan string, 100)
 	err := a.transcriber.Start(context.Background(), func(delta string) {
 		select {
 		case transcriptCh <- delta:
 		default:
-			// Channel full, drop the delta
 		}
 	})
 	if err != nil {
 		return a, notification.ErrorCmd(fmt.Sprintf("Failed to start listening: %v", err))
 	}
 
-	// Set recording mode on the editor to show animated dots
-	recordingCmd := a.chatPage.SetRecording(true)
+	recordingCmd := a.editor.SetRecording(true)
 
-	// Return a command that listens for transcripts and sends them as messages
 	return a, tea.Batch(
 		notification.InfoCmd("🎤 Listening... (ENTER to send or ESC to cancel)"),
 		recordingCmd,
@@ -561,13 +530,11 @@ func (a *appModel) handleStartSpeak() (tea.Model, tea.Cmd) {
 	)
 }
 
-// listenForTranscripts returns a command that listens for transcript deltas
-// and sends them as messages to the TUI.
 func (a *appModel) listenForTranscripts(ch <-chan string) tea.Cmd {
 	return func() tea.Msg {
 		delta, ok := <-ch
 		if !ok {
-			return nil // Channel closed
+			return nil
 		}
 		return speakTranscriptAndContinue{delta: delta, ch: ch}
 	}
@@ -579,12 +546,12 @@ func (a *appModel) handleStopSpeak() (tea.Model, tea.Cmd) {
 	}
 
 	a.transcriber.Stop()
-	recordingCmd := a.chatPage.SetRecording(false)
+	recordingCmd := a.editor.SetRecording(false)
 	return a, tea.Batch(recordingCmd, notification.SuccessCmd("Stopped listening"))
 }
 
 func (a *appModel) handleSpeakTranscript(delta string) (tea.Model, tea.Cmd) {
-	a.chatPage.InsertText(delta + " ")
+	a.editor.InsertText(delta + " ")
 	return a, nil
 }
 

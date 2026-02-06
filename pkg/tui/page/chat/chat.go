@@ -1,13 +1,10 @@
 package chat
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 
 	"charm.land/bubbles/v2/help"
@@ -16,40 +13,27 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/docker/cagent/pkg/app"
-	"github.com/docker/cagent/pkg/history"
 	"github.com/docker/cagent/pkg/tui/commands"
-	"github.com/docker/cagent/pkg/tui/components/editor"
 	"github.com/docker/cagent/pkg/tui/components/messages"
 	"github.com/docker/cagent/pkg/tui/components/notification"
 	"github.com/docker/cagent/pkg/tui/components/sidebar"
 	"github.com/docker/cagent/pkg/tui/components/spinner"
 	"github.com/docker/cagent/pkg/tui/core"
 	"github.com/docker/cagent/pkg/tui/core/layout"
-	"github.com/docker/cagent/pkg/tui/dialog"
 	msgtypes "github.com/docker/cagent/pkg/tui/messages"
 	"github.com/docker/cagent/pkg/tui/service"
 	"github.com/docker/cagent/pkg/tui/styles"
 )
 
-// FocusedPanel represents which panel is currently focused
-type FocusedPanel string
-
 const (
-	PanelChat   FocusedPanel = "chat"
-	PanelEditor FocusedPanel = "editor"
-
 	// minWindowWidth is the threshold below which sidebar switches to horizontal mode
 	minWindowWidth = 120
-	// resizeHandleWidth is the width of the draggable center portion of the resize handle
-	resizeHandleWidth = 8
 	// dragThreshold is pixels of movement needed to distinguish click from drag
 	dragThreshold = 3
 	// toggleColumnWidth is the width of the sidebar toggle/resize handle column
 	toggleColumnWidth = 1
 	// appPaddingHorizontal is total horizontal padding from AppStyle (left + right)
 	appPaddingHorizontal = 2
-	// reservedVerticalLines accounts for resize handle (1) + status bar spacing (1)
-	reservedVerticalLines = 2
 )
 
 // sidebarLayoutMode represents how the sidebar is displayed
@@ -95,32 +79,28 @@ func (l sidebarLayout) showToggle() bool {
 	return l.mode == sidebarVertical || l.mode == sidebarCollapsed
 }
 
-// EditorHeightChangedMsg is emitted when the editor height changes (e.g., during resize)
-type EditorHeightChangedMsg struct {
-	Height int
-}
-
-// Page represents the main chat page
+// Page represents the main chat content area (messages + sidebar).
+// The editor and resize handle are owned by the parent (background.Model).
 type Page interface {
 	layout.Model
 	layout.Sizeable
 	layout.Help
 	CompactSession(additionalPrompt string) tea.Cmd
 	Cleanup()
-	// GetInputHeight returns the current height of the editor/input area (including padding)
-	GetInputHeight() int
 	// SetSessionStarred updates the sidebar star indicator
 	SetSessionStarred(starred bool)
 	// SetTitleRegenerating sets the title regenerating state on the sidebar
 	SetTitleRegenerating(regenerating bool) tea.Cmd
-	// InsertText inserts text at the current cursor position in the editor
-	InsertText(text string)
-	// SetRecording sets the recording mode on the editor
-	SetRecording(recording bool) tea.Cmd
-	// SendEditorContent sends the current editor content as a message
-	SendEditorContent() tea.Cmd
 	// ScrollToBottom scrolls the messages viewport to the bottom if auto-scroll is active.
 	ScrollToBottom() tea.Cmd
+	// IsWorking returns whether the agent is currently working
+	IsWorking() bool
+	// QueueLength returns the number of queued messages
+	QueueLength() int
+	// FocusMessages gives focus to the messages panel for keyboard scrolling
+	FocusMessages() tea.Cmd
+	// BlurMessages removes focus from the messages panel
+	BlurMessages()
 }
 
 // queuedMessage represents a message waiting to be sent to the agent
@@ -139,14 +119,11 @@ type chatPage struct {
 	// Components
 	sidebar  sidebar.Model
 	messages messages.Model
-	editor   editor.Editor
-	spinner  spinner.Spinner
 
 	sessionState *service.SessionState
 
 	// State
-	focusedPanel FocusedPanel
-	working      bool
+	working bool
 
 	msgCancel       context.CancelFunc
 	streamCancelled bool
@@ -170,20 +147,6 @@ type chatPage struct {
 	keyMap KeyMap
 
 	app *app.App
-
-	history *history.History
-
-	// Cached layout dimensions
-	chatHeight  int
-	inputHeight int
-
-	// keyboardEnhancementsSupported tracks whether the terminal supports keyboard enhancements
-	keyboardEnhancementsSupported bool
-
-	// Resizable editor state
-	isDragging       bool
-	isHoveringHandle bool
-	editorLines      int
 
 	// Sidebar drag state
 	isDraggingSidebar     bool // True while dragging the sidebar resize handle
@@ -217,20 +180,20 @@ func (p *chatPage) computeSidebarLayout() sidebarLayout {
 		l.chatWidth = max(1, innerWidth-l.sidebarWidth)
 		l.handleX = l.chatWidth
 		l.sidebarStartX = l.chatWidth + toggleColumnWidth
-		l.chatHeight = max(1, p.height-p.inputHeight-reservedVerticalLines)
+		l.chatHeight = max(1, p.height)
 		l.sidebarHeight = l.chatHeight
 
 	case sidebarCollapsed:
 		l.sidebarWidth = innerWidth - toggleColumnWidth
 		l.chatWidth = innerWidth
 		l.sidebarHeight = p.sidebar.CollapsedHeight(l.sidebarWidth)
-		l.chatHeight = max(1, p.height-p.inputHeight-l.sidebarHeight-reservedVerticalLines)
+		l.chatHeight = max(1, p.height-l.sidebarHeight)
 
 	case sidebarCollapsedNarrow:
 		l.sidebarWidth = innerWidth
 		l.chatWidth = innerWidth
 		l.sidebarHeight = p.sidebar.CollapsedHeight(l.sidebarWidth)
-		l.chatHeight = max(1, p.height-p.inputHeight-l.sidebarHeight-reservedVerticalLines)
+		l.chatHeight = max(1, p.height-l.sidebarHeight)
 	}
 
 	return l
@@ -238,105 +201,17 @@ func (p *chatPage) computeSidebarLayout() sidebarLayout {
 
 // KeyMap defines key bindings for the chat page
 type KeyMap struct {
-	Tab             key.Binding
 	Cancel          key.Binding
-	ShiftNewline    key.Binding
-	CtrlJ           key.Binding
-	ExternalEditor  key.Binding
 	ToggleSplitDiff key.Binding
 	ToggleSidebar   key.Binding
 }
 
-// getEditorDisplayNameFromEnv returns a friendly display name for the configured editor.
-// It takes visual and editorEnv values as parameters and maps common editors to display names.
-// If neither is set, it returns the platform-specific fallback that will actually be used.
-func getEditorDisplayNameFromEnv(visual, editorEnv string) string {
-	editorCmd := cmp.Or(visual, editorEnv)
-	if editorCmd == "" {
-		// Return the actual fallback editor that will be used
-		if runtime.GOOS == "windows" {
-			return "Notepad"
-		}
-		return "Vi"
-	}
-
-	// Parse the command (may include arguments like "code --wait")
-	parts := strings.Fields(editorCmd)
-	if len(parts) == 0 {
-		return "$EDITOR"
-	}
-
-	// Get the base command name (e.g., "/usr/local/bin/code" → "code")
-	baseName := filepath.Base(parts[0])
-
-	// Map common editor command prefixes to friendly display names
-	// Using prefix matching to handle variants like "code-insiders", "nvim-qt", etc.
-	editorPrefixes := []struct {
-		prefix string
-		name   string
-	}{
-		{"code", "VSCode"},
-		{"cursor", "Cursor"},
-		{"nvim", "Neovim"},
-		{"vim", "Vim"},
-		{"vi", "Vi"},
-		{"nano", "Nano"},
-		{"emacs", "Emacs"},
-		{"subl", "Sublime Text"},
-		{"sublime", "Sublime Text"},
-		{"atom", "Atom"},
-		{"gedit", "gedit"},
-		{"kate", "Kate"},
-		{"notepad++", "Notepad++"},
-		{"notepad", "Notepad"},
-		{"textmate", "TextMate"},
-		{"mate", "TextMate"},
-		{"zed", "Zed"},
-	}
-
-	for _, editor := range editorPrefixes {
-		if strings.HasPrefix(baseName, editor.prefix) {
-			return editor.name
-		}
-	}
-
-	// Return the base name with first letter capitalized
-	if baseName != "" {
-		return strings.ToUpper(baseName[:1]) + baseName[1:]
-	}
-
-	return "$EDITOR"
-}
-
-// getEditorDisplayName returns a friendly display name for the configured editor.
-// It reads the VISUAL or EDITOR environment variables and maps common editors to display names.
-// If neither is set, it returns the platform-specific fallback that will actually be used.
-func getEditorDisplayName() string {
-	return getEditorDisplayNameFromEnv(os.Getenv("VISUAL"), os.Getenv("EDITOR"))
-}
-
 // defaultKeyMap returns the default key bindings
 func defaultKeyMap() KeyMap {
-	editorName := getEditorDisplayName()
-
 	return KeyMap{
-		Tab: key.NewBinding(
-			key.WithKeys("tab"),
-			key.WithHelp("Tab", "switch focus"),
-		),
 		Cancel: key.NewBinding(
 			key.WithKeys("esc"),
 			key.WithHelp("Esc", "interrupt"),
-		),
-		// Show newline help in footer. Terminals that support Shift+Enter will use it.
-		// Ctrl+J acts as a fallback on terminals that don't distinguish Shift+Enter.
-		ShiftNewline: key.NewBinding(
-			key.WithKeys("shift+enter", "ctrl+j"),
-			key.WithHelp("Shift+Enter / Ctrl+j", "newline"),
-		),
-		ExternalEditor: key.NewBinding(
-			key.WithKeys("ctrl+g"),
-			key.WithHelp("Ctrl+g", fmt.Sprintf("edit in %s", editorName)),
 		),
 		ToggleSplitDiff: key.NewBinding(
 			key.WithKeys("ctrl+shift+t"),
@@ -352,28 +227,14 @@ func defaultKeyMap() KeyMap {
 
 // New creates a new chat page
 func New(a *app.App, sessionState *service.SessionState) Page {
-	historyStore, err := history.New()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to initialize command history: %v\n", err)
-	}
-
 	p := &chatPage{
-		sidebar:                       sidebar.New(sessionState),
-		messages:                      messages.New(sessionState),
-		editor:                        editor.New(a, historyStore),
-		spinner:                       spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle),
-		pendingSpinner:                spinner.New(spinner.ModeBoth, styles.SpinnerDotsAccentStyle),
-		focusedPanel:                  PanelEditor,
-		app:                           a,
-		keyMap:                        defaultKeyMap(),
-		history:                       historyStore,
-		sessionState:                  sessionState,
-		keyboardEnhancementsSupported: false,
-		editorLines:                   3,
+		sidebar:        sidebar.New(sessionState),
+		messages:       messages.New(sessionState),
+		pendingSpinner: spinner.New(spinner.ModeBoth, styles.SpinnerDotsAccentStyle),
+		app:            a,
+		keyMap:         defaultKeyMap(),
+		sessionState:   sessionState,
 	}
-
-	// Initialize help text with default (ctrl+j)
-	p.updateNewlineHelp()
 
 	return p
 }
@@ -385,8 +246,6 @@ func (p *chatPage) Init() tea.Cmd {
 	cmds = append(cmds,
 		p.sidebar.Init(),
 		p.messages.Init(),
-		p.editor.Init(),
-		p.editor.Focus(),
 	)
 
 	// Load messages from existing session (for session restore)
@@ -401,15 +260,6 @@ func (p *chatPage) Init() tea.Cmd {
 // Update handles messages and updates the page state
 func (p *chatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyboardEnhancementsMsg:
-		// Track keyboard enhancement support and update help text
-		p.keyboardEnhancementsSupported = msg.Flags != 0
-		p.updateNewlineHelp()
-		// Forward to editor
-		editorModel, editorCmd := p.editor.Update(msg)
-		p.editor = editorModel.(editor.Editor)
-		return p, editorCmd
-
 	case tea.WindowSizeMsg:
 		cmdSize := p.SetSize(msg.Width, msg.Height)
 
@@ -421,15 +271,10 @@ func (p *chatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		chatModel, chatCmd := p.messages.Update(msg)
 		p.messages = chatModel.(messages.Model)
 
-		// Forward to editor component
-		editorModel, editorCmd := p.editor.Update(msg)
-		p.editor = editorModel.(editor.Editor)
-		return p, tea.Batch(cmdSize, sidebarCmd, chatCmd, editorCmd)
+		return p, tea.Batch(cmdSize, sidebarCmd, chatCmd)
 
 	case tea.KeyPressMsg:
-		if model, cmd, handled := p.handleKeyPress(msg); handled {
-			return model, cmd
-		}
+		return p.handleKeyPress(msg)
 
 	case tea.MouseClickMsg:
 		return p.handleMouseClick(msg)
@@ -473,11 +318,6 @@ func (p *chatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		slog.Debug(msg.Content)
 		return p.handleSendMsg(msg)
 
-	case msgtypes.InsertFileRefMsg:
-		// Attach file using editor's AttachFile method which registers the attachment
-		p.editor.AttachFile(msg.FilePath)
-		return p, nil
-
 	case msgtypes.ToggleHideToolResultsMsg:
 		// Forward to messages component to invalidate cache and trigger redraw
 		model, cmd := p.messages.Update(messages.ToggleHideToolResultsMsg{})
@@ -495,24 +335,10 @@ func (p *chatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		p.messages = model.(messages.Model)
 		cmds = append(cmds, cmd)
 
-		editorModel, editorCmd := p.editor.Update(msg)
-		p.editor = editorModel.(editor.Editor)
-		cmds = append(cmds, editorCmd)
-
 		// Forward to sidebar to ensure it picks up new theme colors
 		sidebarModel, sidebarCmd := p.sidebar.Update(msg)
 		p.sidebar = sidebarModel.(sidebar.Model)
 		cmds = append(cmds, sidebarCmd)
-
-		// Recreate spinners with new colors (they pre-render frames)
-		if p.working {
-			p.spinner.Stop()
-			p.spinner = spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
-			cmds = append(cmds, p.spinner.Init())
-		} else {
-			// Just recreate without reinitializing
-			p.spinner = spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
-		}
 
 		if p.pendingResponse {
 			p.pendingSpinner.Stop()
@@ -537,16 +363,6 @@ func (p *chatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	chatModel, chatCmd := p.messages.Update(msg)
 	p.messages = chatModel.(messages.Model)
 
-	editorModel, editorCmd := p.editor.Update(msg)
-	p.editor = editorModel.(editor.Editor)
-
-	var cmdSpinner tea.Cmd
-	if p.working {
-		var model layout.Model
-		model, cmdSpinner = p.spinner.Update(msg)
-		p.spinner = model.(spinner.Spinner)
-	}
-
 	var cmdPendingSpinner tea.Cmd
 	if p.pendingResponse {
 		var model layout.Model
@@ -554,23 +370,21 @@ func (p *chatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		p.pendingSpinner = model.(spinner.Spinner)
 	}
 
-	return p, tea.Batch(sidebarCmd, chatCmd, editorCmd, cmdSpinner, cmdPendingSpinner)
+	return p, tea.Batch(sidebarCmd, chatCmd, cmdPendingSpinner)
 }
 
 func (p *chatPage) setWorking(working bool) tea.Cmd {
 	wasWorking := p.working
 	p.working = working
 
-	cmd := []tea.Cmd{p.editor.SetWorking(working)}
-	if working && !wasWorking {
-		// Starting work - register spinner
-		cmd = append(cmd, p.spinner.Init())
-	} else if !working && wasWorking {
-		// Stopping work - unregister spinner
-		p.spinner.Stop()
+	if working != wasWorking {
+		return core.CmdHandler(msgtypes.WorkingStateChangedMsg{
+			Working:     working,
+			QueueLength: len(p.messageQueue),
+		})
 	}
 
-	return tea.Batch(cmd...)
+	return nil
 }
 
 // setPendingResponse sets the pending response state.
@@ -640,7 +454,7 @@ func (p *chatPage) renderCollapsedSidebar(sl sidebarLayout) string {
 		Render(sidebarWithDivider)
 }
 
-// View renders the chat page
+// View renders the chat page (messages + sidebar only, no editor or resize handle)
 func (p *chatPage) View() string {
 	sl := p.computeSidebarLayout()
 
@@ -685,14 +499,9 @@ func (p *chatPage) View() string {
 		bodyContent = lipgloss.JoinVertical(lipgloss.Top, sidebarRendered, chatView)
 	}
 
-	resizeHandle := p.renderResizeHandle(sl.innerWidth)
-	input := p.editor.View()
-
-	content := lipgloss.JoinVertical(lipgloss.Left, bodyContent, resizeHandle, input)
-
 	return styles.AppStyle.
 		Height(p.height).
-		Render(content)
+		Render(bodyContent)
 }
 
 // renderSidebarHandle renders the sidebar toggle/resize handle.
@@ -724,25 +533,8 @@ func (p *chatPage) SetSize(width, height int) tea.Cmd {
 
 	var cmds []tea.Cmd
 
-	// Calculate heights accounting for padding
-	minLines := 4
-	maxLines := max(minLines, (height-6)/2)
-	p.editorLines = max(minLines, min(p.editorLines, maxLines))
-
-	innerWidth := width - appPaddingHorizontal
-
-	targetEditorHeight := p.editorLines - 1
-	editorCmd := p.editor.SetSize(innerWidth, targetEditorHeight)
-	cmds = append(cmds, editorCmd)
-
-	_, actualEditorHeight := p.editor.GetSize()
-	p.inputHeight = actualEditorHeight
-
-	cmds = append(cmds, core.CmdHandler(EditorHeightChangedMsg{Height: actualEditorHeight}))
-
 	// Compute layout once and use it for all sizing
 	sl := p.computeSidebarLayout()
-	p.chatHeight = sl.chatHeight
 
 	switch sl.mode {
 	case sidebarVertical:
@@ -771,64 +563,14 @@ func (p *chatPage) GetSize() (width, height int) {
 	return p.width, p.height
 }
 
-// GetInputHeight returns the current height of the editor/input area (including padding)
-func (p *chatPage) GetInputHeight() int {
-	return p.inputHeight
-}
-
 // Bindings returns key bindings for the chat page
 func (p *chatPage) Bindings() []key.Binding {
-	bindings := []key.Binding{
-		p.keyMap.Tab,
-	}
-
-	if p.focusedPanel == PanelChat {
-		bindings = append(bindings, p.messages.Bindings()...)
-	} else {
-		bindings = append(bindings,
-			p.keyMap.ShiftNewline,
-			p.keyMap.ExternalEditor,
-		)
-	}
-
-	return bindings
+	return p.messages.Bindings()
 }
 
 // Help returns help information
 func (p *chatPage) Help() help.KeyMap {
 	return core.NewSimpleHelp(p.Bindings())
-}
-
-// switchFocus cycles between the focusable panels
-func (p *chatPage) switchFocus() {
-	p.messages.Blur()
-	p.editor.Blur()
-
-	// Move to next panel
-	switch p.focusedPanel {
-	case PanelChat:
-		p.focusedPanel = PanelEditor
-		p.editor.Focus()
-	case PanelEditor:
-		p.focusedPanel = PanelChat
-		p.messages.Focus()
-	}
-}
-
-// updateNewlineHelp updates the help text for the newline shortcut
-// based on keyboard enhancement support.
-func (p *chatPage) updateNewlineHelp() {
-	if p.keyboardEnhancementsSupported {
-		p.keyMap.ShiftNewline = key.NewBinding(
-			key.WithKeys("shift+enter", "ctrl+j"),
-			key.WithHelp("Shift+Enter", "newline"),
-		)
-	} else {
-		p.keyMap.ShiftNewline = key.NewBinding(
-			key.WithKeys("ctrl+j"),
-			key.WithHelp("Ctrl+j", "newline"),
-		)
-	}
 }
 
 // cancelStream cancels the current stream and cleans up associated state
@@ -951,8 +693,6 @@ func (p *chatPage) processMessage(msg msgtypes.SendMsg) tea.Cmd {
 		p.msgCancel()
 	}
 
-	_ = p.history.Add(msg.Content)
-
 	var ctx context.Context
 	ctx, p.msgCancel = context.WithCancel(context.Background())
 
@@ -963,8 +703,6 @@ func (p *chatPage) processMessage(msg msgtypes.SendMsg) tea.Cmd {
 
 	// Start working state immediately to show the user something is happening.
 	// This provides visual feedback while the runtime loads tools and prepares the stream.
-	// The spinner will be visible in the resize handle area.
-	// We start this BEFORE command resolution since that can involve tool execution.
 	spinnerCmd := p.setWorking(true)
 	p.startProgressBar()
 
@@ -1003,7 +741,6 @@ func (p *chatPage) CompactSession(additionalPrompt string) tea.Cmd {
 
 func (p *chatPage) Cleanup() {
 	p.stopProgressBar()
-	p.editor.Cleanup()
 }
 
 // SetSessionStarred updates the sidebar star indicator
@@ -1034,121 +771,59 @@ func (p *chatPage) handleSidebarClickType(x, y int) sidebar.ClickResult {
 }
 
 // routeMouseEvent routes mouse events to the appropriate component based on coordinates.
-func (p *chatPage) routeMouseEvent(msg tea.Msg, y int) tea.Cmd {
-	editorTop := p.height - p.inputHeight
-	if y < editorTop {
-		sl := p.computeSidebarLayout()
+func (p *chatPage) routeMouseEvent(msg tea.Msg, _ int) tea.Cmd {
+	sl := p.computeSidebarLayout()
 
-		if sl.mode == sidebarVertical && !p.sidebar.IsCollapsed() {
-			var x int
-			switch m := msg.(type) {
-			case tea.MouseClickMsg:
-				x = m.X
-			case tea.MouseMotionMsg:
-				x = m.X
-			case tea.MouseReleaseMsg:
-				x = m.X
-			}
-
-			adjustedX := x - styles.AppPaddingLeft
-			if sl.isInSidebar(adjustedX) {
-				model, cmd := p.sidebar.Update(msg)
-				p.sidebar = model.(sidebar.Model)
-				return cmd
-			}
+	if sl.mode == sidebarVertical && !p.sidebar.IsCollapsed() {
+		var x int
+		switch m := msg.(type) {
+		case tea.MouseClickMsg:
+			x = m.X
+		case tea.MouseMotionMsg:
+			x = m.X
+		case tea.MouseReleaseMsg:
+			x = m.X
 		}
 
-		model, cmd := p.messages.Update(msg)
-		p.messages = model.(messages.Model)
-		return cmd
-	}
-
-	// Check for banner clicks to open attachment preview
-	if click, ok := msg.(tea.MouseClickMsg); ok && click.Button == tea.MouseLeft {
-		editorTopPadding := styles.EditorStyle.GetPaddingTop()
-		localY := y - editorTop - editorTopPadding
-		if localY >= 0 && localY < p.editor.BannerHeight() {
-			localX := max(0, click.X-styles.AppPaddingLeft)
-			if preview, ok := p.editor.AttachmentAt(localX); ok {
-				return p.openAttachmentPreview(preview)
-			}
+		adjustedX := x - styles.AppPaddingLeft
+		if sl.isInSidebar(adjustedX) {
+			model, cmd := p.sidebar.Update(msg)
+			p.sidebar = model.(sidebar.Model)
+			return cmd
 		}
 	}
 
-	model, cmd := p.editor.Update(msg)
-	p.editor = model.(editor.Editor)
+	model, cmd := p.messages.Update(msg)
+	p.messages = model.(messages.Model)
 	return cmd
 }
 
-// handleResize adjusts editor height based on drag position.
-func (p *chatPage) handleResize(y int) tea.Cmd {
-	// Subtract EditorStyle padding to get internal content lines
-	editorPadding := styles.EditorStyle.GetVerticalFrameSize()
-	targetLines := p.height - y - 1 - editorPadding
-	newLines := max(3, min(targetLines, (p.height-6)/2))
-	if newLines != p.editorLines {
-		p.editorLines = newLines
-		return p.SetSize(p.width, p.height)
-	}
-	return nil
+// IsWorking returns whether the agent is currently working
+func (p *chatPage) IsWorking() bool {
+	return p.working
 }
 
-// renderResizeHandle renders the draggable separator between messages and editor.
-func (p *chatPage) renderResizeHandle(width int) string {
-	// Guard against zero or negative width (can happen before WindowSizeMsg is received)
-	if width <= 0 {
-		return ""
-	}
-
-	// Use brighter style when actively dragging
-	centerStyle := styles.ResizeHandleHoverStyle
-	if p.isDragging {
-		centerStyle = styles.ResizeHandleActiveStyle
-	}
-
-	// Show a small centered highlight when hovered or dragging
-	centerPart := strings.Repeat("─", min(resizeHandleWidth, width))
-	handle := centerStyle.Render(centerPart)
-
-	// Always center handle on full width
-	fullLine := lipgloss.PlaceHorizontal(
-		max(0, width-appPaddingHorizontal), lipgloss.Center, handle,
-		lipgloss.WithWhitespaceChars("─"),
-		lipgloss.WithWhitespaceStyle(styles.ResizeHandleStyle),
-	)
-
-	if p.working {
-		// Truncate right side and append spinner (handle stays centered)
-		workingText := "Working…"
-		if queueLen := len(p.messageQueue); queueLen > 0 {
-			workingText = fmt.Sprintf("Working… (%d queued)", queueLen)
-		}
-		suffix := " " + p.spinner.View() + " " + styles.SpinnerDotsHighlightStyle.Render(workingText)
-		cancelKeyPart := styles.HighlightWhiteStyle.Render(p.keyMap.Cancel.Help().Key)
-		suffix += " (" + cancelKeyPart + " to interrupt)"
-		suffixWidth := lipgloss.Width(suffix)
-		truncated := lipgloss.NewStyle().MaxWidth(width - appPaddingHorizontal - suffixWidth).Render(fullLine)
-		return truncated + suffix
-	}
-
-	// Show queue count even when not working (messages waiting to be processed)
-	if queueLen := len(p.messageQueue); queueLen > 0 {
-		queueText := fmt.Sprintf("%d queued", queueLen)
-		suffix := " " + styles.WarningStyle.Render(queueText) + " "
-		suffixWidth := lipgloss.Width(suffix)
-		truncated := lipgloss.NewStyle().MaxWidth(width - appPaddingHorizontal - suffixWidth).Render(fullLine)
-		return truncated + suffix
-	}
-
-	return fullLine
+// QueueLength returns the number of queued messages
+func (p *chatPage) QueueLength() int {
+	return len(p.messageQueue)
 }
 
-func (p *chatPage) openAttachmentPreview(preview editor.AttachmentPreview) tea.Cmd {
-	return core.CmdHandler(dialog.OpenDialogMsg{
-		Model: dialog.NewAttachmentPreviewDialog(preview),
-	})
+// FocusMessages gives focus to the messages panel
+func (p *chatPage) FocusMessages() tea.Cmd {
+	return p.messages.Focus()
 }
 
+// BlurMessages removes focus from the messages panel
+func (p *chatPage) BlurMessages() {
+	p.messages.Blur()
+}
+
+// ScrollToBottom scrolls the messages viewport to the bottom if auto-scroll is active.
+func (p *chatPage) ScrollToBottom() tea.Cmd {
+	return p.messages.ScrollToBottom()
+}
+
+// startProgressBar sets a terminal progress-bar indicator (ConEmu/Windows Terminal).
 // See: https://conemu.github.io/en/AnsiEscapeCodes.html#ConEmu_specific_OSC
 func (p *chatPage) startProgressBar() {
 	fmt.Fprint(os.Stderr, "\x1b]9;4;3;0\x1b\\")
@@ -1156,24 +831,4 @@ func (p *chatPage) startProgressBar() {
 
 func (p *chatPage) stopProgressBar() {
 	fmt.Fprint(os.Stderr, "\x1b]9;4;0;0\x1b\\")
-}
-
-// InsertText inserts text at the current cursor position in the editor
-func (p *chatPage) InsertText(text string) {
-	p.editor.InsertText(text)
-}
-
-// SetRecording sets the recording mode on the editor
-func (p *chatPage) SetRecording(recording bool) tea.Cmd {
-	return p.editor.SetRecording(recording)
-}
-
-// SendEditorContent sends the current editor content as a message
-func (p *chatPage) SendEditorContent() tea.Cmd {
-	return p.editor.SendContent()
-}
-
-// ScrollToBottom scrolls the messages viewport to the bottom if auto-scroll is active.
-func (p *chatPage) ScrollToBottom() tea.Cmd {
-	return p.messages.ScrollToBottom()
 }

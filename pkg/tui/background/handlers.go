@@ -399,9 +399,9 @@ func (m *Model) handleAttachFile(filePath string) (tea.Model, tea.Cmd) {
 	if filePath != "" {
 		info, err := os.Stat(filePath)
 		if err == nil && !info.IsDir() {
-			updated, cmd := m.chatPage.Update(messages.InsertFileRefMsg{FilePath: filePath})
-			m.chatPage = updated.(chat.Page)
-			return m, tea.Batch(cmd, notification.SuccessCmd("File attached: "+filePath))
+			// Attach file to the editor directly
+			m.editor.AttachFile(filePath)
+			return m, notification.SuccessCmd("File attached: " + filePath)
 		}
 	}
 	return m, core.CmdHandler(dialog.OpenDialogMsg{

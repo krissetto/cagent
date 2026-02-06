@@ -1,4 +1,4 @@
-package chat
+package background
 
 import (
 	"testing"

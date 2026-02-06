@@ -40,3 +40,10 @@ type TabsUpdatedMsg struct {
 	Tabs      []TabInfo
 	ActiveIdx int
 }
+
+// WorkingStateChangedMsg is emitted by the content view when working state changes.
+// background.Model uses this to update the editor's working indicator and resize handle spinner.
+type WorkingStateChangedMsg struct {
+	Working     bool
+	QueueLength int
+}
