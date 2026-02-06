@@ -1350,11 +1350,18 @@ func (m *model) isMouseOnScrollbar(x, y int) bool {
 }
 
 func (m *model) handleScrollbarUpdate(msg tea.Msg) (layout.Model, tea.Cmd) {
+	prevOffset := m.scrollbar.GetScrollOffset()
 	sb, cmd := m.scrollbar.Update(msg)
 	m.scrollbar = sb
-	m.userHasScrolled = true
-	m.bottomSlack = 0
-	m.scrollOffset = m.scrollbar.GetScrollOffset()
+	newOffset := m.scrollbar.GetScrollOffset()
+
+	// Sync scroll state when the scrollbar handled the event (click → cmd)
+	// or when a drag changed the offset (drag motion → no cmd, offset changes).
+	if cmd != nil || newOffset != prevOffset {
+		m.userHasScrolled = true
+		m.bottomSlack = 0
+		m.scrollOffset = newOffset
+	}
 	return m, cmd
 }
 

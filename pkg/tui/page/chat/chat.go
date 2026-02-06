@@ -119,6 +119,8 @@ type Page interface {
 	SetRecording(recording bool) tea.Cmd
 	// SendEditorContent sends the current editor content as a message
 	SendEditorContent() tea.Cmd
+	// ScrollToBottom scrolls the messages viewport to the bottom if auto-scroll is active.
+	ScrollToBottom() tea.Cmd
 }
 
 // queuedMessage represents a message waiting to be sent to the agent
@@ -337,8 +339,9 @@ func defaultKeyMap() KeyMap {
 			key.WithHelp("Ctrl+g", fmt.Sprintf("edit in %s", editorName)),
 		),
 		ToggleSplitDiff: key.NewBinding(
-			key.WithKeys("ctrl+t"),
-			key.WithHelp("Ctrl+t", "toggle split diff mode"),
+			key.WithKeys("ctrl+shift+t"),
+			key.WithHelp("", ""),
+			key.WithDisabled(),
 		),
 		ToggleSidebar: key.NewBinding(
 			key.WithKeys("ctrl+b"),
@@ -1168,4 +1171,9 @@ func (p *chatPage) SetRecording(recording bool) tea.Cmd {
 // SendEditorContent sends the current editor content as a message
 func (p *chatPage) SendEditorContent() tea.Cmd {
 	return p.editor.SendContent()
+}
+
+// ScrollToBottom scrolls the messages viewport to the bottom if auto-scroll is active.
+func (p *chatPage) ScrollToBottom() tea.Cmd {
+	return p.messages.ScrollToBottom()
 }

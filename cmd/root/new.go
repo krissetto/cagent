@@ -2,6 +2,7 @@ package root
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -15,6 +16,7 @@ import (
 	"github.com/docker/cagent/pkg/sessiontitle"
 	"github.com/docker/cagent/pkg/telemetry"
 	"github.com/docker/cagent/pkg/tui"
+	"github.com/docker/cagent/pkg/tui/background"
 	tuiinput "github.com/docker/cagent/pkg/tui/input"
 )
 
@@ -87,7 +89,22 @@ func (f *newFlags) runNewCommand(cmd *cobra.Command, args []string) error {
 	return runTUI(ctx, rt, sess, appOpts...)
 }
 
+// RunTUIConfig holds configuration needed to spawn sessions in background agents mode.
+type RunTUIConfig struct {
+	// SessionSpawner is called to create new background sessions.
+	// If nil, background agents mode is disabled.
+	SessionSpawner background.SessionSpawner
+	// InitialWorkingDir is the working directory for the initial session.
+	InitialWorkingDir string
+	// Cleanup is called when the initial session is closed.
+	Cleanup func()
+}
+
 func runTUI(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts ...app.Opt) error {
+	return runTUIWithConfig(ctx, rt, sess, nil, opts...)
+}
+
+func runTUIWithConfig(ctx context.Context, rt runtime.Runtime, sess *session.Session, tuiConfig *RunTUIConfig, opts ...app.Opt) error {
 	// For local runtime, create and pass a title generator.
 	if pr, ok := rt.(*runtime.PersistentRuntime); ok {
 		if model := pr.CurrentAgent().Model(); model != nil {
@@ -96,7 +113,6 @@ func runTUI(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts
 	}
 
 	a := app.New(ctx, rt, sess, opts...)
-	m := tui.New(ctx, a)
 
 	coalescer := tuiinput.NewWheelCoalescer()
 	filter := func(model tea.Model, msg tea.Msg) tea.Msg {
@@ -109,6 +125,39 @@ func runTUI(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts
 		}
 		return msg
 	}
+
+	// Determine initial working directory
+	workingDir := ""
+	if tuiConfig != nil && tuiConfig.InitialWorkingDir != "" {
+		workingDir = tuiConfig.InitialWorkingDir
+	} else {
+		workingDir, _ = os.Getwd()
+	}
+
+	// Use background agents model if feature is enabled and spawner is provided
+	var m tea.Model
+	if background.IsEnabled() && tuiConfig != nil && tuiConfig.SessionSpawner != nil {
+		cleanup := tuiConfig.Cleanup
+		if cleanup == nil {
+			cleanup = func() {}
+		}
+		bgModel := background.New(ctx, tuiConfig.SessionSpawner, a, workingDir, cleanup)
+		m = bgModel
+
+		p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithFilter(filter))
+		coalescer.SetSender(p.Send)
+
+		// Set program on background model for routed message sending
+		if setter, ok := bgModel.(interface{ SetProgram(*tea.Program) }); ok {
+			setter.SetProgram(p)
+		}
+
+		_, err := p.Run()
+		return err
+	}
+
+	// Standard single-session mode
+	m = tui.New(ctx, a)
 
 	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithFilter(filter))
 	coalescer.SetSender(p.Send)

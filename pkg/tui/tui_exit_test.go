@@ -34,6 +34,7 @@ func (m *mockChatPage) SetTitleRegenerating(bool) tea.Cmd      { return nil }
 func (m *mockChatPage) InsertText(string)                      {}
 func (m *mockChatPage) SetRecording(bool) tea.Cmd              { return nil }
 func (m *mockChatPage) SendEditorContent() tea.Cmd             { return nil }
+func (m *mockChatPage) ScrollToBottom() tea.Cmd                { return nil }
 func (m *mockChatPage) Bindings() []key.Binding                { return nil }
 func (m *mockChatPage) Help() help.KeyMap                      { return nil }
 

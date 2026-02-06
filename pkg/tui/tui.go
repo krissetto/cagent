@@ -22,6 +22,7 @@ import (
 	"github.com/docker/cagent/pkg/tui/components/markdown"
 	"github.com/docker/cagent/pkg/tui/components/notification"
 	"github.com/docker/cagent/pkg/tui/components/statusbar"
+	"github.com/docker/cagent/pkg/tui/components/tool/editfile"
 	"github.com/docker/cagent/pkg/tui/core"
 	"github.com/docker/cagent/pkg/tui/dialog"
 	"github.com/docker/cagent/pkg/tui/messages"
@@ -401,6 +402,11 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.ToggleHideToolResultsMsg:
 		return a.handleToggleHideToolResults()
+
+	case messages.ToggleSplitDiffMsg:
+		updated, cmd := a.chatPage.Update(editfile.ToggleDiffViewMsg{})
+		a.chatPage = updated.(chat.Page)
+		return a, cmd
 
 	case messages.ClearQueueMsg:
 		updated, cmd := a.chatPage.Update(msg)

@@ -20,8 +20,10 @@ import (
 	"github.com/docker/cagent/pkg/paths"
 	"github.com/docker/cagent/pkg/runtime"
 	"github.com/docker/cagent/pkg/session"
+	"github.com/docker/cagent/pkg/sessiontitle"
 	"github.com/docker/cagent/pkg/teamloader"
 	"github.com/docker/cagent/pkg/telemetry"
+	"github.com/docker/cagent/pkg/tui/background"
 	"github.com/docker/cagent/pkg/tui/styles"
 )
 
@@ -253,6 +255,34 @@ func (f *runExecFlags) runOrExec(ctx context.Context, out *cli.Printer, args []s
 		return f.handleExecMode(ctx, out, rt, sess, args)
 	}
 
+	// For local runtime with background agents enabled, pass spawning dependencies
+	if f.remoteAddress == "" && background.IsEnabled() {
+		agentSource, err := config.Resolve(agentFileName, f.runConfig.EnvProvider())
+		if err != nil {
+			return err
+		}
+
+		// Get session store from runtime
+		var sessStore session.Store
+		switch typedRt := rt.(type) {
+		case *runtime.LocalRuntime:
+			sessStore = typedRt.SessionStore()
+		case *runtime.PersistentRuntime:
+			sessStore = typedRt.SessionStore()
+		}
+
+		deps := &localSessionDeps{
+			agentSource:  agentSource,
+			runConfig:    &f.runConfig,
+			sessionStore: sessStore,
+			agentName:    f.agentName,
+			autoApprove:  f.autoApprove,
+			modelOvr:     f.modelOverrides,
+			cleanup:      cleanup,
+		}
+		return f.handleRunModeWithDeps(ctx, rt, sess, args, deps)
+	}
+
 	return f.handleRunMode(ctx, rt, sess, args)
 }
 
@@ -445,7 +475,22 @@ func readInitialMessage(args []string) (*string, error) {
 	return &args[1], nil
 }
 
+// localSessionDeps holds dependencies needed to spawn new local sessions.
+type localSessionDeps struct {
+	agentSource  config.Source
+	runConfig    *config.RuntimeConfig
+	sessionStore session.Store
+	agentName    string
+	autoApprove  bool
+	modelOvr     []string
+	cleanup      func()
+}
+
 func (f *runExecFlags) handleRunMode(ctx context.Context, rt runtime.Runtime, sess *session.Session, args []string) error {
+	return f.handleRunModeWithDeps(ctx, rt, sess, args, nil)
+}
+
+func (f *runExecFlags) handleRunModeWithDeps(ctx context.Context, rt runtime.Runtime, sess *session.Session, args []string, deps *localSessionDeps) error {
 	firstMessage, err := readInitialMessage(args)
 	if err != nil {
 		return err
@@ -462,7 +507,85 @@ func (f *runExecFlags) handleRunMode(ctx context.Context, rt runtime.Runtime, se
 		opts = append(opts, app.WithExitAfterFirstResponse())
 	}
 
-	return runTUI(ctx, rt, sess, opts...)
+	// If deps are provided and we have a local runtime, set up for background agents
+	var tuiConfig *RunTUIConfig
+	if deps != nil {
+		wd, _ := os.Getwd()
+		tuiConfig = &RunTUIConfig{
+			InitialWorkingDir: wd,
+			Cleanup:           deps.cleanup,
+			SessionSpawner:    f.createSessionSpawner(deps),
+		}
+	}
+
+	return runTUIWithConfig(ctx, rt, sess, tuiConfig, opts...)
+}
+
+// createSessionSpawner creates a function that can spawn new sessions with different working directories.
+func (f *runExecFlags) createSessionSpawner(deps *localSessionDeps) background.SessionSpawner {
+	return func(spawnCtx context.Context, workingDir string) (*app.App, *session.Session, func(), error) {
+		// Create a copy of the runtime config with the new working directory
+		runConfigCopy := deps.runConfig.Clone()
+		runConfigCopy.WorkingDir = workingDir
+
+		// Load team with the new working directory
+		loadResult, err := teamloader.LoadWithConfig(spawnCtx, deps.agentSource, runConfigCopy, teamloader.WithModelOverrides(deps.modelOvr))
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		team := loadResult.Team
+		agent, err := team.Agent(deps.agentName)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		// Create model switcher config
+		modelSwitcherCfg := &runtime.ModelSwitcherConfig{
+			Models:             loadResult.Models,
+			Providers:          loadResult.Providers,
+			ModelsGateway:      runConfigCopy.ModelsGateway,
+			EnvProvider:        runConfigCopy.EnvProvider(),
+			AgentDefaultModels: loadResult.AgentDefaultModels,
+		}
+
+		// Create the local runtime
+		localRt, err := runtime.New(team,
+			runtime.WithSessionStore(deps.sessionStore),
+			runtime.WithCurrentAgent(deps.agentName),
+			runtime.WithTracer(otel.Tracer(AppName)),
+			runtime.WithModelSwitcherConfig(modelSwitcherCfg),
+		)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		// Create a new session
+		newSess := session.New(
+			session.WithMaxIterations(agent.MaxIterations()),
+			session.WithToolsApproved(deps.autoApprove),
+			session.WithThinking(agent.ThinkingConfigured()),
+			session.WithWorkingDir(workingDir),
+		)
+
+		// Create cleanup function
+		cleanup := func() {
+			cleanupCtx := context.WithoutCancel(spawnCtx)
+			_ = team.StopToolSets(cleanupCtx)
+		}
+
+		// Create the app
+		var appOpts []app.Opt
+		if pr, ok := localRt.(*runtime.PersistentRuntime); ok {
+			if model := pr.CurrentAgent().Model(); model != nil {
+				appOpts = append(appOpts, app.WithTitleGenerator(sessiontitle.New(model)))
+			}
+		}
+
+		a := app.New(spawnCtx, localRt, newSess, appOpts...)
+
+		return a, newSess, cleanup, nil
+	}
 }
 
 // applyTheme applies the theme from user config, or the built-in default.
