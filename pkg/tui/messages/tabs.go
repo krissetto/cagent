@@ -47,3 +47,11 @@ type WorkingStateChangedMsg struct {
 	Working     bool
 	QueueLength int
 }
+
+// ToggleDashboardMsg toggles the dashboard view.
+type ToggleDashboardMsg struct{}
+
+// SelectDashboardSessionMsg is sent when a session is selected from the dashboard.
+type SelectDashboardSessionMsg struct {
+	SessionID string // The session to navigate to
+}

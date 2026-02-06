@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -21,8 +22,9 @@ type SessionRunner struct {
 	App        *app.App
 	WorkingDir string
 	Title      string
-	IsRunning  bool // True when stream is active
-	NeedsAttn  bool // True when user attention is needed
+	AgentName  string // Current agent name, updated by runtime events
+	IsRunning  bool   // True when stream is active
+	NeedsAttn  bool   // True when user attention is needed
 	cancel     context.CancelFunc
 	cleanup    func()
 }
@@ -164,6 +166,12 @@ func (s *Supervisor) handleRuntimeEvent(sessionID string, msg tea.Msg) {
 		runner.Title = ev.Title
 		s.notifyTabsUpdated()
 
+	case *runtime.AgentInfoEvent:
+		runner.AgentName = ev.AgentName
+
+	case *runtime.TeamInfoEvent:
+		runner.AgentName = ev.CurrentAgent
+
 	case *runtime.ToolCallConfirmationEvent, *runtime.MaxIterationsReachedEvent:
 		// These require user attention
 		if sessionID != s.activeID {
@@ -183,7 +191,8 @@ func (s *Supervisor) notifyTabsUpdated() {
 	tabs := s.buildTabInfoLocked()
 	activeIdx := s.activeIndexLocked()
 
-	// Send asynchronously to avoid blocking.
+	// Send asynchronously to avoid blocking. We don't need to wait for the
+	// bubbletea event loop to process the message, and the caller holds the lock.
 	// Capture p locally so the goroutine doesn't race on s.program.
 	go p.Send(messages.TabsUpdatedMsg{
 		Tabs:      tabs,
@@ -279,24 +288,19 @@ func (s *Supervisor) ActiveID() string {
 // CloseSession closes a session and removes it from the supervisor.
 func (s *Supervisor) CloseSession(sessionID string) (nextActiveID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	runner, ok := s.runners[sessionID]
 	if !ok {
-		return s.activeID
+		nextActiveID = s.activeID
+		s.mu.Unlock()
+		return nextActiveID
 	}
 
 	// Cancel the session context
 	if runner.cancel != nil {
 		runner.cancel()
 	}
-
-	// Run cleanup (stop toolsets, etc.)
-	if runner.cleanup != nil {
-		go func() {
-			runner.cleanup()
-		}()
-	}
+	cleanup := runner.cleanup
 
 	// Remove from maps
 	delete(s.runners, sessionID)
@@ -319,7 +323,15 @@ func (s *Supervisor) CloseSession(sessionID string) (nextActiveID string) {
 	}
 
 	s.notifyTabsUpdated()
-	return s.activeID
+	nextActiveID = s.activeID
+	s.mu.Unlock()
+
+	// Run cleanup outside the lock so it can't deadlock.
+	if cleanup != nil {
+		go cleanup()
+	}
+
+	return nextActiveID
 }
 
 // Count returns the number of sessions.
@@ -334,6 +346,65 @@ func (s *Supervisor) GetTabs() ([]messages.TabInfo, int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.buildTabInfoLocked(), s.activeIndexLocked()
+}
+
+// SessionInfo contains enriched session data for dashboard display.
+type SessionInfo struct {
+	SessionID      string
+	Title          string
+	WorkingDir     string
+	IsActive       bool
+	IsRunning      bool
+	NeedsAttention bool
+	AgentName      string
+	InputTokens    int64
+	OutputTokens   int64
+	Cost           float64
+	MessageCount   int
+	Duration       time.Duration
+}
+
+// GetSessionInfos returns enriched session data for all runners, in tab order.
+func (s *Supervisor) GetSessionInfos() []SessionInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	infos := make([]SessionInfo, 0, len(s.order))
+	for _, id := range s.order {
+		runner := s.runners[id]
+		if runner == nil {
+			continue
+		}
+
+		title := runner.Title
+		if title == "" {
+			title = filepath.Base(runner.WorkingDir)
+		}
+
+		info := SessionInfo{
+			SessionID:      id,
+			Title:          title,
+			WorkingDir:     runner.WorkingDir,
+			IsActive:       id == s.activeID,
+			IsRunning:      runner.IsRunning,
+			NeedsAttention: runner.NeedsAttn,
+		}
+
+		// Enrich from session data if available
+		if runner.App != nil {
+			if sess := runner.App.Session(); sess != nil {
+				info.InputTokens = sess.InputTokens
+				info.OutputTokens = sess.OutputTokens
+				info.Cost = sess.Cost
+				info.MessageCount = len(sess.GetAllMessages())
+				info.Duration = sess.Duration()
+			}
+		}
+		info.AgentName = runner.AgentName
+
+		infos = append(infos, info)
+	}
+	return infos
 }
 
 // Shutdown closes all sessions.

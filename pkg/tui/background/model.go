@@ -36,6 +36,7 @@ import (
 	"github.com/docker/cagent/pkg/tui/dialog"
 	"github.com/docker/cagent/pkg/tui/messages"
 	"github.com/docker/cagent/pkg/tui/page/chat"
+	"github.com/docker/cagent/pkg/tui/page/dashboard"
 	"github.com/docker/cagent/pkg/tui/service"
 	"github.com/docker/cagent/pkg/tui/service/supervisor"
 	"github.com/docker/cagent/pkg/tui/service/tuistate"
@@ -49,10 +50,20 @@ type SessionSpawner = supervisor.SessionSpawner
 // FocusedPanel represents which panel is currently focused
 type FocusedPanel string
 
+// viewMode represents the current view of the TUI.
+type viewMode int
+
 const (
 	PanelContent FocusedPanel = "content"
 	PanelEditor  FocusedPanel = "editor"
+)
 
+const (
+	viewChat      viewMode = iota
+	viewDashboard          // Dashboard overview of all sessions
+)
+
+const (
 	// resizeHandleWidth is the width of the draggable center portion of the resize handle
 	resizeHandleWidth = 8
 	// appPaddingHorizontal is total horizontal padding from AppStyle (left + right)
@@ -86,6 +97,10 @@ type Model struct {
 	dialogMgr    dialog.Manager
 	statusBar    statusbar.StatusBar
 	completions  completion.Manager
+
+	// Dashboard view
+	dashboard dashboard.Dashboard
+	viewMode  viewMode
 
 	// Working state indicator (resize handle spinner)
 	workingSpinner spinner.Spinner
@@ -155,6 +170,8 @@ func New(ctx context.Context, spawner SessionSpawner, initialApp *app.App, initi
 		chatPage:       initialChatPage,
 		editor:         initialEditor,
 		history:        historyStore,
+		dashboard:      dashboard.New(),
+		viewMode:       viewChat,
 		notification:   notification.New(),
 		dialogMgr:      dialog.New(),
 		completions:    completion.New(),
@@ -244,6 +261,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.TabsUpdatedMsg:
 		m.tabBar.SetTabs(msg.Tabs, msg.ActiveIdx)
+		// Keep dashboard in sync when visible
+		if m.viewMode == viewDashboard {
+			m.dashboard.SetSessions(m.supervisor.GetSessionInfos())
+		}
 		return m, nil
 
 	case messages.SpawnSessionMsg:
@@ -273,6 +294,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	// --- Dashboard ---
+
+	case messages.ToggleDashboardMsg:
+		return m.toggleDashboard()
+
+	case messages.SelectDashboardSessionMsg:
+		return m.selectDashboardSession(msg.SessionID)
 
 	// --- Working state from content view ---
 
@@ -662,6 +691,38 @@ func (m *Model) handleWorkingStateChanged(msg messages.WorkingStateChangedMsg) (
 	return m, tea.Batch(cmds...)
 }
 
+// toggleDashboard switches between chat and dashboard views.
+func (m *Model) toggleDashboard() (tea.Model, tea.Cmd) {
+	if m.viewMode == viewDashboard {
+		// Switch back to chat view
+		m.viewMode = viewChat
+		m.focusedPanel = PanelEditor
+		return m, tea.Batch(m.resizeAll(), m.editor.Focus())
+	}
+
+	// Switch to dashboard view
+	m.viewMode = viewDashboard
+	m.focusedPanel = PanelContent
+
+	// Sync session data
+	m.dashboard.SetSessions(m.supervisor.GetSessionInfos())
+
+	m.editor.Blur()
+	cmd := m.resizeAll()
+	return m, cmd
+}
+
+// selectDashboardSession navigates to a session selected from the dashboard.
+func (m *Model) selectDashboardSession(sessionID string) (tea.Model, tea.Cmd) {
+	// Switch back to chat view
+	m.viewMode = viewChat
+	m.focusedPanel = PanelEditor
+
+	// Switch to the selected session tab
+	model, switchCmd := m.handleSwitchTab(sessionID)
+	return model, tea.Batch(switchCmd, m.resizeAll())
+}
+
 // handleOpenSessionBrowser opens the session browser dialog.
 func (m *Model) handleOpenSessionBrowser() (tea.Model, tea.Cmd) {
 	store := m.application.SessionStore()
@@ -1000,8 +1061,11 @@ func (m *Model) resizeAll() tea.Cmd {
 
 	width, height := m.width, m.height
 
-	// Calculate fixed heights
-	tabBarHeight := m.tabBar.Height()
+	// Calculate fixed heights — tab bar is hidden in dashboard mode
+	tabBarHeight := 0
+	if m.viewMode == viewChat {
+		tabBarHeight = m.tabBar.Height()
+	}
 	statusBarHeight := 1
 	if view := m.statusBar.View(); view != "" {
 		statusBarHeight = lipgloss.Height(view)
@@ -1033,6 +1097,9 @@ func (m *Model) resizeAll() tea.Cmd {
 	cmd = m.chatPage.SetSize(width, m.contentHeight)
 	cmds = append(cmds, cmd)
 
+	// Update dashboard (content area)
+	m.dashboard.SetSize(width, m.contentHeight)
+
 	// Update completion manager with editor height for popup positioning
 	m.completions.SetEditorBottom(editorHeight + tabBarHeight)
 	m.completions.Update(tea.WindowSizeMsg{Width: width, Height: height})
@@ -1054,12 +1121,34 @@ func (m *Model) Bindings() []key.Binding {
 		key.WithKeys("ctrl+c"),
 		key.WithHelp("Ctrl+c", "quit"),
 	)
+	dashboardBinding := key.NewBinding(
+		key.WithKeys("ctrl+d"),
+		key.WithHelp("Ctrl+d", "dashboard"),
+	)
+
+	if m.viewMode == viewDashboard {
+		// Dashboard mode: show dashboard-specific bindings
+		bindings := []key.Binding{
+			quitBinding, dashboardBinding,
+			key.NewBinding(
+				key.WithKeys("enter"),
+				key.WithHelp("Enter", "open session"),
+			),
+			key.NewBinding(
+				key.WithKeys("esc"),
+				key.WithHelp("Esc", "back"),
+			),
+		}
+		return bindings
+	}
+
+	// Chat mode bindings
 	tabBinding := key.NewBinding(
 		key.WithKeys("tab"),
 		key.WithHelp("Tab", "switch focus"),
 	)
 
-	bindings := []key.Binding{quitBinding, tabBinding}
+	bindings := []key.Binding{quitBinding, dashboardBinding, tabBinding}
 	bindings = append(bindings, m.tabBar.Bindings()...)
 
 	// Show newline help based on keyboard enhancement support
@@ -1089,9 +1178,11 @@ func (m *Model) Bindings() []key.Binding {
 
 // handleKeyPress handles all keyboard input with proper priority routing.
 func (m *Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// Tab bar keys first (Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+W)
-	if cmd := m.tabBar.Update(msg); cmd != nil {
-		return m, cmd
+	// Tab bar keys first (Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+W) — only in chat mode
+	if m.viewMode == viewChat {
+		if cmd := m.tabBar.Update(msg); cmd != nil {
+			return m, cmd
+		}
 	}
 
 	// Dialog gets priority when open
@@ -1120,7 +1211,7 @@ func (m *Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	}
 
-	// Global keyboard shortcuts
+	// Global keyboard shortcuts (work in both view modes)
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
 		return m, core.CmdHandler(dialog.OpenDialogMsg{
@@ -1129,6 +1220,9 @@ func (m *Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+z"))):
 		return m, tea.Suspend
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+d"))):
+		return m.toggleDashboard()
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+k"))):
 		categories := commands.BuildCommandCategories(context.Background(), m.application)
@@ -1154,25 +1248,43 @@ func (m *Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+g"))):
 		return m.openExternalEditor()
 
-	// Toggle sidebar (propagates to content view regardless of focus)
+	// Toggle sidebar (propagates to content view regardless of focus) — only in chat mode
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+b"))):
-		updated, cmd := m.chatPage.Update(msg)
-		m.chatPage = updated.(chat.Page)
-		return m, cmd
+		if m.viewMode == viewChat {
+			updated, cmd := m.chatPage.Update(msg)
+			m.chatPage = updated.(chat.Page)
+			return m, cmd
+		}
+		return m, nil
 
 	// Focus switching: Tab key toggles between content and editor
 	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+		if m.viewMode == viewDashboard {
+			// In dashboard mode, Tab switches focus between dashboard and editor
+			return m.switchFocus()
+		}
 		return m.switchFocus()
 
-	// Esc: cancel stream (works regardless of focus)
+	// Esc
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		if m.viewMode == viewDashboard {
+			// Esc exits dashboard to chat view
+			return m.toggleDashboard()
+		}
 		// Forward to content view for stream cancellation
 		updated, cmd := m.chatPage.Update(msg)
 		m.chatPage = updated.(chat.Page)
 		return m, cmd
 	}
 
-	// Focus-based routing
+	// Dashboard-specific routing: when in dashboard mode and content is focused, route to dashboard
+	if m.viewMode == viewDashboard && m.focusedPanel == PanelContent {
+		updated, cmd := m.dashboard.Update(msg)
+		m.dashboard = updated.(dashboard.Dashboard)
+		return m, cmd
+	}
+
+	// Focus-based routing (chat mode)
 	switch m.focusedPanel {
 	case PanelEditor:
 		editorModel, cmd := m.editor.Update(msg)
@@ -1197,10 +1309,15 @@ func (m *Model) switchFocus() (tea.Model, tea.Cmd) {
 		}
 		m.focusedPanel = PanelContent
 		m.editor.Blur()
+		if m.viewMode == viewDashboard {
+			return m, nil // Dashboard doesn't need FocusMessages
+		}
 		return m, m.chatPage.FocusMessages()
 	case PanelContent:
 		m.focusedPanel = PanelEditor
-		m.chatPage.BlurMessages()
+		if m.viewMode == viewChat {
+			m.chatPage.BlurMessages()
+		}
 		return m, m.editor.Focus()
 	}
 	return m, nil
@@ -1223,7 +1340,14 @@ func (m *Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		if m.focusedPanel != PanelContent {
 			m.focusedPanel = PanelContent
 			m.editor.Blur()
-			m.chatPage.FocusMessages()
+			if m.viewMode == viewChat {
+				m.chatPage.FocusMessages()
+			}
+		}
+		if m.viewMode == viewDashboard {
+			updated, cmd := m.dashboard.Update(msg)
+			m.dashboard = updated.(dashboard.Dashboard)
+			return m, cmd
 		}
 		updated, cmd := m.chatPage.Update(msg)
 		m.chatPage = updated.(chat.Page)
@@ -1236,11 +1360,13 @@ func (m *Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case regionTabBar:
-		// Adjust Y for tab bar (relative to its start)
-		adjustedMsg := msg
-		adjustedMsg.Y = msg.Y - m.contentHeight - 1
-		if cmd := m.tabBar.Update(adjustedMsg); cmd != nil {
-			return m, cmd
+		// Tab bar only exists in chat mode
+		if m.viewMode == viewChat {
+			adjustedMsg := msg
+			adjustedMsg.Y = msg.Y - m.contentHeight - 1
+			if cmd := m.tabBar.Update(adjustedMsg); cmd != nil {
+				return m, cmd
+			}
 		}
 		return m, nil
 
@@ -1248,7 +1374,9 @@ func (m *Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		// Focus editor on click
 		if m.focusedPanel != PanelEditor {
 			m.focusedPanel = PanelEditor
-			m.chatPage.BlurMessages()
+			if m.viewMode == viewChat {
+				m.chatPage.BlurMessages()
+			}
 		}
 		// Adjust Y for editor
 		adjustedMsg := msg
@@ -1280,6 +1408,11 @@ func (m *Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 	region := m.hitTestRegion(msg.Y)
 	switch region {
 	case regionContent:
+		if m.viewMode == viewDashboard {
+			updated, cmd := m.dashboard.Update(msg)
+			m.dashboard = updated.(dashboard.Dashboard)
+			return m, cmd
+		}
 		updated, cmd := m.chatPage.Update(msg)
 		m.chatPage = updated.(chat.Page)
 		return m, cmd
@@ -1310,6 +1443,11 @@ func (m *Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd)
 	region := m.hitTestRegion(msg.Y)
 	switch region {
 	case regionContent:
+		if m.viewMode == viewDashboard {
+			updated, cmd := m.dashboard.Update(msg)
+			m.dashboard = updated.(dashboard.Dashboard)
+			return m, cmd
+		}
 		updated, cmd := m.chatPage.Update(msg)
 		m.chatPage = updated.(chat.Page)
 		return m, cmd
@@ -1335,6 +1473,11 @@ func (m *Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	region := m.hitTestRegion(msg.Y)
 	switch region {
 	case regionContent:
+		if m.viewMode == viewDashboard {
+			updated, cmd := m.dashboard.Update(msg)
+			m.dashboard = updated.(dashboard.Dashboard)
+			return m, cmd
+		}
 		updated, cmd := m.chatPage.Update(msg)
 		m.chatPage = updated.(chat.Page)
 		return m, cmd
@@ -1377,6 +1520,11 @@ func (m *Model) handleWheelCoalesced(msg messages.WheelCoalescedMsg) (tea.Model,
 	region := m.hitTestRegion(msg.Y)
 	switch region {
 	case regionContent:
+		if m.viewMode == viewDashboard {
+			updated, cmd := m.dashboard.Update(msg)
+			m.dashboard = updated.(dashboard.Dashboard)
+			return m, cmd
+		}
 		updated, cmd := m.chatPage.Update(msg)
 		m.chatPage = updated.(chat.Page)
 		return m, cmd
@@ -1401,7 +1549,10 @@ const (
 
 // hitTestRegion determines which layout region a Y coordinate falls in.
 func (m *Model) hitTestRegion(y int) layoutRegion {
-	tabBarHeight := m.tabBar.Height()
+	tabBarHeight := 0
+	if m.viewMode == viewChat {
+		tabBarHeight = m.tabBar.Height()
+	}
 
 	resizeHandleTop := m.contentHeight
 	tabBarTop := resizeHandleTop + 1
@@ -1413,6 +1564,9 @@ func (m *Model) hitTestRegion(y int) layoutRegion {
 	case y < tabBarTop:
 		return regionResizeHandle
 	case y < editorTop:
+		if m.viewMode == viewDashboard {
+			return regionEditor // No tab bar in dashboard mode
+		}
 		return regionTabBar
 	default:
 		_, editorHeight := m.editor.GetSize()
@@ -1425,7 +1579,11 @@ func (m *Model) hitTestRegion(y int) layoutRegion {
 
 // editorTop returns the Y coordinate where the editor starts.
 func (m *Model) editorTop() int {
-	return m.contentHeight + 1 + m.tabBar.Height()
+	tabBarHeight := 0
+	if m.viewMode == viewChat {
+		tabBarHeight = m.tabBar.Height()
+	}
+	return m.contentHeight + 1 + tabBarHeight
 }
 
 // handleEditorResize adjusts editor height based on drag position.
@@ -1512,14 +1670,16 @@ func (m *Model) View() tea.View {
 		)
 	}
 
-	// Content area (messages + sidebar) -- swaps per tab
-	contentView := m.chatPage.View()
+	// Content area — dashboard or chat depending on view mode
+	var contentView string
+	if m.viewMode == viewDashboard {
+		contentView = m.dashboard.View()
+	} else {
+		contentView = m.chatPage.View()
+	}
 
 	// Resize handle (between content and bottom panel)
 	resizeHandle := m.renderResizeHandle(m.width)
-
-	// Tab bar (above editor)
-	tabBarView := m.tabBar.View()
 
 	// Editor (fixed position, per-session state)
 	editorView := m.editor.View()
@@ -1527,14 +1687,25 @@ func (m *Model) View() tea.View {
 	// Status bar
 	statusBarView := m.statusBar.View()
 
-	// Combine: content | resize handle | tab bar | editor | status bar
-	baseView := lipgloss.JoinVertical(lipgloss.Top,
-		contentView,
-		resizeHandle,
-		tabBarView,
-		editorView,
-		statusBarView,
-	)
+	// Tab bar is hidden in dashboard mode (the dashboard IS the navigation)
+	var baseView string
+	if m.viewMode == viewDashboard {
+		baseView = lipgloss.JoinVertical(lipgloss.Top,
+			contentView,
+			resizeHandle,
+			editorView,
+			statusBarView,
+		)
+	} else {
+		tabBarView := m.tabBar.View()
+		baseView = lipgloss.JoinVertical(lipgloss.Top,
+			contentView,
+			resizeHandle,
+			tabBarView,
+			editorView,
+			statusBarView,
+		)
+	}
 
 	// Handle overlays
 	hasOverlays := m.dialogMgr.Open() || m.notification.Open() || m.completions.Open()
@@ -1566,6 +1737,9 @@ func (m *Model) View() tea.View {
 
 // windowTitle returns the terminal window title.
 func (m *Model) windowTitle() string {
+	if m.viewMode == viewDashboard {
+		return "Dashboard - cagent"
+	}
 	if sessionTitle := m.sessionState.SessionTitle(); sessionTitle != "" {
 		return sessionTitle + " - cagent"
 	}
