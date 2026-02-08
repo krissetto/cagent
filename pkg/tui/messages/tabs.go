@@ -51,3 +51,11 @@ type WorkingStateChangedMsg struct {
 // BellMsg is sent when the terminal bell should be rung to notify the user.
 // This is used when a background tab needs attention (e.g., tool confirmation).
 type BellMsg struct{}
+
+// ToggleDashboardMsg toggles the dashboard view.
+type ToggleDashboardMsg struct{}
+
+// SelectDashboardSessionMsg is sent when a session is selected from the dashboard.
+type SelectDashboardSessionMsg struct {
+	SessionID string // The session to navigate to
+}

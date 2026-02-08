@@ -25,6 +25,7 @@ import (
 	"github.com/docker/cagent/pkg/tui/dialog"
 	"github.com/docker/cagent/pkg/tui/messages"
 	"github.com/docker/cagent/pkg/tui/page/chat"
+	"github.com/docker/cagent/pkg/tui/page/dashboard"
 	"github.com/docker/cagent/pkg/tui/service"
 	"github.com/docker/cagent/pkg/tui/styles"
 )
@@ -420,6 +421,10 @@ func (m *Model) applyThemeChanged() (tea.Model, tea.Cmd) {
 	chatUpdated, chatCmd := m.chatPage.Update(messages.ThemeChangedMsg{})
 	m.chatPage = chatUpdated.(chat.Page)
 	cmds = append(cmds, chatCmd)
+
+	dashUpdated, dashCmd := m.dashboard.Update(messages.ThemeChangedMsg{})
+	m.dashboard = dashUpdated.(dashboard.Dashboard)
+	cmds = append(cmds, dashCmd)
 
 	return m, tea.Batch(cmds...)
 }

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -21,6 +22,7 @@ type SessionRunner struct {
 	App          *app.App
 	WorkingDir   string
 	Title        string
+	AgentName    string  // Current agent name, updated by runtime events
 	IsRunning    bool    // True when stream is active
 	NeedsAttn    bool    // True when user attention is needed
 	PendingEvent tea.Msg // Event that triggered attention (for replay on tab switch)
@@ -169,6 +171,12 @@ func (s *Supervisor) handleRuntimeEvent(sessionID string, msg tea.Msg) {
 	case *runtime.SessionTitleEvent:
 		runner.Title = ev.Title
 		s.notifyTabsUpdated()
+
+	case *runtime.AgentInfoEvent:
+		runner.AgentName = ev.AgentName
+
+	case *runtime.TeamInfoEvent:
+		runner.AgentName = ev.CurrentAgent
 
 	case *runtime.ToolCallConfirmationEvent, *runtime.MaxIterationsReachedEvent, *runtime.ElicitationRequestEvent:
 		// These require user attention
@@ -364,6 +372,65 @@ func (s *Supervisor) GetTabs() ([]messages.TabInfo, int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.buildTabInfoLocked(), s.activeIndexLocked()
+}
+
+// SessionInfo contains enriched session data for dashboard display.
+type SessionInfo struct {
+	SessionID      string
+	Title          string
+	WorkingDir     string
+	IsActive       bool
+	IsRunning      bool
+	NeedsAttention bool
+	AgentName      string
+	InputTokens    int64
+	OutputTokens   int64
+	Cost           float64
+	MessageCount   int
+	Duration       time.Duration
+}
+
+// GetSessionInfos returns enriched session data for all runners, in tab order.
+func (s *Supervisor) GetSessionInfos() []SessionInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	infos := make([]SessionInfo, 0, len(s.order))
+	for _, id := range s.order {
+		runner := s.runners[id]
+		if runner == nil {
+			continue
+		}
+
+		title := runner.Title
+		if title == "" {
+			title = filepath.Base(runner.WorkingDir)
+		}
+
+		info := SessionInfo{
+			SessionID:      id,
+			Title:          title,
+			WorkingDir:     runner.WorkingDir,
+			IsActive:       id == s.activeID,
+			IsRunning:      runner.IsRunning,
+			NeedsAttention: runner.NeedsAttn,
+		}
+
+		// Enrich from session data if available
+		if runner.App != nil {
+			if sess := runner.App.Session(); sess != nil {
+				info.InputTokens = sess.InputTokens
+				info.OutputTokens = sess.OutputTokens
+				info.Cost = sess.Cost
+				info.MessageCount = len(sess.GetAllMessages())
+				info.Duration = sess.Duration()
+			}
+		}
+		info.AgentName = runner.AgentName
+
+		infos = append(infos, info)
+	}
+	return infos
 }
 
 // Shutdown closes all sessions.

@@ -67,6 +67,16 @@ func builtInSessionCommands() []Item {
 			},
 		},
 		{
+			ID:           "session.dashboard",
+			Label:        "Dashboard",
+			SlashCommand: "/dashboard",
+			Description:  "Show dashboard overview of all active sessions",
+			Category:     "Session",
+			Execute: func(string) tea.Cmd {
+				return core.CmdHandler(messages.ToggleDashboardMsg{})
+			},
+		},
+		{
 			ID:           "session.star",
 			Label:        "Star",
 			SlashCommand: "/star",
