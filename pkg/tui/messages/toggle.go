@@ -12,6 +12,7 @@ type (
 	ToggleHideToolResultsMsg struct{}
 
 	// ToggleSidebarMsg toggles sidebar visibility.
+	// The background model also handles this to persist the collapsed state.
 	ToggleSidebarMsg struct{}
 
 	// ShowCostDialogMsg shows the cost/usage dialog.

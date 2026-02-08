@@ -64,6 +64,9 @@ type Model interface {
 	// IsScrollbarDragging returns true when the scrollbar thumb is being dragged.
 	IsScrollbarDragging() bool
 
+	// IsMouseOnScrollbar returns true when the given screen coordinates are on the scrollbar.
+	IsMouseOnScrollbar(x, y int) bool
+
 	// Inline editing methods
 	StartInlineEdit(msgIndex, sessionPosition int, content string) tea.Cmd
 	CancelInlineEdit() tea.Cmd
@@ -573,7 +576,7 @@ func (m *model) GetSize() (width, height int) {
 	return m.width, m.height
 }
 
-// Focus gives focus to the component
+// Focus gives focus to the component.
 func (m *model) Focus() tea.Cmd {
 	m.focused = true
 	// Start selection on the last assistant message for better UX
@@ -585,9 +588,6 @@ func (m *model) Focus() tea.Cmd {
 	// Invalidate render cache so selection highlight is shown
 	m.invalidateAllItems()
 	m.renderDirty = true
-	if m.selectedMessageIndex >= 0 {
-		m.scrollToSelectedMessage()
-	}
 	return nil
 }
 
@@ -841,16 +841,13 @@ func (m *model) scrollToSelectedMessage() {
 	}
 	endLine := startLine + selectedHeight
 
-	prevOffset := m.scrollOffset
-	m.scrollview.SetContent(m.renderedLines, m.totalScrollableHeight())
-	m.scrollview.SetScrollOffset(m.scrollOffset)
-	m.scrollview.EnsureRangeVisible(startLine, endLine-1)
-
-	newOffset := m.scrollview.ScrollOffset()
-	if newOffset != prevOffset {
+	// Scroll to show the top of the selected message.
+	// When messages are taller than the viewport, always anchor to the start
+	// so the user sees the beginning of the message first.
+	if startLine < m.scrollOffset || endLine > m.scrollOffset+m.height {
 		m.userHasScrolled = true
 		m.bottomSlack = 0
-		m.setScrollOffset(newOffset)
+		m.setScrollOffset(startLine)
 	}
 }
 
@@ -1582,6 +1579,10 @@ func (m *model) isMouseOnScrollbar(x, y int) bool {
 
 func (m *model) IsScrollbarDragging() bool {
 	return m.scrollview.IsDragging()
+}
+
+func (m *model) IsMouseOnScrollbar(x, y int) bool {
+	return m.isMouseOnScrollbar(x, y)
 }
 
 func (m *model) handleScrollviewUpdate(msg tea.Msg) (layout.Model, tea.Cmd) {
