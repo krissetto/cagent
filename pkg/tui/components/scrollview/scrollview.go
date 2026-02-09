@@ -1,6 +1,5 @@
 // Package scrollview provides a composable scrollable view that pairs content
-// with a fixed-position scrollbar. It guarantees that every rendered line is
-// exactly [Model.width] columns wide and exactly [Model.height] lines tall
+// with a fixed-position scrollbar.
 //
 // Simple path: call [Model.Update] + [Model.View].
 // Advanced path (custom scroll management): use [Model.UpdateMouse],
@@ -243,16 +242,18 @@ func (m *Model) UpdateMouse(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 func (m *Model) IsDragging() bool { return m.sb.IsDragging() }
 
 // View renders the scrollable region with automatic content slicing.
-// Output is exactly width columns wide and height lines tall.
 func (m *Model) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
 	m.syncScrollbar()
 
-	// Slice visible window from content
-	visible := make([]string, m.height)
-	for i := range m.height {
+	nLines := m.height
+	if !m.NeedsScrollbar() {
+		nLines = min(m.height, max(0, len(m.lines)-m.scrollOffset))
+	}
+	visible := make([]string, nLines)
+	for i := range nLines {
 		if idx := m.scrollOffset + i; idx < len(m.lines) {
 			visible[i] = m.lines[idx]
 		}
@@ -261,17 +262,18 @@ func (m *Model) View() string {
 }
 
 // ViewWithLines renders pre-sliced visible lines with the scrollbar.
-// The caller provides exactly the visible window; scrollview handles
-// padding, truncation, and scrollbar composition.
 func (m *Model) ViewWithLines(visibleLines []string) string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
 	m.syncScrollbar()
 
-	result := make([]string, m.height)
-	copy(result, visibleLines)
-	return m.compose(result)
+	if m.NeedsScrollbar() && len(visibleLines) < m.height {
+		result := make([]string, m.height)
+		copy(result, visibleLines)
+		return m.compose(result)
+	}
+	return m.compose(visibleLines)
 }
 
 // syncScrollbar syncs the local scroll offset to the scrollbar and reads back the clamped value.
@@ -282,7 +284,6 @@ func (m *Model) syncScrollbar() {
 }
 
 // compose pads/truncates lines to contentWidth and joins with the scrollbar column.
-// lines must have exactly m.height entries.
 func (m *Model) compose(lines []string) string {
 	contentWidth := m.ContentWidth()
 
@@ -304,15 +305,20 @@ func (m *Model) compose(lines []string) string {
 		return lipgloss.JoinHorizontal(lipgloss.Top, contentView, m.buildColumn(m.gapWidth), m.sb.View())
 	}
 	if m.reserveScrollbarSpace {
-		return lipgloss.JoinHorizontal(lipgloss.Top, contentView, m.buildColumn(m.gapWidth+scrollbar.Width))
+		return lipgloss.JoinHorizontal(lipgloss.Top, contentView, m.buildColumnN(m.gapWidth+scrollbar.Width, len(lines)))
 	}
 	return contentView
 }
 
 // buildColumn returns a column of spaces with the given width and m.height lines.
 func (m *Model) buildColumn(colWidth int) string {
+	return m.buildColumnN(colWidth, m.height)
+}
+
+// buildColumnN returns a column of spaces with the given width and n lines.
+func (m *Model) buildColumnN(colWidth, n int) string {
 	col := strings.Repeat(" ", colWidth)
-	lines := make([]string, m.height)
+	lines := make([]string, n)
 	for i := range lines {
 		lines[i] = col
 	}
