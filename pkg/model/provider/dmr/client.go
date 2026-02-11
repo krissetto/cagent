@@ -85,22 +85,31 @@ func NewClient(ctx context.Context, cfg *latest.ModelConfig, opts ...options.Opt
 
 	// Skip docker model status query when BaseURL is explicitly provided.
 	// This avoids unnecessary exec calls and speeds up tests/CI scenarios.
+	//
+	// When neither BaseURL nor MODEL_RUNNER_HOST is set, we attempt to use the
+	// Docker CLI to discover the endpoint. However, when the CLI is unavailable
+	// (e.g., inside a container in Docker Compose), we skip CLI calls entirely
+	// and let resolveDMRBaseURL handle endpoint discovery via connectivity checks
+	// against well-known internal hostnames.
 	var endpoint, engine string
 	if cfg.BaseURL == "" && os.Getenv("MODEL_RUNNER_HOST") == "" {
-		var err error
-		endpoint, engine, err = getDockerModelEndpointAndEngine(ctx)
-		if err != nil {
-			if err.Error() == "unknown flag: --json\n\nUsage:  docker [OPTIONS] COMMAND [ARG...]\n\nRun 'docker --help' for more information" {
-				slog.Debug("docker model status query failed", "error", err)
-				return nil, ErrNotInstalled
+		if dockerCLIAvailable() {
+			var err error
+			endpoint, engine, err = getDockerModelEndpointAndEngine(ctx)
+			if err != nil {
+				if err.Error() == "unknown flag: --json\n\nUsage:  docker [OPTIONS] COMMAND [ARG...]\n\nRun 'docker --help' for more information" {
+					slog.Debug("docker model status query failed", "error", err)
+					return nil, ErrNotInstalled
+				}
+				slog.Error("docker model status query failed", "error", err)
+			} else {
+				if err := pullDockerModelIfNeeded(ctx, cfg.Model); err != nil {
+					slog.Debug("docker model pull failed", "error", err)
+					return nil, err
+				}
 			}
-			slog.Error("docker model status query failed", "error", err)
 		} else {
-			// Auto-pull the model if needed
-			if err := pullDockerModelIfNeeded(ctx, cfg.Model); err != nil {
-				slog.Debug("docker model pull failed", "error", err)
-				return nil, err
-			}
+			slog.Debug("docker CLI not found, skipping model status query and relying on endpoint connectivity checks")
 		}
 	}
 
@@ -1156,6 +1165,11 @@ func buildConfigureRequest(model string, contextSize *int64, runtimeFlags []stri
 	}
 
 	return req
+}
+
+func dockerCLIAvailable() bool {
+	_, err := exec.LookPath("docker")
+	return err == nil
 }
 
 func getDockerModelEndpointAndEngine(ctx context.Context) (endpoint, engine string, err error) {

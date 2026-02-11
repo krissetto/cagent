@@ -55,6 +55,28 @@ func TestNewClientReturnsErrNotInstalledWhenDockerModelUnsupported(t *testing.T)
 	require.ErrorIs(t, err, ErrNotInstalled)
 }
 
+func TestNewClientSkipsCLIWhenDockerNotOnPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping PATH isolation test on Windows")
+	}
+
+	// Use an empty temp dir as PATH so docker CLI is not found.
+	tempDir := t.TempDir()
+	t.Setenv("PATH", tempDir)
+	t.Setenv("MODEL_RUNNER_HOST", "")
+
+	cfg := &latest.ModelConfig{
+		Provider: "dmr",
+		Model:    "ai/qwen3",
+	}
+
+	// NewClient should NOT return ErrNotInstalled when docker is simply absent.
+	// It should proceed to endpoint connectivity checks instead.
+	client, err := NewClient(t.Context(), cfg)
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
 func TestGetDMRFallbackURLs(t *testing.T) {
 	t.Parallel()
 
