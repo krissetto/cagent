@@ -810,3 +810,31 @@ func TestGet_WithHideToolResults(t *testing.T) {
 	require.NotNil(t, settings)
 	assert.True(t, settings.HideToolResults)
 }
+
+func TestSettings_RestoreTabs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		settings *Settings
+		expected bool
+	}{
+		{"nil settings", nil, false},
+		{"empty settings", &Settings{}, false},
+		{"explicitly disabled", &Settings{RestoreTabs: boolPtr(false)}, false},
+		{"explicitly enabled", &Settings{RestoreTabs: boolPtr(true)}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Get settings through GetSettings to test default behavior
+			config := &Config{Settings: tt.settings}
+			settings := config.GetSettings()
+			if settings.RestoreTabs == nil {
+				t.Fatal("RestoreTabs should never be nil after GetSettings()")
+			}
+			assert.Equal(t, tt.expected, *settings.RestoreTabs)
+		})
+	}
+}

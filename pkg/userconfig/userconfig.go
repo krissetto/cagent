@@ -53,7 +53,7 @@ type Settings struct {
 	// Titles longer than this are truncated with an ellipsis. Defaults to 20.
 	TabTitleMaxLength int `yaml:"tab_title_max_length,omitempty"`
 	// RestoreTabs restores previously open tabs when launching the TUI.
-	// Defaults to true when not set.
+	// Defaults to false when not set (user must explicitly opt-in).
 	RestoreTabs *bool `yaml:"restore_tabs,omitempty"`
 }
 
@@ -306,10 +306,10 @@ func boolPtr(b bool) *bool {
 // GetSettings returns the global settings with defaults applied.
 func (c *Config) GetSettings() *Settings {
 	if c.Settings == nil {
-		return &Settings{RestoreTabs: boolPtr(true)}
+		return &Settings{RestoreTabs: boolPtr(false)}
 	}
 	if c.Settings.RestoreTabs == nil {
-		c.Settings.RestoreTabs = boolPtr(true)
+		c.Settings.RestoreTabs = boolPtr(false)
 	}
 	return c.Settings
 }
