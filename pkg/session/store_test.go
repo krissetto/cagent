@@ -304,8 +304,94 @@ func TestBranchSessionClonesSubSession(t *testing.T) {
 	require.NotNil(t, subItem.SubSession)
 	assert.NotEqual(t, subSession.ID, subItem.SubSession.ID)
 	assert.Equal(t, loaded.ID, subItem.SubSession.ParentID)
+	assert.Same(t, loaded, subItem.SubSession.ParentSession())
 	require.Len(t, subItem.SubSession.Messages, 1)
 	assert.Equal(t, "Sub message", subItem.SubSession.Messages[0].Message.Message.Content)
+}
+
+func TestSQLiteStoreGetSession_PopulatesNestedParentPointers(t *testing.T) {
+	tempDB := filepath.Join(t.TempDir(), "test_nested_parent_links.db")
+
+	store, err := NewSQLiteSessionStore(tempDB)
+	require.NoError(t, err)
+	defer store.(*SQLiteSessionStore).Close()
+
+	grandchild := &Session{
+		ID:        "grandchild-session",
+		CreatedAt: time.Now(),
+		Messages: []Item{
+			NewMessageItem(UserMessage("nested result")),
+		},
+	}
+	child := &Session{
+		ID:        "child-session",
+		CreatedAt: time.Now(),
+		Messages:  []Item{NewSubSessionItem(grandchild)},
+	}
+	root := &Session{
+		ID:        "root-session",
+		CreatedAt: time.Now(),
+		Messages:  []Item{NewSubSessionItem(child)},
+	}
+
+	require.NoError(t, store.AddSession(t.Context(), root))
+
+	loaded, err := store.GetSession(t.Context(), root.ID)
+	require.NoError(t, err)
+	require.Len(t, loaded.Messages, 1)
+	loadedChild := loaded.Messages[0].SubSession
+	require.NotNil(t, loadedChild)
+	assert.Equal(t, loaded.ID, loadedChild.ParentID)
+	assert.Same(t, loaded, loadedChild.ParentSession())
+	require.Len(t, loadedChild.Messages, 1)
+	loadedGrandchild := loadedChild.Messages[0].SubSession
+	require.NotNil(t, loadedGrandchild)
+	assert.Equal(t, loadedChild.ID, loadedGrandchild.ParentID)
+	assert.Same(t, loadedChild, loadedGrandchild.ParentSession())
+}
+
+func TestInMemoryStoreAddSubSession_ReplacesExistingNestedSubSessionWithoutDuplicating(t *testing.T) {
+	store := NewInMemorySessionStore()
+
+	root := &Session{ID: "root-session", CreatedAt: time.Now()}
+	require.NoError(t, store.AddSession(t.Context(), root))
+
+	child := &Session{
+		ID:        "child-session",
+		CreatedAt: time.Now(),
+		Messages: []Item{
+			NewMessageItem(UserMessage("first result")),
+		},
+	}
+	require.NoError(t, store.AddSubSession(t.Context(), root.ID, child))
+
+	replacement := &Session{
+		ID:        child.ID,
+		CreatedAt: child.CreatedAt,
+		Messages: []Item{
+			NewMessageItem(UserMessage("updated result")),
+			NewSubSessionItem(&Session{
+				ID:        "grandchild-session",
+				CreatedAt: time.Now(),
+				Messages: []Item{
+					NewMessageItem(UserMessage("nested result")),
+				},
+			}),
+		},
+	}
+	require.NoError(t, store.AddSubSession(t.Context(), root.ID, replacement))
+
+	require.Len(t, root.Messages, 1)
+	require.NotNil(t, root.Messages[0].SubSession)
+	loadedChild := root.Messages[0].SubSession
+	assert.Equal(t, child.ID, loadedChild.ID)
+	assert.Equal(t, root.ID, loadedChild.ParentID)
+	assert.Same(t, root, loadedChild.ParentSession())
+	require.Len(t, loadedChild.Messages, 2)
+	assert.Equal(t, "updated result", loadedChild.Messages[0].Message.Message.Content)
+	require.NotNil(t, loadedChild.Messages[1].SubSession)
+	loadedGrandchild := loadedChild.Messages[1].SubSession
+	assert.Equal(t, "nested result", loadedGrandchild.Messages[0].Message.Message.Content)
 }
 
 func TestStoreAgentNameJSON(t *testing.T) {
@@ -707,6 +793,45 @@ func TestBackupDatabase(t *testing.T) {
 		err := backupDatabase(dbPath)
 		require.NoError(t, err)
 	})
+}
+
+func TestSQLiteStoreAddSubSession_PersistsInMemoryNestedDescendants(t *testing.T) {
+	tempDB := filepath.Join(t.TempDir(), "test_nested_subsessions.db")
+
+	store, err := NewSQLiteSessionStore(tempDB)
+	require.NoError(t, err)
+	defer store.(*SQLiteSessionStore).Close()
+
+	root := &Session{
+		ID:        "root-session",
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, store.AddSession(t.Context(), root))
+
+	child := &Session{
+		ID:        "child-session",
+		CreatedAt: time.Now(),
+		Messages: []Item{
+			NewSubSessionItem(&Session{
+				ID:        "grandchild-session",
+				CreatedAt: time.Now(),
+				Messages: []Item{
+					NewMessageItem(UserMessage("nested result")),
+				},
+			}),
+		},
+	}
+
+	require.NoError(t, store.AddSubSession(t.Context(), root.ID, child))
+
+	retrieved, err := store.GetSession(t.Context(), root.ID)
+	require.NoError(t, err)
+	require.Len(t, retrieved.Messages, 1)
+	require.NotNil(t, retrieved.Messages[0].SubSession)
+	require.Len(t, retrieved.Messages[0].SubSession.Messages, 1)
+	require.NotNil(t, retrieved.Messages[0].SubSession.Messages[0].SubSession)
+	assert.Equal(t, "grandchild-session", retrieved.Messages[0].SubSession.Messages[0].SubSession.ID)
+	assert.Equal(t, "nested result", retrieved.Messages[0].SubSession.Messages[0].SubSession.Messages[0].Message.Message.Content)
 }
 
 // TestOrphanedSubsessionReference verifies that loading sessions gracefully

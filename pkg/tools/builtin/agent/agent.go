@@ -62,8 +62,9 @@ type RunParams struct {
 
 // RunResult holds the outcome of a sub-agent execution.
 type RunResult struct {
-	Result string // final assistant message on completion
-	ErrMsg string // error detail if failed
+	Result  string // final assistant message on completion
+	ErrMsg  string // error detail if failed
+	Stopped bool   // true when execution was canceled/stopped
 }
 
 // Runner abstracts the runtime dependency for background agent execution.
@@ -131,6 +132,9 @@ type Handler struct {
 	runner Runner
 	wg     sync.WaitGroup
 	tasks  *concurrent.Map[string, *task]
+
+	mu      sync.Mutex
+	stopped bool
 }
 
 // NewHandler creates a new Handler with the given Runner.
@@ -160,7 +164,7 @@ func (h *Handler) totalTaskCount() int {
 	return h.tasks.Length()
 }
 
-func (h *Handler) pruneCompleted() {
+func (h *Handler) pruneCompletedLocked() {
 	var toDelete []string
 	h.tasks.Range(func(id string, t *task) bool {
 		s := t.loadStatus()
@@ -172,6 +176,33 @@ func (h *Handler) pruneCompleted() {
 	for _, id := range toDelete {
 		h.tasks.Delete(id)
 	}
+}
+
+func (h *Handler) pruneCompleted() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneCompletedLocked()
+}
+
+func appendOutputLimited(sb *strings.Builder, current int, content string) int {
+	remaining := maxOutputBytes - current
+	if remaining <= 0 || content == "" {
+		return current
+	}
+	if len(content) > remaining {
+		content = content[:remaining]
+	}
+	n, _ := sb.WriteString(content)
+	return current + n
+}
+
+func capCompletedResult(content string) string {
+	if len(content) <= maxOutputBytes {
+		return content
+	}
+
+	const truncatedSuffix = "\n\n[output truncated at 10MB limit]"
+	return content[:maxOutputBytes-len(truncatedSuffix)] + truncatedSuffix
 }
 
 // HandleRun starts a sub-agent task asynchronously and returns a task ID immediately.
@@ -197,22 +228,26 @@ func (h *Handler) HandleRun(ctx context.Context, sess *session.Session, toolCall
 		return tools.ResultError(fmt.Sprintf("agent %q is not in the sub-agents list. This agent has no sub-agents configured.", params.Agent)), nil
 	}
 
-	// Enforce concurrency cap.
+	// Enforce caps atomically across concurrent starts.
+	h.mu.Lock()
+	if h.stopped {
+		h.mu.Unlock()
+		return tools.ResultError("background agent handler is stopped"), nil
+	}
 	if h.runningTaskCount() >= maxConcurrentTasks {
+		h.mu.Unlock()
 		return tools.ResultError(fmt.Sprintf("maximum concurrent background agent tasks (%d) reached; stop or wait for existing tasks to complete", maxConcurrentTasks)), nil
 	}
-
-	// Enforce total cap, pruning finished tasks first.
 	if h.totalTaskCount() >= maxTotalTasks {
-		h.pruneCompleted()
+		h.pruneCompletedLocked()
 		if h.totalTaskCount() >= maxTotalTasks {
+			h.mu.Unlock()
 			return tools.ResultError(fmt.Sprintf("maximum total background agent tasks (%d) reached; view and discard old tasks first", maxTotalTasks)), nil
 		}
 	}
 
 	taskID := newTaskID()
-
-	taskCtx, cancel := context.WithCancel(ctx)
+	taskCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 
 	t := &task{
 		id:        taskID,
@@ -223,6 +258,7 @@ func (h *Handler) HandleRun(ctx context.Context, sess *session.Session, toolCall
 	}
 	t.storeStatus(taskRunning)
 	h.tasks.Store(taskID, t)
+	h.mu.Unlock()
 
 	h.wg.Go(func() {
 		defer cancel()
@@ -236,13 +272,18 @@ func (h *Handler) HandleRun(ctx context.Context, sess *session.Session, toolCall
 			ParentSession:  sess,
 			OnContent: func(content string) {
 				t.outputMu.Lock()
-				if t.outputBytes < maxOutputBytes {
-					n, _ := t.output.WriteString(content)
-					t.outputBytes += n
-				}
+				t.outputBytes = appendOutputLimited(&t.output, t.outputBytes, content)
 				t.outputMu.Unlock()
 			},
 		})
+
+		if result.Stopped {
+			if t.loadStatus() == taskRunning {
+				t.storeStatus(taskStopped)
+			}
+			slog.Debug("Background agent task stopped", "task_id", taskID)
+			return
+		}
 
 		if result.ErrMsg != "" {
 			t.errMsg = result.ErrMsg
@@ -259,7 +300,7 @@ func (h *Handler) HandleRun(ctx context.Context, sess *session.Session, toolCall
 
 		// Write result before CAS so readers who observe taskCompleted
 		// always see the populated result field.
-		t.result = result.Result
+		t.result = capCompletedResult(result.Result)
 		if t.casStatus(taskRunning, taskCompleted) {
 			slog.Debug("Background agent task completed", "task_id", taskID, "agent", params.Agent)
 		}
@@ -375,6 +416,10 @@ func (h *Handler) HandleStop(_ context.Context, _ *session.Session, toolCall too
 // StopAll cancels all running tasks and waits for their goroutines to exit.
 // Called during runtime shutdown to ensure clean teardown.
 func (h *Handler) StopAll() {
+	h.mu.Lock()
+	h.stopped = true
+	h.mu.Unlock()
+
 	h.tasks.Range(func(_ string, t *task) bool {
 		if t.casStatus(taskRunning, taskStopped) {
 			t.cancel()

@@ -23,15 +23,19 @@ type mockRunner struct {
 	subAgentNames []string
 	runResult     *RunResult
 	runDelay      time.Duration // optional delay to simulate work
+	runFunc       func(ctx context.Context, params RunParams) *RunResult
 }
 
 func (m *mockRunner) CurrentAgentSubAgentNames() []string { return m.subAgentNames }
 func (m *mockRunner) RunAgent(ctx context.Context, params RunParams) *RunResult {
+	if m.runFunc != nil {
+		return m.runFunc(ctx, params)
+	}
 	if m.runDelay > 0 {
 		select {
 		case <-time.After(m.runDelay):
 		case <-ctx.Done():
-			return &RunResult{}
+			return &RunResult{Stopped: true}
 		}
 	}
 	// Call OnContent if result has content, to simulate streaming.
@@ -45,9 +49,7 @@ func (m *mockRunner) RunAgent(ctx context.Context, params RunParams) *RunResult 
 }
 
 func newTestHandler() *Handler {
-	return &Handler{
-		tasks: concurrent.NewMap[string, *task](),
-	}
+	return &Handler{tasks: concurrent.NewMap[string, *task]()}
 }
 
 func newTestHandlerWithRunner(r Runner) *Handler {
@@ -247,17 +249,21 @@ func TestHandleView_Completed_EmptyResult(t *testing.T) {
 	assert.Contains(t, result.Output, "no output")
 }
 
-func TestHandleView_OutputBufferTruncated(t *testing.T) {
+func TestHandleView_CompletedResultTruncatedToMaxOutputBytes(t *testing.T) {
 	h := newTestHandler()
-	tk := insertTask(h, "t1", "researcher", taskRunning)
-	tk.output.WriteString(strings.Repeat("x", maxOutputBytes))
-	tk.outputBytes = maxOutputBytes
+	tk := insertTask(h, "t1", "researcher", taskCompleted)
+	tk.result = capCompletedResult(strings.Repeat("x", maxOutputBytes+2048))
 
 	tc := makeToolCall(t, ViewBackgroundAgentArgs{TaskID: "t1"})
 	result, err := h.HandleView(t.Context(), nil, tc)
 	require.NoError(t, err)
-	assert.Contains(t, result.Output, "truncated", "should show truncation notice when buffer is full")
-	assert.Contains(t, result.Output, "still running")
+	assert.Len(t, tk.result, maxOutputBytes)
+	assert.Contains(t, result.Output, "Task ID: t1")
+	assert.Contains(t, result.Output, "Agent:   researcher")
+	assert.Contains(t, result.Output, "Status:  completed")
+	assert.Contains(t, result.Output, "--- Output ---")
+	assert.Contains(t, result.Output, "[output truncated at 10MB limit]")
+	assert.Contains(t, result.Output, strings.Repeat("x", 1024))
 }
 
 func TestHandleView_InvalidJSON(t *testing.T) {
@@ -303,6 +309,46 @@ func TestHandleStop_Running(t *testing.T) {
 	assert.Equal(t, taskStopped, tk.loadStatus())
 }
 
+func TestHandleStop_ExplicitStopWinsOverLateSuccessfulReturn(t *testing.T) {
+	h := newTestHandlerWithRunner(&mockRunner{
+		subAgentNames: []string{"sub"},
+		runFunc: func(ctx context.Context, params RunParams) *RunResult {
+			<-ctx.Done()
+			time.Sleep(10 * time.Millisecond)
+			return &RunResult{Result: "late success"}
+		},
+	})
+
+	tc := makeToolCall(t, RunBackgroundAgentArgs{Agent: "sub", Task: "long task"})
+	_, err := h.HandleRun(t.Context(), session.New(), tc)
+	require.NoError(t, err)
+
+	var taskID string
+	h.tasks.Range(func(id string, _ *task) bool {
+		taskID = id
+		return false
+	})
+	require.NotEmpty(t, taskID)
+
+	stopTC := makeToolCall(t, StopBackgroundAgentArgs{TaskID: taskID})
+	result, err := h.HandleStop(t.Context(), nil, stopTC)
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+
+	h.wg.Wait()
+
+	tk, ok := h.tasks.Load(taskID)
+	require.True(t, ok)
+	assert.Equal(t, taskStopped, tk.loadStatus())
+
+	viewTC := makeToolCall(t, ViewBackgroundAgentArgs{TaskID: taskID})
+	viewResult, err := h.HandleView(t.Context(), nil, viewTC)
+	require.NoError(t, err)
+	assert.Contains(t, viewResult.Output, "Status:  stopped")
+	assert.Contains(t, viewResult.Output, "<task was stopped>")
+	assert.NotContains(t, viewResult.Output, "late success")
+}
+
 func TestHandleStop_InvalidJSON(t *testing.T) {
 	h := newTestHandler()
 	bad := tools.ToolCall{Function: tools.FunctionCall{Arguments: "not-json"}}
@@ -331,6 +377,19 @@ func TestStopAll_WaitsForGoroutines(t *testing.T) {
 }
 
 // --- HandleRun: input validation ---
+
+func TestHandleRun_AfterStopAllRejectsNewTasks(t *testing.T) {
+	h := newTestHandlerWithRunner(&mockRunner{subAgentNames: []string{"sub"}})
+
+	h.StopAll()
+
+	tc := makeToolCall(t, RunBackgroundAgentArgs{Agent: "sub", Task: "do something"})
+	result, err := h.HandleRun(t.Context(), session.New(), tc)
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Output, "handler is stopped")
+	assert.Equal(t, 0, h.totalTaskCount())
+}
 
 func TestHandleRun_EmptyAgent(t *testing.T) {
 	h := newTestHandlerWithRunner(&mockRunner{subAgentNames: []string{"sub"}})
@@ -389,26 +448,129 @@ func TestHandleRun_InvalidJSON(t *testing.T) {
 	require.Error(t, err, "invalid JSON should return an error")
 }
 
-func TestHandleRun_StartsTask(t *testing.T) {
+func TestHandleRun_ContextCancellationDoesNotStopBackgroundTask(t *testing.T) {
 	h := newTestHandlerWithRunner(&mockRunner{
 		subAgentNames: []string{"sub"},
-		runResult:     &RunResult{Result: "done"},
+		runFunc: func(ctx context.Context, params RunParams) *RunResult {
+			<-time.After(20 * time.Millisecond)
+			return &RunResult{Result: "done"}
+		},
 	})
 
+	ctx, cancel := context.WithCancel(t.Context())
 	tc := makeToolCall(t, RunBackgroundAgentArgs{Agent: "sub", Task: "write a poem"})
-	result, err := h.HandleRun(t.Context(), session.New(), tc)
+	result, err := h.HandleRun(ctx, session.New(), tc)
 	require.NoError(t, err)
+	cancel()
 	assert.False(t, result.IsError)
-	assert.Contains(t, result.Output, "agent_task_")
-	assert.Contains(t, result.Output, "sub")
 
 	h.wg.Wait()
-
-	assert.Equal(t, 1, h.totalTaskCount())
 	h.tasks.Range(func(_ string, tk *task) bool {
 		assert.Equal(t, taskCompleted, tk.loadStatus())
+		assert.Equal(t, "done", tk.result)
 		return true
 	})
+}
+
+func TestHandleRun_OversizedContentChunkIsTruncatedAtWriteTime(t *testing.T) {
+	h := newTestHandlerWithRunner(&mockRunner{
+		subAgentNames: []string{"sub"},
+		runFunc: func(ctx context.Context, params RunParams) *RunResult {
+			params.OnContent(strings.Repeat("x", maxOutputBytes+1024))
+			return &RunResult{Result: "done"}
+		},
+	})
+
+	tc := makeToolCall(t, RunBackgroundAgentArgs{Agent: "sub", Task: "stream output"})
+	_, err := h.HandleRun(t.Context(), session.New(), tc)
+	require.NoError(t, err)
+
+	h.wg.Wait()
+	h.tasks.Range(func(_ string, tk *task) bool {
+		tk.outputMu.RLock()
+		defer tk.outputMu.RUnlock()
+		assert.Equal(t, maxOutputBytes, tk.outputBytes)
+		assert.Len(t, tk.output.String(), maxOutputBytes)
+		return true
+	})
+}
+
+func TestHandleRun_CompletedResultLargerThanMaxOutputBytesIsTruncated(t *testing.T) {
+	h := newTestHandlerWithRunner(&mockRunner{
+		subAgentNames: []string{"sub"},
+		runResult:     &RunResult{Result: strings.Repeat("y", maxOutputBytes+4096)},
+	})
+
+	tc := makeToolCall(t, RunBackgroundAgentArgs{Agent: "sub", Task: "produce final output"})
+	_, err := h.HandleRun(t.Context(), session.New(), tc)
+	require.NoError(t, err)
+
+	h.wg.Wait()
+	h.tasks.Range(func(_ string, tk *task) bool {
+		assert.Equal(t, taskCompleted, tk.loadStatus())
+		assert.Len(t, tk.result, maxOutputBytes)
+		assert.Contains(t, tk.result, "[output truncated at 10MB limit]")
+		return true
+	})
+}
+
+func TestHandleRun_StopAllMarksCanceledTaskStopped(t *testing.T) {
+	h := newTestHandlerWithRunner(&mockRunner{
+		subAgentNames: []string{"sub"},
+		runFunc: func(ctx context.Context, params RunParams) *RunResult {
+			<-ctx.Done()
+			return &RunResult{Stopped: true}
+		},
+	})
+
+	tc := makeToolCall(t, RunBackgroundAgentArgs{Agent: "sub", Task: "long task"})
+	_, err := h.HandleRun(t.Context(), session.New(), tc)
+	require.NoError(t, err)
+
+	h.StopAll()
+	h.tasks.Range(func(_ string, tk *task) bool {
+		assert.Equal(t, taskStopped, tk.loadStatus())
+		return true
+	})
+}
+
+func TestHandleRun_AtomicConcurrentAdmissionRespectsCap(t *testing.T) {
+	h := newTestHandlerWithRunner(&mockRunner{
+		subAgentNames: []string{"sub"},
+		runFunc: func(ctx context.Context, params RunParams) *RunResult {
+			<-ctx.Done()
+			return &RunResult{Stopped: true}
+		},
+	})
+
+	callTC := makeToolCall(t, RunBackgroundAgentArgs{Agent: "sub", Task: "work"})
+
+	var wg sync.WaitGroup
+	results := make(chan bool, maxConcurrentTasks+10)
+	for range maxConcurrentTasks + 10 {
+		wg.Go(func() {
+			res, err := h.HandleRun(t.Context(), session.New(), callTC)
+			if err == nil {
+				results <- !res.IsError
+				return
+			}
+			results <- false
+		})
+	}
+	wg.Wait()
+	close(results)
+
+	var started int
+	for ok := range results {
+		if ok {
+			started++
+		}
+	}
+	assert.Equal(t, maxConcurrentTasks, started)
+	assert.Equal(t, maxConcurrentTasks, h.runningTaskCount())
+	assert.Equal(t, maxConcurrentTasks, h.totalTaskCount())
+
+	h.StopAll()
 }
 
 func TestHandleRun_ProviderError_TaskFails(t *testing.T) {
@@ -452,6 +614,36 @@ func TestHandleRun_WithExpectedOutput(t *testing.T) {
 		assert.Equal(t, taskCompleted, tk.loadStatus())
 		return true
 	})
+}
+
+func TestHandleRun_ForwardsParentSessionAndExpectedOutput(t *testing.T) {
+	parent := session.New(session.WithUserMessage("start"))
+
+	var gotParams RunParams
+	h := newTestHandlerWithRunner(&mockRunner{
+		subAgentNames: []string{"sub"},
+		runFunc: func(ctx context.Context, params RunParams) *RunResult {
+			gotParams = params
+			return &RunResult{Result: "done"}
+		},
+	})
+
+	tc := makeToolCall(t, RunBackgroundAgentArgs{
+		Agent:          "sub",
+		Task:           "summarize the document",
+		ExpectedOutput: "A one-paragraph summary",
+	})
+	result, err := h.HandleRun(t.Context(), parent, tc)
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+
+	h.wg.Wait()
+
+	assert.Equal(t, "sub", gotParams.AgentName)
+	assert.Equal(t, "summarize the document", gotParams.Task)
+	assert.Equal(t, "A one-paragraph summary", gotParams.ExpectedOutput)
+	assert.Same(t, parent, gotParams.ParentSession)
+	assert.NotNil(t, gotParams.OnContent)
 }
 
 func TestHandleRun_TotalCapAutoPruneAdmits(t *testing.T) {
@@ -517,19 +709,17 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 	}
 
 	for i := range 5 {
-		wg.Add(1)
-		go func(tc tools.ToolCall) {
-			defer wg.Done()
+		tc := viewTCs[i]
+		wg.Go(func() {
 			_, _ = h.HandleView(t.Context(), nil, tc)
-		}(viewTCs[i])
+		})
 	}
 
 	for i := range 3 {
-		wg.Add(1)
-		go func(tc tools.ToolCall) {
-			defer wg.Done()
+		tc := stopTCs[i]
+		wg.Go(func() {
 			_, _ = h.HandleStop(t.Context(), nil, tc)
-		}(stopTCs[i])
+		})
 	}
 
 	wg.Wait()

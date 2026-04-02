@@ -139,4 +139,31 @@ func TestBranchSession(t *testing.T) {
 		assert.Equal(t, "msg1", branched.Messages[0].Message.Message.Content)
 		assert.Equal(t, "msg2", branched.Messages[1].Message.Message.Content)
 	})
+
+	t.Run("branching nested sub-sessions populates in-memory parent chain", func(t *testing.T) {
+		grandchild := &Session{ID: "grandchild", Messages: []Item{NewMessageItem(UserMessage("deep"))}}
+		child := &Session{ID: "child", Messages: []Item{NewSubSessionItem(grandchild)}}
+		parent := &Session{
+			ID:    "parent-id",
+			Title: "Parent Title",
+			Messages: []Item{
+				NewMessageItem(UserMessage("msg1")),
+				NewSubSessionItem(child),
+				NewMessageItem(UserMessage("msg3")),
+			},
+		}
+
+		branched, err := BranchSession(parent, 2)
+		require.NoError(t, err)
+		require.Len(t, branched.Messages, 2)
+		branchedChild := branched.Messages[1].SubSession
+		require.NotNil(t, branchedChild)
+		assert.Equal(t, branched.ID, branchedChild.ParentID)
+		assert.Same(t, branched, branchedChild.ParentSession())
+		require.Len(t, branchedChild.Messages, 1)
+		branchedGrandchild := branchedChild.Messages[0].SubSession
+		require.NotNil(t, branchedGrandchild)
+		assert.Equal(t, branchedChild.ID, branchedGrandchild.ParentID)
+		assert.Same(t, branchedChild, branchedGrandchild.ParentSession())
+	})
 }

@@ -2,7 +2,9 @@ package builtin
 
 import (
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -121,6 +123,178 @@ func TestShellTool_ListBackgroundJobs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, listResult.Output, "Background Jobs:")
 	assert.Contains(t, listResult.Output, "ID: job_")
+}
+
+func TestShellTool_ViewBackgroundJob_NotFound(t *testing.T) {
+	tool := NewShellTool(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
+
+	result, err := tool.handler.ViewBackgroundJob(t.Context(), ViewBackgroundJobArgs{JobID: "nonexistent"})
+	require.NoError(t, err)
+	assert.Contains(t, result.Output, "Job not found")
+}
+
+func TestShellTool_StopBackgroundJob_NotFound(t *testing.T) {
+	tool := NewShellTool(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
+
+	result, err := tool.handler.StopBackgroundJob(t.Context(), StopBackgroundJobArgs{JobID: "nonexistent"})
+	require.NoError(t, err)
+	assert.Contains(t, result.Output, "Job not found")
+}
+
+func TestShellTool_StopBackgroundJob_StopsRunningJob(t *testing.T) {
+	tool := NewShellTool(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
+	require.NoError(t, tool.Start(t.Context()))
+	t.Cleanup(func() { _ = tool.Stop(t.Context()) })
+
+	startResult, err := tool.handler.RunShellBackground(t.Context(), RunShellBackgroundArgs{Cmd: "sleep 60"})
+	require.NoError(t, err)
+
+	// Extract job ID from result
+	output := startResult.Output
+	jobIDStart := strings.Index(output, "job_")
+	require.Greater(t, jobIDStart, -1, "should contain job ID")
+	jobIDEnd := strings.IndexByte(output[jobIDStart:], '\n')
+	var jobID string
+	if jobIDEnd == -1 {
+		jobID = output[jobIDStart:]
+	} else {
+		jobID = output[jobIDStart : jobIDStart+jobIDEnd]
+	}
+	jobID = strings.TrimSpace(jobID)
+
+	stopResult, err := tool.handler.StopBackgroundJob(t.Context(), StopBackgroundJobArgs{JobID: jobID})
+	require.NoError(t, err)
+	assert.Contains(t, stopResult.Output, "stopped successfully")
+
+	// Verify status changed
+	viewResult, err := tool.handler.ViewBackgroundJob(t.Context(), ViewBackgroundJobArgs{JobID: jobID})
+	require.NoError(t, err)
+	assert.Contains(t, viewResult.Output, "stopped")
+}
+
+func TestShellTool_ViewBackgroundJob_CompletedShowsOutput(t *testing.T) {
+	tool := NewShellTool(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
+	require.NoError(t, tool.Start(t.Context()))
+	t.Cleanup(func() { _ = tool.Stop(t.Context()) })
+
+	startResult, err := tool.handler.RunShellBackground(t.Context(), RunShellBackgroundArgs{Cmd: `echo "hello from bg"`})
+	require.NoError(t, err)
+
+	output := startResult.Output
+	jobIDStart := strings.Index(output, "job_")
+	require.Greater(t, jobIDStart, -1)
+	jobIDEnd := strings.IndexByte(output[jobIDStart:], '\n')
+	var jobID string
+	if jobIDEnd == -1 {
+		jobID = output[jobIDStart:]
+	} else {
+		jobID = output[jobIDStart : jobIDStart+jobIDEnd]
+	}
+	jobID = strings.TrimSpace(jobID)
+
+	// Wait for job to complete
+	require.Eventually(t, func() bool {
+		viewResult, err := tool.handler.ViewBackgroundJob(t.Context(), ViewBackgroundJobArgs{JobID: jobID})
+		return err == nil && (strings.Contains(viewResult.Output, "completed") || strings.Contains(viewResult.Output, "failed"))
+	}, 5*time.Second, 100*time.Millisecond)
+
+	viewResult, err := tool.handler.ViewBackgroundJob(t.Context(), ViewBackgroundJobArgs{JobID: jobID})
+	require.NoError(t, err)
+	assert.Contains(t, viewResult.Output, "completed")
+	assert.Contains(t, viewResult.Output, "hello from bg")
+	assert.Contains(t, viewResult.Output, "Exit Code: 0")
+}
+
+func TestShellTool_ViewBackgroundJob_FailedShowsNonZeroExit(t *testing.T) {
+	tool := NewShellTool(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
+	require.NoError(t, tool.Start(t.Context()))
+	t.Cleanup(func() { _ = tool.Stop(t.Context()) })
+
+	startResult, err := tool.handler.RunShellBackground(t.Context(), RunShellBackgroundArgs{Cmd: "exit 42"})
+	require.NoError(t, err)
+
+	output := startResult.Output
+	jobIDStart := strings.Index(output, "job_")
+	require.Greater(t, jobIDStart, -1)
+	jobIDEnd := strings.IndexByte(output[jobIDStart:], '\n')
+	var jobID string
+	if jobIDEnd == -1 {
+		jobID = output[jobIDStart:]
+	} else {
+		jobID = output[jobIDStart : jobIDStart+jobIDEnd]
+	}
+	jobID = strings.TrimSpace(jobID)
+
+	require.Eventually(t, func() bool {
+		viewResult, err := tool.handler.ViewBackgroundJob(t.Context(), ViewBackgroundJobArgs{JobID: jobID})
+		return err == nil && (strings.Contains(viewResult.Output, "failed") || strings.Contains(viewResult.Output, "completed"))
+	}, 5*time.Second, 100*time.Millisecond)
+
+	viewResult, err := tool.handler.ViewBackgroundJob(t.Context(), ViewBackgroundJobArgs{JobID: jobID})
+	require.NoError(t, err)
+	assert.Contains(t, viewResult.Output, "failed")
+	assert.Contains(t, viewResult.Output, "Exit Code: 42")
+}
+
+func TestShellTool_Stop_TerminatesRunningJobs(t *testing.T) {
+	tool := NewShellTool(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
+	require.NoError(t, tool.Start(t.Context()))
+
+	_, err := tool.handler.RunShellBackground(t.Context(), RunShellBackgroundArgs{Cmd: "sleep 60"})
+	require.NoError(t, err)
+
+	// Stop should return promptly (well within 10 seconds) and terminate the job
+	done := make(chan struct{})
+	go func() {
+		_ = tool.Stop(t.Context())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop() did not return within 10 seconds")
+	}
+
+	// All jobs should be in stopped state
+	tool.handler.jobs.Range(func(_ string, job *backgroundJob) bool {
+		status := job.status.Load()
+		assert.NotEqual(t, statusRunning, status, "job should not still be running after Stop()")
+		return true
+	})
+}
+
+func TestShellTool_StopBackgroundJob_AlreadyStopped(t *testing.T) {
+	tool := NewShellTool(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
+	require.NoError(t, tool.Start(t.Context()))
+	t.Cleanup(func() { _ = tool.Stop(t.Context()) })
+
+	startResult, err := tool.handler.RunShellBackground(t.Context(), RunShellBackgroundArgs{Cmd: `echo done`})
+	require.NoError(t, err)
+
+	output := startResult.Output
+	jobIDStart := strings.Index(output, "job_")
+	require.Greater(t, jobIDStart, -1)
+	jobIDEnd := strings.IndexByte(output[jobIDStart:], '\n')
+	var jobID string
+	if jobIDEnd == -1 {
+		jobID = output[jobIDStart:]
+	} else {
+		jobID = output[jobIDStart : jobIDStart+jobIDEnd]
+	}
+	jobID = strings.TrimSpace(jobID)
+
+	// Wait for job to finish
+	require.Eventually(t, func() bool {
+		viewResult, _ := tool.handler.ViewBackgroundJob(t.Context(), ViewBackgroundJobArgs{JobID: jobID})
+		return viewResult != nil && (strings.Contains(viewResult.Output, "completed") || strings.Contains(viewResult.Output, "failed"))
+	}, 5*time.Second, 100*time.Millisecond)
+
+	// Trying to stop an already-completed job should return an error message
+	stopResult, err := tool.handler.StopBackgroundJob(t.Context(), StopBackgroundJobArgs{JobID: jobID})
+	require.NoError(t, err)
+	assert.Contains(t, stopResult.Output, "not running")
 }
 
 func TestShellTool_Instructions(t *testing.T) {

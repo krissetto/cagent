@@ -21,6 +21,10 @@ func createProcessGroup(_ *os.Process) (*processGroup, error) {
 	return &processGroup{}, nil
 }
 
+func (pg *processGroup) close() {
+	// Unix process groups are managed by the kernel; nothing to release.
+}
+
 func kill(proc *os.Process, _ *processGroup) error {
 	return syscall.Kill(-proc.Pid, syscall.SIGTERM)
 }

@@ -29,6 +29,8 @@ const (
 	ToolNameStopBackgroundJob  = "stop_background_job"
 )
 
+const maxOutputBytes = 10 * 1024 * 1024 // 10 MB
+
 // ShellTool provides shell command execution capabilities.
 type ShellTool struct {
 	handler *shellHandler
@@ -49,6 +51,7 @@ type shellHandler struct {
 	workingDir      string
 	jobs            *concurrent.Map[string, *backgroundJob]
 	jobCounter      atomic.Int64
+	wg              sync.WaitGroup
 }
 
 // Job status constants
@@ -166,6 +169,7 @@ func (h *shellHandler) runNativeCommand(timeoutCtx, ctx context.Context, command
 
 	pg, err := createProcessGroup(cmd.Process)
 	if err != nil {
+		_ = cmd.Process.Kill()
 		return tools.ResultError(fmt.Sprintf("Error creating process group: %s", err))
 	}
 
@@ -188,6 +192,10 @@ func (h *shellHandler) runNativeCommand(timeoutCtx, ctx context.Context, command
 			<-done
 		}
 	case cmdErr = <-done:
+	}
+
+	if pg != nil {
+		pg.close()
 	}
 
 	output := formatCommandOutput(timeoutCtx, ctx, cmdErr, outBuf.String(), timeout)
@@ -214,7 +222,7 @@ func (h *shellHandler) RunShellBackground(_ context.Context, params RunShellBack
 	// The limitedWriter shares the job's outputMu so that readers
 	// (ViewBackgroundJob, ListBackgroundJobs) and the pipe-copy
 	// goroutines spawned by exec.Cmd use the same lock.
-	lw := &limitedWriter{mu: &job.outputMu, buf: job.output, maxSize: 10 * 1024 * 1024}
+	lw := &limitedWriter{mu: &job.outputMu, buf: job.output, maxSize: maxOutputBytes}
 	cmd.Stdout = lw
 	cmd.Stderr = lw
 
@@ -233,7 +241,11 @@ func (h *shellHandler) RunShellBackground(_ context.Context, params RunShellBack
 	job.status.Store(statusRunning)
 	h.jobs.Store(jobID, job)
 
-	go h.monitorJob(job, cmd)
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		h.monitorJob(job, cmd)
+	}()
 
 	return tools.ResultSuccess(fmt.Sprintf("Background job started with ID: %s\nCommand: %s\nWorking directory: %s",
 		jobID, params.Cmd, params.Cwd)), nil
@@ -241,6 +253,12 @@ func (h *shellHandler) RunShellBackground(_ context.Context, params RunShellBack
 
 func (h *shellHandler) monitorJob(job *backgroundJob, cmd *exec.Cmd) {
 	err := cmd.Wait()
+
+	// Release OS resources (e.g. Windows job/process handles) now that the
+	// process has exited. This must happen outside the lock.
+	if job.processGroup != nil {
+		job.processGroup.close()
+	}
 
 	job.outputMu.Lock()
 	defer job.outputMu.Unlock()
@@ -319,7 +337,7 @@ func (h *shellHandler) ViewBackgroundJob(_ context.Context, params ViewBackgroun
 		result.WriteString("<no output>\n")
 	} else {
 		result.WriteString(output)
-		if len(output) >= 10*1024*1024 {
+		if len(output) >= maxOutputBytes {
 			result.WriteString("\n\n[Output truncated at 10MB limit]")
 		}
 	}
@@ -478,6 +496,9 @@ func (t *ShellTool) Stop(context.Context) error {
 		}
 		return true
 	})
+
+	// Wait for all monitor goroutines to finish
+	t.handler.wg.Wait()
 
 	return nil
 }

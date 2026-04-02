@@ -55,16 +55,23 @@ func createProcessGroup(proc *os.Process) (*processGroup, error) {
 	}, nil
 }
 
+func (pg *processGroup) close() {
+	if pg == nil {
+		return
+	}
+	if pg.processHandle != 0 {
+		_ = windows.CloseHandle(pg.processHandle)
+		pg.processHandle = 0
+	}
+	if pg.jobHandle != 0 {
+		_ = windows.CloseHandle(pg.jobHandle)
+		pg.jobHandle = 0
+	}
+}
+
 func kill(proc *os.Process, pg *processGroup) error {
 	if pg != nil {
-		// Close handles to trigger JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-		// which will terminate all processes in the job
-		if pg.processHandle != 0 {
-			_ = windows.CloseHandle(pg.processHandle)
-		}
-		if pg.jobHandle != 0 {
-			_ = windows.CloseHandle(pg.jobHandle)
-		}
+		pg.close()
 	}
 
 	// Also call Kill on the process as a fallback

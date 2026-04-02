@@ -145,7 +145,8 @@ type Session struct {
 	// ParentID indicates this is a sub-session created by task transfer.
 	// Sub-sessions are not persisted as standalone entries; they are embedded
 	// within the parent session's Messages array.
-	ParentID string `json:"-"`
+	ParentID string   `json:"-"`
+	parent   *Session `json:"-"`
 
 	// MessageUsageHistory stores per-message usage data for remote mode.
 	// In remote mode, messages are managed server-side, so we track usage separately.
@@ -361,9 +362,17 @@ func (s *Session) AddMessage(msg *Message) {
 
 // AddSubSession adds a sub-session to the session
 func (s *Session) AddSubSession(subSession *Session) {
+	subSession.ParentID = s.ID
+	subSession.parent = s
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.Messages {
+		if s.Messages[i].SubSession != nil && s.Messages[i].SubSession.ID == subSession.ID {
+			s.Messages[i].SubSession = subSession
+			return
+		}
+	}
 	s.Messages = append(s.Messages, NewSubSessionItem(subSession))
-	s.mu.Unlock()
 }
 
 // Duration calculates the duration of the session from message timestamps.
@@ -591,6 +600,11 @@ func WithExcludedTools(names []string) Opt {
 // IsSubSession returns true if this session is a sub-session (has a parent).
 func (s *Session) IsSubSession() bool {
 	return s.ParentID != ""
+}
+
+// ParentSession returns the in-memory parent session when available.
+func (s *Session) ParentSession() *Session {
+	return s.parent
 }
 
 // MessageCount returns the number of items that contain a message.

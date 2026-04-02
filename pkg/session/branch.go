@@ -198,17 +198,28 @@ func cloneChatMessage(src chat.Message) chat.Message {
 	return dst
 }
 
-func setParentIDs(sess *Session) {
+func PopulateParentLinks(sess *Session) {
+	populateParentLinks(nil, sess)
+}
+
+func populateParentLinks(parent, sess *Session) {
 	if sess == nil {
 		return
 	}
+	if parent != nil {
+		sess.ParentID = parent.ID
+	}
+	sess.parent = parent
 	for _, item := range sess.Messages {
 		if item.SubSession == nil {
 			continue
 		}
-		item.SubSession.ParentID = sess.ID
-		setParentIDs(item.SubSession)
+		populateParentLinks(sess, item.SubSession)
 	}
+}
+
+func setParentIDs(sess *Session) {
+	PopulateParentLinks(sess)
 }
 
 func recalculateSessionTotals(sess *Session) {

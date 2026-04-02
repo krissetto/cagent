@@ -222,6 +222,7 @@ func (s *InMemorySessionStore) UpdateSession(_ context.Context, session *Session
 		existing.mu.RLock()
 		newSession.Messages = make([]Item, len(existing.Messages))
 		copy(newSession.Messages, existing.Messages)
+		newSession.parent = existing.parent
 		existing.mu.RUnlock()
 	}
 
@@ -653,6 +654,7 @@ func (s *SQLiteSessionStore) GetSession(ctx context.Context, id string) (*Sessio
 		return nil, fmt.Errorf("loading session items: %w", err)
 	}
 	sess.Messages = items
+	PopulateParentLinks(sess)
 
 	return sess, nil
 }
@@ -765,6 +767,7 @@ func (s *SQLiteSessionStore) loadSessionWith(ctx context.Context, q querier, id 
 		return nil, fmt.Errorf("loading session items: %w", err)
 	}
 	sess.Messages = items
+	PopulateParentLinks(sess)
 
 	return sess, nil
 }
@@ -1058,32 +1061,62 @@ func (s *SQLiteSessionStore) AddSubSession(ctx context.Context, parentSessionID 
 	// 1. Set parent_id on sub-session
 	subSession.ParentID = parentSessionID
 
-	// 2. Insert sub-session as a new session row
-	if err := s.addSessionTx(ctx, tx, subSession); err != nil {
-		return fmt.Errorf("inserting sub-session: %w", err)
-	}
-
-	// 3. Recursively add all items from the sub-session
-	for i, item := range subSession.Messages {
-		if err := s.addItemTx(ctx, tx, subSession.ID, i, item); err != nil {
-			return fmt.Errorf("inserting sub-session item %d: %w", i, err)
-		}
-	}
-
-	// 4. Add reference in parent's items
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO session_items (session_id, position, item_type, subsession_id)
-		 VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_items WHERE session_id = ?), 'subsession', ?)`,
-		parentSessionID, parentSessionID, subSession.ID)
+	// 2. Insert or update sub-session as a session row
+	alreadyLinked, err := s.hasSubSessionLinkTx(ctx, tx, parentSessionID, subSession.ID)
 	if err != nil {
-		return fmt.Errorf("inserting subsession reference: %w", err)
+		return fmt.Errorf("checking subsession link: %w", err)
+	}
+	if err := s.upsertSessionTx(ctx, tx, subSession); err != nil {
+		return fmt.Errorf("upserting sub-session: %w", err)
+	}
+
+	// 3. Recursively upsert all items from the sub-session
+	if err := s.replaceSessionItemsTx(ctx, tx, subSession.ID, subSession.Messages); err != nil {
+		return fmt.Errorf("replacing sub-session items: %w", err)
+	}
+
+	// 4. Add reference in parent's items exactly once
+	if !alreadyLinked {
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO session_items (session_id, position, item_type, subsession_id)
+			 VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_items WHERE session_id = ?), 'subsession', ?)`,
+			parentSessionID, parentSessionID, subSession.ID)
+		if err != nil {
+			return fmt.Errorf("inserting subsession reference: %w", err)
+		}
 	}
 
 	return tx.Commit()
 }
 
-// addSessionTx inserts a session within a transaction.
-func (s *SQLiteSessionStore) addSessionTx(ctx context.Context, tx *sql.Tx, session *Session) error {
+func (s *SQLiteSessionStore) hasSubSessionLinkTx(ctx context.Context, tx *sql.Tx, parentSessionID, subSessionID string) (bool, error) {
+	var exists int
+	err := tx.QueryRowContext(ctx,
+		`SELECT 1 FROM session_items WHERE session_id = ? AND item_type = 'subsession' AND subsession_id = ? LIMIT 1`,
+		parentSessionID, subSessionID,
+	).Scan(&exists)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (s *SQLiteSessionStore) replaceSessionItemsTx(ctx context.Context, tx *sql.Tx, sessionID string, items []Item) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_items WHERE session_id = ?`, sessionID); err != nil {
+		return err
+	}
+	for i, item := range items {
+		if err := s.addItemTx(ctx, tx, sessionID, i, item); err != nil {
+			return fmt.Errorf("inserting session item %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteSessionStore) upsertSessionTx(ctx context.Context, tx *sql.Tx, session *Session) error {
 	permissionsJSON := ""
 	if session.Permissions != nil {
 		permBytes, err := json.Marshal(session.Permissions)
@@ -1111,18 +1144,33 @@ func (s *SQLiteSessionStore) addSessionTx(ctx context.Context, tx *sql.Tx, sessi
 		customModelsUsedJSON = string(customBytes)
 	}
 
-	// Use NULL for empty parent_id to avoid foreign key constraint issues
 	var parentID any
 	if session.ParentID != "" {
 		parentID = session.ParentID
 	}
+
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO sessions (
 			id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message,
 			max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides,
 			custom_models_used, thinking, parent_id
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   tools_approved = excluded.tools_approved,
+		   input_tokens = excluded.input_tokens,
+		   output_tokens = excluded.output_tokens,
+		   title = excluded.title,
+		   cost = excluded.cost,
+		   send_user_message = excluded.send_user_message,
+		   max_iterations = excluded.max_iterations,
+		   working_dir = excluded.working_dir,
+		   starred = excluded.starred,
+		   permissions = excluded.permissions,
+		   agent_model_overrides = excluded.agent_model_overrides,
+		   custom_models_used = excluded.custom_models_used,
+		   thinking = excluded.thinking,
+		   parent_id = excluded.parent_id`,
 		session.ID, session.ToolsApproved, session.InputTokens, session.OutputTokens,
 		session.Title, session.Cost, session.SendUserMessage, session.MaxIterations,
 		session.WorkingDir, session.CreatedAt.Format(time.RFC3339), session.Starred,
@@ -1146,18 +1194,15 @@ func (s *SQLiteSessionStore) addItemTx(ctx context.Context, tx *sql.Tx, sessionI
 		return err
 
 	case item.SubSession != nil:
-		// Recursively add the sub-session
+		// Recursively add or refresh the sub-session
 		subSession := item.SubSession
 		subSession.ParentID = sessionID
 
-		if err := s.addSessionTx(ctx, tx, subSession); err != nil {
+		if err := s.upsertSessionTx(ctx, tx, subSession); err != nil {
 			return fmt.Errorf("inserting nested sub-session: %w", err)
 		}
-
-		for i, subItem := range subSession.Messages {
-			if err := s.addItemTx(ctx, tx, subSession.ID, i, subItem); err != nil {
-				return fmt.Errorf("inserting nested sub-session item %d: %w", i, err)
-			}
+		if err := s.replaceSessionItemsTx(ctx, tx, subSession.ID, subSession.Messages); err != nil {
+			return fmt.Errorf("inserting nested sub-session items: %w", err)
 		}
 
 		_, err := tx.ExecContext(ctx,

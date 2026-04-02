@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -18,6 +19,8 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin"
 	agenttool "github.com/docker/docker-agent/pkg/tools/builtin/agent"
 )
+
+var errSubSessionCanceled = errors.New("sub-session canceled")
 
 // agentNames returns the names of the given agents.
 func agentNames(agents []*agent.Agent) []string {
@@ -174,13 +177,60 @@ func (r *LocalRuntime) runSubSessionForwarding(ctx context.Context, parent, chil
 		}
 	}
 
+	if ctx.Err() != nil {
+		span.RecordError(errSubSessionCanceled)
+		span.SetStatus(codes.Error, "sub-session canceled")
+		return tools.ResultError("Task transfer was canceled."), errSubSessionCanceled
+	}
+
 	parent.ToolsApproved = child.ToolsApproved
 
+	if err := r.ensureSubSessionParentMaterialized(context.WithoutCancel(ctx), parent); err != nil {
+		slog.Warn("Failed to materialize parent sub-session before forwarding child persistence", "parent_id", parent.ID, "ancestor_id", parent.ParentID, "error", err)
+		return tools.ResultError("Task transfer completed but could not be recorded."), err
+	}
 	parent.AddSubSession(child)
 	evts <- SubSessionCompleted(parent.ID, child, callerAgent)
 
 	span.SetStatus(codes.Ok, "sub-session completed")
 	return tools.ResultSuccess(child.GetLastAssistantMessageContent()), nil
+}
+
+// ensureSubSessionParentMaterialized persists an in-memory parent sub-session row
+// before a nested child is linked beneath it. It recursively materializes any
+// active in-memory parent chain first so deeper descendants can be persisted.
+func (r *LocalRuntime) ensureSubSessionParentMaterialized(ctx context.Context, parent *session.Session) error {
+	if r.sessionStore == nil || parent == nil || parent.ID == "" || parent.ParentID == "" {
+		return nil
+	}
+
+	_, err := r.sessionStore.GetSession(ctx, parent.ID)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, session.ErrNotFound) {
+		return err
+	}
+
+	ancestor := parent.ParentSession()
+	if ancestor == nil {
+		ancestor, err = r.sessionStore.GetSession(ctx, parent.ParentID)
+		if err != nil {
+			return err
+		}
+	} else if err := r.ensureSubSessionParentMaterialized(ctx, ancestor); err != nil && !errors.Is(err, session.ErrNotFound) {
+		return err
+	}
+
+	for i := range ancestor.Messages {
+		sub := ancestor.Messages[i].SubSession
+		if sub == nil || sub.ID != parent.ID {
+			continue
+		}
+		return r.sessionStore.AddSubSession(ctx, ancestor.ID, sub)
+	}
+
+	return session.ErrNotFound
 }
 
 // runSubSessionCollecting runs a child session, collecting output via an
@@ -193,9 +243,6 @@ func (r *LocalRuntime) runSubSessionCollecting(ctx context.Context, parent, chil
 	var errMsg string
 	events := r.RunStream(ctx, child)
 	for event := range events {
-		if ctx.Err() != nil {
-			break
-		}
 		if choice, ok := event.(*AgentChoiceEvent); ok && choice.Content != "" {
 			if onContent != nil {
 				onContent(choice.Content)
@@ -211,12 +258,29 @@ func (r *LocalRuntime) runSubSessionCollecting(ctx context.Context, parent, chil
 	for range events {
 	}
 
+	if ctx.Err() != nil {
+		return &agenttool.RunResult{Stopped: true}
+	}
 	if errMsg != "" {
 		return &agenttool.RunResult{ErrMsg: errMsg}
 	}
 
 	result := child.GetLastAssistantMessageContent()
+	if err := r.ensureSubSessionParentMaterialized(context.WithoutCancel(ctx), parent); err != nil {
+		slog.Warn("Failed to materialize parent sub-session before background child persistence", "parent_id", parent.ID, "ancestor_id", parent.ParentID, "error", err)
+		return &agenttool.RunResult{ErrMsg: fmt.Sprintf("failed to record background task: %v", err)}
+	}
 	parent.AddSubSession(child)
+	if r.sessionStore != nil && parent.ID != "" {
+		if err := r.sessionStore.AddSubSession(context.WithoutCancel(ctx), parent.ID, child); err != nil {
+			if errors.Is(err, session.ErrNotFound) {
+				slog.Debug("Skipping persistence for background sub-session because parent session is not yet materialized in store", "parent_id", parent.ID, "sub_session_id", child.ID)
+			} else {
+				slog.Warn("Failed to persist background sub-session", "parent_id", parent.ID, "sub_session_id", child.ID, "error", err)
+				return &agenttool.RunResult{ErrMsg: fmt.Sprintf("failed to persist background task: %v", err)}
+			}
+		}
+	}
 	return &agenttool.RunResult{Result: result}
 }
 
