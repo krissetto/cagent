@@ -712,9 +712,16 @@ func buildInvariantSystemMessages(a *agent.Agent) []chat.Message {
 			validAgentIDs = append(validAgentIDs, subAgent.Name())
 		}
 
+		delegatePrompt := "You are part of a multi-agent team. You have access to these sub-agents:\n" + text.String() +
+			"\nThe valid agent names are: " + strings.Join(validAgentIDs, ", ") + ".\n\n" +
+			"Use the `delegate` tool to start a conversation with a sub-agent by providing their name and your message. \n" +
+			"The sub-agent may respond with a question or a final result. \n" +
+			"You can continue the conversation using the same tool with the returned `delegation_id`.\n\n" +
+			"If you are the best to answer the question according to your description, you can answer it directly.\n\n" +
+			"Only delegate to the agents listed above."
 		messages = append(messages, chat.Message{
 			Role:    chat.MessageRoleSystem,
-			Content: "You are a multi-agent system, make sure to answer the user query in the most helpful way possible. You have access to these sub-agents:\n" + text.String() + "\nIMPORTANT: You can ONLY transfer tasks to the agents listed above using their ID. The valid agent names are: " + strings.Join(validAgentIDs, ", ") + ". You MUST NOT attempt to transfer to any other agent IDs - doing so will cause system errors.\n\nIf you are the best to answer the question according to your description, you can answer it.\n\nIf another agent is better for answering the question according to its description, call `transfer_task` function to transfer the question to that agent using the agent's ID. When transferring, do not generate any text other than the function call.\n\n",
+			Content: delegatePrompt,
 		})
 	}
 

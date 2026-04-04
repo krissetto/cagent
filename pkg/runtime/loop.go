@@ -25,22 +25,12 @@ import (
 	bgagent "github.com/docker/docker-agent/pkg/tools/builtin/agent"
 )
 
-// registerDefaultTools wires up the built-in tool handlers (delegation,
-// background agents, model switching) into the runtime's tool dispatch map.
+// registerDefaultTools wires up the built-in tool handlers into the runtime's tool dispatch map.
 func (r *LocalRuntime) registerDefaultTools() {
-	// Unified delegation tool and its backward-compatible aliases
+	// Delegation and handoff handlers
 	r.toolMap[builtin.ToolNameDelegate] = r.handleDelegate
-	r.toolMap[builtin.ToolNameListDelegations] = r.handleListDelegations
-	r.toolMap[builtin.ToolNameViewDelegation] = r.handleViewDelegation
 	r.toolMap[builtin.ToolNameStopDelegation] = r.handleStopDelegation
-
-	// Backward-compatible aliases for old tool names
-	r.toolMap[builtin.ToolNameTransferTask] = r.handleTaskTransfer
 	r.toolMap[builtin.ToolNameHandoff] = r.handleHandoff
-	r.toolMap["run_background_agent"] = r.handleRunBackgroundAgent
-	r.toolMap["list_background_agents"] = r.handleListBackgroundAgents
-	r.toolMap["view_background_agent"] = r.handleViewBackgroundAgent
-	r.toolMap["stop_background_agent"] = r.handleStopBackgroundAgent
 
 	// Other built-in handlers
 	r.toolMap[builtin.ToolNameChangeModel] = r.handleChangeModel

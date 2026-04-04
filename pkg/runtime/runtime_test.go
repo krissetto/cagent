@@ -1469,9 +1469,8 @@ func TestToolRejectionWithoutReason(t *testing.T) {
 	require.NotContains(t, toolResponse.Response, "Reason:")
 }
 
-func TestTransferTaskRejectsNonSubAgent(t *testing.T) {
+func TestDelegateRejectsNonSubAgent(t *testing.T) {
 	// root has librarian as sub-agent but NOT planner.
-	// planner exists in the team. transfer_task to planner should be rejected.
 	prov := &mockProvider{id: "test/mock-model", stream: &mockStream{}}
 
 	librarian := agent.New("librarian", "Library agent", agent.WithModel(prov))
@@ -1492,25 +1491,20 @@ func TestTransferTaskRejectsNonSubAgent(t *testing.T) {
 		ID:   "call_1",
 		Type: "function",
 		Function: tools.FunctionCall{
-			Name:      "transfer_task",
-			Arguments: `{"agent":"planner","task":"do something","expected_output":""}`,
+			Name:      "delegate",
+			Arguments: `{"agent":"planner","message":"do something"}`,
 		},
 	}
 
-	result, err := rt.handleTaskTransfer(t.Context(), sess, toolCall, evts)
+	result, err := rt.handleDelegate(t.Context(), sess, toolCall, evts)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.True(t, result.IsError, "transfer to non-sub-agent should return an error result")
-	assert.Contains(t, result.Output, "cannot transfer task to planner")
+	assert.True(t, result.IsError, "delegate to non-sub-agent should return an error result")
+	assert.Contains(t, result.Output, "not in sub-agents list")
 	assert.Contains(t, result.Output, "librarian")
-	assert.Equal(t, "root", rt.currentAgent, "current agent should remain root")
 }
 
-func TestTransferTaskAllowsSubAgent(t *testing.T) {
-	// Verify that transfer_task to a valid sub-agent is NOT rejected by the validation.
-	// We can't fully run the child session without a real model, so we just confirm
-	// it gets past validation (it will fail later due to mock stream being empty,
-	// which is fine — we only care that it's not blocked by the sub-agent check).
+func TestDelegateAllowsSubAgent(t *testing.T) {
 	prov := &mockProvider{id: "test/mock-model", stream: newStreamBuilder().AddContent("done").AddStopWithUsage(10, 5).Build()}
 
 	librarian := agent.New("librarian", "Library agent", agent.WithModel(prov))
@@ -1530,15 +1524,15 @@ func TestTransferTaskAllowsSubAgent(t *testing.T) {
 		ID:   "call_1",
 		Type: "function",
 		Function: tools.FunctionCall{
-			Name:      "transfer_task",
-			Arguments: `{"agent":"librarian","task":"find a book","expected_output":"book title"}`,
+			Name:      "delegate",
+			Arguments: `{"agent":"librarian","message":"find a book"}`,
 		},
 	}
 
-	result, err := rt.handleTaskTransfer(t.Context(), sess, toolCall, evts)
+	result, err := rt.handleDelegate(t.Context(), sess, toolCall, evts)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.False(t, result.IsError, "transfer to valid sub-agent should succeed")
+	assert.False(t, result.IsError, "delegate to valid sub-agent should succeed")
 }
 
 func TestYoloMode_OverridesPermissionsDeny(t *testing.T) {

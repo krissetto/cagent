@@ -99,6 +99,9 @@ type Store interface {
 	// The sub-session is stored as a separate session row with parent_id set.
 	AddSubSession(ctx context.Context, parentSessionID string, subSession *Session) error
 
+	// GetSubsessions returns all direct child sessions of the given parent session.
+	GetSubsessions(ctx context.Context, parentID string) ([]Summary, error)
+
 	// AddSummary adds a summary item to a session at the next position.
 	// firstKeptEntry is the index of the first message kept verbatim during compaction.
 	AddSummary(ctx context.Context, sessionID, summary string, firstKeptEntry int) error
@@ -190,13 +193,20 @@ func (s *InMemorySessionStore) DeleteSession(_ context.Context, id string) error
 // UpdateSession updates an existing session, or creates it if it doesn't exist (upsert).
 // This enables lazy session persistence - sessions are only stored when they have content.
 // Note: Like SQLite, this only stores metadata. Messages are stored separately via AddMessage.
+// Exception: when a new delegation child session is first persisted after RunDelegation,
+// its in-memory Messages are preserved (delegation bypass for in-memory store).
 func (s *InMemorySessionStore) UpdateSession(_ context.Context, session *Session) error {
 	if session.ID == "" {
 		return ErrEmptyID
 	}
 
+	// Capture messages from the input session before acquiring locks on any store session.
+	session.mu.RLock()
+	inputMessages := make([]Item, len(session.Messages))
+	copy(inputMessages, session.Messages)
+	session.mu.RUnlock()
+
 	// Build a new session with the same metadata but a fresh mutex.
-	// Messages are stored separately via AddMessage.
 	// MAINTENANCE: when adding new persisted fields to Session, add them here too.
 	newSession := &Session{
 		ID:                  session.ID,
@@ -218,12 +228,29 @@ func (s *InMemorySessionStore) UpdateSession(_ context.Context, session *Session
 		ParentID:            session.ParentID,
 	}
 
-	// Preserve existing messages if session already exists
+	// For message preservation: use whichever source has more messages.
+	// This handles two cases correctly:
+	// 1. Event-based persistence (AddMessage adds messages incrementally to the store;
+	//    UpdateSession is called with the original session which may have fewer).
+	// 2. Whole-session persistence (delegation RunDelegation persists the complete
+	//    session object after a run; the input has more messages than the store).
 	if existing, exists := s.sessions.Load(session.ID); exists {
 		existing.mu.RLock()
-		newSession.Messages = make([]Item, len(existing.Messages))
-		copy(newSession.Messages, existing.Messages)
+		existingMessages := make([]Item, len(existing.Messages))
+		copy(existingMessages, existing.Messages)
 		existing.mu.RUnlock()
+
+		if len(inputMessages) > len(existingMessages) {
+			// Input session has more messages (e.g., full session after delegation run)
+			newSession.Messages = inputMessages
+		} else {
+			// Store already has more messages (e.g., event-based AddMessage calls)
+			newSession.Messages = existingMessages
+		}
+	} else {
+		// New session - preserve messages from the input session object.
+		// This is needed for delegation child sessions that are persisted after RunDelegation.
+		newSession.Messages = inputMessages
 	}
 
 	s.sessions.Store(session.ID, newSession)
@@ -357,6 +384,30 @@ func (s *InMemorySessionStore) UpdateSessionTitle(_ context.Context, sessionID, 
 	}
 	session.Title = title
 	return nil
+}
+
+// GetSubsessions returns all child sessions of the given parent.
+func (s *InMemorySessionStore) GetSubsessions(_ context.Context, parentID string) ([]Summary, error) {
+	if parentID == "" {
+		return nil, ErrEmptyID
+	}
+	var result []Summary
+	s.sessions.Range(func(_ string, value *Session) bool {
+		if value.ParentID == parentID {
+			result = append(result, Summary{
+				ID:          value.ID,
+				Title:       value.Title,
+				CreatedAt:   value.CreatedAt,
+				Starred:     value.Starred,
+				NumMessages: value.MessageCount(),
+			})
+		}
+		return true
+	})
+	slices.SortFunc(result, func(a, b Summary) int {
+		return b.CreatedAt.Compare(a.CreatedAt)
+	})
+	return result, nil
 }
 
 // Close is a no-op for in-memory stores.
@@ -853,6 +904,42 @@ func (s *SQLiteSessionStore) GetSessionSummaries(ctx context.Context) ([]Summary
 	}
 
 	return summaries, nil
+}
+
+// GetSubsessions returns all direct child sessions for a parent ID.
+func (s *SQLiteSessionStore) GetSubsessions(ctx context.Context, parentID string) ([]Summary, error) {
+	if parentID == "" {
+		return nil, ErrEmptyID
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, title, created_at, starred,
+		        (SELECT COUNT(*) FROM session_items si WHERE si.session_id = s.id AND si.item_type = 'message')
+		 FROM sessions s
+		 WHERE s.parent_id = ?
+		 ORDER BY s.created_at DESC`, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []Summary
+	for rows.Next() {
+		var id, title, createdAtStr, starredStr string
+		var numMessages int
+		if err := rows.Scan(&id, &title, &createdAtStr, &starredStr, &numMessages); err != nil {
+			return nil, err
+		}
+		createdAt, err := time.Parse(time.RFC3339, createdAtStr)
+		if err != nil {
+			return nil, err
+		}
+		starred, err := strconv.ParseBool(starredStr)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, Summary{ID: id, Title: title, CreatedAt: createdAt, Starred: starred, NumMessages: numMessages})
+	}
+	return summaries, rows.Err()
 }
 
 // DeleteSession deletes a session by ID

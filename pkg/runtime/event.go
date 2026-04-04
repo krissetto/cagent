@@ -10,6 +10,8 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
+var _ = time.Duration(0) // keep time import for AgentContext.Timestamp
+
 type Event interface {
 	GetAgentName() string
 }
@@ -673,50 +675,45 @@ func SubSessionCompleted(parentSessionID string, subSession any, agentName strin
 type DelegationStartedEvent struct {
 	AgentContext
 
-	Type                 string `json:"type"`
-	DelegationID         string `json:"delegation_id"`
-	ParentDelegationID   string `json:"parent_delegation_id,omitempty"`
-	ParentSessionID      string `json:"parent_session_id"`
-	Task                 string `json:"task"`
-	Mode                 string `json:"mode"`
+	Type            string `json:"type"`
+	SessionID       string `json:"session_id"`
+	ParentSessionID string `json:"parent_session_id"`
+	AgentName       string `json:"agent_name"`
+	Task            string `json:"task"`
 }
 
 func (e *DelegationStartedEvent) GetSessionID() string { return e.ParentSessionID }
 
-func DelegationStarted(delegationID, parentDelegationID, parentSessionID, agentName, task, mode string) Event {
+func DelegationStarted(sessionID, parentSessionID, agentName, task string) Event {
 	return &DelegationStartedEvent{
-		Type:               "delegation_started",
-		DelegationID:       delegationID,
-		ParentDelegationID: parentDelegationID,
-		ParentSessionID:    parentSessionID,
-		Task:               task,
-		Mode:               mode,
-		AgentContext:       newAgentContext(agentName),
+		Type:            "delegation_started",
+		SessionID:       sessionID,
+		ParentSessionID: parentSessionID,
+		AgentName:       agentName,
+		Task:            task,
+		AgentContext:    newAgentContext(agentName),
 	}
 }
 
 // DelegationCompletedEvent is emitted when a delegation finishes successfully.
-// The runtime uses this to resume the parent agent without polling.
 type DelegationCompletedEvent struct {
 	AgentContext
 
-	Type             string        `json:"type"`
-	DelegationID     string        `json:"delegation_id"`
-	ParentSessionID  string        `json:"parent_session_id"`
-	Result           string        `json:"result"`
-	Duration         time.Duration `json:"duration"`
+	Type            string `json:"type"`
+	SessionID       string `json:"session_id"`
+	ParentSessionID string `json:"parent_session_id"`
+	Reply           string `json:"reply"`
 }
 
 func (e *DelegationCompletedEvent) GetSessionID() string { return e.ParentSessionID }
 
-func DelegationCompleted(delegationID, parentSessionID, agentName, result string, duration time.Duration) Event {
+func DelegationCompleted(sessionID, parentSessionID, reply string) Event {
 	return &DelegationCompletedEvent{
 		Type:            "delegation_completed",
-		DelegationID:    delegationID,
+		SessionID:       sessionID,
 		ParentSessionID: parentSessionID,
-		Result:          result,
-		Duration:        duration,
-		AgentContext:    newAgentContext(agentName),
+		Reply:           reply,
+		AgentContext:    newAgentContext(""),
 	}
 }
 
@@ -724,19 +721,15 @@ func DelegationCompleted(delegationID, parentSessionID, agentName, result string
 type DelegationStoppedEvent struct {
 	AgentContext
 
-	Type             string `json:"type"`
-	DelegationID     string `json:"delegation_id"`
-	ParentSessionID  string `json:"parent_session_id"`
+	Type      string `json:"type"`
+	SessionID string `json:"session_id"`
 }
 
-func (e *DelegationStoppedEvent) GetSessionID() string { return e.ParentSessionID }
-
-func DelegationStopped(delegationID, parentSessionID, agentName string) Event {
+func DelegationStopped(sessionID string) Event {
 	return &DelegationStoppedEvent{
-		Type:            "delegation_stopped",
-		DelegationID:    delegationID,
-		ParentSessionID: parentSessionID,
-		AgentContext:    newAgentContext(agentName),
+		Type:         "delegation_stopped",
+		SessionID:    sessionID,
+		AgentContext: newAgentContext(""),
 	}
 }
 
@@ -744,58 +737,20 @@ func DelegationStopped(delegationID, parentSessionID, agentName string) Event {
 type DelegationFailedEvent struct {
 	AgentContext
 
-	Type             string `json:"type"`
-	DelegationID     string `json:"delegation_id"`
-	ParentSessionID  string `json:"parent_session_id"`
-	Error            string `json:"error"`
+	Type            string `json:"type"`
+	SessionID       string `json:"session_id"`
+	ParentSessionID string `json:"parent_session_id"`
+	Error           string `json:"error"`
 }
 
 func (e *DelegationFailedEvent) GetSessionID() string { return e.ParentSessionID }
 
-func DelegationFailed(delegationID, parentSessionID, agentName, errMsg string) Event {
+func DelegationFailed(sessionID, parentSessionID, errMsg string) Event {
 	return &DelegationFailedEvent{
 		Type:            "delegation_failed",
-		DelegationID:    delegationID,
+		SessionID:       sessionID,
 		ParentSessionID: parentSessionID,
 		Error:           errMsg,
-		AgentContext:    newAgentContext(agentName),
-	}
-}
-
-// DelegationProgressEvent is emitted periodically with output from a running delegation.
-type DelegationProgressEvent struct {
-	AgentContext
-
-	Type             string `json:"type"`
-	DelegationID     string `json:"delegation_id"`
-	ParentSessionID  string `json:"parent_session_id"`
-	Output           string `json:"output"`
-}
-
-func (e *DelegationProgressEvent) GetSessionID() string { return e.ParentSessionID }
-
-func DelegationProgress(delegationID, parentSessionID, agentName, output string) Event {
-	return &DelegationProgressEvent{
-		Type:            "delegation_progress",
-		DelegationID:    delegationID,
-		ParentSessionID: parentSessionID,
-		Output:          output,
-		AgentContext:    newAgentContext(agentName),
-	}
-}
-
-// DelegationTreeEvent provides a full snapshot of the delegation tree for TUI display.
-type DelegationTreeEvent struct {
-	AgentContext
-
-	Type string `json:"type"`
-	Tree any    `json:"tree"` // []*delegation.DelegationNode
-}
-
-func DelegationTree(tree any, agentName string) Event {
-	return &DelegationTreeEvent{
-		Type:         "delegation_tree",
-		Tree:         tree,
-		AgentContext: newAgentContext(agentName),
+		AgentContext:    newAgentContext(""),
 	}
 }

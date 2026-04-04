@@ -2,7 +2,7 @@ package delegation
 
 import (
 	"context"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,232 +14,293 @@ import (
 
 // MockRunner implements DelegationRunner for testing
 type MockRunner struct {
-	CallCount int
-	Results   map[string]*RunResult
+	mu        sync.Mutex
+	callCount int
+	delay     time.Duration
+	result    string
+	err       error
+	// sessionReceived stores the last session passed to RunDelegation
+	sessionReceived *session.Session
 }
 
-func (m *MockRunner) RunDelegation(ctx context.Context, params RunParams) *RunResult {
-	m.CallCount++
-	if result, ok := m.Results[params.AgentName]; ok {
-		return result
+func (m *MockRunner) RunDelegation(ctx context.Context, d *Delegation, sess *session.Session) (string, error) {
+	m.mu.Lock()
+	m.callCount++
+	m.sessionReceived = sess
+	m.mu.Unlock()
+
+	if m.delay > 0 {
+		select {
+		case <-time.After(m.delay):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 	}
-	return &RunResult{Result: "default result"}
-}
 
-type blockingMockRunner struct {
-	block   chan struct{}
-	running *atomic.Int32
-	result  *RunResult
-}
-
-func (m *blockingMockRunner) RunDelegation(ctx context.Context, params RunParams) *RunResult {
-	m.running.Add(1)
-	defer m.running.Add(-1)
-	select {
-	case <-m.block:
-		return m.result
-	case <-ctx.Done():
-		return &RunResult{Stopped: true}
-	}
+	return m.result, m.err
 }
 
 func TestDelegationLifecycle(t *testing.T) {
-	runner := &MockRunner{
-		Results: map[string]*RunResult{
-			"agent1": {Result: "success"},
-		},
-	}
+	runner := &MockRunner{result: "success"}
 
 	manager := NewManager(runner)
 	parentSession := session.New()
 
 	// Test delegation creation
-	d, err := manager.Start(context.Background(), parentSession, "", "agent1", "test task", "expected output", ModeSyncDelegate)
+	delegationID, reply, err := manager.Start(context.Background(), StartParams{
+		AgentName:       "agent1",
+		Task:            "test task",
+		ParentSessionID: parentSession.ID,
+		ParentSession:   parentSession,
+	})
+
 	require.NoError(t, err)
-	require.NotNil(t, d)
-	assert.NotEmpty(t, d.ID)
-	assert.Equal(t, "agent1", d.AgentName)
-	assert.Equal(t, "test task", d.Task)
+	require.NotEmpty(t, delegationID)
+	assert.Equal(t, "success", reply)
 
 	// Test delegation was stored
-	found, ok := manager.Get(d.ID)
+	found, ok := manager.Get(delegationID)
 	require.True(t, ok)
-	assert.Equal(t, d.ID, found.ID)
+	assert.Equal(t, delegationID, found.SessionID)
+	assert.Equal(t, "agent1", found.AgentName)
+	assert.Equal(t, StatusCompleted, found.LoadStatus())
+}
 
-	// Test delegation result
-	assert.Equal(t, "success", d.Result)
+func TestDelegationContinue(t *testing.T) {
+	runner := &MockRunner{result: "success"}
+
+	manager := NewManager(runner)
+	parentSession := session.New()
+
+	// Start a delegation
+	delegationID, reply, err := manager.Start(context.Background(), StartParams{
+		AgentName:       "agent1",
+		Task:            "first task",
+		ParentSessionID: parentSession.ID,
+		ParentSession:   parentSession,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "success", reply)
+
+	// Continue the delegation with a new runner result
+	runner.result = "second response"
+	reply, err = manager.Continue(context.Background(), delegationID, "follow-up message")
+	require.NoError(t, err)
+	assert.Equal(t, "second response", reply)
+}
+
+func TestDelegationStop(t *testing.T) {
+	runner := &MockRunner{result: "result"}
+
+	manager := NewManager(runner)
+	parentSession := session.New()
+
+	delegationID, _, err := manager.Start(context.Background(), StartParams{
+		AgentName:       "agent1",
+		Task:            "task",
+		ParentSessionID: parentSession.ID,
+		ParentSession:   parentSession,
+	})
+	require.NoError(t, err)
+
+	// Try to stop a completed delegation
+	err = manager.Stop(context.Background(), delegationID)
+	assert.Error(t, err) // should be not running anymore
+}
+
+func TestDelegationEmptyAgentName(t *testing.T) {
+	runner := &MockRunner{result: "result"}
+
+	manager := NewManager(runner)
+	parentSession := session.New()
+
+	_, _, err := manager.Start(context.Background(), StartParams{
+		AgentName:       "",
+		Task:            "task",
+		ParentSessionID: parentSession.ID,
+		ParentSession:   parentSession,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent name is required")
+}
+
+func TestDelegationEmptyTask(t *testing.T) {
+	runner := &MockRunner{result: "result"}
+
+	manager := NewManager(runner)
+	parentSession := session.New()
+
+	_, _, err := manager.Start(context.Background(), StartParams{
+		AgentName:       "agent1",
+		Task:            "",
+		ParentSessionID: parentSession.ID,
+		ParentSession:   parentSession,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "message is required")
+}
+
+func TestDelegationContinueNotFound(t *testing.T) {
+	runner := &MockRunner{result: "result"}
+
+	manager := NewManager(runner)
+
+	_, err := manager.Continue(context.Background(), "nonexistent-id", "message")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestDelegationContinueEmptyMessage(t *testing.T) {
+	runner := &MockRunner{result: "result"}
+
+	manager := NewManager(runner)
+	parentSession := session.New()
+
+	delegationID, _, err := manager.Start(context.Background(), StartParams{
+		AgentName:       "agent1",
+		Task:            "task",
+		ParentSessionID: parentSession.ID,
+		ParentSession:   parentSession,
+	})
+	require.NoError(t, err)
+
+	_, err = manager.Continue(context.Background(), delegationID, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "message is required")
+}
+
+func TestDelegationStatus(t *testing.T) {
+	d := NewDelegation("session1", "parent-session", "agent1")
+
+	// Initial status should be pending
+	assert.Equal(t, StatusPending, d.LoadStatus())
+
+	// Update to running
+	d.StoreStatus(StatusRunning)
+	assert.Equal(t, StatusRunning, d.LoadStatus())
+
+	// Update to completed
+	d.StoreStatus(StatusCompleted)
 	assert.Equal(t, StatusCompleted, d.LoadStatus())
 }
 
-func TestDelegationAsync(t *testing.T) {
-	runner := &MockRunner{
-		Results: map[string]*RunResult{
-			"agent1": {Result: "async result"},
-		},
+func TestDelegationStatusString(t *testing.T) {
+	tests := []struct {
+		status DelegationStatus
+		want   string
+	}{
+		{StatusPending, "pending"},
+		{StatusRunning, "running"},
+		{StatusCompleted, "completed"},
+		{StatusFailed, "failed"},
+		{StatusCancelled, "cancelled"},
 	}
 
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, tt.status.String())
+	}
+}
+
+func TestDelegationReply(t *testing.T) {
+	d := NewDelegation("session1", "parent", "agent1")
+
+	assert.Empty(t, d.GetLastReply())
+
+	d.SetLastReply("hello world")
+	assert.Equal(t, "hello world", d.GetLastReply())
+}
+
+func TestDelegationError(t *testing.T) {
+	d := NewDelegation("session1", "parent", "agent1")
+
+	assert.Nil(t, d.GetError())
+
+	testErr := assert.AnError
+	d.SetError(testErr)
+	assert.Equal(t, testErr, d.GetError())
+}
+
+// TestManager_Continue_ReloadsExistingSession verifies that Continue loads the
+// persisted child session from the store and appends the new message.
+func TestManager_Continue_ReloadsExistingSession(t *testing.T) {
+	store := session.NewInMemorySessionStore()
+	runner := &MockRunner{result: "first response"}
+
+	manager := NewManager(runner, WithSessionStore(store))
+	parentSession := session.New()
+
+	// Persist parent so it can be found
+	err := store.AddSession(t.Context(), parentSession)
+	require.NoError(t, err)
+
+	// Start first delegation
+	delegationID, _, err := manager.Start(t.Context(), StartParams{
+		AgentName:       "agent1",
+		Task:            "initial task",
+		ParentSessionID: parentSession.ID,
+		ParentSession:   parentSession,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, delegationID)
+
+	// Persist the child session so Continue can reload it
+	// (RunDelegation should have already done this, but for test we check if it works)
+	childSess := runner.sessionReceived
+	require.NotNil(t, childSess)
+
+	// Manually upsert it into the store to simulate successful initial run
+	err = store.UpdateSession(t.Context(), childSess)
+	require.NoError(t, err)
+
+	// Now continue and verify the stored session is loaded (runner gets the stored session)
+	runner.result = "continuation response"
+	reply, err := manager.Continue(t.Context(), delegationID, "follow-up question")
+	require.NoError(t, err)
+	assert.Equal(t, "continuation response", reply)
+
+	// The session passed to the second RunDelegation should be the loaded one (same ID)
+	contSess := runner.sessionReceived
+	require.NotNil(t, contSess)
+	assert.Equal(t, delegationID, contSess.ID)
+}
+
+// TestManager_DoneCh_RecreatedOnContinue verifies that DoneCh is recreated on continuation
+// so callers waiting on it get a fresh signal.
+func TestManager_DoneCh_RecreatedOnContinue(t *testing.T) {
+	runner := &MockRunner{result: "response"}
 	manager := NewManager(runner)
 	parentSession := session.New()
 
-	d, err := manager.Start(context.Background(), parentSession, "", "agent1", "async task", "", ModeAsyncDelegate)
+	delegationID, _, err := manager.Start(t.Context(), StartParams{
+		AgentName:       "agent1",
+		Task:            "task",
+		ParentSessionID: parentSession.ID,
+	})
 	require.NoError(t, err)
-	require.NotNil(t, d)
 
-	// Async should return immediately
-	assert.Equal(t, ModeAsyncDelegate, d.Mode)
+	// At this point DoneCh is closed (Start completed synchronously)
+	d, ok := manager.Get(delegationID)
+	require.True(t, ok)
 
-	// Wait for completion using DoneCh
 	select {
 	case <-d.DoneCh:
-		assert.Equal(t, StatusCompleted, d.LoadStatus())
-	case <-time.After(5 * time.Second):
-		t.Fatal("delegation did not complete in time")
-	}
-}
-
-func TestDelegationMaxConcurrent(t *testing.T) {
-	var running atomic.Int32
-	block := make(chan struct{})
-	runner := &blockingMockRunner{
-		block:   block,
-		running: &running,
-		result:  &RunResult{Result: "result"},
+		// Good, it was closed by Start
+	default:
+		t.Fatal("DoneCh should be closed after Start")
 	}
 
-	manager := NewManager(runner, WithMaxConcurrent(1))
-	parentSession := session.New()
-
-	// First async delegation should succeed and remain running.
-	d1, err := manager.Start(context.Background(), parentSession, "", "agent1", "task1", "", ModeAsyncDelegate)
+	// Continue should recreate DoneCh so it can signal again
+	_, err = manager.Continue(t.Context(), delegationID, "more work")
 	require.NoError(t, err)
-	require.NotNil(t, d1)
 
-	require.Eventually(t, func() bool {
-		return running.Load() == 1
-	}, time.Second, 10*time.Millisecond)
-
-	// Second async delegation should now be rejected while the first is still running.
-	_, err = manager.Start(context.Background(), parentSession, "", "agent1", "task2", "", ModeAsyncDelegate)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "maximum concurrent delegations")
-
-	close(block)
+	// DoneCh should be closed again after Continue completes
 	select {
-	case <-d1.DoneCh:
-	case <-time.After(5 * time.Second):
-		t.Fatal("delegation did not complete in time")
+	case <-d.DoneCh:
+		// Good, it was closed by Continue
+	default:
+		t.Fatal("DoneCh should be closed after Continue")
 	}
-}
-
-
-func TestDelegationStop(t *testing.T) {
-	runner := &MockRunner{
-		Results: map[string]*RunResult{
-			"agent1": {Result: "result"},
-		},
-	}
-
-	manager := NewManager(runner)
-	parentSession := session.New()
-
-	d, err := manager.Start(context.Background(), parentSession, "", "agent1", "task", "", ModeAsyncDelegate)
-	require.NoError(t, err)
-
-	// Wait for it to start
-	<-d.DoneCh
-
-	// Now try to stop (should fail since it's already completed)
-	err = manager.Stop(d.ID)
-	assert.Error(t, err) // should be not running
-}
-
-func TestDelegationOutput(t *testing.T) {
-	d := NewDelegation("parent-session", "", "agent1", "task", "output", ModeSyncDelegate)
-	d.MaxOutput = 100
-
-	// Append output
-	d.AppendOutput("hello ")
-	d.AppendOutput("world")
-
-	output := d.GetOutput()
-	assert.Equal(t, "hello world", output)
-
-	// Test truncation
-	d.AppendOutput(string(make([]byte, 200))) // Try to append 200 bytes
-	output = d.GetOutput()
-	assert.LessOrEqual(t, len(output), 100)
-}
-
-func TestDelegationTree(t *testing.T) {
-	runner := &MockRunner{
-		Results: map[string]*RunResult{
-			"child1": {Result: "result1"},
-			"child2": {Result: "result2"},
-		},
-	}
-
-	manager := NewManager(runner)
-	parentSession := session.New()
-
-	// Create root delegation
-	root, err := manager.Start(context.Background(), parentSession, "", "child1", "root task", "", ModeSyncDelegate)
-	require.NoError(t, err)
-	<-root.DoneCh
-
-	// Create child delegation
-	child, err := manager.Start(context.Background(), parentSession, root.ID, "child2", "child task", "", ModeSyncDelegate)
-	require.NoError(t, err)
-	<-child.DoneCh
-
-	// Build tree
-	tree := manager.Tree()
-	require.Len(t, tree, 1)
-	assert.Equal(t, root.ID, tree[0].ID)
-	assert.Len(t, tree[0].Children, 1)
-	assert.Equal(t, child.ID, tree[0].Children[0].ID)
-}
-
-func TestDelegationView(t *testing.T) {
-	runner := &MockRunner{
-		Results: map[string]*RunResult{
-			"agent1": {Result: "test result"},
-		},
-	}
-
-	manager := NewManager(runner)
-	parentSession := session.New()
-
-	d, err := manager.Start(context.Background(), parentSession, "", "agent1", "task", "", ModeSyncDelegate)
-	require.NoError(t, err)
-	<-d.DoneCh
-
-	// View the delegation
-	output, err := manager.View(d.ID)
-	require.NoError(t, err)
-	assert.Contains(t, output, "completed")
-	assert.Contains(t, output, "test result")
-
-	// View non-existent delegation
-	_, err = manager.View("non-existent")
-	assert.Error(t, err)
-}
-
-func TestDelegationList(t *testing.T) {
-	runner := &MockRunner{
-		Results: map[string]*RunResult{
-			"agent1": {Result: "result"},
-		},
-	}
-
-	manager := NewManager(runner)
-	parentSession := session.New()
-
-	d, err := manager.Start(context.Background(), parentSession, "", "agent1", "task", "", ModeSyncDelegate)
-	require.NoError(t, err)
-	<-d.DoneCh
-
-	output := manager.List()
-	assert.Contains(t, output, "Delegations:")
-	assert.Contains(t, output, d.ID)
-	assert.Contains(t, output, "completed")
 }

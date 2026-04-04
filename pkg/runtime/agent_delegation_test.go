@@ -10,20 +10,6 @@ import (
 	"github.com/docker/docker-agent/pkg/session"
 )
 
-func TestBuildTaskSystemMessage(t *testing.T) {
-	t.Run("with expected output", func(t *testing.T) {
-		msg := buildTaskSystemMessage("do the thing", "a result")
-		assert.Contains(t, msg, "<task>\ndo the thing\n</task>")
-		assert.Contains(t, msg, "<expected_output>\na result\n</expected_output>")
-	})
-
-	t.Run("without expected output", func(t *testing.T) {
-		msg := buildTaskSystemMessage("do the thing", "")
-		assert.Contains(t, msg, "<task>\ndo the thing\n</task>")
-		assert.NotContains(t, msg, "expected_output")
-	})
-}
-
 func TestAgentNames(t *testing.T) {
 	agents := []*agent.Agent{
 		agent.New("alpha", ""),

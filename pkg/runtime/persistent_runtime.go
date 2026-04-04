@@ -42,10 +42,8 @@ func New(agents *team.Team, opts ...Opt) (Runtime, error) {
 // RunStream wraps the inner runtime's RunStream and intercepts events
 // to persist session changes to the store.
 func (r *PersistentRuntime) RunStream(ctx context.Context, sess *session.Session) <-chan Event {
-	if !sess.IsSubSession() {
-		if err := r.sessionStore.UpdateSession(ctx, sess); err != nil {
-			slog.Warn("Failed to persist initial session", "session_id", sess.ID, "error", err)
-		}
+	if err := r.sessionStore.UpdateSession(ctx, sess); err != nil {
+		slog.Warn("Failed to persist initial session", "session_id", sess.ID, "error", err)
 	}
 
 	innerEvents := r.LocalRuntime.RunStream(ctx, sess)
@@ -66,13 +64,8 @@ func (r *PersistentRuntime) RunStream(ctx context.Context, sess *session.Session
 }
 
 func (r *PersistentRuntime) handleEvent(ctx context.Context, sess *session.Session, event Event, streaming *streamingState) {
-	// Skip persistence for sub-sessions (they're persisted when added to parent)
-	if sess.IsSubSession() {
-		return
-	}
-
-	// Skip events that belong to a different session (e.g. sub-agent
-	// streaming events forwarded through the parent's event channel).
+	// Skip events that belong to a different session (e.g. child-session
+	// streaming events that are not for this session).
 	if scoped, ok := event.(SessionScoped); ok && scoped.GetSessionID() != sess.ID {
 		return
 	}
@@ -124,11 +117,8 @@ func (r *PersistentRuntime) handleEvent(ctx context.Context, sess *session.Sessi
 		streaming.messageID = 0
 
 	case *SubSessionCompletedEvent:
-		if subSess, ok := e.SubSession.(*session.Session); ok {
-			if err := r.sessionStore.AddSubSession(ctx, e.ParentSessionID, subSess); err != nil {
-				slog.Warn("Failed to persist sub-session", "parent_id", e.ParentSessionID, "error", err)
-			}
-		}
+		// Delegate child sessions persist themselves; don't add them to parent
+		// Sub-sessions created via task transfer are stored separately with parent_id
 
 	case *SessionSummaryEvent:
 		if err := r.sessionStore.AddSummary(ctx, e.SessionID, e.Summary, e.FirstKeptEntry); err != nil {

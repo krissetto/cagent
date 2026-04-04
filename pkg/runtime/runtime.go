@@ -296,7 +296,7 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 		sessionStore:         session.NewInMemorySessionStore(),
 		fallbackCooldowns:    make(map[string]*fallbackCooldownState),
 	}
-	r.delegations = delegation.NewManager(r, delegation.WithCompletionCallback(r.handleDelegationCompletion))
+	r.delegations = delegation.NewManager(r, delegation.WithSessionStore(r.sessionStore))
 
 	for _, opt := range opts {
 		opt(r)
@@ -1054,7 +1054,16 @@ func (r *LocalRuntime) Summarize(ctx context.Context, sess *session.Session, add
 // swapElicitationEventsChannel atomically replaces the current elicitation
 // events channel and returns the previous one. Each RunStream call swaps in
 // its own channel on entry and swaps the previous one back on exit, so nested
-// streams (sub-sessions, background agents) don't lose the parent's channel.
+// streams (sub-sessions, background agents, delegations) don't lose the
+// parent's channel.
+//
+// Thread safety: the swap is serialized by elicitationEventsChannelMux (write lock).
+// The elicitationHandler reads the channel under a read lock, ensuring it sees
+// a consistent channel reference even when nested RunStream calls are active.
+// For delegation RunDelegation calls (which run synchronously within the
+// parent's tool handler goroutine), the child's swap-restore happens entirely
+// within the parent's RunStream lifetime, so the parent's channel is always
+// restored before the parent needs it again.
 func (r *LocalRuntime) swapElicitationEventsChannel(ch chan Event) chan Event {
 	r.elicitationEventsChannelMux.Lock()
 	defer r.elicitationEventsChannelMux.Unlock()
@@ -1096,44 +1105,6 @@ func (r *LocalRuntime) elicitationHandler(ctx context.Context, req *mcp.ElicitPa
 	case <-ctx.Done():
 		slog.Debug("Context cancelled while waiting for elicitation response")
 		return tools.ElicitationResult{}, ctx.Err()
-	}
-}
-
-// handleDelegationCompletion is the callback fired when an async delegation completes.
-// It emits completion/progress and sub-session events via the delegation's pinned event sender.
-func (r *LocalRuntime) handleDelegationCompletion(d *delegation.Delegation) {
-	send := d.Events
-	if send == nil {
-		slog.Debug("No pinned events sender for delegation completion", "delegation_id", d.ID)
-		return
-	}
-
-	if d.ChildSession != nil {
-		if !send(SubSessionCompleted(d.ParentSessionID, d.ChildSession, d.AgentName)) {
-			slog.Warn("Failed to send sub-session completion event", "delegation_id", d.ID)
-		}
-	}
-
-	if output := d.GetOutput(); output != "" {
-		if !send(DelegationProgress(d.ID, d.ParentSessionID, d.AgentName, output)) {
-			slog.Warn("Failed to send delegation progress event", "delegation_id", d.ID)
-		}
-	}
-
-	status := d.LoadStatus()
-	switch status {
-	case delegation.StatusCompleted:
-		if !send(DelegationCompleted(d.ID, d.ParentSessionID, d.AgentName, d.Result, d.Duration())) {
-			slog.Warn("Failed to send delegation completion event", "delegation_id", d.ID)
-		}
-	case delegation.StatusFailed:
-		if !send(DelegationFailed(d.ID, d.ParentSessionID, d.AgentName, d.ErrMsg)) {
-			slog.Warn("Failed to send delegation failed event", "delegation_id", d.ID)
-		}
-	case delegation.StatusStopped:
-		if !send(DelegationStopped(d.ID, d.ParentSessionID, d.AgentName)) {
-			slog.Warn("Failed to send delegation stopped event", "delegation_id", d.ID)
-		}
 	}
 }
 

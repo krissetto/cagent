@@ -536,7 +536,7 @@ func TestGetMessages_SanitizesOrphanedToolCalls(t *testing.T) {
 	}
 }
 
-func TestTransferTaskPromptExcludesParents(t *testing.T) {
+func TestDelegatePromptExcludesParents(t *testing.T) {
 	t.Parallel()
 
 	// Build hierarchy: planner -> root -> librarian
@@ -561,16 +561,16 @@ func TestTransferTaskPromptExcludesParents(t *testing.T) {
 	s := New()
 	messages := s.GetMessages(root)
 
-	// Find the system message about sub-agents
-	var subAgentMsg string
+	// Find the system message about delegation
+	var delegateMsg string
 	for _, msg := range messages {
-		if msg.Role == chat.MessageRoleSystem && strings.Contains(msg.Content, "transfer_task") {
-			subAgentMsg = msg.Content
+		if msg.Role == chat.MessageRoleSystem && strings.Contains(msg.Content, "delegate") {
+			delegateMsg = msg.Content
 			break
 		}
 	}
 
-	require.NotEmpty(t, subAgentMsg, "should have a sub-agent system message")
-	assert.Contains(t, subAgentMsg, "librarian", "should list librarian as a valid sub-agent")
-	assert.NotContains(t, subAgentMsg, "planner", "should NOT list parent agent planner as a valid transfer target")
+	require.NotEmpty(t, delegateMsg, "should have a delegation system message")
+	assert.Contains(t, delegateMsg, "librarian", "should list librarian as a valid delegation target")
+	assert.NotContains(t, delegateMsg, "planner", "should NOT list parent agent planner as a valid delegation target")
 }

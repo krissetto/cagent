@@ -223,6 +223,152 @@ func TestGetSessionSummaries(t *testing.T) {
 	assert.Equal(t, 1, summaries[1].NumMessages)
 }
 
+// TestGetSubsessions_InMemory verifies that GetSubsessions returns direct children of a parent.
+func TestGetSubsessions_InMemory(t *testing.T) {
+	store := NewInMemorySessionStore()
+
+	// Create parent session
+	parent := &Session{
+		ID:        "parent",
+		CreatedAt: time.Now(),
+	}
+	err := store.AddSession(t.Context(), parent)
+	require.NoError(t, err)
+
+	// Create two sub-sessions
+	subSession1 := &Session{
+		ID:        "child1",
+		CreatedAt: time.Now().Add(1 * time.Minute),
+		ParentID:  "parent",
+		Title:     "First Child",
+	}
+	subSession2 := &Session{
+		ID:        "child2",
+		CreatedAt: time.Now().Add(2 * time.Minute),
+		ParentID:  "parent",
+		Title:     "Second Child",
+	}
+
+	err = store.AddSession(t.Context(), subSession1)
+	require.NoError(t, err)
+	err = store.AddSession(t.Context(), subSession2)
+	require.NoError(t, err)
+
+	// Create a sub-subsession (child of child1) and orphan session
+	subSubSession := &Session{
+		ID:        "grandchild",
+		CreatedAt: time.Now().Add(3 * time.Minute),
+		ParentID:  "child1",
+		Title:     "Grandchild",
+	}
+	orphan := &Session{
+		ID:        "orphan",
+		CreatedAt: time.Now(),
+	}
+
+	err = store.AddSession(t.Context(), subSubSession)
+	require.NoError(t, err)
+	err = store.AddSession(t.Context(), orphan)
+	require.NoError(t, err)
+
+	// Get children of parent - should return child1 and child2, not grandchild
+	children, err := store.GetSubsessions(t.Context(), "parent")
+	require.NoError(t, err)
+	assert.Len(t, children, 2)
+
+	// Verify children are correct (newer first)
+	assert.Equal(t, "child2", children[0].ID)
+	assert.Equal(t, "Second Child", children[0].Title)
+	assert.Equal(t, "child1", children[1].ID)
+	assert.Equal(t, "First Child", children[1].Title)
+
+	// Get children of orphan - should be empty
+	orphanChildren, err := store.GetSubsessions(t.Context(), "orphan")
+	require.NoError(t, err)
+	assert.Empty(t, orphanChildren)
+
+	// Get children of grandchild's parent (child1)
+	grandchildren, err := store.GetSubsessions(t.Context(), "child1")
+	require.NoError(t, err)
+	assert.Len(t, grandchildren, 1)
+	assert.Equal(t, "grandchild", grandchildren[0].ID)
+}
+
+// TestGetSubsessions_SQLite verifies that GetSubsessions works with SQLite store.
+func TestGetSubsessions_SQLite(t *testing.T) {
+	tempDB := filepath.Join(t.TempDir(), "test_get_subsessions.db")
+
+	store, err := NewSQLiteSessionStore(tempDB)
+	require.NoError(t, err)
+	defer store.(*SQLiteSessionStore).Close()
+
+	// Create parent session
+	parent := &Session{
+		ID:        "parent",
+		CreatedAt: time.Now(),
+	}
+	err = store.AddSession(t.Context(), parent)
+	require.NoError(t, err)
+
+	// Create two sub-sessions
+	subSession1 := &Session{
+		ID:        "child1",
+		CreatedAt: time.Now().Add(1 * time.Minute),
+		ParentID:  "parent",
+		Title:     "First Child",
+	}
+	subSession2 := &Session{
+		ID:        "child2",
+		CreatedAt: time.Now().Add(2 * time.Minute),
+		ParentID:  "parent",
+		Title:     "Second Child",
+	}
+
+	err = store.AddSession(t.Context(), subSession1)
+	require.NoError(t, err)
+	err = store.AddSession(t.Context(), subSession2)
+	require.NoError(t, err)
+
+	// Create a sub-subsession and orphan
+	subSubSession := &Session{
+		ID:        "grandchild",
+		CreatedAt: time.Now().Add(3 * time.Minute),
+		ParentID:  "child1",
+		Title:     "Grandchild",
+	}
+	orphan := &Session{
+		ID:        "orphan",
+		CreatedAt: time.Now(),
+	}
+
+	err = store.AddSession(t.Context(), subSubSession)
+	require.NoError(t, err)
+	err = store.AddSession(t.Context(), orphan)
+	require.NoError(t, err)
+
+	// Get children of parent - should return child1 and child2, not grandchild
+	children, err := store.GetSubsessions(t.Context(), "parent")
+	require.NoError(t, err)
+	assert.Len(t, children, 2)
+
+	// Verify children are correct (newer first)
+	assert.Equal(t, "child2", children[0].ID)
+	assert.Equal(t, "Second Child", children[0].Title)
+	assert.Equal(t, "child1", children[1].ID)
+	assert.Equal(t, "First Child", children[1].Title)
+
+	// Get children of orphan - should be empty
+	orphanChildren, err := store.GetSubsessions(t.Context(), "orphan")
+	require.NoError(t, err)
+	assert.Empty(t, orphanChildren)
+
+	// Get children of child1
+	grandchildren, err := store.GetSubsessions(t.Context(), "child1")
+	require.NoError(t, err)
+	assert.Len(t, grandchildren, 1)
+	assert.Equal(t, "grandchild", grandchildren[0].ID)
+}
+
 func TestBranchSessionCopiesPrefix(t *testing.T) {
 	tempDB := filepath.Join(t.TempDir(), "test_branch_prefix.db")
 
