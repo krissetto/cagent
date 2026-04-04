@@ -127,7 +127,10 @@ func TestDelegation_MultiTurnConversation_EndToEnd(t *testing.T) {
 	assert.False(t, result2.IsError)
 	assert.Contains(t, result2.Output, "second reply")
 
-	childSess, err := store.GetSession(context.Background(), delegationID)
+	childDelegation, ok := rt.delegations.Get(delegationID)
+	require.True(t, ok)
+
+	childSess, err := store.GetSession(context.Background(), childDelegation.SessionID)
 	require.NoError(t, err)
 	var userMessages []string
 	for _, item := range childSess.Messages {

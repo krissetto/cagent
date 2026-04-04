@@ -48,15 +48,15 @@ func validateAgentInList(currentAgent, targetAgent, action, listDesc string, age
 
 // SubSessionConfig describes how to build and run a child session.
 type SubSessionConfig struct {
-	Task                 string
-	ExpectedOutput       string
-	SystemMessage        string
-	AgentName            string
-	Title                string
-	ToolsApproved        bool
-	PinAgent             bool
-	ImplicitUserMessage  string
-	ExcludedTools        []string
+	Task                string
+	ExpectedOutput      string
+	SystemMessage       string
+	AgentName           string
+	Title               string
+	ToolsApproved       bool
+	PinAgent            bool
+	ImplicitUserMessage string
+	ExcludedTools       []string
 }
 
 // newSubSession builds a *session.Session from a SubSessionConfig and a parent session.
@@ -151,7 +151,7 @@ func (r *LocalRuntime) RunDelegation(ctx context.Context, d *delegation.Delegati
 	}
 
 	if r.elicitationEventsChannel != nil {
-		trySendEvent(ctx, r.elicitationEventsChannel, DelegationStarted(childSess.ID, d.ParentSessionID, d.AgentName, childSess.GetLastUserMessageContent()))
+		trySendEvent(ctx, r.elicitationEventsChannel, DelegationStarted(d.ID, childSess.ID, d.ParentSessionID, d.AgentName, childSess.GetLastUserMessageContent()))
 	}
 
 	events := r.RunStream(ctx, childSess)
@@ -174,13 +174,13 @@ func (r *LocalRuntime) RunDelegation(ctx context.Context, d *delegation.Delegati
 
 	if errMsg != "" {
 		if r.elicitationEventsChannel != nil {
-			trySendEvent(ctx, r.elicitationEventsChannel, DelegationFailed(childSess.ID, d.ParentSessionID, errMsg))
+			trySendEvent(ctx, r.elicitationEventsChannel, DelegationFailed(d.ID, childSess.ID, d.ParentSessionID, errMsg))
 		}
 		return "", fmt.Errorf("%s", errMsg)
 	}
 
 	if r.elicitationEventsChannel != nil {
-		trySendEvent(ctx, r.elicitationEventsChannel, DelegationCompleted(childSess.ID, d.ParentSessionID, lastAssistant))
+		trySendEvent(ctx, r.elicitationEventsChannel, DelegationCompleted(d.ID, childSess.ID, d.ParentSessionID, lastAssistant))
 	}
 
 	// Persist the child session after a successful run so that Continue can reload it.
@@ -249,7 +249,11 @@ func (r *LocalRuntime) handleStopDelegation(ctx context.Context, _ *session.Sess
 		return tools.ResultError(err.Error()), nil
 	}
 	if evts != nil {
-		trySendEvent(ctx, evts, DelegationStopped(params.DelegationID))
+		if d, ok := r.delegations.Get(params.DelegationID); ok {
+			trySendEvent(ctx, evts, DelegationStopped(params.DelegationID, d.SessionID))
+		} else {
+			trySendEvent(ctx, evts, DelegationStopped(params.DelegationID, ""))
+		}
 	}
 	return tools.ResultSuccess("delegation stopped"), nil
 }

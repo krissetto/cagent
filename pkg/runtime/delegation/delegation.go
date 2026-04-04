@@ -35,9 +35,12 @@ func (s DelegationStatus) String() string {
 }
 
 // Delegation represents a single delegation from parent to child session.
-// The delegation_id IS the child session ID.
 type Delegation struct {
-	// SessionID is the unique identifier for this delegation (== child session ID)
+	// ID is the short human-readable delegation ID (5-char lowercase alphanumeric, e.g. "ab3k9").
+	// This is the ID exposed to callers and stored as the map key in Manager.
+	ID string
+
+	// SessionID is the UUID of the child session used for store lookups.
 	SessionID string
 
 	// ParentSessionID is the parent session ID

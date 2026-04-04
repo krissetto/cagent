@@ -2,6 +2,7 @@ package delegation
 
 import (
 	"context"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -40,30 +41,74 @@ func (m *MockRunner) RunDelegation(ctx context.Context, d *Delegation, sess *ses
 	return m.result, m.err
 }
 
-func TestDelegationLifecycle(t *testing.T) {
-	runner := &MockRunner{result: "success"}
+func TestGenerateShortID_Format(t *testing.T) {
+	manager := NewManager(&MockRunner{})
 
+	manager.mu.Lock()
+	id := manager.generateShortID()
+	manager.mu.Unlock()
+
+	require.Len(t, id, shortIDLength)
+	assert.Regexp(t, regexp.MustCompile(`^[a-z0-9]{5}$`), id)
+}
+
+func TestGenerateShortID_Uniqueness(t *testing.T) {
+	manager := NewManager(&MockRunner{})
+	seen := make(map[string]struct{}, 1000)
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for range 1000 {
+		id := manager.generateShortID()
+		if _, exists := seen[id]; exists {
+			t.Fatalf("duplicate short ID generated: %s", id)
+		}
+		seen[id] = struct{}{}
+		manager.delegations[id] = &Delegation{ID: id}
+	}
+}
+
+func TestManager_ShortIDLookup(t *testing.T) {
+	runner := &MockRunner{result: "success"}
 	manager := NewManager(runner)
 	parentSession := session.New()
 
-	// Test delegation creation
 	delegationID, reply, err := manager.Start(context.Background(), StartParams{
 		AgentName:       "agent1",
 		Task:            "test task",
 		ParentSessionID: parentSession.ID,
 		ParentSession:   parentSession,
 	})
-
 	require.NoError(t, err)
-	require.NotEmpty(t, delegationID)
 	assert.Equal(t, "success", reply)
+	assert.Regexp(t, regexp.MustCompile(`^[a-z0-9]{5}$`), delegationID)
 
-	// Test delegation was stored
-	found, ok := manager.Get(delegationID)
+	runner.result = "continued"
+	reply, err = manager.Continue(context.Background(), delegationID, "follow-up")
+	require.NoError(t, err)
+	assert.Equal(t, "continued", reply)
+}
+
+func TestManager_StopByShortID(t *testing.T) {
+	runner := &MockRunner{result: "success"}
+	manager := NewManager(runner)
+	parentSession := session.New()
+
+	delegationID, _, err := manager.Start(context.Background(), StartParams{
+		AgentName:       "agent1",
+		Task:            "test task",
+		ParentSessionID: parentSession.ID,
+		ParentSession:   parentSession,
+	})
+	require.NoError(t, err)
+
+	d, ok := manager.Get(delegationID)
 	require.True(t, ok)
-	assert.Equal(t, delegationID, found.SessionID)
-	assert.Equal(t, "agent1", found.AgentName)
-	assert.Equal(t, StatusCompleted, found.LoadStatus())
+	d.StoreStatus(StatusRunning)
+
+	err = manager.Stop(context.Background(), delegationID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusCancelled, d.LoadStatus())
 }
 
 func TestDelegationContinue(t *testing.T) {
@@ -264,7 +309,10 @@ func TestManager_Continue_ReloadsExistingSession(t *testing.T) {
 	// The session passed to the second RunDelegation should be the loaded one (same ID)
 	contSess := runner.sessionReceived
 	require.NotNil(t, contSess)
-	assert.Equal(t, delegationID, contSess.ID)
+	// The child session UUID should match what the manager stored, not the short delegationID
+	d, ok := manager.Get(delegationID)
+	require.True(t, ok)
+	assert.Equal(t, d.SessionID, contSess.ID)
 }
 
 // TestManager_DoneCh_RecreatedOnContinue verifies that DoneCh is recreated on continuation

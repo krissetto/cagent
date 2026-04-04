@@ -14,13 +14,13 @@ const (
 // DelegateArgs specifies the parameters for the delegate tool.
 type DelegateArgs struct {
 	Agent        string `json:"agent,omitempty" jsonschema:"description,The name of the sub-agent to delegate to. Required for new delegations."`
-	DelegationID string `json:"delegation_id,omitempty" jsonschema:"description,The session ID of an existing delegation. Omit to start new, provide to continue."`
+	DelegationID string `json:"delegation_id,omitempty" jsonschema:"description,The short 5-character delegation ID of an existing delegation. Omit to start new, provide to continue."`
 	Message      string `json:"message" jsonschema:"description,The message to send to the agent."`
 }
 
 // StopDelegationArgs specifies the parameters for the stop_delegation tool.
 type StopDelegationArgs struct {
-	DelegationID string `json:"delegation_id" jsonschema:"description,The session ID of the delegation to cancel."`
+	DelegationID string `json:"delegation_id" jsonschema:"description,The short 5-character delegation ID of the delegation to cancel."`
 }
 
 type DelegateTool struct{}
@@ -36,7 +36,7 @@ func (t *DelegateTool) Tools(context.Context) ([]tools.Tool, error) {
 		{
 			Name:        ToolNameDelegate,
 			Category:    "transfer",
-			Description: `Start or continue a conversation with a sub-agent. Provide agent + message to start a new delegation, or delegation_id + message to continue an existing one. Returns the delegation_id and the child agent's latest reply.`,
+			Description: `Start or continue a conversation with a sub-agent. Provide agent + message to start a new delegation, or delegation_id + message to continue an existing one. Delegation IDs are short 5-character codes. Returns the delegation_id and the child agent's latest reply.`,
 			Parameters:  tools.MustSchemaFor[DelegateArgs](),
 			Annotations: tools.ToolAnnotations{Title: "Delegate"},
 		},

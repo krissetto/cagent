@@ -676,6 +676,7 @@ type DelegationStartedEvent struct {
 	AgentContext
 
 	Type            string `json:"type"`
+	DelegationID    string `json:"delegation_id"`
 	SessionID       string `json:"session_id"`
 	ParentSessionID string `json:"parent_session_id"`
 	AgentName       string `json:"agent_name"`
@@ -684,9 +685,10 @@ type DelegationStartedEvent struct {
 
 func (e *DelegationStartedEvent) GetSessionID() string { return e.ParentSessionID }
 
-func DelegationStarted(sessionID, parentSessionID, agentName, task string) Event {
+func DelegationStarted(delegationID, sessionID, parentSessionID, agentName, task string) Event {
 	return &DelegationStartedEvent{
 		Type:            "delegation_started",
+		DelegationID:    delegationID,
 		SessionID:       sessionID,
 		ParentSessionID: parentSessionID,
 		AgentName:       agentName,
@@ -700,6 +702,7 @@ type DelegationCompletedEvent struct {
 	AgentContext
 
 	Type            string `json:"type"`
+	DelegationID    string `json:"delegation_id"`
 	SessionID       string `json:"session_id"`
 	ParentSessionID string `json:"parent_session_id"`
 	Reply           string `json:"reply"`
@@ -707,9 +710,10 @@ type DelegationCompletedEvent struct {
 
 func (e *DelegationCompletedEvent) GetSessionID() string { return e.ParentSessionID }
 
-func DelegationCompleted(sessionID, parentSessionID, reply string) Event {
+func DelegationCompleted(delegationID, sessionID, parentSessionID, reply string) Event {
 	return &DelegationCompletedEvent{
 		Type:            "delegation_completed",
+		DelegationID:    delegationID,
 		SessionID:       sessionID,
 		ParentSessionID: parentSessionID,
 		Reply:           reply,
@@ -721,13 +725,15 @@ func DelegationCompleted(sessionID, parentSessionID, reply string) Event {
 type DelegationStoppedEvent struct {
 	AgentContext
 
-	Type      string `json:"type"`
-	SessionID string `json:"session_id"`
+	Type         string `json:"type"`
+	DelegationID string `json:"delegation_id"`
+	SessionID    string `json:"session_id"`
 }
 
-func DelegationStopped(sessionID string) Event {
+func DelegationStopped(delegationID, sessionID string) Event {
 	return &DelegationStoppedEvent{
 		Type:         "delegation_stopped",
+		DelegationID: delegationID,
 		SessionID:    sessionID,
 		AgentContext: newAgentContext(""),
 	}
@@ -738,6 +744,7 @@ type DelegationFailedEvent struct {
 	AgentContext
 
 	Type            string `json:"type"`
+	DelegationID    string `json:"delegation_id"`
 	SessionID       string `json:"session_id"`
 	ParentSessionID string `json:"parent_session_id"`
 	Error           string `json:"error"`
@@ -745,9 +752,10 @@ type DelegationFailedEvent struct {
 
 func (e *DelegationFailedEvent) GetSessionID() string { return e.ParentSessionID }
 
-func DelegationFailed(sessionID, parentSessionID, errMsg string) Event {
+func DelegationFailed(delegationID, sessionID, parentSessionID, errMsg string) Event {
 	return &DelegationFailedEvent{
 		Type:            "delegation_failed",
+		DelegationID:    delegationID,
 		SessionID:       sessionID,
 		ParentSessionID: parentSessionID,
 		Error:           errMsg,
