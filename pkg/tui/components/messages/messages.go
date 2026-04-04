@@ -24,6 +24,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/components/reasoningblock"
 	"github.com/docker/docker-agent/pkg/tui/components/scrollview"
 	"github.com/docker/docker-agent/pkg/tui/components/tool"
+	"github.com/docker/docker-agent/pkg/tui/components/tool/delegation"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/editfile"
 	"github.com/docker/docker-agent/pkg/tui/core"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
@@ -56,6 +57,8 @@ type Model interface {
 	AppendToLastMessage(agentName, content string) tea.Cmd
 	AppendReasoning(agentName, content string) tea.Cmd
 	AddShellOutputMessage(content string) tea.Cmd
+	AddDelegationCard(id, agentName, task string) tea.Cmd
+	UpdateDelegationCard(id, reply string, failed bool) tea.Cmd
 	LoadFromSession(sess *session.Session) tea.Cmd
 
 	RemoveSpinner()
@@ -940,6 +943,8 @@ func (m *model) shouldCacheMessage(index int) bool {
 		return false
 	case types.MessageTypeUser:
 		return true
+	case types.MessageTypeDelegation:
+		return msg.DelegationDone
 	default:
 		return false
 	}
@@ -1308,6 +1313,10 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 			if hasToolCalls {
 				attachToReasoning := reasoningBlock != nil && !hasContent
 				for i, tc := range smsg.Message.ToolCalls {
+					// Skip delegation tool calls - they're handled via delegation events
+					if tc.Function.Name == builtin.ToolNameDelegate || tc.Function.Name == builtin.ToolNameContinueDelegation || tc.Function.Name == builtin.ToolNameStopDelegation {
+						continue
+					}
 					var toolDef tools.Tool
 					if i < len(smsg.Message.ToolDefinitions) {
 						toolDef = smsg.Message.ToolDefinitions[i]
@@ -1556,9 +1565,14 @@ func (m *model) createToolCallView(msg *types.Message) layout.Model {
 }
 
 func (m *model) createMessageView(msg *types.Message) layout.Model {
-	view := message.New(msg, m.sessionState.PreviousMessage())
-	view.SetSize(m.contentWidth(), 0)
-	return view
+	switch msg.Type {
+	case types.MessageTypeDelegation:
+		return m.createDelegationCardView(msg)
+	default:
+		view := message.New(msg, m.sessionState.PreviousMessage())
+		view.SetSize(m.contentWidth(), 0)
+		return view
+	}
 }
 
 func (m *model) RemoveSpinner() {
@@ -1778,9 +1792,56 @@ func (m *model) hasAnimatedContent() bool {
 					}
 				}
 			}
+		case types.MessageTypeDelegation:
+			if !msg.DelegationDone {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func (m *model) AddDelegationCard(id, agentName, task string) tea.Cmd {
+	// Check if a card with this delegation ID already exists (continuation case).
+	// If so, reactivate it instead of adding a duplicate.
+	for i, msg := range m.messages {
+		if msg.Type == types.MessageTypeDelegation && msg.DelegationID == id {
+			msg.DelegationDone = false
+			msg.DelegationFailed = false
+			msg.DelegationReply = ""
+			msg.Content = task
+			m.invalidateItem(i)
+			view := m.createDelegationCardView(msg)
+			m.views[i] = view
+			return view.Init()
+		}
+	}
+	msg := types.DelegationCard(id, agentName, task)
+	return m.addMessage(msg)
+}
+
+func (m *model) UpdateDelegationCard(id, reply string, failed bool) tea.Cmd {
+	// Search from the end to find the most recently activated card for this ID.
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		msg := m.messages[i]
+		if msg.Type == types.MessageTypeDelegation && msg.DelegationID == id {
+			msg.DelegationDone = true
+			msg.DelegationFailed = failed
+			msg.DelegationReply = reply
+			m.invalidateItem(i)
+			// Recreate the view so it re-renders with done state
+			view := m.createDelegationCardView(msg)
+			m.views[i] = view
+			return view.Init()
+		}
+	}
+	return nil
+}
+
+func (m *model) createDelegationCardView(msg *types.Message) layout.Model {
+	view := delegation.New(msg, m.sessionState)
+	view.SetSize(m.contentWidth(), 0)
+	return view
 }
 
 // StartInlineEdit begins inline editing for the specified message.

@@ -170,6 +170,13 @@ type ToolsChangeSubscriber interface {
 	OnToolsChanged(handler func(Event))
 }
 
+// DelegationEventSubscriber is implemented by runtimes that can notify when a
+// background delegation lifecycle event occurs outside the active RunStream
+// (e.g. completion after the parent turn has already returned).
+type DelegationEventSubscriber interface {
+	OnDelegationEvent(handler func(Event))
+}
+
 // LocalRuntime manages the execution of agents
 type LocalRuntime struct {
 	toolMap                     map[string]ToolHandlerFunc
@@ -203,6 +210,10 @@ type LocalRuntime struct {
 
 	// onToolsChanged is called when an MCP toolset reports a tool list change.
 	onToolsChanged func(Event)
+
+	// onDelegationEvent is called when a background delegation lifecycle event
+	// occurs outside the active parent stream.
+	onDelegationEvent func(Event)
 
 	delegations *delegation.Manager
 }
@@ -296,11 +307,16 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 		sessionStore:         session.NewInMemorySessionStore(),
 		fallbackCooldowns:    make(map[string]*fallbackCooldownState),
 	}
-	r.delegations = delegation.NewManager(r, delegation.WithSessionStore(r.sessionStore))
 
 	for _, opt := range opts {
 		opt(r)
 	}
+
+	r.delegations = delegation.NewManager(
+		r,
+		delegation.WithSessionStore(r.sessionStore),
+		delegation.WithOnCompletion(r.handleDelegationCompletion),
+	)
 
 	if r.modelsStore == nil {
 		modelsStore, err := modelsdev.NewStore()
@@ -742,6 +758,36 @@ func (r *LocalRuntime) SessionStore() session.Store {
 	return r.sessionStore
 }
 
+// handleDelegationCompletion emits lifecycle events for background delegations
+// after the child goroutine has fully finished. This gives the app/TUI a
+// runtime-level observable completion path without requiring parent polling.
+func (r *LocalRuntime) handleDelegationCompletion(d *delegation.Delegation, reply string, err error) {
+	var event Event
+	switch d.LoadStatus() {
+	case delegation.StatusCompleted:
+		event = DelegationCompleted(d.ID, d.SessionID, d.ParentSessionID, d.AgentName, reply)
+	case delegation.StatusCancelled:
+		event = DelegationStopped(d.ID, d.SessionID, d.AgentName)
+	default:
+		msg := "delegation failed"
+		if err != nil {
+			msg = err.Error()
+		}
+		event = DelegationFailed(d.ID, d.SessionID, d.ParentSessionID, d.AgentName, msg)
+	}
+
+	if r.onDelegationEvent != nil {
+		r.onDelegationEvent(event)
+	}
+
+	r.elicitationEventsChannelMux.RLock()
+	eventsCh := r.elicitationEventsChannel
+	r.elicitationEventsChannelMux.RUnlock()
+	if eventsCh != nil {
+		trySendEvent(context.Background(), eventsCh, event)
+	}
+}
+
 // Close releases resources held by the runtime, including the session store.
 func (r *LocalRuntime) Close() error {
 	r.delegations.StopAll()
@@ -798,6 +844,12 @@ func (r *LocalRuntime) OnToolsChanged(handler func(Event)) {
 			}
 		}
 	}
+}
+
+// OnDelegationEvent registers a handler for background delegation lifecycle
+// events that occur after the parent RunStream has returned.
+func (r *LocalRuntime) OnDelegationEvent(handler func(Event)) {
+	r.onDelegationEvent = handler
 }
 
 // emitToolsChanged is the callback registered on MCP toolsets. It re-reads

@@ -10,6 +10,7 @@ import (
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/sound"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tools/builtin"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
 	"github.com/docker/docker-agent/pkg/tui/core"
@@ -91,15 +92,24 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	// ===== Tool Events =====
 	case *runtime.PartialToolCallEvent:
+		if isDelegationTool(msg.ToolCall.Function.Name) {
+			return true, nil
+		}
 		return true, p.handlePartialToolCall(msg)
 
 	case *runtime.ToolCallEvent:
+		if isDelegationTool(msg.ToolCall.Function.Name) {
+			return true, nil
+		}
 		return true, p.handleToolCall(msg)
 
 	case *runtime.ToolCallConfirmationEvent:
 		return true, p.handleToolCallConfirmation(msg)
 
 	case *runtime.ToolCallResponseEvent:
+		if isDelegationTool(msg.ToolDefinition.Name) {
+			return true, nil
+		}
 		return true, p.handleToolCallResponse(msg)
 
 	// ===== Sidebar Info Events (forwarded) =====
@@ -150,6 +160,19 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	case *runtime.ElicitationRequestEvent:
 		return true, p.handleElicitationRequest(msg)
+
+	// ===== Delegation Events =====
+	case *runtime.DelegationStartedEvent:
+		return true, p.messages.AddDelegationCard(msg.DelegationID, msg.AgentName, msg.Task)
+
+	case *runtime.DelegationCompletedEvent:
+		return true, p.messages.UpdateDelegationCard(msg.DelegationID, msg.Reply, false)
+
+	case *runtime.DelegationFailedEvent:
+		return true, p.messages.UpdateDelegationCard(msg.DelegationID, msg.Error, true)
+
+	case *runtime.DelegationStoppedEvent:
+		return true, p.messages.UpdateDelegationCard(msg.DelegationID, "stopped", false)
 	}
 
 	return false, nil
@@ -360,4 +383,13 @@ func (p *chatPage) handleElicitationRequest(msg *runtime.ElicitationRequestEvent
 		})
 		return tea.Batch(spinnerCmd, dialogCmd)
 	}
+}
+
+// isDelegationTool returns true for tool names that belong to the delegation
+// subsystem. These tool calls are suppressed from the main chat transcript
+// and surfaced instead via DelegationStarted/Completed/Failed/Stopped events.
+func isDelegationTool(name string) bool {
+	return name == builtin.ToolNameDelegate ||
+		name == builtin.ToolNameContinueDelegation ||
+		name == builtin.ToolNameStopDelegation
 }

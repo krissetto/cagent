@@ -1492,7 +1492,7 @@ func TestDelegateRejectsNonSubAgent(t *testing.T) {
 		Type: "function",
 		Function: tools.FunctionCall{
 			Name:      "delegate",
-			Arguments: `{"agent":"planner","message":"do something"}`,
+			Arguments: `{"agent":"planner","task":"do something"}`,
 		},
 	}
 
@@ -1525,7 +1525,7 @@ func TestDelegateAllowsSubAgent(t *testing.T) {
 		Type: "function",
 		Function: tools.FunctionCall{
 			Name:      "delegate",
-			Arguments: `{"agent":"librarian","message":"find a book"}`,
+			Arguments: `{"agent":"librarian","task":"find a book"}`,
 		},
 	}
 

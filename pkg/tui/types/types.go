@@ -22,6 +22,7 @@ const (
 	MessageTypeToolResult
 	MessageTypeWelcome
 	MessageTypeLoading
+	MessageTypeDelegation
 )
 
 const (
@@ -55,6 +56,12 @@ type Message struct {
 	// SessionPosition is the index of this message in session.Messages (when known).
 	// Used for operations like branching on edits.
 	SessionPosition *int
+	// Delegation card fields (MessageTypeDelegation only)
+	DelegationID    string
+	DelegationAgent string
+	DelegationDone  bool
+	DelegationFailed bool
+	DelegationReply string
 }
 
 func Agent(typ MessageType, agentName, content string) *Message {
@@ -124,5 +131,14 @@ func Loading(description string) *Message {
 	return &Message{
 		Type:    MessageTypeLoading,
 		Content: strings.ReplaceAll(description, "\t", "    "),
+	}
+}
+
+func DelegationCard(id, agentName, task string) *Message {
+	return &Message{
+		Type:            MessageTypeDelegation,
+		DelegationID:    id,
+		DelegationAgent: agentName,
+		Content:         task,
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/docker/docker-agent/pkg/agent"
+	"github.com/docker/docker-agent/pkg/runtime/delegation"
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/compaction"
 	"github.com/docker/docker-agent/pkg/modelerrors"
@@ -29,6 +30,7 @@ import (
 func (r *LocalRuntime) registerDefaultTools() {
 	// Delegation and handoff handlers
 	r.toolMap[builtin.ToolNameDelegate] = r.handleDelegate
+	r.toolMap[builtin.ToolNameContinueDelegation] = r.handleContinueDelegation
 	r.toolMap[builtin.ToolNameStopDelegation] = r.handleStopDelegation
 	r.toolMap[builtin.ToolNameHandoff] = r.handleHandoff
 
@@ -41,11 +43,17 @@ func (r *LocalRuntime) registerDefaultTools() {
 // finalizeEventChannel performs cleanup at the end of a RunStream goroutine:
 // restores the previous elicitation channel, emits the StreamStopped event,
 // fires hooks, and closes the events channel.
-func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.Session, prevElicitationCh, events chan Event) {
+//
+// When skipElicitationRestore is true (background delegation child runs), the
+// global elicitation channel is left untouched — the child never swapped it in
+// the first place.
+func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.Session, prevElicitationCh, events chan Event, skipElicitationRestore bool) {
 	// Swap back the parent's elicitation channel before closing this
 	// stream's channel. This prevents a send-on-closed-channel panic
 	// and restores elicitation for the parent session.
-	r.swapElicitationEventsChannel(prevElicitationCh)
+	if !skipElicitationRestore {
+		r.swapElicitationEventsChannel(prevElicitationCh)
+	}
 
 	defer close(events)
 
@@ -80,11 +88,17 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 		))
 		defer sessionSpan.End()
 
-		// Swap in this stream's events channel for elicitation and save the
-		// previous one so it can be restored on teardown. This allows nested
-		// RunStream calls to temporarily own elicitation without losing the
-		// parent's channel.
-		prevElicitationCh := r.swapElicitationEventsChannel(events)
+		// Background delegation child runs must NOT touch the global
+		// elicitation channel — doing so would race with other concurrent
+		// child runs and clobber the parent's channel.
+		isBackgroundDelegation := ctx.Value(delegation.BackgroundRunKey{}) != nil
+
+		var prevElicitationCh chan Event
+		if !isBackgroundDelegation {
+			// Normal (or synchronous Continue) run: swap in this stream's
+			// events channel for elicitation.
+			prevElicitationCh = r.swapElicitationEventsChannel(events)
+		}
 
 		a := r.resolveSessionAgent(sess)
 
@@ -114,7 +128,7 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 
 		events <- StreamStarted(sess.ID, a.Name())
 
-		defer r.finalizeEventChannel(ctx, sess, prevElicitationCh, events)
+		defer r.finalizeEventChannel(ctx, sess, prevElicitationCh, events, isBackgroundDelegation)
 
 		iteration := 0
 		// Use a runtime copy of maxIterations so we don't modify the session's persistent config

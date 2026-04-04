@@ -34,6 +34,13 @@ func (s DelegationStatus) String() string {
 	return "unknown"
 }
 
+// BackgroundRunKey is a context key that marks a context as belonging to a
+// background delegation run (launched asynchronously from Manager.Start).
+// When RunStream detects this key it skips the global elicitation-events-channel
+// swap, preventing concurrent background child runs from clobbering each other's
+// (and the parent's) elicitation routing.
+type BackgroundRunKey struct{}
+
 // Delegation represents a single delegation from parent to child session.
 type Delegation struct {
 	// ID is the short human-readable delegation ID (5-char lowercase alphanumeric, e.g. "ab3k9").
@@ -49,13 +56,17 @@ type Delegation struct {
 	// AgentName is the name of the agent being delegated to
 	AgentName string
 
+	// Task is the initial task / prompt given to the child agent
+	Task string
+
 	// Status is the current lifecycle status (atomic)
 	Status atomic.Int32
 
 	// Cancel is the context cancellation function for the delegation
 	Cancel context.CancelFunc
 
-	// DoneCh is closed when the delegation completes (for sync await)
+	// DoneCh is closed when the delegation completes (for sync await).
+	// Protected by mu for safe replacement during Continue.
 	DoneCh chan struct{}
 
 	// lastReply stores the latest child assistant message
@@ -126,4 +137,15 @@ func (d *Delegation) GetError() error {
 // Duration returns the elapsed time since the delegation started
 func (d *Delegation) Duration() time.Duration {
 	return time.Since(d.StartTime)
+}
+
+// replaceDoneCh creates a fresh DoneCh under the delegation mutex.
+// Must only be called after the previous DoneCh has been closed (e.g. after
+// waiting on it in Continue).
+func (d *Delegation) replaceDoneCh() chan struct{} {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ch := make(chan struct{})
+	d.DoneCh = ch
+	return ch
 }

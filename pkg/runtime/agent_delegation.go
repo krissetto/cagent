@@ -142,16 +142,19 @@ func (r *LocalRuntime) runSubSessionForwarding(ctx context.Context, parent, chil
 }
 
 // RunDelegation implements delegation.DelegationRunner.
+//
+// It runs a child session and returns the last assistant message. The context
+// should carry delegation.BackgroundRunKey when invoked from a background
+// goroutine (via Manager.Start) so that RunStream skips the global elicitation
+// channel swap — preventing concurrent child runs from clobbering each other.
+// For synchronous Continue calls the context does NOT carry the key, so normal
+// elicitation swap/restore semantics apply.
 func (r *LocalRuntime) RunDelegation(ctx context.Context, d *delegation.Delegation, childSess *session.Session) (string, error) {
 	if r.sessionStore != nil {
 		if existing, err := r.sessionStore.GetSession(ctx, childSess.ID); err == nil && existing != nil {
 			existing.AddMessage(session.UserMessage(childSess.GetLastUserMessageContent()))
 			childSess = existing
 		}
-	}
-
-	if r.elicitationEventsChannel != nil {
-		trySendEvent(ctx, r.elicitationEventsChannel, DelegationStarted(d.ID, childSess.ID, d.ParentSessionID, d.AgentName, childSess.GetLastUserMessageContent()))
 	}
 
 	events := r.RunStream(ctx, childSess)
@@ -173,51 +176,33 @@ func (r *LocalRuntime) RunDelegation(ctx context.Context, d *delegation.Delegati
 	}
 
 	if errMsg != "" {
-		if r.elicitationEventsChannel != nil {
-			trySendEvent(ctx, r.elicitationEventsChannel, DelegationFailed(d.ID, childSess.ID, d.ParentSessionID, errMsg))
-		}
 		return "", fmt.Errorf("%s", errMsg)
-	}
-
-	if r.elicitationEventsChannel != nil {
-		trySendEvent(ctx, r.elicitationEventsChannel, DelegationCompleted(d.ID, childSess.ID, d.ParentSessionID, lastAssistant))
 	}
 
 	// Persist the child session after a successful run so that Continue can reload it.
 	if r.sessionStore != nil {
 		if err := r.sessionStore.UpdateSession(ctx, childSess); err != nil {
-			slog.Warn("Failed to persist child session after delegation run", "session_id", childSess.ID, "error", err)
+			slog.Warn("Failed to persist child session after delegation run",
+				"session_id", childSess.ID, "error", err)
 		}
 	}
 
 	return lastAssistant, nil
 }
 
-func (r *LocalRuntime) handleDelegate(ctx context.Context, sess *session.Session, toolCall tools.ToolCall, _ chan Event) (*tools.ToolCallResult, error) {
+// handleDelegate starts a new background delegation and returns immediately with
+// {"delegation_id":"<id>","status":"started"}. The child agent runs asynchronously;
+// use continue_delegation to send follow-up messages or stop_delegation to cancel.
+func (r *LocalRuntime) handleDelegate(ctx context.Context, sess *session.Session, toolCall tools.ToolCall, evts chan Event) (*tools.ToolCallResult, error) {
 	var params builtin.DelegateArgs
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &params); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
-	if strings.TrimSpace(params.Message) == "" {
-		return tools.ResultError("message must not be empty"), nil
-	}
-	if params.Agent != "" && params.DelegationID != "" {
-		return tools.ResultError("provide either agent or delegation_id, not both"), nil
-	}
-	if params.Agent == "" && params.DelegationID == "" {
-		return tools.ResultError("either agent or delegation_id is required"), nil
-	}
-
-	if params.DelegationID != "" {
-		reply, err := r.delegations.Continue(ctx, params.DelegationID, params.Message)
-		if err != nil {
-			return tools.ResultError(err.Error()), nil
-		}
-		return tools.ResultSuccess(fmt.Sprintf(`{"delegation_id":%q,"response":%q}`, params.DelegationID, reply)), nil
-	}
-
 	if strings.TrimSpace(params.Agent) == "" {
-		return tools.ResultError("agent name must not be empty"), nil
+		return tools.ResultError("agent is required"), nil
+	}
+	if strings.TrimSpace(params.Task) == "" {
+		return tools.ResultError("task is required"), nil
 	}
 
 	a := r.CurrentAgent()
@@ -225,19 +210,44 @@ func (r *LocalRuntime) handleDelegate(ctx context.Context, sess *session.Session
 		return errResult, nil
 	}
 
-	delegationID, reply, err := r.delegations.Start(ctx, delegation.StartParams{
+	delegationID, sessionID, err := r.delegations.Start(ctx, delegation.StartParams{
 		AgentName:       params.Agent,
-		Task:            params.Message,
+		Task:            params.Task,
 		ParentSessionID: sess.ID,
 		ParentSession:   sess,
 	})
 	if err != nil {
 		return tools.ResultError(err.Error()), nil
 	}
-	return tools.ResultSuccess(fmt.Sprintf(`{"delegation_id":%q,"response":%q}`, delegationID, reply)), nil
+
+	// Emit DelegationStarted immediately so the TUI can show the card.
+	if evts != nil {
+		trySendEvent(ctx, evts, DelegationStarted(delegationID, sessionID, sess.ID, params.Agent, params.Task))
+	}
+
+	return tools.ResultSuccess(fmt.Sprintf(`{"delegation_id":%q,"status":"started"}`, delegationID)), nil
 }
 
-func (r *LocalRuntime) handleStopDelegation(ctx context.Context, _ *session.Session, toolCall tools.ToolCall, evts chan Event) (*tools.ToolCallResult, error) {
+func (r *LocalRuntime) handleContinueDelegation(ctx context.Context, _ *session.Session, toolCall tools.ToolCall, _ chan Event) (*tools.ToolCallResult, error) {
+	var params builtin.ContinueDelegationArgs
+	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &params); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	if strings.TrimSpace(params.DelegationID) == "" {
+		return tools.ResultError("delegation_id is required"), nil
+	}
+	if strings.TrimSpace(params.Message) == "" {
+		return tools.ResultError("message is required"), nil
+	}
+
+	reply, err := r.delegations.Continue(ctx, params.DelegationID, params.Message)
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
+	return tools.ResultSuccess(fmt.Sprintf(`{"delegation_id":%q,"reply":%q}`, params.DelegationID, reply)), nil
+}
+
+func (r *LocalRuntime) handleStopDelegation(ctx context.Context, _ *session.Session, toolCall tools.ToolCall, _ chan Event) (*tools.ToolCallResult, error) {
 	var params builtin.StopDelegationArgs
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &params); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -248,13 +258,10 @@ func (r *LocalRuntime) handleStopDelegation(ctx context.Context, _ *session.Sess
 	if err := r.delegations.Stop(ctx, params.DelegationID); err != nil {
 		return tools.ResultError(err.Error()), nil
 	}
-	if evts != nil {
-		if d, ok := r.delegations.Get(params.DelegationID); ok {
-			trySendEvent(ctx, evts, DelegationStopped(params.DelegationID, d.SessionID))
-		} else {
-			trySendEvent(ctx, evts, DelegationStopped(params.DelegationID, ""))
-		}
-	}
+	// DelegationStopped lifecycle event is emitted by the onCompletion callback
+	// once the background goroutine actually terminates — not synchronously here.
+	// This prevents double-firing and ensures the event fires only after the child
+	// session has fully stopped.
 	return tools.ResultSuccess("delegation stopped"), nil
 }
 

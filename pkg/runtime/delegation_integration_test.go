@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,6 +54,7 @@ func TestRegisterDefaultToolsIncludesDelegation(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, rt.toolMap, builtin.ToolNameDelegate)
+	assert.Contains(t, rt.toolMap, builtin.ToolNameContinueDelegation)
 	assert.Contains(t, rt.toolMap, builtin.ToolNameStopDelegation)
 	assert.Contains(t, rt.toolMap, builtin.ToolNameHandoff)
 
@@ -87,7 +89,7 @@ func TestDelegation_MultiTurnConversation_EndToEnd(t *testing.T) {
 	evts := make(chan Event, 256)
 
 	// Start delegation
-	startArgs, _ := json.Marshal(builtin.DelegateArgs{Agent: "worker", Message: "first task"})
+	startArgs, _ := json.Marshal(builtin.DelegateArgs{Agent: "worker", Task: "first task"})
 	startToolCall := tools.ToolCall{
 		ID:   "tc-start",
 		Type: "function",
@@ -100,7 +102,9 @@ func TestDelegation_MultiTurnConversation_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.False(t, result.IsError)
-	assert.Contains(t, result.Output, "first reply")
+	assert.Contains(t, result.Output, "delegation_id")
+	assert.Contains(t, result.Output, "status")
+	assert.Contains(t, result.Output, "started")
 
 	// Extract delegation ID from result
 	var parsed map[string]string
@@ -109,19 +113,29 @@ func TestDelegation_MultiTurnConversation_EndToEnd(t *testing.T) {
 	delegationID := parsed["delegation_id"]
 	require.NotEmpty(t, delegationID)
 
+	// Wait for the async goroutine to complete
+	d, ok := rt.delegations.Get(delegationID)
+	require.True(t, ok)
+	select {
+	case <-d.DoneCh:
+		assert.Equal(t, "first reply", d.GetLastReply())
+	case <-time.After(5 * time.Second):
+		t.Fatal("delegation did not complete")
+	}
+
 	// Swap provider response for continuation
 	prov.stream = newStreamBuilder().AddContent("second reply").AddStopWithUsage(10, 5).Build()
 
-	contArgs, _ := json.Marshal(builtin.DelegateArgs{DelegationID: delegationID, Message: "follow-up task"})
+	contArgs, _ := json.Marshal(builtin.ContinueDelegationArgs{DelegationID: delegationID, Message: "follow-up task"})
 	contToolCall := tools.ToolCall{
 		ID:   "tc-cont",
 		Type: "function",
 		Function: tools.FunctionCall{
-			Name:      builtin.ToolNameDelegate,
+			Name:      builtin.ToolNameContinueDelegation,
 			Arguments: string(contArgs),
 		},
 	}
-	result2, err := rt.handleDelegate(context.Background(), sess, contToolCall, evts)
+	result2, err := rt.handleContinueDelegation(context.Background(), sess, contToolCall, evts)
 	require.NoError(t, err)
 	require.NotNil(t, result2)
 	assert.False(t, result2.IsError)

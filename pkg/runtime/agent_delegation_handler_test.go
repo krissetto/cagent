@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,12 +35,34 @@ func newDelegationTestRuntime(t *testing.T) (*LocalRuntime, *session.Session, ch
 	return rt, sess, evts
 }
 
+// waitForDelegationRT waits for a delegation's DoneCh to be closed.
+func waitForDelegationRT(t *testing.T, rt *LocalRuntime, delegationID string) {
+	t.Helper()
+	d, ok := rt.delegations.Get(delegationID)
+	require.True(t, ok, "delegation %s not found", delegationID)
+	select {
+	case <-d.DoneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("delegation %s did not complete within timeout", delegationID)
+	}
+}
+
+// parseDelegationID extracts delegation_id from a handleDelegate tool result JSON.
+func parseDelegationID(t *testing.T, output string) string {
+	t.Helper()
+	var m map[string]string
+	require.NoError(t, json.Unmarshal([]byte(output), &m))
+	id := m["delegation_id"]
+	require.NotEmpty(t, id, "delegation_id missing from output: %s", output)
+	return id
+}
+
 func TestHandleDelegate_NewDelegation(t *testing.T) {
 	rt, sess, evts := newDelegationTestRuntime(t)
 
 	args, _ := json.Marshal(builtin.DelegateArgs{
-		Agent:   "worker",
-		Message: "crunch numbers",
+		Agent: "worker",
+		Task:  "crunch numbers",
 	})
 	toolCall := tools.ToolCall{
 		ID:   "tc1",
@@ -55,15 +78,22 @@ func TestHandleDelegate_NewDelegation(t *testing.T) {
 	require.NotNil(t, result)
 	assert.False(t, result.IsError, "delegation should succeed")
 	assert.Contains(t, result.Output, "delegation_id")
-	assert.Contains(t, result.Output, "response")
+	assert.Contains(t, result.Output, "status")
+	assert.Contains(t, result.Output, "started")
+
+	// Wait for the async goroutine and verify the reply.
+	id := parseDelegationID(t, result.Output)
+	waitForDelegationRT(t, rt, id)
+	d, _ := rt.delegations.Get(id)
+	assert.Equal(t, "task done", d.GetLastReply())
 }
 
 func TestHandleDelegate_EmptyAgentReturnsError(t *testing.T) {
 	rt, sess, evts := newDelegationTestRuntime(t)
 
 	args, _ := json.Marshal(builtin.DelegateArgs{
-		Agent:   "",
-		Message: "do something",
+		Agent: "",
+		Task:  "do something",
 	})
 	toolCall := tools.ToolCall{
 		ID:   "tc2",
@@ -78,14 +108,15 @@ func TestHandleDelegate_EmptyAgentReturnsError(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.True(t, result.IsError)
+	assert.Contains(t, result.Output, "agent is required")
 }
 
-func TestHandleDelegate_EmptyMessageReturnsError(t *testing.T) {
+func TestHandleDelegate_EmptyTaskReturnsError(t *testing.T) {
 	rt, sess, evts := newDelegationTestRuntime(t)
 
 	args, _ := json.Marshal(builtin.DelegateArgs{
-		Agent:   "worker",
-		Message: "",
+		Agent: "worker",
+		Task:  "",
 	})
 	toolCall := tools.ToolCall{
 		ID:   "tc3",
@@ -100,39 +131,61 @@ func TestHandleDelegate_EmptyMessageReturnsError(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.True(t, result.IsError)
-	assert.Contains(t, result.Output, "message must not be empty")
+	assert.Contains(t, result.Output, "task is required")
 }
 
-func TestHandleDelegate_BothAgentAndDelegationIDReturnsError(t *testing.T) {
+func TestHandleContinueDelegation_EmptyDelegationID(t *testing.T) {
 	rt, sess, evts := newDelegationTestRuntime(t)
 
-	args, _ := json.Marshal(builtin.DelegateArgs{
-		Agent:        "worker",
-		DelegationID: "some-id",
+	args, _ := json.Marshal(builtin.ContinueDelegationArgs{
+		DelegationID: "",
 		Message:      "hello",
 	})
 	toolCall := tools.ToolCall{
 		ID:   "tc4",
 		Type: "function",
 		Function: tools.FunctionCall{
-			Name:      builtin.ToolNameDelegate,
+			Name:      builtin.ToolNameContinueDelegation,
 			Arguments: string(args),
 		},
 	}
 
-	result, err := rt.handleDelegate(context.Background(), sess, toolCall, evts)
+	result, err := rt.handleContinueDelegation(context.Background(), sess, toolCall, evts)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.True(t, result.IsError)
-	assert.Contains(t, result.Output, "either agent or delegation_id")
+	assert.Contains(t, result.Output, "delegation_id is required")
+}
+
+func TestHandleContinueDelegation_EmptyMessage(t *testing.T) {
+	rt, sess, evts := newDelegationTestRuntime(t)
+
+	args, _ := json.Marshal(builtin.ContinueDelegationArgs{
+		DelegationID: "abc12",
+		Message:      "",
+	})
+	toolCall := tools.ToolCall{
+		ID:   "tc4b",
+		Type: "function",
+		Function: tools.FunctionCall{
+			Name:      builtin.ToolNameContinueDelegation,
+			Arguments: string(args),
+		},
+	}
+
+	result, err := rt.handleContinueDelegation(context.Background(), sess, toolCall, evts)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Output, "message is required")
 }
 
 func TestHandleDelegate_InvalidAgentReturnsError(t *testing.T) {
 	rt, sess, evts := newDelegationTestRuntime(t)
 
 	args, _ := json.Marshal(builtin.DelegateArgs{
-		Agent:   "nonexistent",
-		Message: "hello",
+		Agent: "nonexistent",
+		Task:  "hello",
 	})
 	toolCall := tools.ToolCall{
 		ID:   "tc5",
@@ -235,8 +288,8 @@ func TestHandleDelegate_NoSyntheticSystemMessage(t *testing.T) {
 	rt, sess, evts := newDelegationTestRuntime(t)
 
 	args, _ := json.Marshal(builtin.DelegateArgs{
-		Agent:   "worker",
-		Message: "analyze data",
+		Agent: "worker",
+		Task:  "analyze data",
 	})
 	toolCall := tools.ToolCall{
 		ID:   "tc-nosys",
@@ -251,8 +304,14 @@ func TestHandleDelegate_NoSyntheticSystemMessage(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.False(t, result.IsError, "delegation should succeed")
+	assert.Contains(t, result.Output, "status")
+	assert.Contains(t, result.Output, "started")
 	assert.NotContains(t, result.Output, "helper agent")
 	assert.NotContains(t, result.Output, "Complete the following task")
+
+	// Wait for async goroutine to finish.
+	id := parseDelegationID(t, result.Output)
+	waitForDelegationRT(t, rt, id)
 }
 
 // TestHandleDelegate_ParentTranscriptIsolation verifies that the parent session
@@ -264,8 +323,8 @@ func TestHandleDelegate_ParentTranscriptIsolation(t *testing.T) {
 	assert.NotNil(t, sess)
 
 	args, _ := json.Marshal(builtin.DelegateArgs{
-		Agent:   "worker",
-		Message: "do work",
+		Agent: "worker",
+		Task:  "do work",
 	})
 	toolCall := tools.ToolCall{
 		ID:   "tc-iso",
@@ -281,9 +340,13 @@ func TestHandleDelegate_ParentTranscriptIsolation(t *testing.T) {
 	require.NotNil(t, result)
 	assert.False(t, result.IsError)
 
-	// The parent session messages should not contain raw child content
-	// The result contains delegation_id and response as a tool result
+	// The parent session messages should not contain raw child content.
+	// The result contains delegation_id and status as a tool result.
 	assert.Contains(t, result.Output, "delegation_id")
-	assert.Contains(t, result.Output, "response")
+	assert.Contains(t, result.Output, "status")
+	assert.Contains(t, result.Output, "started")
+
+	id := parseDelegationID(t, result.Output)
+	waitForDelegationRT(t, rt, id)
 }
 
