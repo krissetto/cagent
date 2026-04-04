@@ -18,12 +18,12 @@ import (
 	"github.com/docker/docker-agent/pkg/config/types"
 	"github.com/docker/docker-agent/pkg/hooks"
 	"github.com/docker/docker-agent/pkg/modelsdev"
+	"github.com/docker/docker-agent/pkg/runtime/delegation"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sessiontitle"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin"
-	agenttool "github.com/docker/docker-agent/pkg/tools/builtin/agent"
 	mcptools "github.com/docker/docker-agent/pkg/tools/mcp"
 )
 
@@ -139,14 +139,6 @@ type Runtime interface {
 	// if the runtime does not support local title generation (e.g. remote runtimes).
 	TitleGenerator() *sessiontitle.Generator
 
-	// Steer enqueues a user message for urgent mid-turn injection into the
-	// running agent loop. Returns an error if the queue is full or steering
-	// is not available.
-	Steer(msg QueuedMessage) error
-	// FollowUp enqueues a message for end-of-turn processing. Each follow-up
-	// gets a full undivided agent turn. Returns an error if the queue is full.
-	FollowUp(msg QueuedMessage) error
-
 	// Close releases resources held by the runtime (e.g., session store connections).
 	Close() error
 }
@@ -209,18 +201,10 @@ type LocalRuntime struct {
 
 	currentAgentMu sync.RWMutex
 
-	// steerQueue stores urgent mid-turn messages. The agent loop drains
-	// ALL pending messages after tool execution, before the stop check.
-	steerQueue MessageQueue
-
-	// followUpQueue stores end-of-turn messages. The agent loop pops
-	// exactly ONE message after the model stops and stop-hooks have run.
-	followUpQueue MessageQueue
-
 	// onToolsChanged is called when an MCP toolset reports a tool list change.
 	onToolsChanged func(Event)
 
-	bgAgents *agenttool.Handler
+	delegations *delegation.Manager
 }
 
 type Opt func(*LocalRuntime)
@@ -241,22 +225,6 @@ func WithManagedOAuth(managed bool) Opt {
 func WithTracer(t trace.Tracer) Opt {
 	return func(r *LocalRuntime) {
 		r.tracer = t
-	}
-}
-
-// WithSteerQueue sets a custom MessageQueue for mid-turn message injection.
-// If not provided, an in-memory buffered queue is used.
-func WithSteerQueue(q MessageQueue) Opt {
-	return func(r *LocalRuntime) {
-		r.steerQueue = q
-	}
-}
-
-// WithFollowUpQueue sets a custom MessageQueue for end-of-turn follow-up
-// messages. If not provided, an in-memory buffered queue is used.
-func WithFollowUpQueue(q MessageQueue) Opt {
-	return func(r *LocalRuntime) {
-		r.followUpQueue = q
 	}
 }
 
@@ -323,14 +291,12 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 		currentAgent:         defaultAgent.Name(),
 		resumeChan:           make(chan ResumeRequest),
 		elicitationRequestCh: make(chan ElicitationResult),
-		steerQueue:           NewInMemoryMessageQueue(defaultSteerQueueCapacity),
-		followUpQueue:        NewInMemoryMessageQueue(defaultFollowUpQueueCapacity),
 		sessionCompaction:    true,
 		managedOAuth:         true,
 		sessionStore:         session.NewInMemorySessionStore(),
 		fallbackCooldowns:    make(map[string]*fallbackCooldownState),
 	}
-	r.bgAgents = agenttool.NewHandler(r)
+	r.delegations = delegation.NewManager(r, delegation.WithCompletionCallback(r.handleDelegationCompletion))
 
 	for _, opt := range opts {
 		opt(r)
@@ -778,7 +744,7 @@ func (r *LocalRuntime) SessionStore() session.Store {
 
 // Close releases resources held by the runtime, including the session store.
 func (r *LocalRuntime) Close() error {
-	r.bgAgents.StopAll()
+	r.delegations.StopAll()
 	if r.sessionStore != nil {
 		return r.sessionStore.Close()
 	}
@@ -842,8 +808,7 @@ func (r *LocalRuntime) emitToolsChanged() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	a := r.CurrentAgent()
-	agentTools, err := a.StartedTools(ctx)
+	agentTools, err := r.CurrentAgentTools(ctx)
 	if err != nil {
 		return
 	}
@@ -1049,24 +1014,14 @@ func (r *LocalRuntime) ResumeElicitation(ctx context.Context, action tools.Elici
 	}
 }
 
-// Steer enqueues a user message for urgent mid-turn injection into the
-// running agent loop. The message will be picked up after the current batch
-// of tool calls finishes but before the loop checks whether to stop.
-func (r *LocalRuntime) Steer(msg QueuedMessage) error {
-	if !r.steerQueue.Enqueue(context.Background(), msg) {
-		return errors.New("steer queue full")
+// trySendEvent delivers an event unless the context is done.
+func trySendEvent(ctx context.Context, ch chan<- Event, event Event) bool {
+	select {
+	case ch <- event:
+		return true
+	case <-ctx.Done():
+		return false
 	}
-	return nil
-}
-
-// FollowUp enqueues a message to be processed after the current agent turn
-// finishes. Unlike Steer, follow-ups are popped one at a time and each gets
-// a full undivided agent turn.
-func (r *LocalRuntime) FollowUp(msg QueuedMessage) error {
-	if !r.followUpQueue.Enqueue(context.Background(), msg) {
-		return errors.New("follow-up queue full")
-	}
-	return nil
 }
 
 // Run starts the agent's interaction loop
@@ -1142,4 +1097,47 @@ func (r *LocalRuntime) elicitationHandler(ctx context.Context, req *mcp.ElicitPa
 		slog.Debug("Context cancelled while waiting for elicitation response")
 		return tools.ElicitationResult{}, ctx.Err()
 	}
+}
+
+// handleDelegationCompletion is the callback fired when an async delegation completes.
+// It emits completion/progress and sub-session events via the delegation's pinned event sender.
+func (r *LocalRuntime) handleDelegationCompletion(d *delegation.Delegation) {
+	send := d.Events
+	if send == nil {
+		slog.Debug("No pinned events sender for delegation completion", "delegation_id", d.ID)
+		return
+	}
+
+	if d.ChildSession != nil {
+		if !send(SubSessionCompleted(d.ParentSessionID, d.ChildSession, d.AgentName)) {
+			slog.Warn("Failed to send sub-session completion event", "delegation_id", d.ID)
+		}
+	}
+
+	if output := d.GetOutput(); output != "" {
+		if !send(DelegationProgress(d.ID, d.ParentSessionID, d.AgentName, output)) {
+			slog.Warn("Failed to send delegation progress event", "delegation_id", d.ID)
+		}
+	}
+
+	status := d.LoadStatus()
+	switch status {
+	case delegation.StatusCompleted:
+		if !send(DelegationCompleted(d.ID, d.ParentSessionID, d.AgentName, d.Result, d.Duration())) {
+			slog.Warn("Failed to send delegation completion event", "delegation_id", d.ID)
+		}
+	case delegation.StatusFailed:
+		if !send(DelegationFailed(d.ID, d.ParentSessionID, d.AgentName, d.ErrMsg)) {
+			slog.Warn("Failed to send delegation failed event", "delegation_id", d.ID)
+		}
+	case delegation.StatusStopped:
+		if !send(DelegationStopped(d.ID, d.ParentSessionID, d.AgentName)) {
+			slog.Warn("Failed to send delegation stopped event", "delegation_id", d.ID)
+		}
+	}
+}
+
+// DelegationManager returns the delegation manager for external access (e.g., TUI).
+func (r *LocalRuntime) DelegationManager() *delegation.Manager {
+	return r.delegations
 }

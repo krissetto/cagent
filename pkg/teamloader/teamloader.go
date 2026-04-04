@@ -450,6 +450,9 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 	}
 
 	if len(a.SubAgents) > 0 {
+		// Register the unified delegation tool (delegate, list_delegations, etc.)
+		// Plus backward-compatible aliases for transfer_task
+		toolSets = append(toolSets, builtin.NewDelegateTool())
 		toolSets = append(toolSets, builtin.NewTransferTaskTool())
 	}
 	if len(a.Handoffs) > 0 {
