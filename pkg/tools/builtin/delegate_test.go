@@ -14,18 +14,19 @@ func TestDelegateTool(t *testing.T) {
 	toolset := NewDelegateTool()
 	tools, err := toolset.Tools(context.Background())
 	require.NoError(t, err)
-	require.Len(t, tools, 3)
+	require.Len(t, tools, 4)
 
 	assert.Equal(t, ToolNameDelegate, tools[0].Name)
 	assert.Equal(t, ToolNameContinueDelegation, tools[1].Name)
 	assert.Equal(t, ToolNameStopDelegation, tools[2].Name)
+	assert.Equal(t, ToolNameGetDelegationResult, tools[3].Name)
 }
 
 func TestDelegateToolSchemas(t *testing.T) {
 	toolset := NewDelegateTool()
 	toolList, err := toolset.Tools(context.Background())
 	require.NoError(t, err)
-	require.Len(t, toolList, 3)
+	require.Len(t, toolList, 4)
 
 	toMap := func(t *testing.T, params any) map[string]any {
 		t.Helper()

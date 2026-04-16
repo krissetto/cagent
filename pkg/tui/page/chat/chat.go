@@ -862,13 +862,14 @@ func (p *chatPage) handleDelegationResume(msg msgtypes.DelegationResumeMsg) (lay
 	notifCmd := p.messages.AddSubagentNotification(msg.AgentName)
 
 	if p.working {
-		// Parent is currently running — queue the notification for delivery
-		// after the current stream stops.
+		// Parent is currently running. Queue the notification for delivery after
+		// the current turn ends — it will be drained in handleStreamStopped.
 		p.pendingDelegationResumes = append(p.pendingDelegationResumes, msg)
 		return p, notifCmd
 	}
 
-	// Parent is idle — resume immediately.
+	// Parent is idle — resume immediately so the short notification reaches the
+	// model without user interaction.
 	spinnerCmd := p.setWorking(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	p.msgCancel = cancel
@@ -887,6 +888,10 @@ func (p *chatPage) handleDelegationResume(msg msgtypes.DelegationResumeMsg) (lay
 func (p *chatPage) handleChildTabSendMsg(msg msgtypes.ChildTabSendMsg) (layout.Model, tea.Cmd) {
 	userMsgCmd := p.messages.AddUserMessage(msg.Content)
 	spinnerCmd := p.setWorking(true)
+	// Wire Esc to stop the child delegation via the provided cancel func.
+	if msg.CancelFunc != nil {
+		p.msgCancel = msg.CancelFunc
+	}
 	scrollCmd := p.messages.ScrollToBottom()
 	return p, tea.Batch(userMsgCmd, spinnerCmd, scrollCmd)
 }

@@ -1,6 +1,10 @@
 package messages
 
-import "github.com/docker/docker-agent/pkg/session"
+import (
+	"context"
+
+	"github.com/docker/docker-agent/pkg/session"
+)
 
 // Attachment represents content attached to a message. It is either a reference
 // to a file on disk (FilePath is set) or inline content already in memory
@@ -108,7 +112,8 @@ type (
 	// is NOT called — the actual execution goes through Manager.Continue() which
 	// is triggered by the tui layer before this message is dispatched.
 	ChildTabSendMsg struct {
-		Content string
+		Content    string
+		CancelFunc context.CancelFunc // Called by Esc to stop the delegation
 	}
 
 	// SendAttachmentMsg is a message for the first message with an attachment.

@@ -169,19 +169,26 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	case *runtime.DelegationCompletedEvent:
 		p.sidebar.UpdateDelegation(msg.DelegationID, msg.Reply, false)
-		// Queue the completion for the parent session. If the parent is still
-		// working, handleSendMsg will queue it; if idle, it restarts the loop.
 		if msg.ParentSessionID == p.app.Session().ID {
-			content := fmt.Sprintf("[Delegation %s completed] Agent %q finished with result: %s", msg.DelegationID, msg.AgentName, msg.Reply)
-			return true, core.CmdHandler(msgtypes.SendMsg{Content: content})
+			content := fmt.Sprintf("%s (%s) has responded", msg.AgentName, msg.DelegationID)
+			return true, core.CmdHandler(msgtypes.DelegationResumeMsg{
+				DelegationID: msg.DelegationID,
+				AgentName:    msg.AgentName,
+				Content:      content,
+			})
 		}
 		return true, nil
 
 	case *runtime.DelegationFailedEvent:
 		p.sidebar.UpdateDelegation(msg.DelegationID, msg.Error, true)
 		if msg.ParentSessionID == p.app.Session().ID {
-			content := fmt.Sprintf("[Delegation %s failed] Agent %q reported error: %s", msg.DelegationID, msg.AgentName, msg.Error)
-			return true, core.CmdHandler(msgtypes.SendMsg{Content: content})
+			content := fmt.Sprintf("%s (%s) failed", msg.AgentName, msg.DelegationID)
+			return true, core.CmdHandler(msgtypes.DelegationResumeMsg{
+				DelegationID: msg.DelegationID,
+				AgentName:    msg.AgentName,
+				Content:      content,
+				IsError:      true,
+			})
 		}
 		return true, nil
 

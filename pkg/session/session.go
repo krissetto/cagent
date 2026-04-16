@@ -736,8 +736,12 @@ func buildInvariantSystemMessages(a *agent.Agent) []chat.Message {
 			"\nThe valid agent names are: " + strings.Join(validAgentIDs, ", ") + ".\n\n" +
 			"Use `delegate` to start a background sub-agent run. It returns immediately with a `delegation_id` and `status` \"started\" without waiting for a reply.\n" +
 			"Use `continue_delegation` with a `delegation_id` to send a follow-up message to the same agent session; it returns immediately and the agent's reply will be delivered when ready.\n" +
+			"Use `get_delegation_result` to inspect the current result or status of a delegation without copying the full child session into your context.\n" +
 			"Use `stop_delegation` to cancel a running delegation.\n\n" +
-			"After calling `delegate`, either continue your own work or use `continue_delegation` later if you need a follow-up from that child session.\n\n" +
+			"When a background sub-agent finishes a turn, you will receive a short notification such as `agent_name (delegation_id) has responded`. " +
+			"Use `get_delegation_result` to read the result and decide what to do next. " +
+			"The full child session content is NOT automatically injected into your context — the two sessions remain distinct and tools let you interact between them.\n\n" +
+			"After calling `delegate`, either continue your own work or come back later with `continue_delegation` if you need a follow-up from that child session.\n\n" +
 			"Only delegate to the agents listed above. If you are best suited to handle the request yourself, respond directly."
 		messages = append(messages, chat.Message{
 			Role:    chat.MessageRoleSystem,

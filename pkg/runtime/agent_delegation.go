@@ -211,6 +211,26 @@ func (r *LocalRuntime) RunDelegation(ctx context.Context, d *delegation.Delegati
 		}
 	}
 
+	// Generate a title for the child session from the first user message
+	// (the parent agent's task). This provides a meaningful label in the
+	// sidebar and tab header.
+	if childSess.Title == "" {
+		for _, item := range childSess.Messages {
+			if item.Message != nil && item.Message.Message.Role == chat.MessageRoleUser && !item.Message.Implicit {
+				title := item.Message.Message.Content
+				if len(title) > 60 {
+					title = title[:57] + "..."
+				}
+				childSess.Title = title
+				if r.sessionStore != nil {
+					_ = r.sessionStore.UpdateSession(ctx, childSess)
+				}
+				r.delegationEventBus.Publish(childSess.ID, SessionTitle(childSess.ID, title))
+				break
+			}
+		}
+	}
+
 	// Signal subscribers that the child session stream is done.
 	r.delegationEventBus.Close(childSess.ID)
 
@@ -311,6 +331,28 @@ func (r *LocalRuntime) handleStopDelegation(ctx context.Context, _ *session.Sess
 	// This prevents double-firing and ensures the event fires only after the child
 	// session has fully stopped.
 	return tools.ResultSuccess("delegation stopped"), nil
+}
+
+func (r *LocalRuntime) handleGetDelegationResult(ctx context.Context, _ *session.Session, toolCall tools.ToolCall, _ chan Event) (*tools.ToolCallResult, error) {
+	var params builtin.GetDelegationResultArgs
+	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &params); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	if strings.TrimSpace(params.DelegationID) == "" {
+		return tools.ResultError("delegation_id is required"), nil
+	}
+
+	d, ok := r.delegations.Get(params.DelegationID)
+	if !ok {
+		return tools.ResultError(fmt.Sprintf("delegation %s not found", params.DelegationID)), nil
+	}
+
+	status := string(d.LoadStatus())
+	lastReply := d.GetLastReply()
+
+	result := fmt.Sprintf(`{"delegation_id":%q,"agent":%q,"status":%q,"last_reply":%q}`,
+		params.DelegationID, d.AgentName, status, lastReply)
+	return tools.ResultSuccess(result), nil
 }
 
 func (r *LocalRuntime) handleHandoff(_ context.Context, _ *session.Session, toolCall tools.ToolCall, _ chan Event) (*tools.ToolCallResult, error) {

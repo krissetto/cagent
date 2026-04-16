@@ -834,8 +834,10 @@ func (r *LocalRuntime) SessionStore() session.Store {
 // after the child goroutine has fully finished. This gives the app/TUI a
 // runtime-level observable completion path without requiring parent polling.
 func (r *LocalRuntime) handleDelegationCompletion(d *delegation.Delegation, reply string, err error) {
+	status := d.LoadStatus()
+
 	var event Event
-	switch d.LoadStatus() {
+	switch status {
 	case delegation.StatusCompleted:
 		event = DelegationCompleted(d.ID, d.SessionID, d.ParentSessionID, d.AgentName, reply)
 	case delegation.StatusCancelled:

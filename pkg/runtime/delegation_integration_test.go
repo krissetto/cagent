@@ -251,16 +251,19 @@ func TestDelegate_NoDuplicateUserMessage(t *testing.T) {
 	childSess, err := store.GetSession(context.Background(), childDelegation.SessionID)
 	require.NoError(t, err)
 
-	// Collect all user messages
+	// Collect visible child-session user messages only (exclude parent-session
+	// delegation notifications that may now be persisted asynchronously via the
+	// steer queue on completion).
 	var userMessages []string
 	for _, item := range childSess.Messages {
-		if item.Message != nil && item.Message.Message.Role == chat.MessageRoleUser {
+		if item.Message != nil && item.Message.Message.Role == chat.MessageRoleUser && !item.Message.IsSubagentResult {
 			userMessages = append(userMessages, item.Message.Message.Content)
 		}
 	}
 
-	// Verify exactly 2 messages: first task and follow-up, no duplicates
-	require.Len(t, userMessages, 2, "expected exactly 2 user messages, got: %v", userMessages)
+	// Verify exactly 2 visible child-session user messages: first task and
+	// follow-up, no duplicates.
+	require.Len(t, userMessages, 2, "expected exactly 2 child user messages, got: %v", userMessages)
 	assert.Equal(t, "first task", userMessages[0])
 	assert.Equal(t, "follow-up", userMessages[1])
 }

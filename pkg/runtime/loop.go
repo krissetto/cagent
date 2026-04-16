@@ -32,6 +32,7 @@ func (r *LocalRuntime) registerDefaultTools() {
 	r.toolMap[builtin.ToolNameDelegate] = r.handleDelegate
 	r.toolMap[builtin.ToolNameContinueDelegation] = r.handleContinueDelegation
 	r.toolMap[builtin.ToolNameStopDelegation] = r.handleStopDelegation
+	r.toolMap[builtin.ToolNameGetDelegationResult] = r.handleGetDelegationResult
 	r.toolMap[builtin.ToolNameHandoff] = r.handleHandoff
 
 	// Other built-in handlers
@@ -417,14 +418,23 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 
 			// --- STEERING: mid-turn injection ---
 			// Drain ALL pending steer messages. These are urgent course-
-			// corrections that the model should see on the very next
-			// iteration, wrapped in <system-reminder> tags.
+			// corrections (or subagent notifications) that the model should
+			// see on the very next iteration.
 			if steered := r.steerQueue.Drain(ctx); len(steered) > 0 {
 				for _, sm := range steered {
-					wrapped := fmt.Sprintf(
-						"<system-reminder>\nThe user sent the following message while you were working:\n%s\n\nPlease address this in your next response while continuing with your current tasks.\n</system-reminder>",
-						sm.Content,
-					)
+					var wrapped string
+					switch sm.Kind {
+					case "delegation-notification":
+						wrapped = fmt.Sprintf(
+							"<system-reminder>\nBackground subagent notification: %s\n\nYou may use get_delegation_result to retrieve the result or continue_delegation to send a follow-up.\n</system-reminder>",
+							sm.Content,
+						)
+					default:
+						wrapped = fmt.Sprintf(
+							"<system-reminder>\nThe user sent the following message while you were working:\n%s\n\nPlease address this in your next response while continuing with your current tasks.\n</system-reminder>",
+							sm.Content,
+						)
+					}
 					userMsg := session.UserMessage(wrapped, sm.MultiContent...)
 					sess.AddMessage(userMsg)
 					events <- UserMessage(sm.Content, sess.ID, sm.MultiContent, len(sess.Messages)-1)

@@ -12,6 +12,10 @@ import (
 type QueuedMessage struct {
 	Content      string
 	MultiContent []chat.MessagePart
+	// Kind classifies the message for formatting in the loop. Empty means
+	// a normal user message; "delegation-notification" is used for subagent
+	// completion notifications.
+	Kind string
 }
 
 // MessageQueue is the interface for storing messages that are injected into

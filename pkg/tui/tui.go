@@ -1269,10 +1269,17 @@ func (m *appModel) handleChildTabSend(tabID, delegationID, content string) (tea.
 		return m, notification.ErrorCmd("Failed to send message: " + err.Error())
 	}
 
+	// Wire Esc to stop the child delegation rather than cancelling a normal app.Run stream.
+	cancelFn := func() {
+		if err := mgr.Stop(context.Background(), delegationID); err != nil {
+			slog.Warn("handleChildTabSend: stop child delegation failed", "delegation", delegationID, "error", err)
+		}
+	}
+
 	// Let the chat page handle the display: add user message to transcript
 	// and show the spinner. We forward as a ChildTabSendMsg so the chat page
 	// skips its normal app.Run() path (which would double-execute the child).
-	updated, cmd := m.chatPage.Update(messages.ChildTabSendMsg{Content: content})
+	updated, cmd := m.chatPage.Update(messages.ChildTabSendMsg{Content: content, CancelFunc: cancelFn})
 	m.chatPage = updated.(chat.Page)
 	return m, cmd
 }
@@ -1990,6 +1997,19 @@ func (m *appModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 		case "esc":
 			return m.handleStopSpeak()
+		}
+	}
+
+	// If the active tab is a child delegation session and Esc is pressed,
+	// stop the delegation instead of cancelling a normal app.Run stream.
+	// User-cancelled delegations do NOT auto-resume the parent.
+	if msg.String() == "esc" {
+		activeID := m.supervisor.ActiveID()
+		if delegationID, isChild := m.childTabDelegationIDs[activeID]; isChild {
+			if mgr := m.application.DelegationManager(); mgr != nil {
+				_ = mgr.Stop(context.Background(), delegationID)
+			}
+			// Let the chat page also cancel its local state (spinner off, etc.)
 		}
 	}
 

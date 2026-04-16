@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	ToolNameDelegate           = "delegate"
-	ToolNameContinueDelegation = "continue_delegation"
-	ToolNameStopDelegation     = "stop_delegation"
+	ToolNameDelegate             = "delegate"
+	ToolNameContinueDelegation   = "continue_delegation"
+	ToolNameStopDelegation       = "stop_delegation"
+	ToolNameGetDelegationResult  = "get_delegation_result"
 )
 
 // DelegateArgs is for starting a new delegation.
@@ -27,6 +28,11 @@ type ContinueDelegationArgs struct {
 // StopDelegationArgs specifies the parameters for the stop_delegation tool.
 type StopDelegationArgs struct {
 	DelegationID string `json:"delegation_id" jsonschema:"The short 5-character delegation ID of the delegation to cancel."`
+}
+
+// GetDelegationResultArgs specifies the delegation to retrieve the result for.
+type GetDelegationResultArgs struct {
+	DelegationID string `json:"delegation_id" jsonschema:"The short 5-character delegation ID returned by the delegate tool."`
 }
 
 type DelegateTool struct{}
@@ -60,14 +66,22 @@ func (t *DelegateTool) Tools(context.Context) ([]tools.Tool, error) {
 			Parameters:  tools.MustSchemaFor[StopDelegationArgs](),
 			Annotations: tools.ToolAnnotations{Title: "Stop Delegation"},
 		},
+		{
+			Name:        ToolNameGetDelegationResult,
+			Category:    "transfer",
+			Description: `Read the content of a delegation by its delegation_id. Use this when a user's request matches an available skill.`,
+			Parameters:  tools.MustSchemaFor[GetDelegationResultArgs](),
+			Annotations: tools.ToolAnnotations{Title: "Get Delegation Result", ReadOnlyHint: true},
+		},
 	}, nil
 }
 
 func (t *DelegateTool) Instructions() string {
 	return "# Delegation\n\n" +
 		"Use `delegate` to start a background sub-agent run. It returns immediately with a `delegation_id` and `status` \"started\"; it does not wait for a reply.\n\n" +
-		"Use `continue_delegation` with a `delegation_id` to send a follow-up message to the same agent session; it returns immediately and the agent's reply will be delivered when ready.\n\n" +
+		"Use `continue_delegation` with a `delegation_id` to send a follow-up message to the same agent session; it returns immediately and the agent continues in the background.\n\n" +
+		"Use `get_delegation_result` to inspect the current result or status of a background delegation without copying the child session's full content into the parent session.\n\n" +
 		"Use `stop_delegation` to cancel a running delegation that is no longer needed.\n\n" +
-		"After calling `delegate`, either continue your own work or come back later with `continue_delegation` if you need a follow-up reply from that child session.\n\n" +
-		"Never pass `delegation_id` to `delegate` — use `continue_delegation` for existing delegations."
+		"When a background sub-agent finishes a turn, you may receive a short notification such as `agent_name (delegation_id) has responded`. Treat that as a prompt to inspect or continue that child session with tools, not as the child session's full content.\n\n" +
+		"Never pass `delegation_id` to `delegate` — use `continue_delegation`, `get_delegation_result`, or `stop_delegation` for existing delegations."
 }
