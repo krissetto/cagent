@@ -83,14 +83,14 @@ type Session struct {
 	// CreatedAt is the time the session was created
 	CreatedAt time.Time `json:"created_at"`
 
-	// ToolsApproved is a flag to indicate if the tools have been approved
-	ToolsApproved bool `json:"tools_approved"`
-
 	// NonInteractive indicates the session is running in a non-interactive context
 	// (e.g. MCP server, A2A adapter, evaluation framework) where there is no user
 	// to provide input. This is distinct from ToolsApproved which can also be set
 	// in interactive TUI sessions when a user approves all tools.
 	NonInteractive bool `json:"non_interactive,omitempty"`
+
+	// ToolsApproved is a flag to indicate if the tools have been approved
+	ToolsApproved bool `json:"tools_approved"`
 
 	// HideToolResults is a flag to indicate if tool results should be hidden
 	HideToolResults bool `json:"hide_tool_results"`
@@ -190,6 +190,26 @@ type Message struct {
 	// like when an agent transfers a task to another agent - new session is created with a default user message, but this shouldn't be shown to the user.
 	// Such messages should be marked as true
 	Implicit bool `json:"implicit,omitempty"`
+	// IsSubagentResult marks user-role messages that carry delegation completion
+	// notifications. In the TUI these render as a compact one-liner rather than
+	// a full user message bubble, but for the LLM context they are regular user
+	// messages.
+	IsSubagentResult bool `json:"isSubagentResult,omitempty"`
+}
+
+// SubagentResultMessage creates a user-role message that carries a delegation
+// completion notification. It is tagged IsSubagentResult so the TUI renders it
+// as a compact one-liner ("agentName responded") rather than a full bubble,
+// while the LLM still receives the full content.
+func SubagentResultMessage(agentName, content string) *Message {
+	return &Message{
+		Message: chat.Message{
+			Role:    chat.MessageRoleUser,
+			Content: content,
+		},
+		AgentName:        agentName,
+		IsSubagentResult: true,
+	}
 }
 
 func ImplicitUserMessage(content string) *Message {
@@ -546,15 +566,15 @@ func WithMessages(messages []Item) Opt {
 	}
 }
 
-func WithToolsApproved(toolsApproved bool) Opt {
-	return func(s *Session) {
-		s.ToolsApproved = toolsApproved
-	}
-}
-
 func WithNonInteractive(nonInteractive bool) Opt {
 	return func(s *Session) {
 		s.NonInteractive = nonInteractive
+	}
+}
+
+func WithToolsApproved(toolsApproved bool) Opt {
+	return func(s *Session) {
+		s.ToolsApproved = toolsApproved
 	}
 }
 
@@ -714,11 +734,11 @@ func buildInvariantSystemMessages(a *agent.Agent) []chat.Message {
 
 		delegatePrompt := "You are part of a multi-agent team. You have access to these sub-agents:\n" + text.String() +
 			"\nThe valid agent names are: " + strings.Join(validAgentIDs, ", ") + ".\n\n" +
-			"Use the `delegate` tool to start a conversation with a sub-agent by providing their name and your message. \n" +
-			"The sub-agent may respond with a question or a final result. \n" +
-			"You can continue the conversation using the same tool with the returned `delegation_id`.\n\n" +
-			"If you are the best to answer the question according to your description, you can answer it directly.\n\n" +
-			"Only delegate to the agents listed above."
+			"Use `delegate` to start a background sub-agent run. It returns immediately with a `delegation_id` and `status` \"started\" without waiting for a reply.\n" +
+			"Use `continue_delegation` with a `delegation_id` to send a follow-up message to the same agent session; it returns immediately and the agent's reply will be delivered when ready.\n" +
+			"Use `stop_delegation` to cancel a running delegation.\n\n" +
+			"After calling `delegate`, either continue your own work or use `continue_delegation` later if you need a follow-up from that child session.\n\n" +
+			"Only delegate to the agents listed above. If you are best suited to handle the request yourself, respond directly."
 		messages = append(messages, chat.Message{
 			Role:    chat.MessageRoleSystem,
 			Content: delegatePrompt,

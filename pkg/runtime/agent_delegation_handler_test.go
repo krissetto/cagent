@@ -41,7 +41,7 @@ func waitForDelegationRT(t *testing.T, rt *LocalRuntime, delegationID string) {
 	d, ok := rt.delegations.Get(delegationID)
 	require.True(t, ok, "delegation %s not found", delegationID)
 	select {
-	case <-d.DoneCh:
+	case <-d.GetDoneCh():
 	case <-time.After(5 * time.Second):
 		t.Fatalf("delegation %s did not complete within timeout", delegationID)
 	}

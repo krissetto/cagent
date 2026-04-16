@@ -94,6 +94,21 @@ type Model interface {
 	IsScrollbarDragging() bool
 	// WorkingDirectory returns the working directory path displayed in the sidebar.
 	WorkingDirectory() string
+	// AddDelegation registers a new or reactivates an existing delegation in the sidebar.
+	AddDelegation(id, agentName, task, sessionID string)
+	// UpdateDelegation updates the status of a delegation (completed or failed).
+	UpdateDelegation(id, reply string, failed bool)
+}
+
+// DelegationInfo holds the state of a single delegation shown in the sidebar.
+type DelegationInfo struct {
+	ID             string
+	AgentName      string
+	Task           string
+	ChildSessionID string
+	Status         string // "running", "completed", "failed", "stopped"
+	Reply          string
+	Failed         bool
 }
 
 // ragIndexingState tracks per-strategy indexing progress
@@ -152,6 +167,10 @@ type model struct {
 
 	// Agent click zones: maps content line index to agent name for click detection
 	agentClickZones map[int]string // content line -> agent name
+
+	// Delegation tracking
+	delegations        []DelegationInfo
+	delegationClickMap map[int]int // content line number → index in delegations slice
 }
 
 // Option is a functional option for configuring the sidebar.
@@ -183,10 +202,11 @@ func New(sessionState *service.SessionState, opts ...Option) Model {
 			scrollview.WithWheelStep(1),
 			scrollview.WithKeyMap(nil), // Sidebar has no keyboard scroll — only mouse
 		),
-		workingDirectory: getCurrentWorkingDirectory(),
-		preferredWidth:   DefaultWidth,
-		titleInput:       ti,
-		cacheDirty:       true, // Initial render needed
+		workingDirectory:   getCurrentWorkingDirectory(),
+		preferredWidth:     DefaultWidth,
+		titleInput:         ti,
+		cacheDirty:         true, // Initial render needed
+		delegationClickMap: make(map[int]int),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -200,6 +220,11 @@ func (m *model) Init() tea.Cmd {
 
 // needsSpinner returns true if any spinner-driving state is active.
 func (m *model) needsSpinner() bool {
+	for _, d := range m.delegations {
+		if d.Status == "running" {
+			return true
+		}
+	}
 	return m.workingAgent != "" || m.toolsLoading || m.mcpInit || m.titleRegenerating
 }
 
@@ -575,6 +600,25 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		return m, cmd
 	case tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg, messages.WheelCoalescedMsg:
 		if m.mode == ModeVertical {
+			// Check delegation clicks
+			if clickMsg, ok := msg.(tea.MouseClickMsg); ok && clickMsg.Button == tea.MouseLeft {
+				adjustedX := clickMsg.X - m.layoutCfg.PaddingLeft
+				if adjustedX >= 0 {
+					scrollOffset := m.scrollview.ScrollOffset()
+					contentY := clickMsg.Y + scrollOffset
+					if idx, found := m.delegationClickMap[contentY]; found && idx < len(m.delegations) {
+						d := m.delegations[idx]
+						if d.ChildSessionID != "" {
+							return m, func() tea.Msg {
+								return messages.OpenChildSessionMsg{
+									ChildSessionID: d.ChildSessionID,
+									DelegationID:   d.ID,
+								}
+							}
+						}
+					}
+				}
+			}
 			_, cmd := m.scrollview.Update(msg)
 			return m, cmd
 		}
@@ -903,9 +947,95 @@ func (m *model) renderFromCache() string {
 	return m.scrollview.View()
 }
 
+// AddDelegation registers a new or reactivates an existing delegation in the sidebar.
+func (m *model) AddDelegation(id, agentName, task, sessionID string) {
+	// Check if delegation already exists (for continue_delegation reactivation)
+	for i, d := range m.delegations {
+		if d.ID == id {
+			m.delegations[i].Status = "running"
+			m.delegations[i].Task = task
+			m.invalidateCache()
+			return
+		}
+	}
+	m.delegations = append(m.delegations, DelegationInfo{
+		ID:             id,
+		AgentName:      agentName,
+		Task:           task,
+		ChildSessionID: sessionID,
+		Status:         "running",
+	})
+	m.invalidateCache()
+}
+
+// UpdateDelegation updates the status of a delegation (completed or failed).
+func (m *model) UpdateDelegation(id, reply string, failed bool) {
+	for i, d := range m.delegations {
+		if d.ID == id {
+			m.delegations[i].Reply = reply
+			m.delegations[i].Failed = failed
+			if failed {
+				m.delegations[i].Status = "failed"
+			} else {
+				m.delegations[i].Status = "completed"
+			}
+			m.invalidateCache()
+			return
+		}
+	}
+}
+
+// delegationSection renders the delegations tab in the sidebar.
+func (m *model) delegationSection(contentWidth int) string {
+	if len(m.delegations) == 0 {
+		return ""
+	}
+
+	maxWidth := contentWidth - treePrefixWidth
+	var rows []string
+	for i, d := range m.delegations {
+		var statusIcon string
+		var statusStyle lipgloss.Style
+		switch d.Status {
+		case "running":
+			statusIcon = m.spinner.View()
+			statusStyle = styles.ActiveStyle
+		case "completed":
+			statusIcon = styles.TabAccentStyle.Render("✓")
+			statusStyle = styles.TabPrimaryStyle
+		case "failed":
+			statusIcon = styles.ErrorStyle.Render("✗")
+			statusStyle = styles.ErrorStyle
+		default:
+			statusIcon = styles.MutedStyle.Render("•")
+			statusStyle = styles.MutedStyle
+		}
+
+		agentStyle := styles.AgentAccentStyleFor(d.AgentName)
+		line := statusIcon + " " + agentStyle.Render(d.AgentName) + " " + statusStyle.Render("— "+d.Status)
+
+		// Add task as a tree branch below
+		var prefix string
+		if i == len(m.delegations)-1 {
+			prefix = styles.MutedStyle.Render("└ ")
+		} else {
+			prefix = styles.MutedStyle.Render("├ ")
+		}
+		taskLine := prefix + toolcommon.TruncateText(d.Task, maxWidth)
+
+		rows = append(rows, line, taskLine)
+	}
+
+	content := strings.Join(rows, "\n")
+	return m.renderTab("Delegations", content, contentWidth)
+}
+
 // renderSections renders all sidebar sections and returns them as lines.
 func (m *model) renderSections(contentWidth int) []string {
 	var lines []string
+
+	// Clear delegation click map
+	m.delegationClickMap = make(map[int]int)
 
 	appendSection := func(section string) {
 		if section != "" {
@@ -915,6 +1045,24 @@ func (m *model) renderSections(contentWidth int) []string {
 
 	appendSection(m.sessionInfo(contentWidth))
 	appendSection(m.tokenUsage(contentWidth))
+
+	// Track delegation section line range for click detection
+	delegationStartLine := len(lines)
+	delegationContent := m.delegationSection(contentWidth)
+	if delegationContent != "" {
+		delegationLines := strings.Split(delegationContent, "\n")
+		// The tab header is 1 line (title), then content starts. Each delegation
+		// uses 2 lines (status + task). Map the status line of each delegation
+		// to its index for click detection.
+		headerLines := 1
+		for i := range m.delegations {
+			rowStartLine := delegationStartLine + headerLines + (i * 2)
+			m.delegationClickMap[rowStartLine] = i
+			m.delegationClickMap[rowStartLine+1] = i
+		}
+		lines = append(lines, delegationLines...)
+	}
+
 	appendSection(m.queueSection(contentWidth))
 
 	// Track where agent entries start so we can detect clicks on agent names

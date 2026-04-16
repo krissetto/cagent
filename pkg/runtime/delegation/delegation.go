@@ -78,6 +78,10 @@ type Delegation struct {
 
 	// StartTime is when this delegation started
 	StartTime time.Time
+
+	// TerminatedAt is when this delegation entered a terminal state.
+	// Zero value means it has not terminated yet.
+	TerminatedAt time.Time
 }
 
 // NewDelegation creates a new delegation for a child session
@@ -96,9 +100,23 @@ func (d *Delegation) LoadStatus() DelegationStatus {
 	return DelegationStatus(d.Status.Load())
 }
 
-// StoreStatus sets the status atomically
+// StoreStatus sets the status atomically.
+// If the new status is terminal (Completed, Failed, Cancelled) and TerminatedAt
+// has not been set yet, it is recorded under d.mu.
+// For terminal statuses, d.mu is held across both the atomic store and the
+// TerminatedAt assignment so there is no window where a reader can observe a
+// terminal status but still see a zero TerminatedAt.
 func (d *Delegation) StoreStatus(s DelegationStatus) {
-	d.Status.Store(int32(s))
+	if s == StatusCompleted || s == StatusFailed || s == StatusCancelled {
+		d.mu.Lock()
+		d.Status.Store(int32(s))
+		if d.TerminatedAt.IsZero() {
+			d.TerminatedAt = time.Now()
+		}
+		d.mu.Unlock()
+	} else {
+		d.Status.Store(int32(s))
+	}
 }
 
 // CompareAndSwapStatus atomically updates status if it matches old
@@ -139,13 +157,10 @@ func (d *Delegation) Duration() time.Duration {
 	return time.Since(d.StartTime)
 }
 
-// replaceDoneCh creates a fresh DoneCh under the delegation mutex.
-// Must only be called after the previous DoneCh has been closed (e.g. after
-// waiting on it in Continue).
-func (d *Delegation) replaceDoneCh() chan struct{} {
+// GetDoneCh returns the current DoneCh under d.mu for safe external access.
+// Callers should use this instead of reading d.DoneCh directly.
+func (d *Delegation) GetDoneCh() chan struct{} {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	ch := make(chan struct{})
-	d.DoneCh = ch
-	return ch
+	return d.DoneCh
 }

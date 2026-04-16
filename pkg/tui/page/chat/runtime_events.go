@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -163,16 +164,30 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	// ===== Delegation Events =====
 	case *runtime.DelegationStartedEvent:
-		return true, p.messages.AddDelegationCard(msg.DelegationID, msg.AgentName, msg.Task)
+		p.sidebar.AddDelegation(msg.DelegationID, msg.AgentName, msg.Task, msg.SessionID)
+		return true, nil
 
 	case *runtime.DelegationCompletedEvent:
-		return true, p.messages.UpdateDelegationCard(msg.DelegationID, msg.Reply, false)
+		p.sidebar.UpdateDelegation(msg.DelegationID, msg.Reply, false)
+		// Queue the completion for the parent session. If the parent is still
+		// working, handleSendMsg will queue it; if idle, it restarts the loop.
+		if msg.ParentSessionID == p.app.Session().ID {
+			content := fmt.Sprintf("[Delegation %s completed] Agent %q finished with result: %s", msg.DelegationID, msg.AgentName, msg.Reply)
+			return true, core.CmdHandler(msgtypes.SendMsg{Content: content})
+		}
+		return true, nil
 
 	case *runtime.DelegationFailedEvent:
-		return true, p.messages.UpdateDelegationCard(msg.DelegationID, msg.Error, true)
+		p.sidebar.UpdateDelegation(msg.DelegationID, msg.Error, true)
+		if msg.ParentSessionID == p.app.Session().ID {
+			content := fmt.Sprintf("[Delegation %s failed] Agent %q reported error: %s", msg.DelegationID, msg.AgentName, msg.Error)
+			return true, core.CmdHandler(msgtypes.SendMsg{Content: content})
+		}
+		return true, nil
 
 	case *runtime.DelegationStoppedEvent:
-		return true, p.messages.UpdateDelegationCard(msg.DelegationID, "stopped", false)
+		p.sidebar.UpdateDelegation(msg.DelegationID, "stopped", false)
+		return true, nil
 	}
 
 	return false, nil
@@ -281,6 +296,19 @@ func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd 
 	p.setPendingResponse(false)
 	queueCmd := p.processNextQueuedMessage()
 
+	var resumeCmd tea.Cmd
+	if queueCmd == nil && len(p.pendingDelegationResumes) > 0 {
+		pending := p.pendingDelegationResumes[0]
+		p.pendingDelegationResumes = p.pendingDelegationResumes[1:]
+		resumeSpinnerCmd := p.setWorking(true)
+		ctx, cancel := context.WithCancel(context.Background())
+		p.msgCancel = cancel
+		go func() {
+			p.app.RunWithSubagentResult(ctx, cancel, pending.AgentName, pending.Content)
+		}()
+		resumeCmd = resumeSpinnerCmd
+	}
+
 	var exitCmd tea.Cmd
 	if p.app.ShouldExitAfterFirstResponse() && p.hasReceivedAssistantContent {
 		slog.Debug("Exit after first response triggered, scheduling delayed exit")
@@ -289,7 +317,7 @@ func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd 
 		})
 	}
 
-	return tea.Batch(p.messages.ScrollToBottom(), spinnerCmd, sidebarCmd, queueCmd, exitCmd)
+	return tea.Batch(p.messages.ScrollToBottom(), spinnerCmd, sidebarCmd, queueCmd, resumeCmd, exitCmd)
 }
 
 // handlePartialToolCall processes partial tool call events by rendering each

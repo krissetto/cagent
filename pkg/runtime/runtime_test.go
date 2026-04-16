@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,7 @@ import (
 	"github.com/docker/docker-agent/pkg/modelerrors"
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/permissions"
+	"github.com/docker/docker-agent/pkg/runtime/delegation"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
@@ -1843,6 +1845,54 @@ func TestResolveSessionAgent_InvalidNameFallsBack(t *testing.T) {
 	assert.Equal(t, "root", resolved.Name(), "should fall back to currentAgent for unknown AgentName")
 }
 
+// TestResolveSessionAgent_FindsSubAgent verifies that resolveSessionAgent can
+// find a sub-agent that is NOT a top-level team member.
+func TestResolveSessionAgent_FindsSubAgent(t *testing.T) {
+	prov := &mockProvider{id: "test/mock-model", stream: &mockStream{}}
+	coder := agent.New("coder", "Coder agent", agent.WithModel(prov))
+	root := agent.New("root", "Root agent", agent.WithModel(prov), agent.WithSubAgents(coder))
+	tm := team.New(team.WithAgents(root))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+
+	sess := session.New(session.WithAgentName("coder"))
+	resolved := rt.resolveSessionAgent(sess)
+	require.NotNil(t, resolved)
+	assert.Equal(t, "coder", resolved.Name(), "should find sub-agent through recursive search")
+}
+
+// TestResolveSessionAgent_FindsDeepSubAgent verifies recursive search through
+// multiple levels of sub-agent nesting.
+func TestResolveSessionAgent_FindsDeepSubAgent(t *testing.T) {
+	prov := &mockProvider{id: "test/mock-model", stream: &mockStream{}}
+	deepChild := agent.New("deep-child", "Deep child", agent.WithModel(prov))
+	middle := agent.New("middle", "Middle agent", agent.WithModel(prov), agent.WithSubAgents(deepChild))
+	root := agent.New("root", "Root agent", agent.WithModel(prov), agent.WithSubAgents(middle))
+	tm := team.New(team.WithAgents(root))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+
+	sess := session.New(session.WithAgentName("deep-child"))
+	resolved := rt.resolveSessionAgent(sess)
+	require.NotNil(t, resolved)
+	assert.Equal(t, "deep-child", resolved.Name(), "should find deeply nested sub-agent")
+}
+
+// TestFindInSubAgents_Recursive tests the exported FindInSubAgents helper.
+func TestFindInSubAgents_Recursive(t *testing.T) {
+	prov := &mockProvider{id: "test/mock-model", stream: &mockStream{}}
+	deep := agent.New("deep", "Deep agent", agent.WithModel(prov))
+	middle := agent.New("middle", "Middle agent", agent.WithModel(prov), agent.WithSubAgents(deep))
+	root := agent.New("root", "Root agent", agent.WithModel(prov), agent.WithSubAgents(middle))
+
+	resolved := FindInSubAgents(root, "deep")
+	require.NotNil(t, resolved)
+	assert.Equal(t, "deep", resolved.Name())
+	assert.Nil(t, FindInSubAgents(root, "missing"))
+}
+
 // TestProcessToolCalls_UsesPinnedAgent verifies that tool-call events emitted by
 // processToolCalls carry the pinned agent's name, not root's. Before the fix,
 // processToolCalls called r.CurrentAgent() which always returned root for
@@ -1974,4 +2024,41 @@ func TestRunStream_EmptyMessages_SendUserMessage(t *testing.T) {
 		events = append(events, ev)
 	}
 	require.NotEmpty(t, events)
+}
+
+// TestHandleDelegationCompletion_BlockedChannel verifies that handleDelegationCompletion
+// returns promptly even when the elicitationEventsChannel is full, and does not panic.
+func TestHandleDelegationCompletion_BlockedChannel(t *testing.T) {
+	prov := &mockProvider{id: "test/mock-model", stream: &mockStream{}}
+	root := agent.New("root", "Root agent", agent.WithModel(prov))
+	tm := team.New(team.WithAgents(root))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+
+	// Full buffered channel: non-blocking send in handleDelegationCompletion
+	// must return promptly and not panic.
+	blockedCh := make(chan Event, 1)
+	blockedCh <- Warning("already full", "root")
+
+	rt.elicitationEventsChannelMux.Lock()
+	rt.elicitationEventsChannel = blockedCh
+	rt.elicitationEventsChannelMux.Unlock()
+
+	d := delegation.NewDelegation("sess1", "parent1", "worker")
+	d.ID = "abc12"
+	d.StoreStatus(delegation.StatusCompleted)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rt.handleDelegationCompletion(d, "reply", nil)
+	}()
+
+	select {
+	case <-done:
+		// Good
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleDelegationCompletion blocked on full events channel")
+	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/docker/docker-agent/pkg/audio/transcribe"
 	"github.com/docker/docker-agent/pkg/history"
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/runtime/delegation"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/commands"
@@ -156,6 +157,16 @@ type appModel struct {
 	// previously focused tab differs from the initial tab.
 	pendingActiveTab string
 
+	// childBusSubs tracks active EventBus subscriptions for delegation child
+	// sessions. Keyed by the runtime tab ID (same key as chatPages). The
+	// cancel function cancels the forwarding goroutine when the tab closes.
+	childBusSubs map[string]context.CancelFunc
+
+	// childTabDelegationIDs maps runtime tab IDs of child session tabs to their
+	// delegation short IDs. When the user sends a message from a child tab, we
+	// route it through Manager.Continue() instead of app.Run().
+	childTabDelegationIDs map[string]string
+
 	ready bool
 	err   error
 
@@ -256,6 +267,8 @@ func New(ctx context.Context, spawner SessionSpawner, initialApp *app.App, initi
 		history:                 historyStore,
 		pendingRestores:         make(map[string]string),
 		pendingSidebarCollapsed: make(map[string]bool),
+		childBusSubs:            make(map[string]context.CancelFunc),
+		childTabDelegationIDs:   make(map[string]string),
 		notification:            notification.New(),
 		dialogMgr:               dialog.New(),
 		completions:             completion.New(),
@@ -855,6 +868,15 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.history != nil {
 			_ = m.history.Add(msg.Content)
 		}
+
+		// If the active tab is a child delegation session, route the message
+		// through Manager.Continue() so the delegation lifecycle is tracked
+		// and the parent agent is notified when the child responds.
+		activeID := m.supervisor.ActiveID()
+		if delegationID, isChild := m.childTabDelegationIDs[activeID]; isChild {
+			return m.handleChildTabSend(activeID, delegationID, msg.Content)
+		}
+
 		updated, cmd := m.chatPage.Update(msg)
 		m.chatPage = updated.(chat.Page)
 		return m, cmd
@@ -880,6 +902,9 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.LoadSessionMsg:
 		return m.handleLoadSession(msg.SessionID)
+
+	case messages.OpenChildSessionMsg:
+		return m.handleOpenChildSession(msg.ChildSessionID, msg.DelegationID)
 
 	case messages.BranchFromEditMsg:
 		return m.handleBranchFromEdit(msg)
@@ -1217,6 +1242,170 @@ func (m *appModel) handleLoadSession(sessionID string) (tea.Model, tea.Cmd) {
 	)
 }
 
+// forwardChildEvents subscribes to delegation EventBus events for a child session
+// and forwards them as RoutedMsg to the correct tab's chat page.
+//
+// Known limitation (iteration 3): events that were already persisted (loaded from
+// store by handleOpenChildSession) may also arrive as live events during the brief
+// overlap between load-from-store and the first live event from the bus. This can
+// result in duplicate content (e.g. duplicate AgentChoiceEvent text) in the chat
+// page. Dedup logic is deferred to a future iteration.
+// handleChildTabSend processes a user message sent from a child delegation tab.
+// It routes the message through Manager.Continue() (async) so the delegation
+// lifecycle is tracked and the parent agent is notified when the child responds.
+func (m *appModel) handleChildTabSend(tabID, delegationID, content string) (tea.Model, tea.Cmd) {
+	mgr := m.application.DelegationManager()
+	if mgr == nil {
+		slog.Warn("handleChildTabSend: no delegation manager available", "tab", tabID)
+		// Fall back to normal send.
+		updated, cmd := m.chatPage.Update(messages.SendMsg{Content: content})
+		m.chatPage = updated.(chat.Page)
+		return m, cmd
+	}
+
+	// Continue() is async: it queues the message and returns immediately.
+	if err := mgr.Continue(context.Background(), delegationID, content); err != nil {
+		slog.Warn("handleChildTabSend: Continue failed", "delegation", delegationID, "error", err)
+		return m, notification.ErrorCmd("Failed to send message: " + err.Error())
+	}
+
+	// Let the chat page handle the display: add user message to transcript
+	// and show the spinner. We forward as a ChildTabSendMsg so the chat page
+	// skips its normal app.Run() path (which would double-execute the child).
+	updated, cmd := m.chatPage.Update(messages.ChildTabSendMsg{Content: content})
+	m.chatPage = updated.(chat.Page)
+	return m, cmd
+}
+
+func (m *appModel) forwardChildEvents(ctx context.Context, childSessionID, tabID string, bus *runtime.EventBus) {
+	reopens := bus.WatchReopens(childSessionID)
+	// Capture program reference at subscription time. SetProgram is always called before
+	// any Update handler fires, so m.program is non-nil by the time we reach here.
+	p := m.program
+	go func() {
+		defer bus.UnwatchReopens(childSessionID, reopens)
+		for {
+			ch := bus.Subscribe(childSessionID, 256)
+			// Forward all events from this run.
+			alive := true
+			for alive {
+				select {
+				case event, ok := <-ch:
+					if !ok {
+						alive = false // bus closed for this session (delegation complete)
+					} else if p != nil {
+						p.Send(messages.RoutedMsg{
+							SessionID: tabID,
+							Inner:     event,
+						})
+					}
+				case <-ctx.Done():
+					bus.Unsubscribe(childSessionID, ch)
+					return
+				}
+			}
+			bus.Unsubscribe(childSessionID, ch)
+			// Wait for next run (reopen signal) or tab close.
+			select {
+			case <-reopens:
+				continue // new run started, re-subscribe
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (m *appModel) handleOpenChildSession(childSessionID, delegationID string) (tea.Model, tea.Cmd) {
+	store := m.application.SessionStore()
+	if store == nil {
+		return m, notification.ErrorCmd("No session store configured")
+	}
+
+	sess, err := store.GetSession(context.Background(), childSessionID)
+	if err != nil {
+		return m, notification.ErrorCmd(fmt.Sprintf("Failed to load child session: %v", err))
+	}
+
+	if tabID := m.findTabByPersistedID(childSessionID); tabID != "" {
+		return m.handleSwitchTab(tabID)
+	}
+
+	workingDir := sess.WorkingDir
+	if workingDir == "" {
+		workingDir = m.application.Session().WorkingDir
+	}
+	ctx := context.Background()
+
+	// Capture the delegation event bus from the current (parent) app before switching
+	// tabs — m.application changes after handleSwitchTab.
+	parentBus := m.application.DelegationEventBus()
+
+	newSessionID, err := m.supervisor.SpawnSession(ctx, workingDir)
+	if err != nil {
+		return m, notification.ErrorCmd("Failed to create tab for child session: " + err.Error())
+	}
+
+	if m.tuiStore != nil {
+		if err := m.tuiStore.AddTab(ctx, sess.ID, workingDir); err != nil {
+			slog.Warn("Failed to persist child session tab", "error", err)
+		}
+	}
+
+	model, switchCmd := m.handleSwitchTab(newSessionID)
+	m.application.ReplaceSession(ctx, sess)
+	m.initSessionComponents(newSessionID, m.application, sess)
+
+	if sess.Title != "" {
+		m.supervisor.SetRunnerTitle(newSessionID, sess.Title)
+	}
+
+	m.persistActiveTab(sess.ID)
+
+	// Subscribe to live EventBus events for the child session so the tab shows
+	// streaming updates while the delegation is still in progress.
+	if parentBus != nil {
+		subCtx, cancel := context.WithCancel(context.Background())
+		m.childBusSubs[newSessionID] = cancel
+		m.forwardChildEvents(subCtx, childSessionID, newSessionID, parentBus)
+	}
+
+	// If the delegation is currently running, send a synthetic StreamStartedEvent
+	// to prime the child tab's spinner (the real StreamStartedEvent was missed).
+	// Also generate a title from the task if the session doesn't have one.
+	if delegationID != "" {
+		if mgr := m.application.DelegationManager(); mgr != nil {
+			if d, ok := mgr.Get(delegationID); ok {
+				if d.LoadStatus() == delegation.StatusRunning && m.program != nil {
+					m.program.Send(messages.RoutedMsg{
+						SessionID: newSessionID,
+						Inner:     runtime.StreamStarted(childSessionID, d.AgentName),
+					})
+				}
+				if sess.Title == "" && d.Task != "" {
+					// Derive a short title from the task.
+					title := d.Task
+					if len(title) > 60 {
+						title = title[:57] + "..."
+					}
+					m.supervisor.SetRunnerTitle(newSessionID, title)
+				}
+			}
+		}
+	}
+
+	// Register the tab as a child delegation tab so SendMsg is routed through
+	// Manager.Continue() rather than app.Run().
+	if delegationID != "" {
+		m.childTabDelegationIDs[newSessionID] = delegationID
+	}
+
+	return model, tea.Batch(
+		switchCmd,
+		m.initAndFocusComponents(),
+	)
+}
+
 // replaceActiveSession replaces the current (empty) tab's session with a loaded one in-place.
 // If the loaded session's working directory differs from the runner's current one,
 // a fresh runtime is spawned via the supervisor so that tools operate in the correct directory.
@@ -1544,6 +1733,12 @@ func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
 	delete(m.pendingRestores, sessionID)
 	delete(m.pendingSidebarCollapsed, sessionID)
 
+	// Cancel any EventBus subscription for a delegation child session tab.
+	if cancelSub, ok := m.childBusSubs[sessionID]; ok {
+		cancelSub()
+		delete(m.childBusSubs, sessionID)
+	}
+	delete(m.childTabDelegationIDs, sessionID)
 	var cmds []tea.Cmd
 	// Remove from persistent store using the persisted session-store ID.
 	if m.tuiStore != nil {
@@ -2378,6 +2573,15 @@ func (m *appModel) cleanupAll() {
 	m.closeTranscriptCh()
 	for _, ed := range m.editors {
 		ed.Cleanup()
+	}
+
+	// Cancel all child bus subscriptions.
+	for id, cancelSub := range m.childBusSubs {
+		cancelSub()
+		delete(m.childBusSubs, id)
+	}
+	for id := range m.childTabDelegationIDs {
+		delete(m.childTabDelegationIDs, id)
 	}
 
 	// Safety net: force-exit if bubbletea's shutdown gets stuck.

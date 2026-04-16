@@ -23,6 +23,7 @@ const (
 	MessageTypeWelcome
 	MessageTypeLoading
 	MessageTypeDelegation
+	MessageTypeSubagentNotification
 )
 
 const (
@@ -57,11 +58,12 @@ type Message struct {
 	// Used for operations like branching on edits.
 	SessionPosition *int
 	// Delegation card fields (MessageTypeDelegation only)
-	DelegationID    string
-	DelegationAgent string
-	DelegationDone  bool
-	DelegationFailed bool
-	DelegationReply string
+	DelegationID        string
+	DelegationAgent     string
+	DelegationDone      bool
+	DelegationFailed    bool
+	DelegationReply     string
+	DelegationSessionID string // child session ID from DelegationStartedEvent
 }
 
 func Agent(typ MessageType, agentName, content string) *Message {
@@ -134,11 +136,21 @@ func Loading(description string) *Message {
 	}
 }
 
-func DelegationCard(id, agentName, task string) *Message {
+func DelegationCard(id, agentName, task, sessionID string) *Message {
 	return &Message{
-		Type:            MessageTypeDelegation,
-		DelegationID:    id,
-		DelegationAgent: agentName,
-		Content:         task,
+		Type:                    MessageTypeDelegation,
+		DelegationID:            id,
+		DelegationAgent:         agentName,
+		Content:                 task,
+		DelegationSessionID:     sessionID,
+	}
+}
+
+// SubagentNotification creates a compact one-liner indicating a subagent responded.
+func SubagentNotification(agentName string) *Message {
+	return &Message{
+		Type:    MessageTypeSubagentNotification,
+		Content: agentName + " responded",
+		Sender:  agentName,
 	}
 }

@@ -143,24 +143,60 @@ func (r *LocalRuntime) runSubSessionForwarding(ctx context.Context, parent, chil
 
 // RunDelegation implements delegation.DelegationRunner.
 //
-// It runs a child session and returns the last assistant message. The context
-// should carry delegation.BackgroundRunKey when invoked from a background
-// goroutine (via Manager.Start) so that RunStream skips the global elicitation
-// channel swap — preventing concurrent child runs from clobbering each other.
-// For synchronous Continue calls the context does NOT carry the key, so normal
-// elicitation swap/restore semantics apply.
+// It is a pure executor: it receives a fully-composed childSess and runs it,
+// returning the last assistant message. It does NOT add messages to childSess
+// or perform whole-session persistence — that is the caller's responsibility
+// (Manager.Start / Manager.Continue).
+//
+// The context should carry delegation.BackgroundRunKey when invoked from a
+// background goroutine (via Manager.Start or Manager.Continue) so that RunStream
+// skips the global elicitation channel swap — preventing concurrent child runs
+// from clobbering each other.
 func (r *LocalRuntime) RunDelegation(ctx context.Context, d *delegation.Delegation, childSess *session.Session) (string, error) {
+	// Ensure child session row exists before incremental message persistence.
 	if r.sessionStore != nil {
-		if existing, err := r.sessionStore.GetSession(ctx, childSess.ID); err == nil && existing != nil {
-			existing.AddMessage(session.UserMessage(childSess.GetLastUserMessageContent()))
-			childSess = existing
+		if err := r.sessionStore.UpdateSession(ctx, childSess); err != nil {
+			slog.Warn("Failed to upsert child session before delegation run",
+				"session_id", childSess.ID, "error", err)
+		}
+		// Persist any messages in childSess that are not yet in the store.
+		// SQL-backed stores only write session metadata in UpdateSession; in-memory
+		// stores include the full message list. We detect the gap by comparing the
+		// stored count to the in-memory count and persisting the delta — so this is
+		// a no-op for in-memory (already included) and correctly persists the initial
+		// task (Start) or follow-up message (Continue) for SQL-backed stores.
+		if storedSess, getErr := r.sessionStore.GetSession(ctx, childSess.ID); getErr == nil {
+			storedCount := len(storedSess.Messages)
+			for i := storedCount; i < len(childSess.Messages); i++ {
+				item := childSess.Messages[i]
+				if item.Message != nil {
+					if _, addErr := r.sessionStore.AddMessage(ctx, childSess.ID, item.Message); addErr != nil {
+						slog.Warn("Failed to persist pre-run session message",
+							"session_id", childSess.ID, "position", i, "error", addErr)
+					}
+				}
+			}
 		}
 	}
+
+	// Clear any previous closed latch so that a continuation can establish
+	// fresh subscriptions and receive live events again via the event bus.
+	r.delegationEventBus.Reopen(childSess.ID)
 
 	events := r.RunStream(ctx, childSess)
 	var lastAssistant string
 	var errMsg string
+	var streaming streamingState // tracks incremental persistence state
 	for event := range events {
+		// Publish every child event to the delegation event bus so TUI
+		// subscribers can receive live updates.
+		r.delegationEventBus.Publish(childSess.ID, event)
+
+		// Incrementally persist child events if a store is configured.
+		if r.sessionStore != nil {
+			persistChildEvent(ctx, r.sessionStore, childSess.ID, event, &streaming)
+		}
+
 		switch e := event.(type) {
 		case *AgentChoiceEvent:
 			if e.SessionID == childSess.ID && e.Content != "" {
@@ -175,16 +211,11 @@ func (r *LocalRuntime) RunDelegation(ctx context.Context, d *delegation.Delegati
 		}
 	}
 
+	// Signal subscribers that the child session stream is done.
+	r.delegationEventBus.Close(childSess.ID)
+
 	if errMsg != "" {
 		return "", fmt.Errorf("%s", errMsg)
-	}
-
-	// Persist the child session after a successful run so that Continue can reload it.
-	if r.sessionStore != nil {
-		if err := r.sessionStore.UpdateSession(ctx, childSess); err != nil {
-			slog.Warn("Failed to persist child session after delegation run",
-				"session_id", childSess.ID, "error", err)
-		}
 	}
 
 	return lastAssistant, nil
@@ -215,6 +246,7 @@ func (r *LocalRuntime) handleDelegate(ctx context.Context, sess *session.Session
 		Task:            params.Task,
 		ParentSessionID: sess.ID,
 		ParentSession:   sess,
+		WorkingDir:      sess.WorkingDir,
 	})
 	if err != nil {
 		return tools.ResultError(err.Error()), nil
@@ -228,7 +260,7 @@ func (r *LocalRuntime) handleDelegate(ctx context.Context, sess *session.Session
 	return tools.ResultSuccess(fmt.Sprintf(`{"delegation_id":%q,"status":"started"}`, delegationID)), nil
 }
 
-func (r *LocalRuntime) handleContinueDelegation(ctx context.Context, _ *session.Session, toolCall tools.ToolCall, _ chan Event) (*tools.ToolCallResult, error) {
+func (r *LocalRuntime) handleContinueDelegation(ctx context.Context, sess *session.Session, toolCall tools.ToolCall, evts chan Event) (*tools.ToolCallResult, error) {
 	var params builtin.ContinueDelegationArgs
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &params); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -240,11 +272,27 @@ func (r *LocalRuntime) handleContinueDelegation(ctx context.Context, _ *session.
 		return tools.ResultError("message is required"), nil
 	}
 
-	reply, err := r.delegations.Continue(ctx, params.DelegationID, params.Message)
+	// Look up the delegation so we can emit lifecycle events with the child session ID.
+	d, ok := r.delegations.Get(params.DelegationID)
+	if !ok {
+		return tools.ResultError("delegation not found"), nil
+	}
+
+	// Reactivate the delegation card in the TUI before the async run.
+	if evts != nil {
+		trySendEvent(ctx, evts, DelegationStarted(params.DelegationID, d.SessionID, sess.ID, d.AgentName, params.Message))
+	}
+
+	err := r.delegations.Continue(ctx, params.DelegationID, params.Message)
 	if err != nil {
+		if evts != nil {
+			trySendEvent(ctx, evts, DelegationFailed(params.DelegationID, d.SessionID, sess.ID, d.AgentName, err.Error()))
+		}
 		return tools.ResultError(err.Error()), nil
 	}
-	return tools.ResultSuccess(fmt.Sprintf(`{"delegation_id":%q,"reply":%q}`, params.DelegationID, reply)), nil
+
+	// continue_delegation is now async — reply arrives via completion callback.
+	return tools.ResultSuccess(fmt.Sprintf(`{"delegation_id":%q,"status":"message_sent"}`, params.DelegationID)), nil
 }
 
 func (r *LocalRuntime) handleStopDelegation(ctx context.Context, _ *session.Session, toolCall tools.ToolCall, _ chan Event) (*tools.ToolCallResult, error) {

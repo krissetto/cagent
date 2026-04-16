@@ -56,6 +56,23 @@ type (
 	// LoadSessionMsg loads a session by ID.
 	LoadSessionMsg struct{ SessionID string }
 
+	// OpenChildSessionMsg loads and displays a child session from a delegation card.
+	OpenChildSessionMsg struct {
+		ChildSessionID string
+		DelegationID   string // For checking delegation status on tab open
+	}
+
+	// DelegationResumeMsg is sent when a background delegation completes and the
+	// parent agent should be auto-resumed with the result. Unlike SendMsg, this
+	// bypasses the user message queue so delegation completions don't interfere
+	// with queued user messages.
+	DelegationResumeMsg struct {
+		DelegationID string
+		AgentName    string
+		Content      string // Full notification content for the model
+		IsError      bool
+	}
+
 	// ToggleSessionStarMsg toggles star on a session; empty ID means current session.
 	ToggleSessionStarMsg struct{ SessionID string }
 
@@ -84,6 +101,14 @@ type (
 	SendMsg struct {
 		Content     string       // Full content sent to the agent (with file contents expanded)
 		Attachments []Attachment // Attached files or inline content (e.g. pastes)
+	}
+
+	// ChildTabSendMsg is like SendMsg but for child delegation tabs. The message
+	// is displayed in the transcript and the spinner is activated, but app.Run()
+	// is NOT called — the actual execution goes through Manager.Continue() which
+	// is triggered by the tui layer before this message is dispatched.
+	ChildTabSendMsg struct {
+		Content string
 	}
 
 	// SendAttachmentMsg is a message for the first message with an attachment.

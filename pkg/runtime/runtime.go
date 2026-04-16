@@ -139,6 +139,11 @@ type Runtime interface {
 	// if the runtime does not support local title generation (e.g. remote runtimes).
 	TitleGenerator() *sessiontitle.Generator
 
+	// Steer enqueues an urgent mid-turn message to be injected on the next loop iteration.
+	Steer(msg QueuedMessage) error
+	// FollowUp enqueues an end-of-turn message to be injected when the model stops.
+	FollowUp(msg QueuedMessage) error
+
 	// Close releases resources held by the runtime (e.g., session store connections).
 	Close() error
 }
@@ -215,7 +220,19 @@ type LocalRuntime struct {
 	// occurs outside the active parent stream.
 	onDelegationEvent func(Event)
 
+	// steerQueue stores urgent mid-turn messages. The agent loop drains
+	// all pending items at the top of each iteration.
+	steerQueue MessageQueue
+
+	// followUpQueue stores end-of-turn messages. The agent loop pops
+	// exactly one when the model signals "stopped".
+	followUpQueue MessageQueue
+
 	delegations *delegation.Manager
+
+	// delegationEventBus broadcasts child-session runtime events to TUI subscribers
+	// so that opening a delegation card shows live updates rather than a stale snapshot.
+	delegationEventBus *EventBus
 }
 
 type Opt func(*LocalRuntime)
@@ -236,6 +253,22 @@ func WithManagedOAuth(managed bool) Opt {
 func WithTracer(t trace.Tracer) Opt {
 	return func(r *LocalRuntime) {
 		r.tracer = t
+	}
+}
+
+// WithSteerQueue sets a custom MessageQueue for mid-turn message injection.
+// If not provided, an in-memory buffered queue is used.
+func WithSteerQueue(q MessageQueue) Opt {
+	return func(r *LocalRuntime) {
+		r.steerQueue = q
+	}
+}
+
+// WithFollowUpQueue sets a custom MessageQueue for end-of-turn follow-up
+// messages. If not provided, an in-memory buffered queue is used.
+func WithFollowUpQueue(q MessageQueue) Opt {
+	return func(r *LocalRuntime) {
+		r.followUpQueue = q
 	}
 }
 
@@ -302,6 +335,8 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 		currentAgent:         defaultAgent.Name(),
 		resumeChan:           make(chan ResumeRequest),
 		elicitationRequestCh: make(chan ElicitationResult),
+		steerQueue:           NewInMemoryMessageQueue(defaultSteerQueueCapacity),
+		followUpQueue:        NewInMemoryMessageQueue(defaultFollowUpQueueCapacity),
 		sessionCompaction:    true,
 		managedOAuth:         true,
 		sessionStore:         session.NewInMemorySessionStore(),
@@ -311,6 +346,8 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 	for _, opt := range opts {
 		opt(r)
 	}
+
+	r.delegationEventBus = NewEventBus()
 
 	r.delegations = delegation.NewManager(
 		r,
@@ -468,11 +505,46 @@ func (r *LocalRuntime) CurrentAgent() *agent.Agent {
 // point to a different agent.
 func (r *LocalRuntime) resolveSessionAgent(sess *session.Session) *agent.Agent {
 	if sess.AgentName != "" {
+		// First try direct team lookup (top-level agents).
 		if a, err := r.team.Agent(sess.AgentName); err == nil {
+			return a
+		}
+		// Sub-agents are not top-level team members, so search recursively
+		// through each top-level agent's sub-agent tree before falling back.
+		if a := r.findSubAgent(sess.AgentName); a != nil {
 			return a
 		}
 	}
 	return r.CurrentAgent()
+}
+
+// findSubAgent searches all top-level agents' sub-agent trees for an agent
+// with the given name. Returns nil if not found.
+func (r *LocalRuntime) findSubAgent(name string) *agent.Agent {
+	for _, topName := range r.team.AgentNames() {
+		topAgent, err := r.team.Agent(topName)
+		if err != nil {
+			continue
+		}
+		if found := FindInSubAgents(topAgent, name); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// FindInSubAgents recursively searches an agent's sub-agent tree for an agent
+// with the given name. Returns nil if not found.
+func FindInSubAgents(a *agent.Agent, name string) *agent.Agent {
+	for _, sub := range a.SubAgents() {
+		if sub.Name() == name {
+			return sub
+		}
+		if found := FindInSubAgents(sub, name); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 // CurrentAgentSkillsToolset returns the skills toolset for the current agent, or nil if not enabled.
@@ -778,13 +850,6 @@ func (r *LocalRuntime) handleDelegationCompletion(d *delegation.Delegation, repl
 
 	if r.onDelegationEvent != nil {
 		r.onDelegationEvent(event)
-	}
-
-	r.elicitationEventsChannelMux.RLock()
-	eventsCh := r.elicitationEventsChannel
-	r.elicitationEventsChannelMux.RUnlock()
-	if eventsCh != nil {
-		trySendEvent(context.Background(), eventsCh, event)
 	}
 }
 
@@ -1160,7 +1225,31 @@ func (r *LocalRuntime) elicitationHandler(ctx context.Context, req *mcp.ElicitPa
 	}
 }
 
+// Steer enqueues an urgent mid-turn message. The agent loop drains all pending
+// items at the top of each iteration.
+func (r *LocalRuntime) Steer(msg QueuedMessage) error {
+	if !r.steerQueue.Enqueue(context.Background(), msg) {
+		return errors.New("steer queue full")
+	}
+	return nil
+}
+
+// FollowUp enqueues an end-of-turn message. The agent loop pops exactly one
+// when the model signals "stopped".
+func (r *LocalRuntime) FollowUp(msg QueuedMessage) error {
+	if !r.followUpQueue.Enqueue(context.Background(), msg) {
+		return errors.New("follow-up queue full")
+	}
+	return nil
+}
+
 // DelegationManager returns the delegation manager for external access (e.g., TUI).
 func (r *LocalRuntime) DelegationManager() *delegation.Manager {
 	return r.delegations
+}
+
+// DelegationEventBus returns the event bus used to broadcast child-session events.
+// The TUI subscribes to this bus when opening a delegation's child session.
+func (r *LocalRuntime) DelegationEventBus() *EventBus {
+	return r.delegationEventBus
 }

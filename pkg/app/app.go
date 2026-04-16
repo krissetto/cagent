@@ -22,6 +22,7 @@ import (
 	"github.com/docker/docker-agent/pkg/cli"
 	"github.com/docker/docker-agent/pkg/config/types"
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/runtime/delegation"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sessiontitle"
 	"github.com/docker/docker-agent/pkg/shellpath"
@@ -87,6 +88,34 @@ func WithTitleGenerator(gen *sessiontitle.Generator) Opt {
 	}
 }
 
+// DelegationEventBusAccessor is satisfied by runtimes that expose a delegation event bus.
+type DelegationEventBusAccessor interface {
+	DelegationEventBus() *runtime.EventBus
+}
+
+// DelegationEventBus returns the delegation EventBus from the runtime, if available.
+// Returns nil when the runtime does not support delegation event streaming.
+func (a *App) DelegationEventBus() *runtime.EventBus {
+	if accessor, ok := a.runtime.(DelegationEventBusAccessor); ok {
+		return accessor.DelegationEventBus()
+	}
+	return nil
+}
+
+// DelegationManagerAccessor is satisfied by runtimes that expose a delegation manager.
+type DelegationManagerAccessor interface {
+	DelegationManager() *delegation.Manager
+}
+
+// DelegationManager returns the delegation Manager from the runtime, if available.
+// Returns nil when the runtime does not support delegations.
+func (a *App) DelegationManager() *delegation.Manager {
+	if accessor, ok := a.runtime.(DelegationManagerAccessor); ok {
+		return accessor.DelegationManager()
+	}
+	return nil
+}
+
 func New(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts ...Opt) *App {
 	app := &App{
 		runtime:          rt,
@@ -124,6 +153,22 @@ func New(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts ..
 			select {
 			case app.events <- event:
 			case <-ctx.Done():
+			}
+		})
+	}
+
+	// Subscribe to delegation lifecycle events (completed/failed/stopped)
+	// so the TUI receives them even after the parent RunStream has ended.
+	// This enables automatic parent re-entry when a background delegation
+	// finishes while the parent agent is idle.
+	if des, ok := rt.(runtime.DelegationEventSubscriber); ok {
+		des.OnDelegationEvent(func(event runtime.Event) {
+			select {
+			case app.events <- event:
+			case <-ctx.Done():
+			default:
+				slog.Debug("OnDelegationEvent: events channel full, dropping",
+					"event_type", fmt.Sprintf("%T", event))
 			}
 		})
 	}
@@ -335,6 +380,37 @@ func (a *App) Run(ctx context.Context, cancel context.CancelFunc, message string
 				a.titleGenerating.Store(false)
 			}
 
+			a.sendEvent(ctx, event)
+		}
+	}()
+}
+
+// RunWithSubagentResult adds a delegation completion notification to the
+// session as a SubagentResultMessage and starts a new RunStream. The message
+// renders as a compact one-liner in the TUI but the full content is available
+// to the LLM. Like Run, this is synchronous and should be called from a
+// goroutine.
+func (a *App) RunWithSubagentResult(ctx context.Context, cancel context.CancelFunc, agentName, content string) {
+	a.cancel = cancel
+
+	// Trigger title generation if this is the first meaningful exchange.
+	if a.session.Title == "" && a.titleGen != nil {
+		a.titleGenerating.Store(true)
+		go a.generateTitle(ctx, []string{content})
+	}
+
+	go func() {
+		a.session.AddMessage(session.SubagentResultMessage(agentName, content))
+		for event := range a.runtime.RunStream(ctx, a.session) {
+			if ctx.Err() != nil {
+				if _, ok := event.(*runtime.StreamStoppedEvent); ok {
+					a.sendEvent(context.Background(), event)
+				}
+				continue
+			}
+			if _, ok := event.(*runtime.SessionTitleEvent); ok {
+				a.titleGenerating.Store(false)
+			}
 			a.sendEvent(ctx, event)
 		}
 	}()

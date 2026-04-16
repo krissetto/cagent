@@ -42,14 +42,14 @@ func (t *DelegateTool) Tools(context.Context) ([]tools.Tool, error) {
 		{
 			Name:        ToolNameDelegate,
 			Category:    "transfer",
-			Description: `Start a new delegation — assign a task to a sub-agent and get back their initial reply and a delegation_id for future follow-ups.`,
+			Description: `Start a new background delegation — assign a task to a sub-agent and return immediately with a delegation_id and status "started".`,
 			Parameters:  tools.MustSchemaFor[DelegateArgs](),
 			Annotations: tools.ToolAnnotations{Title: "Delegate"},
 		},
 		{
 			Name:        ToolNameContinueDelegation,
 			Category:    "transfer",
-			Description: `Send a follow-up message to an existing delegation using its delegation_id.`,
+			Description: `Send a follow-up message to an existing delegation using its delegation_id. Returns immediately; the agent processes the message in the background.`,
 			Parameters:  tools.MustSchemaFor[ContinueDelegationArgs](),
 			Annotations: tools.ToolAnnotations{Title: "Continue Delegation"},
 		},
@@ -65,8 +65,9 @@ func (t *DelegateTool) Tools(context.Context) ([]tools.Tool, error) {
 
 func (t *DelegateTool) Instructions() string {
 	return "# Delegation\n\n" +
-		"Use `delegate` to assign a task to a sub-agent. It returns a `delegation_id` and the agent's initial reply.\n\n" +
-		"Use `continue_delegation` with a `delegation_id` to send follow-up messages to the same agent session.\n\n" +
-		"Use `stop_delegation` to cancel a delegation that is no longer needed.\n\n" +
+		"Use `delegate` to start a background sub-agent run. It returns immediately with a `delegation_id` and `status` \"started\"; it does not wait for a reply.\n\n" +
+		"Use `continue_delegation` with a `delegation_id` to send a follow-up message to the same agent session; it returns immediately and the agent's reply will be delivered when ready.\n\n" +
+		"Use `stop_delegation` to cancel a running delegation that is no longer needed.\n\n" +
+		"After calling `delegate`, either continue your own work or come back later with `continue_delegation` if you need a follow-up reply from that child session.\n\n" +
 		"Never pass `delegation_id` to `delegate` — use `continue_delegation` for existing delegations."
 }

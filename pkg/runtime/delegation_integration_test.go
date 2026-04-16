@@ -117,7 +117,7 @@ func TestDelegation_MultiTurnConversation_EndToEnd(t *testing.T) {
 	d, ok := rt.delegations.Get(delegationID)
 	require.True(t, ok)
 	select {
-	case <-d.DoneCh:
+	case <-d.GetDoneCh():
 		assert.Equal(t, "first reply", d.GetLastReply())
 	case <-time.After(5 * time.Second):
 		t.Fatal("delegation did not complete")
@@ -139,10 +139,17 @@ func TestDelegation_MultiTurnConversation_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result2)
 	assert.False(t, result2.IsError)
-	assert.Contains(t, result2.Output, "second reply")
+	// continue_delegation is now async — result contains "message_sent", not the reply.
+	assert.Contains(t, result2.Output, "message_sent")
 
+	// Wait for the async continuation to produce the expected reply.
+	// We poll because Continue() is async — the old DoneCh may already be
+	// closed (from the initial Start run) before the new goroutine replaces it.
 	childDelegation, ok := rt.delegations.Get(delegationID)
 	require.True(t, ok)
+	require.Eventually(t, func() bool {
+		return childDelegation.GetLastReply() == "second reply"
+	}, 5*time.Second, 10*time.Millisecond, "continuation did not produce expected reply")
 
 	childSess, err := store.GetSession(context.Background(), childDelegation.SessionID)
 	require.NoError(t, err)
@@ -154,4 +161,106 @@ func TestDelegation_MultiTurnConversation_EndToEnd(t *testing.T) {
 	}
 	assert.Contains(t, userMessages, "first task")
 	assert.Contains(t, userMessages, "follow-up task")
+}
+
+// TestDelegate_NoDuplicateUserMessage verifies that RunDelegation does NOT
+// reload or re-append user messages from the store. User messages should only
+// be present once: when originally added by Manager.Start or Manager.Continue.
+func TestDelegate_NoDuplicateUserMessage(t *testing.T) {
+	prov := &mockProvider{
+		id:     "test/mock-model",
+		stream: newStreamBuilder().AddContent("first response").AddStopWithUsage(10, 5).Build(),
+	}
+	worker := agent.New("worker", "Worker", agent.WithModel(prov))
+	root := agent.New("root", "Root", agent.WithModel(prov), agent.WithSubAgents(worker))
+	teamObj := team.New(team.WithAgents(root, worker))
+
+	store := session.NewInMemorySessionStore()
+	rt, err := NewLocalRuntime(teamObj, WithSessionCompaction(false), WithModelStore(mockModelStore{}), WithSessionStore(store))
+	require.NoError(t, err)
+
+	sess := session.New(session.WithUserMessage("Go"), session.WithToolsApproved(true))
+	err = store.AddSession(context.Background(), sess)
+	require.NoError(t, err)
+	evts := make(chan Event, 256)
+
+	// Start delegation with first task
+	startArgs, _ := json.Marshal(builtin.DelegateArgs{Agent: "worker", Task: "first task"})
+	startToolCall := tools.ToolCall{
+		ID:   "tc-dup-1",
+		Type: "function",
+		Function: tools.FunctionCall{
+			Name:      builtin.ToolNameDelegate,
+			Arguments: string(startArgs),
+		},
+	}
+	result, err := rt.handleDelegate(context.Background(), sess, startToolCall, evts)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+
+	var parsed map[string]string
+	err = json.Unmarshal([]byte(result.Output), &parsed)
+	require.NoError(t, err)
+	delegationID := parsed["delegation_id"]
+	require.NotEmpty(t, delegationID)
+
+	// Wait for first delegation to complete
+	d, ok := rt.delegations.Get(delegationID)
+	require.True(t, ok)
+	select {
+	case <-d.GetDoneCh():
+	case <-time.After(5 * time.Second):
+		t.Fatal("first delegation did not complete")
+	}
+
+	assert.Equal(t, "first response", d.GetLastReply())
+
+	// Change provider response for continuation
+	prov.stream = newStreamBuilder().AddContent("second response").AddStopWithUsage(10, 5).Build()
+
+	// Continue with follow-up message
+	contArgs, _ := json.Marshal(builtin.ContinueDelegationArgs{
+		DelegationID: delegationID,
+		Message:      "follow-up",
+	})
+	contToolCall := tools.ToolCall{
+		ID:   "tc-dup-2",
+		Type: "function",
+		Function: tools.FunctionCall{
+			Name:      builtin.ToolNameContinueDelegation,
+			Arguments: string(contArgs),
+		},
+	}
+	result2, err := rt.handleContinueDelegation(context.Background(), sess, contToolCall, evts)
+	require.NoError(t, err)
+	require.NotNil(t, result2)
+	assert.False(t, result2.IsError)
+	assert.Contains(t, result2.Output, "message_sent")
+
+	// Wait for the async continuation to finish. Poll because GetDoneCh() may
+	// still return the already-closed Start DoneCh before the Continue goroutine
+	// replaces it.
+	childDelegation, ok := rt.delegations.Get(delegationID)
+	require.True(t, ok)
+	require.Eventually(t, func() bool {
+		return childDelegation.GetLastReply() == "second response"
+	}, 5*time.Second, 10*time.Millisecond, "continuation did not complete")
+
+	// Load child session from store and verify no duplicate messages
+	childSess, err := store.GetSession(context.Background(), childDelegation.SessionID)
+	require.NoError(t, err)
+
+	// Collect all user messages
+	var userMessages []string
+	for _, item := range childSess.Messages {
+		if item.Message != nil && item.Message.Message.Role == chat.MessageRoleUser {
+			userMessages = append(userMessages, item.Message.Message.Content)
+		}
+	}
+
+	// Verify exactly 2 messages: first task and follow-up, no duplicates
+	require.Len(t, userMessages, 2, "expected exactly 2 user messages, got: %v", userMessages)
+	assert.Equal(t, "first task", userMessages[0])
+	assert.Equal(t, "follow-up", userMessages[1])
 }

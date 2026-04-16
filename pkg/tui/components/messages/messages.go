@@ -57,8 +57,9 @@ type Model interface {
 	AppendToLastMessage(agentName, content string) tea.Cmd
 	AppendReasoning(agentName, content string) tea.Cmd
 	AddShellOutputMessage(content string) tea.Cmd
-	AddDelegationCard(id, agentName, task string) tea.Cmd
+	AddDelegationCard(id, agentName, task, sessionID string) tea.Cmd
 	UpdateDelegationCard(id, reply string, failed bool) tea.Cmd
+	AddSubagentNotification(agentName string) tea.Cmd
 	LoadFromSession(sess *session.Session) tea.Cmd
 
 	RemoveSpinner()
@@ -411,6 +412,13 @@ func (m *model) handleMouseRelease(msg tea.MouseReleaseMsg) (layout.Model, tea.C
 				m.selection.clear()
 				if url := m.urlAt(line, col); url != "" {
 					return m, core.CmdHandler(messages.OpenURLMsg{URL: url})
+				}
+				// Check if click was on a delegation card with a child session
+				if msgIdx, _ := m.globalLineToMessageLine(line); msgIdx >= 0 && msgIdx < len(m.messages) {
+					msg := m.messages[msgIdx]
+					if msg.Type == types.MessageTypeDelegation && msg.DelegationSessionID != "" {
+						return m, core.CmdHandler(messages.OpenChildSessionMsg{ChildSessionID: msg.DelegationSessionID})
+					}
 				}
 				return m, nil
 			}
@@ -1118,6 +1126,10 @@ func (m *model) AddUserMessage(content string) tea.Cmd {
 	return m.addMessage(types.User(content))
 }
 
+func (m *model) AddSubagentNotification(agentName string) tea.Cmd {
+	return m.addMessage(types.SubagentNotification(agentName))
+}
+
 func (m *model) AddLoadingMessage(description string) tea.Cmd {
 	return m.addMessage(types.Loading(description))
 }
@@ -1280,10 +1292,21 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 
 		switch smsg.Message.Role {
 		case chat.MessageRoleUser:
-			msg := types.User(smsg.Message.Content)
-			msgPos := pos
-			msg.SessionPosition = &msgPos
-			appendSessionMessage(msg, m.createMessageView(msg))
+			if smsg.IsSubagentResult {
+				name := smsg.AgentName
+				if name == "" {
+					name = "subagent"
+				}
+				msg := types.SubagentNotification(name)
+				msgPos := pos
+				msg.SessionPosition = &msgPos
+				appendSessionMessage(msg, m.createMessageView(msg))
+			} else {
+				msg := types.User(smsg.Message.Content)
+				msgPos := pos
+				msg.SessionPosition = &msgPos
+				appendSessionMessage(msg, m.createMessageView(msg))
+			}
 		case chat.MessageRoleAssistant:
 			hasReasoning := smsg.Message.ReasoningContent != ""
 			hasContent := smsg.Message.Content != ""
@@ -1568,6 +1591,10 @@ func (m *model) createMessageView(msg *types.Message) layout.Model {
 	switch msg.Type {
 	case types.MessageTypeDelegation:
 		return m.createDelegationCardView(msg)
+	case types.MessageTypeSubagentNotification:
+		view := message.New(msg, m.sessionState.PreviousMessage())
+		view.SetSize(m.contentWidth(), 0)
+		return view
 	default:
 		view := message.New(msg, m.sessionState.PreviousMessage())
 		view.SetSize(m.contentWidth(), 0)
@@ -1801,7 +1828,7 @@ func (m *model) hasAnimatedContent() bool {
 	return false
 }
 
-func (m *model) AddDelegationCard(id, agentName, task string) tea.Cmd {
+func (m *model) AddDelegationCard(id, agentName, task, sessionID string) tea.Cmd {
 	// Check if a card with this delegation ID already exists (continuation case).
 	// If so, reactivate it instead of adding a duplicate.
 	for i, msg := range m.messages {
@@ -1810,13 +1837,16 @@ func (m *model) AddDelegationCard(id, agentName, task string) tea.Cmd {
 			msg.DelegationFailed = false
 			msg.DelegationReply = ""
 			msg.Content = task
+			if sessionID != "" {
+				msg.DelegationSessionID = sessionID
+			}
 			m.invalidateItem(i)
 			view := m.createDelegationCardView(msg)
 			m.views[i] = view
 			return view.Init()
 		}
 	}
-	msg := types.DelegationCard(id, agentName, task)
+	msg := types.DelegationCard(id, agentName, task, sessionID)
 	return m.addMessage(msg)
 }
 

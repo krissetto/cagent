@@ -182,3 +182,89 @@ func (r *PersistentRuntime) Run(ctx context.Context, sess *session.Session) ([]s
 
 	return sess.GetAllMessages(), nil
 }
+
+// persistChildEvent persists a single child-session event incrementally.
+// This mirrors the event handling in PersistentRuntime.handleEvent but operates
+// with an explicit store and session ID, so it can be called from RunDelegation
+// (which runs on LocalRuntime, not PersistentRuntime).
+func persistChildEvent(ctx context.Context, store session.Store, sessionID string, event Event, streaming *streamingState) {
+	// Skip events that belong to a different session.
+	if scoped, ok := event.(SessionScoped); ok && scoped.GetSessionID() != sessionID {
+		return
+	}
+
+	switch e := event.(type) {
+	case *AgentChoiceEvent:
+		streaming.content.WriteString(e.Content)
+		streaming.agentName = e.AgentName
+		persistChildStreamingContent(ctx, store, sessionID, streaming)
+
+	case *AgentChoiceReasoningEvent:
+		streaming.reasoningContent.WriteString(e.Content)
+		streaming.agentName = e.AgentName
+		persistChildStreamingContent(ctx, store, sessionID, streaming)
+
+	case *UserMessageEvent:
+		streaming.content.Reset()
+		streaming.reasoningContent.Reset()
+		streaming.agentName = ""
+		streaming.messageID = 0
+		if _, err := store.AddMessage(ctx, e.SessionID, session.UserMessage(e.Message, e.MultiContent...)); err != nil {
+			slog.Warn("[child-persist] Failed to persist user message", "session_id", e.SessionID, "error", err)
+		}
+
+	case *MessageAddedEvent:
+		if streaming.messageID != 0 {
+			if err := store.UpdateMessage(ctx, streaming.messageID, e.Message); err != nil {
+				slog.Warn("[child-persist] Failed to finalize streaming message", "session_id", e.SessionID, "error", err)
+			}
+		} else {
+			if _, err := store.AddMessage(ctx, e.SessionID, e.Message); err != nil {
+				slog.Warn("[child-persist] Failed to persist message", "session_id", e.SessionID, "error", err)
+			}
+		}
+		streaming.content.Reset()
+		streaming.reasoningContent.Reset()
+		streaming.agentName = ""
+		streaming.messageID = 0
+
+	case *TokenUsageEvent:
+		if e.Usage != nil && e.SessionID == sessionID {
+			if err := store.UpdateSessionTokens(ctx, sessionID, e.Usage.InputTokens, e.Usage.OutputTokens, e.Usage.Cost); err != nil {
+				slog.Warn("[child-persist] Failed to persist token usage", "session_id", sessionID, "error", err)
+			}
+		}
+
+	case *SessionTitleEvent:
+		if err := store.UpdateSessionTitle(ctx, sessionID, e.Title); err != nil {
+			slog.Warn("[child-persist] Failed to persist session title", "session_id", sessionID, "error", err)
+		}
+	}
+}
+
+// persistChildStreamingContent creates or updates a streaming assistant message
+// for a child session. This is the child-session equivalent of
+// PersistentRuntime.persistStreamingContent.
+func persistChildStreamingContent(ctx context.Context, store session.Store, sessionID string, streaming *streamingState) {
+	msg := &session.Message{
+		AgentName: streaming.agentName,
+		Message: chat.Message{
+			Role:             chat.MessageRoleAssistant,
+			Content:          streaming.content.String(),
+			ReasoningContent: streaming.reasoningContent.String(),
+		},
+	}
+
+	if streaming.messageID == 0 {
+		id, err := store.AddMessage(ctx, sessionID, msg)
+		if err != nil {
+			slog.Warn("[child-persist] Failed to create streaming message", "session_id", sessionID, "error", err)
+			return
+		}
+		streaming.messageID = id
+	} else {
+		if err := store.UpdateMessage(ctx, streaming.messageID, msg); err != nil {
+			slog.Warn("[child-persist] Failed to update streaming message", "session_id", sessionID, "error", err)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
+	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -17,8 +18,44 @@ func newTestChatPageForEvents() *chatPage {
 	sessionState := &service.SessionState{}
 	return &chatPage{
 		messages:     messages.New(sessionState),
+		sidebar:      newTestSidebar(),
 		sessionState: sessionState,
 	}
+}
+
+// newTestSidebar creates a mock sidebar for testing.
+func newTestSidebar() sidebar.Model {
+	return sidebar.New(&service.SessionState{})
+}
+
+// newTestChatPageForEventsDirect creates a chatPage with direct access to the underlying messages model for testing.
+func newTestChatPageForEventsDirect() (*chatPage, *messages.TestModel) {
+	sessionState := &service.SessionState{}
+	messagesModel := messages.NewTestModel(sessionState)
+	return &chatPage{
+		messages:     messagesModel,
+		sidebar:      newTestSidebar(),
+		sessionState: sessionState,
+	}, messagesModel
+}
+
+func TestDelegationStartedEvent_SessionIDStoredOnCard(t *testing.T) {
+	t.Parallel()
+
+	p, messagesModel := newTestChatPageForEventsDirect()
+	event := &runtime.DelegationStartedEvent{
+		DelegationID: "ab3k9",
+		AgentName:    "bot",
+		Task:         "work",
+		SessionID:    "child-xyz",
+	}
+
+	handled, cmd := p.handleRuntimeEvent(event)
+	assert.True(t, handled)
+	assert.Nil(t, cmd)
+
+	// Delegation events now render in the sidebar rather than message cards.
+	assert.Empty(t, messagesModel.GetMessages())
 }
 
 func TestDelegateToolCallsSuppressed(t *testing.T) {

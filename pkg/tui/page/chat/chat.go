@@ -154,6 +154,8 @@ type chatPage struct {
 	// Message queue for enqueuing messages while agent is working
 	messageQueue []queuedMessage
 
+	pendingDelegationResumes []msgtypes.DelegationResumeMsg
+
 	// Editing state for branching sessions
 	editing          bool
 	branchAtPosition int
@@ -421,6 +423,12 @@ func (p *chatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 
 	case messages.InlineEditCancelledMsg:
 		return p.handleInlineEditCancelled(msg)
+
+	case msgtypes.DelegationResumeMsg:
+		return p.handleDelegationResume(msg)
+
+	case msgtypes.ChildTabSendMsg:
+		return p.handleChildTabSendMsg(msg)
 
 	case msgtypes.SendMsg:
 		slog.Debug(msg.Content)
@@ -845,6 +853,42 @@ func (p *chatPage) processNextQueuedMessage() tea.Cmd {
 	}
 
 	return p.processMessage(msg)
+}
+
+// handleDelegationResume processes a delegation completion notification.
+// Unlike handleSendMsg, this bypasses the user message queue entirely.
+func (p *chatPage) handleDelegationResume(msg msgtypes.DelegationResumeMsg) (layout.Model, tea.Cmd) {
+	// Add compact "responded" indicator to the transcript.
+	notifCmd := p.messages.AddSubagentNotification(msg.AgentName)
+
+	if p.working {
+		// Parent is currently running — queue the notification for delivery
+		// after the current stream stops.
+		p.pendingDelegationResumes = append(p.pendingDelegationResumes, msg)
+		return p, notifCmd
+	}
+
+	// Parent is idle — resume immediately.
+	spinnerCmd := p.setWorking(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	p.msgCancel = cancel
+	go func() {
+		p.app.RunWithSubagentResult(ctx, cancel, msg.AgentName, msg.Content)
+	}()
+
+	scrollCmd := p.messages.ScrollToBottom()
+	return p, tea.Batch(notifCmd, spinnerCmd, scrollCmd)
+}
+
+// handleChildTabSendMsg processes a user message in a child delegation tab.
+// The user message is added to the transcript and the spinner is activated,
+// but no app.Run() is called — the actual execution was already dispatched
+// via Manager.Continue() by the tui-level handleChildTabSend.
+func (p *chatPage) handleChildTabSendMsg(msg msgtypes.ChildTabSendMsg) (layout.Model, tea.Cmd) {
+	userMsgCmd := p.messages.AddUserMessage(msg.Content)
+	spinnerCmd := p.setWorking(true)
+	scrollCmd := p.messages.ScrollToBottom()
+	return p, tea.Batch(userMsgCmd, spinnerCmd, scrollCmd)
 }
 
 // handleClearQueue clears all queued messages and shows a notification.
