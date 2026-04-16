@@ -168,7 +168,7 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 		return true, nil
 
 	case *runtime.DelegationCompletedEvent:
-		p.sidebar.UpdateDelegation(msg.DelegationID, msg.Reply, false)
+		p.sidebar.UpdateDelegation(msg.DelegationID, "responded", false)
 		if msg.ParentSessionID == p.app.Session().ID {
 			content := fmt.Sprintf("%s (%s) has responded", msg.AgentName, msg.DelegationID)
 			return true, core.CmdHandler(msgtypes.DelegationResumeMsg{

@@ -1362,6 +1362,11 @@ func (m *appModel) handleOpenChildSession(childSessionID, delegationID string) (
 	model, switchCmd := m.handleSwitchTab(newSessionID)
 	m.application.ReplaceSession(ctx, sess)
 	m.initSessionComponents(newSessionID, m.application, sess)
+	if delegationID != "" {
+		if mgr := m.application.DelegationManager(); mgr != nil {
+			m.chatPage.SetDelegationContext(delegationID, mgr)
+		}
+	}
 
 	if sess.Title != "" {
 		m.supervisor.SetRunnerTitle(newSessionID, sess.Title)

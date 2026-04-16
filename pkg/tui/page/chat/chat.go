@@ -90,11 +90,21 @@ type SidebarSettings struct {
 
 // Page represents the main chat content area (messages + sidebar).
 // The editor and resize handle are owned by the parent (tui.Model).
+// delegationStopper is the minimal interface needed to stop a delegation.
+// Using an interface here avoids importing the delegation package into the chat page.
+type delegationStopper interface {
+	Stop(ctx context.Context, shortID string) error
+}
+
 type Page interface {
 	layout.Model
 	layout.Sizeable
 	layout.Help
 	CompactSession(additionalPrompt string) tea.Cmd
+	// SetDelegationContext marks this chat page as a child delegation tab.
+	// When set, Esc cancels the delegation rather than calling app.Cancel(),
+	// and msgCancel is wired to Manager.Stop(delegationID).
+	SetDelegationContext(delegationID string, mgr delegationStopper)
 	// SetSessionStarred updates the sidebar star indicator
 	SetSessionStarred(starred bool)
 	// SetTitleRegenerating sets the title regenerating state on the sidebar
@@ -155,6 +165,12 @@ type chatPage struct {
 	messageQueue []queuedMessage
 
 	pendingDelegationResumes []msgtypes.DelegationResumeMsg
+
+	// childDelegationID is set when this chat page is a child delegation tab.
+	// When set, Esc cancels via Manager.Stop() and user sends route through
+	// Manager.Continue() instead of app.Run().
+	childDelegationID string
+	childDelegationMgr delegationStopper
 
 	// Editing state for branching sessions
 	editing          bool
@@ -653,8 +669,26 @@ func (p *chatPage) Help() help.KeyMap {
 	return core.NewSimpleHelp(p.Bindings())
 }
 
+// SetDelegationContext configures this chat page as a child delegation tab.
+func (p *chatPage) SetDelegationContext(delegationID string, mgr delegationStopper) {
+	p.childDelegationID = delegationID
+	p.childDelegationMgr = mgr
+}
+
 // cancelStream cancels the current stream and cleans up associated state
 func (p *chatPage) cancelStream(showCancelMessage bool) tea.Cmd {
+	// For child delegation tabs, stop the delegation instead of cancelling
+	// the normal stream context.
+	if p.childDelegationID != "" && p.childDelegationMgr != nil {
+		_ = p.childDelegationMgr.Stop(context.Background(), p.childDelegationID)
+		p.streamCancelled = true
+		p.streamDepth = 0
+		p.setPendingResponse(false)
+		return tea.Batch(
+			core.CmdHandler(msgtypes.StreamCancelledMsg{ShowMessage: showCancelMessage}),
+			p.setWorking(false),
+		)
+	}
 	if p.msgCancel == nil {
 		return nil
 	}
