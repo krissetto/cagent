@@ -21,6 +21,7 @@ import (
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/audio/transcribe"
 	"github.com/docker/docker-agent/pkg/history"
+	appchat "github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/runtime/delegation"
 	"github.com/docker/docker-agent/pkg/session"
@@ -1356,6 +1357,23 @@ func (m *appModel) handleOpenChildSession(childSessionID, delegationID string) (
 	if m.tuiStore != nil {
 		if err := m.tuiStore.AddTab(ctx, sess.ID, workingDir); err != nil {
 			slog.Warn("Failed to persist child session tab", "error", err)
+		}
+	}
+
+	// If the delegation is currently running, the store may contain a partial
+	// streaming assistant message (from persistStreamingContent). Trim it from
+	// the session snapshot so that LoadFromSession does not render stale partial
+	// content that would conflict with live AgentChoiceEvents from the EventBus.
+	if delegationID != "" {
+		if mgr := m.application.DelegationManager(); mgr != nil {
+			if d, ok := mgr.Get(delegationID); ok && d.LoadStatus() == delegation.StatusRunning {
+				items := sess.Messages
+				if n := len(items); n > 0 {
+					if last := items[n-1]; last.Message != nil && last.Message.Message.Role == appchat.MessageRoleAssistant {
+						sess.Messages = items[:n-1]
+					}
+				}
+			}
 		}
 	}
 

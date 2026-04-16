@@ -301,10 +301,12 @@ func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd 
 	p.streamCancelled = false
 	spinnerCmd := p.setWorking(false)
 	p.setPendingResponse(false)
-	queueCmd := p.processNextQueuedMessage()
-
+	// Drain pending delegation completion notifications first — they must arrive
+	// at the earliest safe moment after the current turn (before any queued user
+	// messages). If both are pending, delegation notifications take priority;
+	// the user-queued message is left for the next turn.
 	var resumeCmd tea.Cmd
-	if queueCmd == nil && len(p.pendingDelegationResumes) > 0 {
+	if len(p.pendingDelegationResumes) > 0 {
 		pending := p.pendingDelegationResumes[0]
 		p.pendingDelegationResumes = p.pendingDelegationResumes[1:]
 		resumeSpinnerCmd := p.setWorking(true)
@@ -314,6 +316,12 @@ func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd 
 			p.app.RunWithSubagentResult(ctx, cancel, pending.AgentName, pending.Content)
 		}()
 		resumeCmd = resumeSpinnerCmd
+	}
+
+	// Only process a queued user message if there are no pending delegation resumes.
+	var queueCmd tea.Cmd
+	if resumeCmd == nil {
+		queueCmd = p.processNextQueuedMessage()
 	}
 
 	var exitCmd tea.Cmd
