@@ -1011,19 +1011,26 @@ func (m *model) delegationSection(contentWidth int) string {
 			statusStyle = styles.MutedStyle
 		}
 
+		_ = statusStyle
 		agentStyle := styles.AgentAccentStyleFor(d.AgentName)
-		line := statusIcon + " " + agentStyle.Render(d.AgentName) + " " + statusStyle.Render("— "+d.Status)
+		line := statusIcon + " " + agentStyle.Render(d.AgentName)
 
-		// Add task as a tree branch below
+		// Show muted preview of last subagent response (not the task).
+		// Fall back to the task text while the delegation is still running.
+		preview := d.Reply
+		if preview == "" || preview == "responded" || preview == "stopped" {
+			preview = d.Task
+		}
+
 		var prefix string
 		if i == len(m.delegations)-1 {
 			prefix = styles.MutedStyle.Render("└ ")
 		} else {
 			prefix = styles.MutedStyle.Render("├ ")
 		}
-		taskLine := prefix + toolcommon.TruncateText(d.Task, maxWidth)
+		previewLine := prefix + styles.MutedStyle.Render(toolcommon.TruncateText(preview, maxWidth))
 
-		rows = append(rows, line, taskLine)
+		rows = append(rows, line, previewLine)
 	}
 
 	content := strings.Join(rows, "\n")

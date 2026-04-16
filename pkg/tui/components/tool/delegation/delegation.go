@@ -1,12 +1,9 @@
 package delegation
 
 import (
-	"strings"
-
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
-	"github.com/docker/docker-agent/pkg/tui/components/toolcommon"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/styles"
@@ -47,7 +44,6 @@ func (d *delegationCard) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 
 func (d *delegationCard) View() string {
 	msg := d.msg
-	id := "[" + msg.DelegationID + "]"
 
 	var icon string
 	switch {
@@ -60,23 +56,10 @@ func (d *delegationCard) View() string {
 	}
 
 	agentBadge := styles.AgentBadgeStyleFor(msg.DelegationAgent).Render(msg.DelegationAgent)
-	idBadge := styles.MutedStyle.Render(id)
 
-	header := icon + "  " + agentBadge + " " + idBadge
-
-	preview := msg.Content // task
-	if msg.DelegationDone && msg.DelegationReply != "" {
-		preview = msg.DelegationReply
-	}
-
-	// Truncate preview to single line, max width
-	if preview != "" {
-		preview = toolcommon.TruncateText(preview, d.width-5)
-		preview = strings.SplitN(preview, "\n", 2)[0]
-	}
-
-	previewLine := styles.ToolMessageStyle.MarginLeft(5).Render(preview)
-	return header + "\n" + previewLine
+	// Single-line compact pill: ✓  planner
+	// No task preview — the user can open the session from the sidebar.
+	return icon + "  " + agentBadge
 }
 
 func (d *delegationCard) SetSize(width, height int) tea.Cmd {

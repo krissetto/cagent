@@ -874,7 +874,7 @@ func (r *LocalRuntime) handleDelegationCompletion(d *delegation.Delegation, repl
 	var event Event
 	switch status {
 	case delegation.StatusCompleted:
-		event = DelegationCompleted(d.ID, d.SessionID, d.ParentSessionID, d.AgentName)
+		event = DelegationCompleted(d.ID, d.SessionID, d.ParentSessionID, d.AgentName, d.GetLastReply())
 	case delegation.StatusCancelled:
 		event = DelegationStopped(d.ID, d.SessionID, d.AgentName)
 	default:

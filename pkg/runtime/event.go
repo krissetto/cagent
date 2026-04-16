@@ -698,8 +698,10 @@ func DelegationStarted(delegationID, sessionID, parentSessionID, agentName, task
 }
 
 // DelegationCompletedEvent is emitted when a delegation finishes successfully.
-// The child's full reply is NOT included — it stays in the child session to
-// enforce context separation. Use get_delegation_result to inspect the result.
+// The child's full reply is NOT included in the parent context — it stays in the
+// child session to enforce context separation. The LastReply field is provided
+// solely for UI display (e.g. sidebar preview) and must not be injected into
+// parent LLM context. Use get_delegation_result to fetch the result explicitly.
 type DelegationCompletedEvent struct {
 	AgentContext
 
@@ -707,16 +709,18 @@ type DelegationCompletedEvent struct {
 	DelegationID    string `json:"delegation_id"`
 	SessionID       string `json:"session_id"`
 	ParentSessionID string `json:"parent_session_id"`
+	LastReply       string `json:"last_reply"` // UI-only: sidebar preview, not in parent LLM context
 }
 
 func (e *DelegationCompletedEvent) GetSessionID() string { return e.ParentSessionID }
 
-func DelegationCompleted(delegationID, sessionID, parentSessionID, agentName string) Event {
+func DelegationCompleted(delegationID, sessionID, parentSessionID, agentName, lastReply string) Event {
 	return &DelegationCompletedEvent{
 		Type:            "delegation_completed",
 		DelegationID:    delegationID,
 		SessionID:       sessionID,
 		ParentSessionID: parentSessionID,
+		LastReply:       lastReply,
 		AgentContext:    newAgentContext(agentName),
 	}
 }

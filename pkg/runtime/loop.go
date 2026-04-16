@@ -124,7 +124,15 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 		messages := sess.GetMessages(a)
 		if sess.SendUserMessage && len(messages) > 0 {
 			lastMsg := messages[len(messages)-1]
-			events <- UserMessage(lastMsg.Content, sess.ID, lastMsg.MultiContent, len(sess.Messages)-1)
+			// Don't emit UserMessageEvent for subagent result notifications —
+			// they are already rendered via AddSubagentNotification in
+			// handleDelegationResume. Emitting here would duplicate them as
+			// full user message bubbles.
+			lastItem := sess.Messages[len(sess.Messages)-1]
+			isSubagentResult := lastItem.Message != nil && lastItem.Message.IsSubagentResult
+			if !isSubagentResult {
+				events <- UserMessage(lastMsg.Content, sess.ID, lastMsg.MultiContent, len(sess.Messages)-1)
+			}
 		}
 
 		events <- StreamStarted(sess.ID, a.Name())

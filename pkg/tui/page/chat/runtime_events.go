@@ -110,6 +110,13 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 		if isDelegationTool(msg.ToolDefinition.Name) {
 			return true, nil
 		}
+		// get_delegation_result: show the single-line tool call completion but
+		// suppress the result JSON body to keep the transcript clean.
+		if msg.ToolDefinition.Name == builtin.ToolNameGetDelegationResult {
+			copy := *msg
+			copy.Response = ""
+			return true, p.handleToolCallResponse(&copy)
+		}
 		return true, p.handleToolCallResponse(msg)
 
 	// ===== Sidebar Info Events (forwarded) =====
@@ -164,10 +171,13 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 	// ===== Delegation Events =====
 	case *runtime.DelegationStartedEvent:
 		p.sidebar.AddDelegation(msg.DelegationID, msg.AgentName, msg.Task, msg.SessionID)
-		return true, nil
+		// Add a compact delegation arrow pill to the transcript.
+		cardCmd := p.messages.AddDelegationCard(msg.DelegationID, msg.AgentName, msg.Task, msg.SessionID)
+		return true, cardCmd
 
 	case *runtime.DelegationCompletedEvent:
-		p.sidebar.UpdateDelegation(msg.DelegationID, "responded", false)
+		p.sidebar.UpdateDelegation(msg.DelegationID, msg.LastReply, false)
+		p.messages.UpdateDelegationCard(msg.DelegationID, msg.LastReply, false)
 		if msg.ParentSessionID == p.app.Session().ID && !p.working {
 			content := fmt.Sprintf("%s (%s) has responded", msg.AgentName, msg.DelegationID)
 			return true, core.CmdHandler(msgtypes.DelegationResumeMsg{

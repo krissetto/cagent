@@ -52,10 +52,15 @@ func TestDelegationStartedEvent_SessionIDStoredOnCard(t *testing.T) {
 
 	handled, cmd := p.handleRuntimeEvent(event)
 	assert.True(t, handled)
-	assert.Nil(t, cmd)
 
-	// Delegation events now render in the sidebar rather than message cards.
-	assert.Empty(t, messagesModel.GetMessages())
+	// DelegationStartedEvent now adds a compact delegation pill to the
+	// message transcript and updates the sidebar.
+	assert.NotNil(t, cmd)
+	assert.NotEmpty(t, messagesModel.GetMessages())
+
+	// Verify the card carries the child session ID for click-to-open.
+	card := messagesModel.GetMessages()[0]
+	assert.Equal(t, "child-xyz", card.DelegationSessionID)
 }
 
 func TestDelegateToolCallsSuppressed(t *testing.T) {
