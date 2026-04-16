@@ -164,8 +164,6 @@ type chatPage struct {
 	// Message queue for enqueuing messages while agent is working
 	messageQueue []queuedMessage
 
-	pendingDelegationResumes []msgtypes.DelegationResumeMsg
-
 	// childDelegationID is set when this chat page is a child delegation tab.
 	// When set, Esc cancels via Manager.Stop() and user sends route through
 	// Manager.Continue() instead of app.Run().
@@ -891,19 +889,25 @@ func (p *chatPage) processNextQueuedMessage() tea.Cmd {
 
 // handleDelegationResume processes a delegation completion notification.
 // Unlike handleSendMsg, this bypasses the user message queue entirely.
+//
+// When the parent is actively running, the short notification has already been
+// queued in the per-parent runtime notification queue by handleDelegationCompletion.
+// The loop will drain it at the earliest safe moment after tool calls. We only
+// add the compact indicator to the transcript here — no TUI-level pending queue.
+//
+// When the parent is idle, we restart the parent loop immediately.
 func (p *chatPage) handleDelegationResume(msg msgtypes.DelegationResumeMsg) (layout.Model, tea.Cmd) {
-	// Add compact "responded" indicator to the transcript.
+	// Always add the compact indicator to the transcript.
 	notifCmd := p.messages.AddSubagentNotification(msg.AgentName)
 
 	if p.working {
-		// Parent is currently running. Queue the notification for delivery after
-		// the current turn ends — it will be drained in handleStreamStopped.
-		p.pendingDelegationResumes = append(p.pendingDelegationResumes, msg)
+		// Parent is currently running. The per-parent runtime queue (delegationNotifyQueues)
+		// already has the notification and will deliver it at the earliest safe moment.
+		// No TUI-level queue needed.
 		return p, notifCmd
 	}
 
-	// Parent is idle — resume immediately so the short notification reaches the
-	// model without user interaction.
+	// Parent is idle — resume immediately.
 	spinnerCmd := p.setWorking(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	p.msgCancel = cancel

@@ -416,6 +416,27 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 			// Record per-toolset model override for the next LLM turn.
 			toolModelOverride = resolveToolCallModelOverride(res.Calls, agentTools)
 
+			// --- PER-PARENT DELEGATION NOTIFICATIONS ---
+			// Drain short background-subagent notifications intended specifically
+			// for THIS parent session. This is like steerQueue semantics but scoped
+			// by parent session ID, so sibling sessions cannot steal each other's
+			// notifications.
+			if notifyQ := r.optGetDelegationNotifyQueue(sess.ID); notifyQ != nil {
+				if notified := notifyQ.Drain(ctx); len(notified) > 0 {
+					for _, sm := range notified {
+						wrapped := fmt.Sprintf(
+							"<system-reminder>\nBackground subagent notification: %s\n\nYou may use get_delegation_result to retrieve the result or continue_delegation to send a follow-up.\n</system-reminder>",
+							sm.Content,
+						)
+						userMsg := session.UserMessage(wrapped, sm.MultiContent...)
+						sess.AddMessage(userMsg)
+						events <- UserMessage(sm.Content, sess.ID, sm.MultiContent, len(sess.Messages)-1)
+					}
+					r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
+					continue
+				}
+			}
+
 			// --- STEERING: mid-turn injection ---
 			// Drain ALL pending steer messages. These are urgent course-
 			// corrections (or subagent notifications) that the model should

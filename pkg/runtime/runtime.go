@@ -233,6 +233,13 @@ type LocalRuntime struct {
 	// delegationEventBus broadcasts child-session runtime events to TUI subscribers
 	// so that opening a delegation card shows live updates rather than a stale snapshot.
 	delegationEventBus *EventBus
+
+	// delegationNotifyQueues stores per-parent-session notification queues for
+	// background delegation completions. Keyed by parent session ID. A child
+	// completion enqueues a short notification that is drained by the parent's
+	// active RunStream loop — preventing cross-session notification theft that
+	// would occur with the global steerQueue.
+	delegationNotifyQueues sync.Map // map[string]MessageQueue
 }
 
 type Opt func(*LocalRuntime)
@@ -836,6 +843,34 @@ func (r *LocalRuntime) SessionStore() session.Store {
 func (r *LocalRuntime) handleDelegationCompletion(d *delegation.Delegation, reply string, err error) {
 	status := d.LoadStatus()
 
+	// When the parent session is actively running, enqueue a short notification
+	// directly into its per-session queue. The parent loop drains this queue
+	// at the earliest safe moment (after tool calls, before next model call),
+	// which is identical to steerQueue semantics but scoped to the parent session.
+	//
+	// When the parent is idle (elicitationEventsChannel == nil), the onDelegationEvent
+	// callback triggers the TUI to restart the parent loop instead — no runtime queue
+	// needed because the notification is injected directly as the new user message.
+	if status != delegation.StatusCancelled && d.ParentSessionID != "" {
+		r.elicitationEventsChannelMux.RLock()
+		parentRunning := r.elicitationEventsChannel != nil
+		r.elicitationEventsChannelMux.RUnlock()
+
+		if parentRunning {
+			var content string
+			if status == delegation.StatusCompleted {
+				content = fmt.Sprintf("%s (%s) has responded", d.AgentName, d.ID)
+			} else {
+				content = fmt.Sprintf("%s (%s) failed", d.AgentName, d.ID)
+			}
+			q := r.getDelegationNotifyQueue(d.ParentSessionID)
+			if !q.Enqueue(context.Background(), QueuedMessage{Content: content, Kind: "delegation-notification"}) {
+				slog.Warn("delegation notify queue full, dropping notification",
+					"delegation_id", d.ID, "parent_session", d.ParentSessionID)
+			}
+		}
+	}
+
 	var event Event
 	switch status {
 	case delegation.StatusCompleted:
@@ -1254,4 +1289,24 @@ func (r *LocalRuntime) DelegationManager() *delegation.Manager {
 // The TUI subscribes to this bus when opening a delegation's child session.
 func (r *LocalRuntime) DelegationEventBus() *EventBus {
 	return r.delegationEventBus
+}
+
+// getDelegationNotifyQueue returns (or creates) the per-parent notification queue
+// for the given session ID. Background child completions enqueue here; the parent's
+// RunStream loop drains it.
+func (r *LocalRuntime) getDelegationNotifyQueue(sessionID string) MessageQueue {
+	if q, ok := r.delegationNotifyQueues.Load(sessionID); ok {
+		return q.(MessageQueue)
+	}
+	newQ := NewInMemoryMessageQueue(defaultSteerQueueCapacity)
+	q, _ := r.delegationNotifyQueues.LoadOrStore(sessionID, newQ)
+	return q.(MessageQueue)
+}
+
+// optGetDelegationNotifyQueue returns the notification queue for sessionID or nil.
+func (r *LocalRuntime) optGetDelegationNotifyQueue(sessionID string) MessageQueue {
+	if q, ok := r.delegationNotifyQueues.Load(sessionID); ok {
+		return q.(MessageQueue)
+	}
+	return nil
 }

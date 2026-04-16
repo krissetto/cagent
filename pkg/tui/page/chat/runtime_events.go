@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -169,7 +168,7 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	case *runtime.DelegationCompletedEvent:
 		p.sidebar.UpdateDelegation(msg.DelegationID, "responded", false)
-		if msg.ParentSessionID == p.app.Session().ID {
+		if msg.ParentSessionID == p.app.Session().ID && !p.working {
 			content := fmt.Sprintf("%s (%s) has responded", msg.AgentName, msg.DelegationID)
 			return true, core.CmdHandler(msgtypes.DelegationResumeMsg{
 				DelegationID: msg.DelegationID,
@@ -181,7 +180,7 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	case *runtime.DelegationFailedEvent:
 		p.sidebar.UpdateDelegation(msg.DelegationID, msg.Error, true)
-		if msg.ParentSessionID == p.app.Session().ID {
+		if msg.ParentSessionID == p.app.Session().ID && !p.working {
 			content := fmt.Sprintf("%s (%s) failed", msg.AgentName, msg.DelegationID)
 			return true, core.CmdHandler(msgtypes.DelegationResumeMsg{
 				DelegationID: msg.DelegationID,
@@ -301,28 +300,12 @@ func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd 
 	p.streamCancelled = false
 	spinnerCmd := p.setWorking(false)
 	p.setPendingResponse(false)
-	// Drain pending delegation completion notifications first — they must arrive
-	// at the earliest safe moment after the current turn (before any queued user
-	// messages). If both are pending, delegation notifications take priority;
-	// the user-queued message is left for the next turn.
-	var resumeCmd tea.Cmd
-	if len(p.pendingDelegationResumes) > 0 {
-		pending := p.pendingDelegationResumes[0]
-		p.pendingDelegationResumes = p.pendingDelegationResumes[1:]
-		resumeSpinnerCmd := p.setWorking(true)
-		ctx, cancel := context.WithCancel(context.Background())
-		p.msgCancel = cancel
-		go func() {
-			p.app.RunWithSubagentResult(ctx, cancel, pending.AgentName, pending.Content)
-		}()
-		resumeCmd = resumeSpinnerCmd
-	}
 
-	// Only process a queued user message if there are no pending delegation resumes.
-	var queueCmd tea.Cmd
-	if resumeCmd == nil {
-		queueCmd = p.processNextQueuedMessage()
-	}
+	// User-queued messages are processed only after the turn ends.
+	// Delegation notifications for the busy-parent case are delivered by the
+	// per-parent runtime notification queue in loop.go, so no TUI-side
+	// delegation queue drain is needed here.
+	queueCmd := p.processNextQueuedMessage()
 
 	var exitCmd tea.Cmd
 	if p.app.ShouldExitAfterFirstResponse() && p.hasReceivedAssistantContent {
@@ -332,7 +315,7 @@ func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd 
 		})
 	}
 
-	return tea.Batch(p.messages.ScrollToBottom(), spinnerCmd, sidebarCmd, queueCmd, resumeCmd, exitCmd)
+	return tea.Batch(p.messages.ScrollToBottom(), spinnerCmd, sidebarCmd, queueCmd, exitCmd)
 }
 
 // handlePartialToolCall processes partial tool call events by rendering each
