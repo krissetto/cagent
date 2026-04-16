@@ -79,6 +79,12 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	// ===== Content Events =====
 	case *runtime.UserMessageEvent:
+		// Delegation notifications use the same UserMessageEvent type but with
+		// Kind="delegation-notification". Render them as a compact styled line
+		// instead of a regular user message bubble.
+		if msg.Kind == "delegation-notification" {
+			return true, p.messages.AddSubagentNotification(msg.Message)
+		}
 		return true, p.messages.ReplaceLoadingWithUser(msg.Message, msg.SessionPosition)
 
 	case *runtime.AgentChoiceEvent:

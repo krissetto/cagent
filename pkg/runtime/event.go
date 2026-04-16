@@ -46,6 +46,7 @@ type UserMessageEvent struct {
 	MultiContent    []chat.MessagePart `json:"multi_content,omitempty"`
 	SessionID       string             `json:"session_id"`
 	SessionPosition int                `json:"session_position"` // Index in session.Messages, -1 if unknown
+	Kind            string             `json:"kind,omitempty"`   // e.g. "delegation-notification"
 }
 
 func UserMessage(message, sessionID string, multiContent []chat.MessagePart, sessionPos ...int) Event {
@@ -59,6 +60,21 @@ func UserMessage(message, sessionID string, multiContent []chat.MessagePart, ses
 		MultiContent:    multiContent,
 		SessionID:       sessionID,
 		SessionPosition: pos,
+		AgentContext:    newAgentContext(""),
+	}
+}
+
+func DelegationNotification(message, sessionID string, sessionPos ...int) Event {
+	pos := -1
+	if len(sessionPos) > 0 {
+		pos = sessionPos[0]
+	}
+	return &UserMessageEvent{
+		Type:            "user_message",
+		Message:         message,
+		SessionID:       sessionID,
+		SessionPosition: pos,
+		Kind:            "delegation-notification",
 		AgentContext:    newAgentContext(""),
 	}
 }

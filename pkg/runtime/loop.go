@@ -436,9 +436,11 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 							"<system-reminder>\nBackground subagent notification: %s\n\nYou may use get_delegation_result to retrieve the result or continue_delegation to send a follow-up.\n</system-reminder>",
 							sm.Content,
 						)
-						userMsg := session.UserMessage(wrapped, sm.MultiContent...)
+						// Use SubagentResultMessage so the TUI renders it with its own
+						// compact style instead of a regular user message bubble.
+						userMsg := session.SubagentResultMessage(sm.AgentName, wrapped)
 						sess.AddMessage(userMsg)
-						events <- UserMessage(sm.Content, sess.ID, sm.MultiContent, len(sess.Messages)-1)
+						events <- DelegationNotification(sm.Content, sess.ID, len(sess.Messages)-1)
 					}
 					r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
 					continue

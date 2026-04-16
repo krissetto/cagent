@@ -859,7 +859,7 @@ func (r *LocalRuntime) handleDelegationCompletion(d *delegation.Delegation, repl
 			content = fmt.Sprintf("%s (%s) failed", d.AgentName, d.ID)
 		}
 		q := r.getDelegationNotifyQueue(d.ParentSessionID)
-		if !q.Enqueue(context.Background(), QueuedMessage{Content: content, Kind: "delegation-notification"}) {
+		if !q.Enqueue(context.Background(), QueuedMessage{Content: content, Kind: "delegation-notification", AgentName: d.AgentName}) {
 			slog.Warn("delegation notify queue full, dropping notification",
 				"delegation_id", d.ID, "parent_session", d.ParentSessionID)
 		}

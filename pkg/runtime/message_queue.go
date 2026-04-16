@@ -16,6 +16,8 @@ type QueuedMessage struct {
 	// a normal user message; "delegation-notification" is used for subagent
 	// completion notifications.
 	Kind string
+	// AgentName is set for delegation-notification kind messages.
+	AgentName string
 }
 
 // MessageQueue is the interface for storing messages that are injected into
