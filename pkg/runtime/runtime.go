@@ -843,31 +843,25 @@ func (r *LocalRuntime) SessionStore() session.Store {
 func (r *LocalRuntime) handleDelegationCompletion(d *delegation.Delegation, reply string, err error) {
 	status := d.LoadStatus()
 
-	// When the parent session is actively running, enqueue a short notification
-	// directly into its per-session queue. The parent loop drains this queue
-	// at the earliest safe moment (after tool calls, before next model call),
-	// which is identical to steerQueue semantics but scoped to the parent session.
+	// Always enqueue the short notification into the per-parent delegation
+	// notification queue — regardless of whether the parent is running or idle.
+	// This uses the same delivery mechanism as the user steerQueue: the parent
+	// loop drains it between iterations.
 	//
-	// When the parent is idle (elicitationEventsChannel == nil), the onDelegationEvent
-	// callback triggers the TUI to restart the parent loop instead — no runtime queue
-	// needed because the notification is injected directly as the new user message.
+	// When the parent is idle (no active RunStream), onDelegationEvent triggers
+	// the TUI to start a new run. The first iteration of that new run drains
+	// the queue and injects the notification.
 	if status != delegation.StatusCancelled && d.ParentSessionID != "" {
-		r.elicitationEventsChannelMux.RLock()
-		parentRunning := r.elicitationEventsChannel != nil
-		r.elicitationEventsChannelMux.RUnlock()
-
-		if parentRunning {
-			var content string
-			if status == delegation.StatusCompleted {
-				content = fmt.Sprintf("%s (%s) has responded", d.AgentName, d.ID)
-			} else {
-				content = fmt.Sprintf("%s (%s) failed", d.AgentName, d.ID)
-			}
-			q := r.getDelegationNotifyQueue(d.ParentSessionID)
-			if !q.Enqueue(context.Background(), QueuedMessage{Content: content, Kind: "delegation-notification"}) {
-				slog.Warn("delegation notify queue full, dropping notification",
-					"delegation_id", d.ID, "parent_session", d.ParentSessionID)
-			}
+		var content string
+		if status == delegation.StatusCompleted {
+			content = fmt.Sprintf("%s (%s) has responded", d.AgentName, d.ID)
+		} else {
+			content = fmt.Sprintf("%s (%s) failed", d.AgentName, d.ID)
+		}
+		q := r.getDelegationNotifyQueue(d.ParentSessionID)
+		if !q.Enqueue(context.Background(), QueuedMessage{Content: content, Kind: "delegation-notification"}) {
+			slog.Warn("delegation notify queue full, dropping notification",
+				"delegation_id", d.ID, "parent_session", d.ParentSessionID)
 		}
 	}
 

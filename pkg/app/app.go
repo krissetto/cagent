@@ -385,11 +385,11 @@ func (a *App) Run(ctx context.Context, cancel context.CancelFunc, message string
 	}()
 }
 
-// RunWithSubagentResult adds a delegation completion notification to the
-// session as a SubagentResultMessage and starts a new RunStream. The message
-// renders as a compact one-liner in the TUI but the full content is available
-// to the LLM. Like Run, this is synchronous and should be called from a
-// goroutine.
+// RunWithSubagentResult starts a new RunStream so the parent can consume
+// any queued per-parent delegation notifications in the runtime. Unlike the
+// earlier implementation, it does NOT add a SubagentResultMessage directly to
+// the session. The runtime loop drains delegationNotifyQueues (same idea as
+// steerQueue) and injects the notification at the earliest safe moment.
 func (a *App) RunWithSubagentResult(ctx context.Context, cancel context.CancelFunc, agentName, content string) {
 	a.cancel = cancel
 
@@ -400,7 +400,6 @@ func (a *App) RunWithSubagentResult(ctx context.Context, cancel context.CancelFu
 	}
 
 	go func() {
-		a.session.AddMessage(session.SubagentResultMessage(agentName, content))
 		for event := range a.runtime.RunStream(ctx, a.session) {
 			if ctx.Err() != nil {
 				if _, ok := event.(*runtime.StreamStoppedEvent); ok {
