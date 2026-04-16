@@ -83,7 +83,11 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 		// Kind="delegation-notification". Render them as a compact styled line
 		// instead of a regular user message bubble.
 		if msg.Kind == "delegation-notification" {
-			return true, p.messages.AddSubagentNotification(msg.Message)
+			agentName := msg.AgentName
+			if agentName == "" {
+				agentName = msg.Message
+			}
+			return true, p.messages.AddSubagentNotification(agentName)
 		}
 		return true, p.messages.ReplaceLoadingWithUser(msg.Message, msg.SessionPosition)
 

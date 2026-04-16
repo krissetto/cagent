@@ -717,14 +717,15 @@ func (s *SQLiteSessionStore) GetSession(ctx context.Context, id string) (*Sessio
 
 // sessionItemRow holds the raw data from a session_items row
 type sessionItemRow struct {
-	position       int
-	itemType       string
-	agentName      sql.NullString
-	messageJSON    sql.NullString
-	implicit       bool
-	subsessionID   sql.NullString
-	summaryText    sql.NullString
-	firstKeptEntry int
+	position         int
+	itemType         string
+	agentName        sql.NullString
+	messageJSON      sql.NullString
+	implicit         bool
+	isSubagentResult bool
+	subsessionID     sql.NullString
+	summaryText      sql.NullString
+	firstKeptEntry   int
 }
 
 // loadSessionItems loads all items for a session from the session_items table.
@@ -735,7 +736,7 @@ func (s *SQLiteSessionStore) loadSessionItems(ctx context.Context, sessionID str
 // loadSessionItemsWith loads items using the provided querier (db or tx).
 func (s *SQLiteSessionStore) loadSessionItemsWith(ctx context.Context, q querier, sessionID string) ([]Item, error) {
 	rows, err := q.QueryContext(ctx,
-		`SELECT position, item_type, agent_name, message_json, implicit, subsession_id, summary_text, COALESCE(first_kept_entry, 0)
+		`SELECT position, item_type, agent_name, message_json, implicit, is_subagent_result, subsession_id, summary_text, COALESCE(first_kept_entry, 0)
 		 FROM session_items WHERE session_id = ? ORDER BY position`, sessionID)
 	if err != nil {
 		return nil, err
@@ -747,7 +748,7 @@ func (s *SQLiteSessionStore) loadSessionItemsWith(ctx context.Context, q querier
 	var rawRows []sessionItemRow
 	for rows.Next() {
 		var row sessionItemRow
-		if err := rows.Scan(&row.position, &row.itemType, &row.agentName, &row.messageJSON, &row.implicit, &row.subsessionID, &row.summaryText, &row.firstKeptEntry); err != nil {
+		if err := rows.Scan(&row.position, &row.itemType, &row.agentName, &row.messageJSON, &row.implicit, &row.isSubagentResult, &row.subsessionID, &row.summaryText, &row.firstKeptEntry); err != nil {
 			return nil, err
 		}
 		rawRows = append(rawRows, row)
@@ -771,9 +772,10 @@ func (s *SQLiteSessionStore) loadSessionItemsWith(ctx context.Context, q querier
 			}
 			items = append(items, Item{
 				Message: &Message{
-					AgentName: row.agentName.String,
-					Message:   chatMsg,
-					Implicit:  row.implicit,
+					AgentName:        row.agentName.String,
+					Message:          chatMsg,
+					Implicit:         row.implicit,
+					IsSubagentResult: row.isSubagentResult,
 				},
 			})
 
@@ -1093,9 +1095,9 @@ func (s *SQLiteSessionStore) AddMessage(ctx context.Context, sessionID string, m
 
 	// Insert a new message at the next position
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO session_items (session_id, position, item_type, agent_name, message_json, implicit)
-		 VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_items WHERE session_id = ?), 'message', ?, ?, ?)`,
-		sessionID, sessionID, msg.AgentName, string(msgJSON), msg.Implicit)
+		`INSERT INTO session_items (session_id, position, item_type, agent_name, message_json, implicit, is_subagent_result)
+		 VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_items WHERE session_id = ?), 'message', ?, ?, ?, ?)`,
+		sessionID, sessionID, msg.AgentName, string(msgJSON), msg.Implicit, msg.IsSubagentResult)
 	if err != nil {
 		return 0, fmt.Errorf("inserting message: %w", err)
 	}
@@ -1117,8 +1119,8 @@ func (s *SQLiteSessionStore) UpdateMessage(ctx context.Context, messageID int64,
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE session_items SET message_json = ?, implicit = ? WHERE id = ?`,
-		string(msgJSON), msg.Implicit, messageID)
+		`UPDATE session_items SET message_json = ?, implicit = ?, is_subagent_result = ? WHERE id = ?`,
+		string(msgJSON), msg.Implicit, msg.IsSubagentResult, messageID)
 	if err != nil {
 		return fmt.Errorf("updating message: %w", err)
 	}
@@ -1234,9 +1236,9 @@ func (s *SQLiteSessionStore) addItemTx(ctx context.Context, tx *sql.Tx, sessionI
 			return fmt.Errorf("marshaling message: %w", err)
 		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO session_items (session_id, position, item_type, agent_name, message_json, implicit)
-			 VALUES (?, ?, 'message', ?, ?, ?)`,
-			sessionID, position, item.Message.AgentName, string(msgJSON), item.Message.Implicit)
+			`INSERT INTO session_items (session_id, position, item_type, agent_name, message_json, implicit, is_subagent_result)
+			 VALUES (?, ?, 'message', ?, ?, ?, ?)`,
+			sessionID, position, item.Message.AgentName, string(msgJSON), item.Message.Implicit, item.Message.IsSubagentResult)
 		return err
 
 	case item.SubSession != nil:

@@ -387,6 +387,12 @@ func getAllMigrations() []Migration {
 			Description: "Add first_kept_entry column to session_items for compaction-preserved messages",
 			UpSQL:       `ALTER TABLE session_items ADD COLUMN first_kept_entry INTEGER DEFAULT 0`,
 		},
+		{
+			ID:          22,
+			Name:        "022_add_is_subagent_result_column",
+			Description: "Add is_subagent_result column to session_items for delegation notification messages",
+			UpSQL:       `ALTER TABLE session_items ADD COLUMN is_subagent_result BOOLEAN DEFAULT 0`,
+		},
 	}
 }
 

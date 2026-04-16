@@ -90,9 +90,9 @@ type SidebarSettings struct {
 
 // Page represents the main chat content area (messages + sidebar).
 // The editor and resize handle are owned by the parent (tui.Model).
-// delegationStopper is the minimal interface needed to stop a delegation.
+// DelegationStopper is the minimal interface needed to stop a delegation.
 // Using an interface here avoids importing the delegation package into the chat page.
-type delegationStopper interface {
+type DelegationStopper interface {
 	Stop(ctx context.Context, shortID string) error
 }
 
@@ -104,7 +104,7 @@ type Page interface {
 	// SetDelegationContext marks this chat page as a child delegation tab.
 	// When set, Esc cancels the delegation rather than calling app.Cancel(),
 	// and msgCancel is wired to Manager.Stop(delegationID).
-	SetDelegationContext(delegationID string, mgr delegationStopper)
+	SetDelegationContext(delegationID string, mgr DelegationStopper)
 	// SetSessionStarred updates the sidebar star indicator
 	SetSessionStarred(starred bool)
 	// SetTitleRegenerating sets the title regenerating state on the sidebar
@@ -168,7 +168,7 @@ type chatPage struct {
 	// When set, Esc cancels via Manager.Stop() and user sends route through
 	// Manager.Continue() instead of app.Run().
 	childDelegationID string
-	childDelegationMgr delegationStopper
+	childDelegationMgr DelegationStopper
 
 	// Editing state for branching sessions
 	editing          bool
@@ -668,7 +668,7 @@ func (p *chatPage) Help() help.KeyMap {
 }
 
 // SetDelegationContext configures this chat page as a child delegation tab.
-func (p *chatPage) SetDelegationContext(delegationID string, mgr delegationStopper) {
+func (p *chatPage) SetDelegationContext(delegationID string, mgr DelegationStopper) {
 	p.childDelegationID = delegationID
 	p.childDelegationMgr = mgr
 }
@@ -908,8 +908,10 @@ func (p *chatPage) handleDelegationResume(msg msgtypes.DelegationResumeMsg) (lay
 		return p, nil
 	}
 
-	// Parent is idle — add compact indicator and resume immediately.
-	notifCmd := p.messages.AddSubagentNotification(msg.AgentName)
+	// Parent is idle — restart immediately. The resumed runtime stream will drain
+	// the per-parent delegation notification queue and add the single compact
+	// transcript indicator, so we must not add one here or the TUI would show
+	// duplicate compact notifications.
 	spinnerCmd := p.setWorking(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	p.msgCancel = cancel
@@ -918,7 +920,7 @@ func (p *chatPage) handleDelegationResume(msg msgtypes.DelegationResumeMsg) (lay
 	}()
 
 	scrollCmd := p.messages.ScrollToBottom()
-	return p, tea.Batch(notifCmd, spinnerCmd, scrollCmd)
+	return p, tea.Batch(spinnerCmd, scrollCmd)
 }
 
 // handleChildTabSendMsg processes a user message in a child delegation tab.

@@ -440,7 +440,7 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 						// compact style instead of a regular user message bubble.
 						userMsg := session.SubagentResultMessage(sm.AgentName, wrapped)
 						sess.AddMessage(userMsg)
-						events <- DelegationNotification(sm.Content, sess.ID, len(sess.Messages)-1)
+						events <- DelegationNotification(sm.Content, sm.AgentName, sess.ID, len(sess.Messages)-1)
 					}
 					r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
 					continue

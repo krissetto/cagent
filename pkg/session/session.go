@@ -191,9 +191,8 @@ type Message struct {
 	// Such messages should be marked as true
 	Implicit bool `json:"implicit,omitempty"`
 	// IsSubagentResult marks user-role messages that carry delegation completion
-	// notifications. In the TUI these render as a compact one-liner rather than
-	// a full user message bubble, but for the LLM context they are regular user
-	// messages.
+	// notifications. It is persisted separately from chat.Message so the TUI can
+	// preserve compact/hidden rendering semantics after reload.
 	IsSubagentResult bool `json:"isSubagentResult,omitempty"`
 }
 

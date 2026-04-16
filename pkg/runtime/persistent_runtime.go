@@ -92,7 +92,7 @@ func (r *PersistentRuntime) handleEvent(ctx context.Context, sess *session.Sessi
 		streaming.agentName = ""
 		streaming.messageID = 0
 
-		if _, err := r.sessionStore.AddMessage(ctx, e.SessionID, session.UserMessage(e.Message, e.MultiContent...)); err != nil {
+		if _, err := r.sessionStore.AddMessage(ctx, e.SessionID, persistedUserMessage(e)); err != nil {
 			slog.Warn("Failed to persist user message", "session_id", e.SessionID, "error", err)
 		}
 
@@ -140,6 +140,13 @@ func (r *PersistentRuntime) handleEvent(ctx context.Context, sess *session.Sessi
 			slog.Warn("Failed to persist session title", "session_id", sess.ID, "error", err)
 		}
 	}
+}
+
+func persistedUserMessage(e *UserMessageEvent) *session.Message {
+	if e.Kind == "delegation-notification" {
+		return session.SubagentResultMessage(e.AgentName, e.Message)
+	}
+	return session.UserMessage(e.Message, e.MultiContent...)
 }
 
 // persistStreamingContent creates or updates the streaming assistant message
@@ -209,7 +216,7 @@ func persistChildEvent(ctx context.Context, store session.Store, sessionID strin
 		streaming.reasoningContent.Reset()
 		streaming.agentName = ""
 		streaming.messageID = 0
-		if _, err := store.AddMessage(ctx, e.SessionID, session.UserMessage(e.Message, e.MultiContent...)); err != nil {
+		if _, err := store.AddMessage(ctx, e.SessionID, persistedUserMessage(e)); err != nil {
 			slog.Warn("[child-persist] Failed to persist user message", "session_id", e.SessionID, "error", err)
 		}
 

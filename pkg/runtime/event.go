@@ -64,7 +64,7 @@ func UserMessage(message, sessionID string, multiContent []chat.MessagePart, ses
 	}
 }
 
-func DelegationNotification(message, sessionID string, sessionPos ...int) Event {
+func DelegationNotification(message, agentName, sessionID string, sessionPos ...int) Event {
 	pos := -1
 	if len(sessionPos) > 0 {
 		pos = sessionPos[0]
@@ -75,7 +75,7 @@ func DelegationNotification(message, sessionID string, sessionPos ...int) Event 
 		SessionID:       sessionID,
 		SessionPosition: pos,
 		Kind:            "delegation-notification",
-		AgentContext:    newAgentContext(""),
+		AgentContext:    newAgentContext(agentName),
 	}
 }
 

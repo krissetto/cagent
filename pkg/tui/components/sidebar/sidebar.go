@@ -602,10 +602,11 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		if m.mode == ModeVertical {
 			// Check delegation clicks
 			if clickMsg, ok := msg.(tea.MouseClickMsg); ok && clickMsg.Button == tea.MouseLeft {
-				adjustedX := clickMsg.X - m.layoutCfg.PaddingLeft
-				if adjustedX >= 0 {
+				localX := clickMsg.X - m.xPos - m.layoutCfg.PaddingLeft
+				localY := clickMsg.Y - m.yPos
+				if localX >= 0 && localY >= 0 {
 					scrollOffset := m.scrollview.ScrollOffset()
-					contentY := clickMsg.Y + scrollOffset
+					contentY := localY + scrollOffset
 					if idx, found := m.delegationClickMap[contentY]; found && idx < len(m.delegations) {
 						d := m.delegations[idx]
 						if d.ChildSessionID != "" {
@@ -985,51 +986,47 @@ func (m *model) UpdateDelegation(id, reply string, failed bool) {
 	}
 }
 
+func (m *model) delegationDisplayLines(d DelegationInfo, index int, contentWidth int) (string, string) {
+	maxWidth := contentWidth - treePrefixWidth
+	var statusIcon string
+	switch d.Status {
+	case "running":
+		statusIcon = m.spinner.View()
+	case "completed":
+		statusIcon = styles.TabAccentStyle.Render("✓")
+	case "failed":
+		statusIcon = styles.ErrorStyle.Render("✗")
+	default:
+		statusIcon = styles.MutedStyle.Render("•")
+	}
+
+	agentStyle := styles.AgentAccentStyleFor(d.AgentName)
+	line := statusIcon + " " + agentStyle.Render(d.AgentName)
+
+	preview := d.Reply
+	if preview == "" || preview == "responded" || preview == "stopped" {
+		preview = d.Task
+	}
+
+	var prefix string
+	if index == len(m.delegations)-1 {
+		prefix = styles.MutedStyle.Render("└ ")
+	} else {
+		prefix = styles.MutedStyle.Render("├ ")
+	}
+	previewLine := prefix + styles.MutedStyle.Render(toolcommon.TruncateText(preview, maxWidth))
+	return line, previewLine
+}
+
 // delegationSection renders the delegations tab in the sidebar.
 func (m *model) delegationSection(contentWidth int) string {
 	if len(m.delegations) == 0 {
 		return ""
 	}
 
-	maxWidth := contentWidth - treePrefixWidth
 	var rows []string
 	for i, d := range m.delegations {
-		var statusIcon string
-		var statusStyle lipgloss.Style
-		switch d.Status {
-		case "running":
-			statusIcon = m.spinner.View()
-			statusStyle = styles.ActiveStyle
-		case "completed":
-			statusIcon = styles.TabAccentStyle.Render("✓")
-			statusStyle = styles.TabPrimaryStyle
-		case "failed":
-			statusIcon = styles.ErrorStyle.Render("✗")
-			statusStyle = styles.ErrorStyle
-		default:
-			statusIcon = styles.MutedStyle.Render("•")
-			statusStyle = styles.MutedStyle
-		}
-
-		_ = statusStyle
-		agentStyle := styles.AgentAccentStyleFor(d.AgentName)
-		line := statusIcon + " " + agentStyle.Render(d.AgentName)
-
-		// Show muted preview of last subagent response (not the task).
-		// Fall back to the task text while the delegation is still running.
-		preview := d.Reply
-		if preview == "" || preview == "responded" || preview == "stopped" {
-			preview = d.Task
-		}
-
-		var prefix string
-		if i == len(m.delegations)-1 {
-			prefix = styles.MutedStyle.Render("└ ")
-		} else {
-			prefix = styles.MutedStyle.Render("├ ")
-		}
-		previewLine := prefix + styles.MutedStyle.Render(toolcommon.TruncateText(preview, maxWidth))
-
+		line, previewLine := m.delegationDisplayLines(d, i, contentWidth)
 		rows = append(rows, line, previewLine)
 	}
 
@@ -1057,11 +1054,11 @@ func (m *model) renderSections(contentWidth int) []string {
 	delegationStartLine := len(lines)
 	delegationContent := m.delegationSection(contentWidth)
 	if delegationContent != "" {
-		delegationLines := strings.Split(delegationContent, "\n")
-		// The tab header is 1 line (title), then content starts. Each delegation
-		// uses 2 lines (status + task). Map the status line of each delegation
-		// to its index for click detection.
-		headerLines := 1
+		delegationLines := strings.Split(strings.TrimRight(delegationContent, "\n"), "\n")
+		headerLines := len(delegationLines) - (len(m.delegations) * 2)
+		if headerLines < 0 {
+			headerLines = 0
+		}
 		for i := range m.delegations {
 			rowStartLine := delegationStartLine + headerLines + (i * 2)
 			m.delegationClickMap[rowStartLine] = i
