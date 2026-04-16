@@ -347,11 +347,16 @@ func (r *LocalRuntime) handleGetDelegationResult(ctx context.Context, _ *session
 		return tools.ResultError(fmt.Sprintf("delegation %s not found", params.DelegationID)), nil
 	}
 
-	status := string(d.LoadStatus())
+	status := d.LoadStatus().String()
 	lastReply := d.GetLastReply()
+	var errStr string
+	if e := d.GetError(); e != nil {
+		errStr = e.Error()
+	}
 
-	result := fmt.Sprintf(`{"delegation_id":%q,"agent":%q,"status":%q,"last_reply":%q}`,
-		params.DelegationID, d.AgentName, status, lastReply)
+	result := fmt.Sprintf(
+		`{"delegation_id":%q,"session_id":%q,"agent":%q,"status":%q,"last_reply":%q,"error":%q}`,
+		params.DelegationID, d.SessionID, d.AgentName, status, lastReply, errStr)
 	return tools.ResultSuccess(result), nil
 }
 

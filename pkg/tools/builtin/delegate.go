@@ -69,7 +69,7 @@ func (t *DelegateTool) Tools(context.Context) ([]tools.Tool, error) {
 		{
 			Name:        ToolNameGetDelegationResult,
 			Category:    "transfer",
-			Description: `Read the content of a delegation by its delegation_id. Use this when a user's request matches an available skill.`,
+			Description: `Retrieve the current status and latest result of a background delegation by delegation_id, without copying the child session content into the parent transcript.`,
 			Parameters:  tools.MustSchemaFor[GetDelegationResultArgs](),
 			Annotations: tools.ToolAnnotations{Title: "Get Delegation Result", ReadOnlyHint: true},
 		},
