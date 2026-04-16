@@ -897,17 +897,19 @@ func (p *chatPage) processNextQueuedMessage() tea.Cmd {
 //
 // When the parent is idle, we restart the parent loop immediately.
 func (p *chatPage) handleDelegationResume(msg msgtypes.DelegationResumeMsg) (layout.Model, tea.Cmd) {
-	// Always add the compact indicator to the transcript.
-	notifCmd := p.messages.AddSubagentNotification(msg.AgentName)
-
 	if p.working {
-		// Parent is currently running. The per-parent runtime queue (delegationNotifyQueues)
-		// already has the notification and will deliver it at the earliest safe moment.
-		// No TUI-level queue needed.
-		return p, notifCmd
+		// Don't add a SubagentNotification message mid-stream — it would break
+		// the AppendToLastMessage / AppendReasoning chain in the messages
+		// component (which checks the LAST message type) and cause the model's
+		// streaming output to fragment into many tiny blocks.
+		//
+		// The parent still receives the notification via the per-parent runtime
+		// notification queue (system-reminder). The sidebar already updated.
+		return p, nil
 	}
 
-	// Parent is idle — resume immediately.
+	// Parent is idle — add compact indicator and resume immediately.
+	notifCmd := p.messages.AddSubagentNotification(msg.AgentName)
 	spinnerCmd := p.setWorking(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	p.msgCancel = cancel
