@@ -76,6 +76,26 @@ func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.S
 // context cancellation). Each iteration: sends messages to the model, streams
 // the response, executes any tool calls, and loops until the model signals stop
 // or the iteration limit is reached.
+func (r *LocalRuntime) injectDelegationNotifications(ctx context.Context, sess *session.Session, events chan Event) bool {
+	if notifyQ := r.optGetDelegationNotifyQueue(sess.ID); notifyQ != nil {
+		if notified := notifyQ.Drain(ctx); len(notified) > 0 {
+			for _, sm := range notified {
+				wrapped := fmt.Sprintf(
+					"<system-reminder>\nBackground subagent notification: %s\n\nYou may use get_delegation_result to retrieve the result or continue_delegation to send a follow-up.\n</system-reminder>",
+					sm.Content,
+				)
+				// Use SubagentResultMessage so the TUI renders it with its own
+				// compact style instead of a regular user message bubble.
+				userMsg := session.SubagentResultMessage(sm.AgentName, wrapped)
+				sess.AddMessage(userMsg)
+				events <- DelegationNotification(sm.Content, sm.AgentName, sess.ID, len(sess.Messages)-1)
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-chan Event {
 	slog.Debug("Starting runtime stream", "agent", r.CurrentAgentName(), "session_id", sess.ID)
 	events := make(chan Event, 128)
@@ -121,16 +141,13 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 
 		events <- ToolsetInfo(len(agentTools), false, a.Name())
 
-		messages := sess.GetMessages(a)
-		if sess.SendUserMessage && len(messages) > 0 {
-			lastMsg := messages[len(messages)-1]
-			// Don't emit UserMessageEvent for subagent result notifications —
-			// they are already rendered via AddSubagentNotification in
-			// handleDelegationResume. Emitting here would duplicate them as
-			// full user message bubbles.
+		if sess.SendUserMessage && len(sess.Messages) > 0 {
 			lastItem := sess.Messages[len(sess.Messages)-1]
-			isSubagentResult := lastItem.Message != nil && lastItem.Message.IsSubagentResult
-			if !isSubagentResult {
+			if lastItem.Message != nil &&
+				lastItem.Message.Message.Role == chat.MessageRoleUser &&
+				!lastItem.Message.IsSubagentResult &&
+				!lastItem.Message.Implicit {
+				lastMsg := lastItem.Message.Message
 				events <- UserMessage(lastMsg.Content, sess.ID, lastMsg.MultiContent, len(sess.Messages)-1)
 			}
 		}
@@ -138,6 +155,14 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 		events <- StreamStarted(sess.ID, a.Name())
 
 		defer r.finalizeEventChannel(ctx, sess, prevElicitationCh, events, isBackgroundDelegation)
+
+		// If the parent was resumed only to consume background delegation
+		// notifications, process them before making another model call. This avoids
+		// an unexpected extra assistant turn where the parent effectively responds
+		// to its own reminder message.
+		if r.injectDelegationNotifications(ctx, sess, events) {
+			return
+		}
 
 		iteration := 0
 		// Use a runtime copy of maxIterations so we don't modify the session's persistent config
@@ -429,22 +454,9 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 			// for THIS parent session. This is like steerQueue semantics but scoped
 			// by parent session ID, so sibling sessions cannot steal each other's
 			// notifications.
-			if notifyQ := r.optGetDelegationNotifyQueue(sess.ID); notifyQ != nil {
-				if notified := notifyQ.Drain(ctx); len(notified) > 0 {
-					for _, sm := range notified {
-						wrapped := fmt.Sprintf(
-							"<system-reminder>\nBackground subagent notification: %s\n\nYou may use get_delegation_result to retrieve the result or continue_delegation to send a follow-up.\n</system-reminder>",
-							sm.Content,
-						)
-						// Use SubagentResultMessage so the TUI renders it with its own
-						// compact style instead of a regular user message bubble.
-						userMsg := session.SubagentResultMessage(sm.AgentName, wrapped)
-						sess.AddMessage(userMsg)
-						events <- DelegationNotification(sm.Content, sm.AgentName, sess.ID, len(sess.Messages)-1)
-					}
-					r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
-					continue
-				}
+			if r.injectDelegationNotifications(ctx, sess, events) {
+				r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
+				continue
 			}
 
 			// --- STEERING: mid-turn injection ---

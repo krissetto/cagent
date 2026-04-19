@@ -687,6 +687,43 @@ func TestCompactionOverflowDoesNotLoop(t *testing.T) {
 	require.True(t, sawError, "expected an ErrorEvent after exhausting compaction retries")
 }
 
+func TestRunStream_IdleParentResume_DrainsDelegationNotificationWithoutNewAssistantTurn(t *testing.T) {
+	t.Parallel()
+
+	stream := newStreamBuilder().
+		AddContent("should not be used").
+		AddStopWithUsage(1, 1).
+		Build()
+
+	prov := &mockProvider{id: "test/mock-model", stream: stream}
+	root := agent.New("root", "You are a test agent", agent.WithModel(prov))
+	tm := team.New(team.WithAgents(root))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+
+	sess := session.New()
+	q := rt.getDelegationNotifyQueue(sess.ID)
+	ok := q.Enqueue(context.Background(), QueuedMessage{
+		Content:   "planner (abc12) has responded",
+		Kind:      "delegation-notification",
+		AgentName: "planner",
+	})
+	require.True(t, ok)
+
+	var events []Event
+	for ev := range rt.RunStream(t.Context(), sess) {
+		events = append(events, ev)
+	}
+
+	assert.True(t, hasEventType(t, events, &UserMessageEvent{}), "expected compact delegation notification event")
+	assert.False(t, hasEventType(t, events, &AgentChoiceEvent{}), "idle parent resume should not trigger a fresh assistant turn just to consume delegation notifications")
+	assert.False(t, hasEventType(t, events, &MessageAddedEvent{}), "idle parent resume should not add a new assistant message")
+	assert.Len(t, sess.Messages, 1)
+	assert.True(t, sess.Messages[0].Message.IsSubagentResult)
+	assert.Equal(t, "planner", sess.Messages[0].Message.AgentName)
+}
+
 func TestSessionWithoutUserMessage(t *testing.T) {
 	stream := newStreamBuilder().AddContent("OK").AddStopWithUsage(1, 1).Build()
 
@@ -699,6 +736,30 @@ func TestSessionWithoutUserMessage(t *testing.T) {
 	require.True(t, hasEventType(t, events, &StreamStartedEvent{}), "Expected StreamStartedEvent")
 	require.True(t, hasEventType(t, events, &StreamStoppedEvent{}), "Expected StreamStoppedEvent")
 	require.False(t, hasEventType(t, events, &UserMessageEvent{}), "Should not have UserMessageEvent when SendUserMessage is false")
+}
+
+func TestRunStream_DoesNotEmitUserMessageEventWhenLastSessionItemIsAssistant(t *testing.T) {
+	t.Parallel()
+
+	stream := newStreamBuilder().
+		AddContent("second answer").
+		AddStopWithUsage(2, 2).
+		Build()
+
+	sess := session.New(session.WithUserMessage("Hi"))
+	sess.AddMessage(session.NewAgentMessage("root", &chat.Message{
+		Role:      chat.MessageRoleAssistant,
+		Content:   "first answer",
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}))
+
+	events := runSession(t, sess, stream)
+
+	for _, ev := range events {
+		if userEv, ok := ev.(*UserMessageEvent); ok {
+			assert.NotEqual(t, "first answer", userEv.Message, "assistant content must not be re-emitted as a user message event")
+		}
+	}
 }
 
 // --- Tool setup failure handling tests ---
