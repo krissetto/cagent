@@ -186,11 +186,39 @@ type Message struct {
 	ID        int64        `json:"-"`
 	AgentName string       `json:"agentName"` // TODO: rename to agent_name
 	Message   chat.Message `json:"message"`
-	// Implicit is an optional field to indicate if the message shouldn't be shown to the user. It's needed for special  situations
-	// like when an agent transfers a task to another agent - new session is created with a default user message, but this shouldn't be shown to the user.
-	// Such messages should be marked as true
+	// Implicit indicates the message should not be rendered as direct user
+	// input. Implicit messages are runtime-generated reminders (e.g.
+	// subagent envelope injections, task-transfer seed messages) that
+	// exist in the session history for model context but should be hidden
+	// or styled differently by UI consumers.
 	Implicit bool `json:"implicit,omitempty"`
+
+	// Kind classifies the message for typed dispatch by UI consumers and
+	// any future processing logic. The zero value (empty string) means a
+	// normal user/assistant/tool message. Non-empty values identify
+	// runtime-generated special messages that may need dedicated rendering
+	// or suppression.
+	//
+	// Kind is persisted alongside the message and round-trips through the
+	// session store. See [MessageKind] constants for the defined values.
+	Kind MessageKind `json:"kind,omitempty"`
 }
+
+// MessageKind classifies a [Message] for typed dispatch.
+type MessageKind string
+
+const (
+	// MessageKindRegular is the zero value: a normal user/assistant/tool message.
+	MessageKindRegular MessageKind = ""
+
+	// MessageKindSubagentEnvelope identifies a runtime-generated user-role
+	// message that injects a subagent envelope reminder into the session
+	// history. These messages carry the `<subagent_update>` XML blob and
+	// are always Implicit. The TUI suppresses them from the transcript and
+	// instead renders the corresponding SubAgentUpdateEvent as a dedicated
+	// card.
+	MessageKindSubagentEnvelope MessageKind = "subagent_envelope"
+)
 
 func ImplicitUserMessage(content string) *Message {
 	msg := UserMessage(content)
@@ -358,11 +386,24 @@ func deepCopyChatMessage(m chat.Message) chat.Message {
 
 // Session helper methods
 
-// AddMessage adds a message to the session
-func (s *Session) AddMessage(msg *Message) {
+// AddMessage adds a message to the session and returns the index of the
+// inserted item. Using the returned index instead of a separate
+// len(s.Messages)-1 read eliminates an unsynchronized access when other
+// goroutines may be appending concurrently.
+func (s *Session) AddMessage(msg *Message) int {
 	s.mu.Lock()
 	s.Messages = append(s.Messages, NewMessageItem(msg))
+	idx := len(s.Messages) - 1
 	s.mu.Unlock()
+	return idx
+}
+
+// Len returns the total number of items (messages, summaries, sub-sessions)
+// in the session's Messages slice in a concurrency-safe way.
+func (s *Session) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.Messages)
 }
 
 // AddSubSession adds a sub-session to the session
@@ -370,6 +411,20 @@ func (s *Session) AddSubSession(subSession *Session) {
 	s.mu.Lock()
 	s.Messages = append(s.Messages, NewSubSessionItem(subSession))
 	s.mu.Unlock()
+}
+
+// SetTitle updates the session title in a concurrency-safe way.
+func (s *Session) SetTitle(title string) {
+	s.mu.Lock()
+	s.Title = title
+	s.mu.Unlock()
+}
+
+// GetTitle returns the current session title in a concurrency-safe way.
+func (s *Session) GetTitle() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Title
 }
 
 // Duration calculates the duration of the session from message timestamps.
@@ -458,9 +513,9 @@ func (s *Session) GetLastUserMessages(n int) []string {
 
 func (s *Session) getLastMessageContentByRole(role chat.MessageRole) string {
 	messages := s.GetAllMessages()
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Message.Role == role {
-			return strings.TrimSpace(messages[i].Message.Content)
+	for _, m := range slices.Backward(messages) {
+		if m.Message.Role == role {
+			return strings.TrimSpace(m.Message.Content)
 		}
 	}
 	return ""
@@ -688,6 +743,31 @@ func markLastMessageAsCacheControl(messages []chat.Message) {
 	}
 }
 
+func buildSubAgentHarnessPrompt(subAgentList string, validAgentIDs []string) string {
+	return `# Runtime-managed subagents
+
+You are a multi-agent system. Answer the user's request in the most helpful way possible, using the subagents below when they are useful.
+
+Available subagents:
+` + subAgentList + `
+Important constraints:
+- You can ONLY use subagents listed above. The valid subagent names are: ` + strings.Join(validAgentIDs, ", ") + `.
+- Do not invent or use any other subagent names.
+- Use ` + "`subagent_start`" + ` to start a persistent background subagent session with one of the valid names.
+- Use ` + "`subagent_send`" + ` to send follow-up work or clarification to an existing live subagent.
+- Use ` + "`subagent_finalize`" + ` to ask a subagent to finish cleanly when no more work is needed.
+- Use ` + "`subagent_stop`" + ` only when a subagent should be canceled immediately.
+
+How to coordinate subagents:
+- Start subagents only when delegation is useful. If you are the best agent for the request, answer directly.
+- Independent subagent tasks may be started in parallel; dependent work should wait for the relevant subagent update first.
+- After starting or messaging a subagent, NEVER poll for completion. Do not call ` + "`subagent_list`" + ` or ` + "`subagent_inspect`" + ` in a loop to check whether a subagent has finished. Do not run shell commands like ` + "`sleep`" + `, ` + "`wait`" + `, or any delay/retry mechanism to "wait" for a subagent — this wastes tokens, pollutes context, and is completely unnecessary. The runtime will automatically inject a ` + "`<subagent_update>`" + ` message into your conversation when a subagent finishes a turn or has a meaningful status change. Simply end your current turn after dispatching work and the update will arrive as your next message.
+- Do not search the filesystem or other external locations for subagent outputs. Subagent results are delivered through runtime updates and the subagent inspection tools, not through files, environment variables, or any other side channel.
+- Use ` + "`subagent_inspect`" + ` only when a received ` + "`<subagent_update>`" + ` preview is insufficient and you explicitly need more of that subagent's transcript. The default mode is cheap; request ` + "`mode=\"recent\"`" + ` or ` + "`mode=\"full\"`" + ` only when necessary.
+- When a tool returns a subagent_id, use the short ID exactly as returned for later ` + "`subagent_send`" + `, ` + "`subagent_inspect`" + `, ` + "`subagent_finalize`" + `, or ` + "`subagent_stop`" + ` calls.
+`
+}
+
 // buildInvariantSystemMessages builds system messages that are identical
 // for all users of a given agent configuration. These messages can be
 // cached efficiently as they don't change between sessions, users, or projects.
@@ -714,7 +794,7 @@ func buildInvariantSystemMessages(a *agent.Agent) []chat.Message {
 
 		messages = append(messages, chat.Message{
 			Role:    chat.MessageRoleSystem,
-			Content: "You are a multi-agent system, make sure to answer the user query in the most helpful way possible. You have access to these sub-agents:\n" + text.String() + "\nIMPORTANT: You can ONLY transfer tasks to the agents listed above using their ID. The valid agent names are: " + strings.Join(validAgentIDs, ", ") + ". You MUST NOT attempt to transfer to any other agent IDs - doing so will cause system errors.\n\nIf you are the best to answer the question according to your description, you can answer it.\n\nIf another agent is better for answering the question according to its description, call `transfer_task` function to transfer the question to that agent using the agent's ID. When transferring, do not generate any text other than the function call.\n\n",
+			Content: buildSubAgentHarnessPrompt(text.String(), validAgentIDs),
 		})
 	}
 
@@ -832,8 +912,8 @@ func buildSessionSummaryMessages(items []Item) ([]chat.Message, int) {
 	// Find the last summary index to determine where conversation messages start
 	// and to include the summary in session summary messages
 	lastSummaryIndex := -1
-	for i := len(items) - 1; i >= 0; i-- {
-		if items[i].Summary != "" {
+	for i, item := range slices.Backward(items) {
+		if item.Summary != "" {
 			lastSummaryIndex = i
 			break
 		}
@@ -1080,7 +1160,7 @@ func truncateOldToolContent(messages []chat.Message, maxTokens int) []chat.Messa
 
 	tokenBudget := maxTokens
 
-	for i := len(result) - 1; i >= 0; i-- {
+	for i := range slices.Backward(result) {
 		msg := &result[i]
 
 		if msg.Role == chat.MessageRoleTool {

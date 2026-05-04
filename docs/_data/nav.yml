@@ -63,12 +63,8 @@
       url: /tools/api/
     - title: User Prompt
       url: /tools/user-prompt/
-    - title: Transfer Task
-      url: /tools/transfer-task/
-    - title: Background Agents
-      url: /tools/background-agents/
-    - title: Handoff
-      url: /tools/handoff/
+    - title: Subagents (Runtime-Managed)
+      url: /tools/subagents/
     - title: OpenAPI
       url: /tools/openapi/
     - title: A2A
@@ -88,6 +84,8 @@
       url: /features/acp/
     - title: API Server
       url: /features/api-server/
+    - title: Live Sessions
+      url: /features/live-sessions/
     - title: Evaluation
       url: /features/evaluation/
     - title: RAG

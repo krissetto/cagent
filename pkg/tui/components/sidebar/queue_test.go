@@ -7,6 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -76,6 +78,35 @@ func TestQueueSection_LongMessageTruncation(t *testing.T) {
 
 	// The full long message should not appear (it's truncated)
 	assert.NotContains(t, result, longMessage)
+}
+
+func TestRenderSections_SubagentsAppearAboveAgents(t *testing.T) {
+	t.Parallel()
+
+	sessionState := &service.SessionState{}
+	m := New(sessionState).(*model)
+	m.SetSize(40, 100)
+	m.currentAgent = "root"
+	sessionState.SetCurrentAgentName("root")
+	m.availableAgents = []runtime.AgentDetails{{Name: "root", Description: "root agent"}}
+	m.recordSubAgentStart(&runtime.SubAgentStartedEvent{
+		SessionID: "root-session",
+		SubAgent: subagent.HandleSnapshot{
+			ID:              "planner-12345",
+			AgentName:       "planner",
+			ParentSessionID: "root-session",
+			Status:          subagent.StatusRunning,
+		},
+	})
+
+	lines := m.renderSections(35)
+	out := strings.Join(lines, "\n")
+	subagentsIdx := strings.Index(out, "Subagents")
+	agentsIdx := strings.Index(out, "Agent")
+	require.NotEqual(t, -1, subagentsIdx)
+	require.NotEqual(t, -1, agentsIdx)
+	assert.Less(t, subagentsIdx, agentsIdx,
+		"live subagents should render above the Agents section in the sidebar")
 }
 
 func TestQueueSection_InRenderSections(t *testing.T) {

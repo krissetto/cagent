@@ -14,7 +14,7 @@ A docker-agent YAML config has these main sections:
 
 ```bash
 # 1. Version — configuration schema version (optional but recommended)
-version: 6
+version: 9
 
 # 2. Metadata — optional agent metadata for distribution
 metadata:
@@ -95,7 +95,7 @@ Models can be referenced inline or defined in the `models` section:
   <a class="card" href="{{ '/configuration/agents/' | relative_url }}">
     <div class="card-icon">🤖</div>
     <h3>Agent Config</h3>
-    <p>All agent properties: model, instruction, tools, sub-agents, hooks, and more.</p>
+    <p>All agent properties: model, instruction, tools, subagents, hooks, and more.</p>
   </a>
   <a class="card" href="{{ '/configuration/models/' | relative_url }}">
     <div class="card-icon">🧠</div>
@@ -149,9 +149,9 @@ API keys and secrets are read from environment variables — never stored in con
 
 **Tool Auto-Installation:**
 
-| Variable              | Description                                                     |
-| --------------------- | --------------------------------------------------------------- |
-| `DOCKER_AGENT_AUTO_INSTALL` | Set to `false` to disable automatic tool installation           |
+| Variable              | Description |
+| --------------------- | ----------- |
+| `DOCKER_AGENT_AUTO_INSTALL` | Set to `false` to disable automatic tool installation |
 | `DOCKER_AGENT_TOOLS_DIR`    | Override the base directory for installed tools (default: `~/.cagent/tools/`) |
 
 <div class="callout callout-warning" markdown="1">
@@ -165,7 +165,8 @@ API keys and secrets are read from environment variables — never stored in con
 
 docker-agent validates your configuration at startup:
 
-- Local `sub_agents` must reference agents defined in the config (external OCI references like `agentcatalog/pirate` are pulled from registries automatically)
+- Local `subagents` must reference agents defined in the config (external OCI references like `agentcatalog/pirate` are pulled from registries automatically)
+- The legacy `sub_agents` alias is still accepted and normalized to `subagents`
 - Named model references must exist in the `models` section
 - Provider names must be valid (`openai`, `anthropic`, `google`, `dmr`, etc.)
 - Required environment variables (API keys) must be set
@@ -181,10 +182,10 @@ For editor autocompletion and validation, use the [Docker Agent JSON Schema](htt
 
 ## Config Versioning
 
-docker-agent configs are versioned. The current version is `5`. Add the version at the top of your config:
+docker-agent configs are versioned. The current version is `9`. Add the version at the top of your config:
 
 ```yaml
-version: 5
+version: 9
 
 agents:
   root:
@@ -193,6 +194,23 @@ agents:
 ```
 
 When you load an older config, docker-agent automatically migrates it to the latest schema. It's recommended to include the version to ensure consistent behavior.
+
+### Schema v9: `subagents`
+
+Schema v9 introduces `subagents` as the canonical field for hierarchical multi-agent delegation. The old `sub_agents` spelling remains accepted for backward compatibility but is now considered legacy.
+
+```yaml
+version: "9"
+
+agents:
+  root:
+    model: openai/gpt-4o
+    description: Coordinator
+    instruction: Delegate work to specialists.
+    subagents: [researcher, writer]
+```
+
+If both spellings are present on the same agent, `subagents` wins.
 
 ## Metadata Section
 
@@ -208,13 +226,13 @@ metadata:
   version: "1.0.0"
 ```
 
-| Field         | Description                                |
-| ------------- | ------------------------------------------ |
-| `author`      | Author or organization name                |
+| Field         | Description |
+| ------------- | ----------- |
+| `author`      | Author or organization name |
 | `license`     | License identifier (e.g., Apache-2.0, MIT) |
-| `description` | Short description for the agent            |
-| `readme`      | Longer markdown description                |
-| `version`     | Semantic version string                    |
+| `description` | Short description for the agent |
+| `readme`      | Longer markdown description |
+| `version`     | Semantic version string |
 
 See [Agent Distribution]({{ '/concepts/distribution/' | relative_url }}) for publishing agents to registries.
 
@@ -252,21 +270,21 @@ agents:
     model: claude
 ```
 
-| Field                 | Description                                                                              |
-| --------------------- | ---------------------------------------------------------------------------------------- |
+| Field                 | Description |
+| --------------------- | ----------- |
 | `provider`            | Underlying provider type: `openai` (default), `anthropic`, `google`, `amazon-bedrock`, etc. |
-| `api_type`            | API schema: `openai_chatcompletions` (default) or `openai_responses`. OpenAI-only.        |
-| `base_url`            | Base URL for the API endpoint. Required for OpenAI-compatible providers.                  |
-| `token_key`           | Environment variable name for the API token.                                              |
-| `temperature`         | Default sampling temperature.                                                             |
-| `max_tokens`          | Default maximum response tokens.                                                          |
-| `thinking_budget`     | Default reasoning effort/budget.                                                          |
-| `task_budget`         | Default total token budget for an agentic task (Anthropic; honored by Claude Opus 4.7 today).  |
-| `top_p`               | Default top-p sampling parameter.                                                         |
-| `frequency_penalty`   | Default frequency penalty.                                                                |
-| `presence_penalty`    | Default presence penalty.                                                                 |
-| `parallel_tool_calls` | Enable parallel tool calls by default.                                                    |
-| `track_usage`         | Track token usage by default.                                                             |
-| `provider_opts`       | Provider-specific options.                                                                |
+| `api_type`            | API schema: `openai_chatcompletions` (default) or `openai_responses`. OpenAI-only. |
+| `base_url`            | Base URL for the API endpoint. Required for OpenAI-compatible providers. |
+| `token_key`           | Environment variable name for the API token. |
+| `temperature`         | Default sampling temperature. |
+| `max_tokens`          | Default maximum response tokens. |
+| `thinking_budget`     | Default reasoning effort/budget. |
+| `task_budget`         | Default total token budget for an agentic task (Anthropic; honored by Claude Opus 4.7 today). |
+| `top_p`               | Default top-p sampling parameter. |
+| `frequency_penalty`   | Default frequency penalty. |
+| `presence_penalty`    | Default presence penalty. |
+| `parallel_tool_calls` | Enable parallel tool calls by default. |
+| `track_usage`         | Track token usage by default. |
+| `provider_opts`       | Provider-specific options. |
 
 See [Provider Definitions]({{ '/providers/custom/' | relative_url }}) for more details.

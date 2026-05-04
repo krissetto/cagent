@@ -1,7 +1,16 @@
-# Changelog
+## [Unreleased]
 
-All notable changes to this project will be documented in this file.
+## What's New
+- Adds schema v9 with canonical `subagents` field while continuing to accept legacy `sub_agents`
+- Ships runtime-managed subagents with top-level YAML opt-in via `subagents:`
+- Adds user-facing documentation for runtime-managed subagents and live session tree observability / control
+- Adds live-session API endpoints for tree inspection, attach (SSE), steer, follow-up, close, and stop
 
+## Improvements
+- Documents runtime-managed subagents as the long-term replacement for legacy `transfer_task`, `background_agents`, and `handoff` multi-agent flows
+- Rejects mixing runtime-managed `subagents:` with legacy `handoffs:` or `background_agents` on the same agent, and suppresses legacy implicit `transfer_task` injection when `subagents:` is present
+- Clarifies migration guidance and rollout status for the new subagent subsystem
+- Makes `subagent_inspect` cost- and context-aware by default: returns only the subagent's latest assistant message plus status metadata, with opt-in `mode: "recent"` / `mode: "full"` for callers that need transcript history
 
 ## [v1.46.0] - 2026-04-16
 

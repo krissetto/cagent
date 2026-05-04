@@ -12,7 +12,7 @@ agents:
 
       ## Available Review Agents
 
-      You have access to these specialized reviewers via transfer_task:
+      - Use `subagent_start` to dispatch review tasks to the appropriate specialist reviewers
       - **code-reviewer**: General code quality, guidelines compliance, bug detection
       - **silent-failure-hunter**: Error handling audit, silent failure detection
       - **code-simplifier**: Code simplification while preserving functionality
@@ -64,7 +64,7 @@ agents:
       - Only include issues from agents - don't invent your own
       - Preserve file:line references from agent reports
       - Be concise but actionable
-    sub_agents:
+    subagents:
       - code-reviewer
       - silent-failure-hunter
       - code-simplifier

@@ -39,10 +39,14 @@ docker-agent ships with several built-in tools that require no external dependen
 | [LSP]({{ '/tools/lsp/' | relative_url }}) | Connect to Language Server Protocol servers for code intelligence |
 | [API]({{ '/tools/api/' | relative_url }}) | Create custom tools that call HTTP APIs without writing code |
 | [User Prompt]({{ '/tools/user-prompt/' | relative_url }}) | Ask users questions and collect interactive input |
-| [Transfer Task]({{ '/tools/transfer-task/' | relative_url }}) | Delegate tasks to sub-agents (auto-enabled with `sub_agents`) |
-| [Background Agents]({{ '/tools/background-agents/' | relative_url }}) | Dispatch work to sub-agents concurrently |
-| [Handoff]({{ '/tools/handoff/' | relative_url }}) | Delegate tasks to remote agents via A2A |
+| [Subagents]({{ '/tools/subagents/' | relative_url }}) | Runtime-managed, persistent, bidirectional multi-agent coordination |
 | [A2A]({{ '/tools/a2a/' | relative_url }}) | Connect to remote agents via the Agent-to-Agent protocol |
+
+<div class="callout callout-info" markdown="1">
+<div class="callout-title">ℹ️ Multi-agent note
+</div>
+  <p>docker-agent's documented multi-agent model is <a href="{{ '/tools/subagents/' | relative_url }}">runtime-managed subagents</a>. Older compatibility surfaces remain in code for backward compatibility but are no longer documented as first-class tools here.</p>
+</div>
 
 ## MCP Tools
 
@@ -63,5 +67,5 @@ See [Tool Config]({{ '/configuration/tools/#mcp-tools' | relative_url }}) for fu
 <div class="callout callout-tip" markdown="1">
 <div class="callout-title">💡 See also
 </div>
-  <p>For full configuration reference, see <a href="{{ '/configuration/tools/' | relative_url }}">Tool Config</a>. For RAG (document retrieval), see <a href="{{ '/features/rag/' | relative_url }}">RAG</a>.</p>
+  <p>For full configuration reference, see <a href="{{ '/configuration/tools/' | relative_url }}">Tool Config</a>. For the recommended multi-agent model, see <a href="{{ '/tools/subagents/' | relative_url }}">Subagents (Runtime-Managed)</a>. For RAG (document retrieval), see <a href="{{ '/features/rag/' | relative_url }}">RAG</a>.</p>
 </div>

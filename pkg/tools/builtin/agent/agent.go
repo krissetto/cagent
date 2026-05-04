@@ -253,7 +253,22 @@ func (h *Handler) pruneCompleted() {
 }
 
 // HandleRun starts a sub-agent task asynchronously and returns a task ID immediately.
+//
+// Validation uses the runner's CurrentAgentSubAgentNames(). Callers that need
+// to validate against a different (e.g. session-pinned) allowed list should
+// use [Handler.HandleRunWithAllowedAgents] instead.
 func (h *Handler) HandleRun(ctx context.Context, sess *session.Session, toolCall tools.ToolCall) (*tools.ToolCallResult, error) {
+	return h.HandleRunWithAllowedAgents(ctx, sess, toolCall, h.runner.CurrentAgentSubAgentNames())
+}
+
+// HandleRunWithAllowedAgents is the session-scoped entry point for the
+// run_background_agent tool. It performs the same parsing, validation,
+// concurrency caps and task launch as [Handler.HandleRun], but validates
+// the requested sub-agent against allowedAgents instead of the runner's
+// CurrentAgentSubAgentNames(). This lets callers (e.g. a session-aware
+// runtime wrapper) validate against the allowed list of the session's
+// pinned agent without mutating shared runner state.
+func (h *Handler) HandleRunWithAllowedAgents(ctx context.Context, sess *session.Session, toolCall tools.ToolCall, allowedAgents []string) (*tools.ToolCallResult, error) {
 	var params RunBackgroundAgentArgs
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &params); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -266,10 +281,9 @@ func (h *Handler) HandleRun(ctx context.Context, sess *session.Session, toolCall
 		return tools.ResultError("task must not be empty"), nil
 	}
 
-	subAgentNames := h.runner.CurrentAgentSubAgentNames()
-	if !slices.Contains(subAgentNames, params.Agent) {
-		if len(subAgentNames) > 0 {
-			return tools.ResultError(fmt.Sprintf("agent %q is not in the sub-agents list. Available: %s", params.Agent, strings.Join(subAgentNames, ", "))), nil
+	if !slices.Contains(allowedAgents, params.Agent) {
+		if len(allowedAgents) > 0 {
+			return tools.ResultError(fmt.Sprintf("agent %q is not in the sub-agents list. Available: %s", params.Agent, strings.Join(allowedAgents, ", "))), nil
 		}
 		return tools.ResultError(fmt.Sprintf("agent %q is not in the sub-agents list. This agent has no sub-agents configured.", params.Agent)), nil
 	}

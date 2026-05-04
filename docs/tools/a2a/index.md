@@ -10,7 +10,7 @@ _Connect to remote agents via the Agent-to-Agent protocol._
 
 ## Overview
 
-The A2A tool connects to remote agents via the A2A (Agent-to-Agent) protocol. Similar to the [handoff tool]({{ '/tools/handoff/' | relative_url }}) but configured as a toolset.
+The A2A tool connects to remote agents via the A2A (Agent-to-Agent) protocol. It exposes remote A2A peers as tools so a local agent can delegate work across process or network boundaries.
 
 ## Configuration
 

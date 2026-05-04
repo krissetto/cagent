@@ -55,7 +55,7 @@ agents:
       - Make trade-off decisions when there are conflicts between different approaches
 
       Your success is measured by how effectively you can leverage your specialized team to deliver high-quality, integrated solutions that fully meet the user's requirements.
-    sub_agents:
+    subagents:
       - web
       - golang
 
@@ -111,7 +111,6 @@ agents:
       * Only ask for clarification if necessary, try your best to use all the tools to get the info you need
       * Don't show the code that you generated
 
-    toolsets:
       - type: shell
       - type: filesystem
       - type: todo
@@ -168,7 +167,6 @@ agents:
       * Only ask for clarification if necessary, try your best to use all the tools to get the info you need
       * Don't show the code that you generated
 
-    toolsets:
       - type: shell
       - type: filesystem
       - type: todo

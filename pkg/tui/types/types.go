@@ -22,6 +22,11 @@ const (
 	MessageTypeToolResult
 	MessageTypeWelcome
 	MessageTypeLoading
+	// MessageTypeSubAgent renders a compact, model-agnostic card for a
+	// runtime-managed subagent lifecycle event (started / sent / update /
+	// closed / stopped / failed). Emitted by the chat page in response to
+	// SubAgent* runtime events.
+	MessageTypeSubAgent
 )
 
 const (
@@ -55,6 +60,9 @@ type Message struct {
 	// SessionPosition is the index of this message in session.Messages (when known).
 	// Used for operations like branching on edits.
 	SessionPosition *int
+	// SubAgent carries the data for a MessageTypeSubAgent card. Nil for all
+	// other message types.
+	SubAgent *SubAgentInfo
 }
 
 func Agent(typ MessageType, agentName, content string) *Message {
@@ -124,5 +132,36 @@ func Loading(description string) *Message {
 	return &Message{
 		Type:    MessageTypeLoading,
 		Content: strings.ReplaceAll(description, "\t", "    "),
+	}
+}
+
+// SubAgentEventKind classifies a subagent transcript card so the renderer can
+// pick the right glyph and tone. Values intentionally mirror the subagent
+// envelope kinds (plus a "started"/"sent" prefix for parent-side actions).
+type SubAgentEventKind string
+
+const (
+	SubAgentEventStarted       SubAgentEventKind = "started"
+	SubAgentEventSent          SubAgentEventKind = "sent"
+	SubAgentEventTurnCompleted SubAgentEventKind = "turn_completed"
+	SubAgentEventClosed        SubAgentEventKind = "closed"
+	SubAgentEventStopped       SubAgentEventKind = "stopped"
+	SubAgentEventFailed        SubAgentEventKind = "failed"
+)
+
+// SubAgentInfo carries the data needed to render a subagent transcript card.
+type SubAgentInfo struct {
+	Kind      SubAgentEventKind
+	AgentName string // subagent name (e.g. "researcher")
+	ShortID   string // short id exposed to the model (first 5 chars)
+	Detail    string // one-line detail: task for started, preview for updates, message for sent, error for failed
+	Truncated bool   // true if Detail was truncated by the runtime
+}
+
+// SubAgent constructs a subagent lifecycle message for the transcript.
+func SubAgent(info SubAgentInfo) *Message {
+	return &Message{
+		Type:     MessageTypeSubAgent,
+		SubAgent: &info,
 	}
 }

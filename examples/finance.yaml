@@ -23,17 +23,16 @@ agents:
         3. Give a summary
       </WORKFLOW>
 
-      - Use the transfer_to_agent tool to call the right agent at the right time to answer the users question.
-      - DO NOT transfer to multiple members at once
+      - Use `subagent_start` to dispatch work to the right specialist and `subagent_send` to follow up. Do not call multiple subagents at once for this workflow.
       - ONLY CALL ONE AGENT AT A TIME
-      - When using the `transfer_to_agent` tool,  make exactly one call and wait for the result before making another. Do not batch or parallelize tool calls.
+      - Make exactly one subagent call and wait for its update before making another. Do not batch or parallelize delegation calls.
 
       General Guidelines:
       - Always analyze the user query to identify relevant metadata.
       - Use the most specific filter(s) possible to narrow down results.
       - Use tables to display data
       - Always include sources
-    sub_agents:
+    subagents:
       - finance_agent
       - web_search_agent
     toolsets:

@@ -24,7 +24,6 @@ import (
 	"github.com/docker/docker-agent/pkg/profiling"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
-	"github.com/docker/docker-agent/pkg/sessiontitle"
 	"github.com/docker/docker-agent/pkg/teamloader"
 	"github.com/docker/docker-agent/pkg/telemetry"
 	"github.com/docker/docker-agent/pkg/tui"
@@ -359,12 +358,17 @@ func (f *runExecFlags) createLocalRuntimeAndSession(ctx context.Context, loadRes
 		AgentDefaultModels: loadResult.AgentDefaultModels,
 	}
 
-	localRt, err := runtime.New(t,
+	runtimeOpts := []runtime.Opt{
 		runtime.WithSessionStore(sessStore),
 		runtime.WithCurrentAgent(f.agentName),
 		runtime.WithTracer(otel.Tracer(AppName)),
 		runtime.WithModelSwitcherConfig(modelSwitcherCfg),
-	)
+	}
+	if f.runConfig.SubagentIdleAutoFinalize > 0 {
+		runtimeOpts = append(runtimeOpts, runtime.WithSubagentIdleAutoFinalize(f.runConfig.SubagentIdleAutoFinalize))
+	}
+
+	localRt, err := runtime.New(t, runtimeOpts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating runtime: %w", err)
 	}
@@ -551,12 +555,16 @@ func (f *runExecFlags) createSessionSpawner(agentSource config.Source, sessStore
 		}
 
 		// Create the local runtime
-		localRt, err := runtime.New(team,
+		runtimeOpts := []runtime.Opt{
 			runtime.WithSessionStore(sessStore),
 			runtime.WithCurrentAgent(f.agentName),
 			runtime.WithTracer(otel.Tracer(AppName)),
 			runtime.WithModelSwitcherConfig(modelSwitcherCfg),
-		)
+		}
+		if runConfigCopy.SubagentIdleAutoFinalize > 0 {
+			runtimeOpts = append(runtimeOpts, runtime.WithSubagentIdleAutoFinalize(runConfigCopy.SubagentIdleAutoFinalize))
+		}
+		localRt, err := runtime.New(team, runtimeOpts...)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -571,10 +579,8 @@ func (f *runExecFlags) createSessionSpawner(agentSource config.Source, sessStore
 
 		// Create the app
 		var appOpts []app.Opt
-		if pr, ok := localRt.(*runtime.PersistentRuntime); ok {
-			if model := pr.CurrentAgent().Model(); model != nil {
-				appOpts = append(appOpts, app.WithTitleGenerator(sessiontitle.New(model)))
-			}
+		if gen := localRt.TitleGenerator(); gen != nil {
+			appOpts = append(appOpts, app.WithTitleGenerator(gen))
 		}
 
 		a := app.New(spawnCtx, localRt, newSess, appOpts...)

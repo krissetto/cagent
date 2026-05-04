@@ -163,6 +163,23 @@ func TestRunSession_SequentialRequestsSucceed(t *testing.T) {
 		require.NoError(t, err)
 		for range ch {
 		}
+
+		// Draining the events channel only tells us the stream goroutine closed
+		// the outward channel; the deferred streaming.Unlock() may still be
+		// racing to execute. Under -race this reliably starts the next request
+		// before the lock is released and produces a spurious ErrSessionBusy.
+		// Wait for the lock to actually be free before moving on.
+		require.Eventually(t, func() bool {
+			rt, ok := sm.runtimeSessions.Load(sess.ID)
+			if !ok {
+				return false
+			}
+			if !rt.streaming.TryLock() {
+				return false
+			}
+			rt.streaming.Unlock()
+			return true
+		}, time.Second, 5*time.Millisecond, "streaming lock should be released after draining the events channel")
 	}
 
 	assert.Equal(t, int32(1), fake.maxConcurrent.Load())

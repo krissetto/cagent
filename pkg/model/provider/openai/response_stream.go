@@ -78,7 +78,7 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 				}
 			}
 		} else {
-			slog.Warn("Received function_call_arguments.delta for unknown item_id", "item_id", event.ItemID, "known_items", len(a.itemCallIDMap))
+			slog.Debug("Ignoring non-text content part", "item_id", event.ItemID, "part_type", event.Part.Type)
 		}
 	case "response.content_part.delta":
 		content := cmp.Or(event.Delta, event.Text, event.Code, event.Part.Text)
@@ -250,7 +250,15 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 			},
 		}
 	default:
-		slog.Info("Unhandled stream event type", "type", event.Type)
+		// Lifecycle events that don't need handling:
+		// - response.created / response.in_progress: stream lifecycle, informational only
+		// - response.content_part.done: terminal for a content part, already handled via delta/text events
+		switch event.Type {
+		case "response.created", "response.in_progress", "response.content_part.done":
+			// Expected no-op events — suppress log noise
+		default:
+			slog.Info("Unhandled stream event type", "type", event.Type)
+		}
 	}
 
 	return response, nil

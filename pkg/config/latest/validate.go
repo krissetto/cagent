@@ -1,7 +1,11 @@
 package latest
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+
+	"github.com/goccy/go-yaml"
 )
 
 func (t *Config) UnmarshalYAML(unmarshal func(any) error) error {
@@ -12,6 +16,62 @@ func (t *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	}
 	*t = Config(tmp)
 	return t.validate()
+}
+
+// UnmarshalYAML accepts both the canonical `subagents` key and the legacy
+// `sub_agents` spelling. The canonical key wins whenever it is present,
+// including when it is explicitly set to an empty list.
+func (a *AgentConfig) UnmarshalYAML(unmarshal func(any) error) error {
+	type alias AgentConfig
+	var raw map[string]any
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	if _, hasCanonical := raw["subagents"]; !hasCanonical {
+		if legacy, hasLegacy := raw["sub_agents"]; hasLegacy {
+			raw["subagents"] = legacy
+		}
+	}
+	delete(raw, "sub_agents")
+
+	data, err := yaml.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	var tmp alias
+	if err := yaml.UnmarshalWithOptions(data, &tmp, yaml.DisallowUnknownField()); err != nil {
+		return err
+	}
+	*a = AgentConfig(tmp)
+	return nil
+}
+
+// UnmarshalJSON mirrors UnmarshalYAML so that transport paths that go through
+// JSON (e.g. `types.CloneThroughJSON` during version upgrades and the HTTP API)
+// also accept the legacy `sub_agents` key.
+func (a *AgentConfig) UnmarshalJSON(data []byte) error {
+	type alias AgentConfig
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if _, hasCanonical := raw["subagents"]; !hasCanonical {
+		if legacy, hasLegacy := raw["sub_agents"]; hasLegacy {
+			raw["subagents"] = legacy
+		}
+	}
+	delete(raw, "sub_agents")
+
+	normalized, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	var tmp alias
+	if err := json.Unmarshal(normalized, &tmp); err != nil {
+		return err
+	}
+	*a = AgentConfig(tmp)
+	return nil
 }
 
 func (t *Config) validate() error {
@@ -28,6 +88,15 @@ func (t *Config) validate() error {
 				return err
 			}
 		}
+
+		// Cross-cutting check: runtime-managed subagents are the replacement
+		// for the legacy `transfer_task` (historically auto-injected when
+		// `subagents` / `sub_agents` is set), `background_agents`, and
+		// `handoffs` flows. Mixing them on the same agent is not supported.
+		if err := agent.validateSubagentsExclusivity(); err != nil {
+			return err
+		}
+
 		if agent.Hooks != nil {
 			if err := agent.Hooks.validate(); err != nil {
 				return err
@@ -35,6 +104,27 @@ func (t *Config) validate() error {
 		}
 	}
 
+	return nil
+}
+
+// validateSubagentsExclusivity enforces that the runtime-managed subagents
+// subsystem (opted into by the presence of `subagents:` / `sub_agents:`)
+// is not combined with the legacy multi-agent surfaces on the same agent.
+func (a *AgentConfig) validateSubagentsExclusivity() error {
+	if len(a.SubAgents) == 0 {
+		return nil
+	}
+	if len(a.Handoffs) > 0 {
+		return fmt.Errorf("agent %q: cannot combine runtime-managed `subagents:` with `handoffs:`; handoffs is a legacy multi-agent flow that runtime-managed subagents replaces", a.Name)
+	}
+	for i := range a.Toolsets {
+		switch a.Toolsets[i].Type {
+		case "background_agents":
+			return fmt.Errorf("agent %q: cannot combine runtime-managed `subagents:` with `- type: background_agents`; background_agents is a legacy multi-agent flow that runtime-managed subagents replaces", a.Name)
+		case "subagents":
+			return fmt.Errorf("agent %q: `- type: subagents` is no longer valid; top-level `subagents:` now both declares available subagents and enables the runtime-managed subagent tools", a.Name)
+		}
+	}
 	return nil
 }
 

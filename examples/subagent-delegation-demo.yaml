@@ -1,0 +1,419 @@
+#!/usr/bin/env docker agent run
+
+# Subagent Delegation Demo
+# ------------------------
+# Demonstrates the runtime-managed subagent subsystem via canned /commands.
+# Run any demo:  docker agent run examples/subagent-delegation-demo.yaml /<command>
+#
+# Demos:
+#   /single               Dispatch one task to one subagent.
+#   /parallel_variants    Start 3 planners in parallel for 3 alternative plans.
+#   /parallel_specialists Start researcher + planner + reviewer in parallel, then synthesize.
+#   /pipeline             Sequential chain: planner -> coder -> reviewer.
+#   /two_way              Multi-turn conversation with a subagent via subagent_send.
+#   /steer                Course-correct a running subagent mid-turn (mode=steer).
+#   /inspect              Compare subagent_inspect modes: last vs recent vs full.
+#   /nested               Root delegates to coordinator, which spawns its own children.
+#   /finalize_vs_stop     Graceful finalize vs hard stop side-by-side.
+#   /list                 Show subagent_list output before and after completion.
+#
+# Notes:
+#   - Declaring `subagents:` on an agent auto-registers the six subagent_* tools.
+#   - Demos are deliberately small — the delegation shape is the point.
+
+version: "9"
+
+models:
+  smart:
+    provider: anthropic
+    model: claude-sonnet-4-5
+    max_tokens: 16000
+
+  fast:
+    provider: openai
+    model: gpt-4o-mini
+
+agents:
+  ###########################################################################
+  # ROOT — orchestrator that runs the demo commands
+  ###########################################################################
+  root:
+    model: smart
+    description: |
+      Orchestrator that demonstrates the runtime-managed subagent system by
+      delegating to planner / coder / reviewer / researcher / coordinator
+      subagents in different shapes (single, fan-out, pipeline, nested, etc).
+    instruction: |
+      You are the **Subagent Delegation Demo orchestrator**. Your job is NOT
+      to do the underlying work yourself — your job is to show off how a
+      parent agent coordinates child agents using the runtime-managed
+      subagent tools.
+
+      Tools you should rely on:
+        - subagent_start    — spawn a child on its own session
+        - subagent_send     — send a follow-up (default) or steer (mode=steer)
+        - subagent_list     — list your live children
+        - subagent_inspect  — peek at a child's status / latest reply / transcript
+        - subagent_finalize — ask a child to wrap up cleanly (cascades to descendants)
+        - subagent_stop     — cancel a child immediately (cascades to descendants)
+
+      Hard rules for these demos:
+        1. **Always** delegate. Do not answer the user's task directly except
+           to summarize what your subagents produced.
+        2. When a demo says "in parallel", issue the `subagent_start` calls in
+           a single tool batch so they actually fan out.
+        3. After dispatching, end your turn and let the runtime wake you with
+           `<subagent_update>` envelopes. Do NOT poll with `subagent_inspect`
+           in a loop.
+        4. Prefer `subagent_inspect` with the default `mode: "last"` (cheap)
+           unless the demo is explicitly about `mode: "recent"` / `"full"`.
+        5. When you are done with a subagent, call `subagent_finalize` on it
+           (or `subagent_stop` if the demo is about hard cancellation).
+        6. End every demo with a short markdown summary that lists each
+           subagent you spawned, its short id, what task you gave it, and a
+           one-line takeaway from its result.
+
+      Be concise. The point is the *shape* of the delegation, not verbose prose.
+
+    add_environment_info: true
+    add_description_parameter: true
+    max_iterations: 40
+
+    # Declaring `subagents:` is the sole opt-in for the runtime-managed
+    # subsystem. The six `subagent_*` tools are auto-registered.
+    subagents:
+      - planner
+      - coder
+      - reviewer
+      - researcher
+      - coordinator
+
+    toolsets:
+      - type: think
+      - type: todo
+      - type: filesystem
+
+    commands:
+      ######################################################################
+      # 1. Simple single-subagent delegation
+      ######################################################################
+      single:
+        description: "Single delegation — root dispatches one task to the planner"
+        instruction: |
+          Demo: **single delegation**.
+
+          1. Use `subagent_start` to dispatch ONE task to the `planner`:
+             "Sketch a 5-step plan for adding a `--dry-run` flag to a CLI app."
+          2. End your turn. Wait for the wake-up envelope.
+          3. When the planner finishes, call `subagent_inspect` on it with
+             the default mode to read its final answer.
+          4. Call `subagent_finalize` to close it cleanly.
+          5. Print a 3-line summary: child id, task, takeaway.
+
+      ######################################################################
+      # 2. Parallel variants — same role, multiple perspectives
+      ######################################################################
+      parallel_variants:
+        description: "3 planners in parallel produce 3 alternative plans"
+        instruction: |
+          Demo: **parallel variants** — same agent role, different framings.
+
+          Topic: "Migrate a small Express.js service from JavaScript to TypeScript."
+
+          In a SINGLE tool batch, issue THREE `subagent_start` calls to the
+          `planner` agent with three different framings:
+
+            A) "Conservative variant: minimize risk, ship in tiny PRs."
+            B) "Aggressive variant: rewrite in one go, prioritize end-state quality."
+            C) "Incremental-with-codemods variant: leverage automated migrations."
+
+          End your turn after dispatching. As each planner completes and
+          you receive a `<subagent_update>` envelope, do NOT immediately
+          inspect — wait until all three are done (you'll see three
+          envelopes). Then for each child:
+            - call `subagent_inspect` (default mode) to read its final plan
+            - call `subagent_finalize` to close it
+
+          Finish with a small markdown table:
+            | Variant | Subagent ID | One-line summary |
+
+      ######################################################################
+      # 3. Sequential pipeline — planner -> coder -> reviewer
+      ######################################################################
+      pipeline:
+        description: "Sequential pipeline: planner → coder → reviewer"
+        instruction: |
+          Demo: **sequential pipeline** across three different specialists.
+
+          Goal: "Add a `reverse(s string) string` helper in Go with a unit test."
+
+          Stage 1 — Plan:
+            - `subagent_start` on `planner` with the goal above.
+            - Wait for completion, then `subagent_inspect` to capture the plan.
+            - `subagent_finalize` the planner.
+
+          Stage 2 — Implement:
+            - `subagent_start` on `coder` and pass the plan you just got
+              as the task body. Be explicit: "Here is the plan from planner
+              <id>: ... Implement it."
+            - Wait for completion, then `subagent_inspect` for the diff/result.
+            - `subagent_finalize` the coder.
+
+          Stage 3 — Review:
+            - `subagent_start` on `reviewer` and include both the plan and
+              the coder's output. Ask for correctness + style feedback.
+            - Wait, inspect, finalize.
+
+          Print a final summary listing the three child ids in order and
+          one bullet of value each stage added.
+
+      ######################################################################
+      # 4. Two-way conversation with subagent_send (follow-up mode)
+      ######################################################################
+      two_way:
+        description: "Two-way chat with one subagent via subagent_send (follow-ups)"
+        instruction: |
+          Demo: **two-way conversation** with a single child using follow-up
+          messages.
+
+          1. `subagent_start` on `researcher` with:
+             "Find three real-world examples of agent-to-agent protocols
+              shipped in 2024 or later."
+          2. After the wake-up, `subagent_inspect` (default) and read the answer.
+          3. Use `subagent_send` (default `followup` mode) to ask:
+             "Now narrow it down to the one with the strongest open standard."
+          4. After the next wake-up, inspect again.
+          5. One more `subagent_send` follow-up:
+             "Cite the spec URL and one limitation."
+          6. After that wake-up, inspect, then `subagent_finalize`.
+
+          Summary should show the running thread: 3 turns, 3 short answers.
+
+      ######################################################################
+      # 5. Steer a running subagent mid-turn (mode=steer)
+      ######################################################################
+      steer:
+        description: "Mid-turn steer of a running subagent (subagent_send mode=steer)"
+        instruction: |
+          Demo: **steer-mode** — course-correct a child WITHOUT waiting for
+          its current turn to finish.
+
+          1. `subagent_start` on `researcher` with a deliberately broad task:
+             "Survey the entire history of multi-agent systems in AI from
+              the 1980s to today and write a long report."
+             (This is intentionally too big — we're going to steer it.)
+          2. Do NOT wait for the wake-up envelope. In your very next tool
+             batch, immediately call `subagent_send` with:
+               { mode: "steer",
+                 message: "Change of plan: scope down to the last 3 years
+                           only and keep it under 200 words." }
+          3. End your turn. When the wake-up arrives, `subagent_inspect`.
+          4. `subagent_finalize` the child.
+
+          In your summary, explicitly call out: "Steer was injected mid-turn
+          at the next safe point" so the demo audience sees the difference
+          from a regular follow-up.
+
+      ######################################################################
+      # 6. Inspect modes — last vs recent vs full
+      ######################################################################
+      inspect:
+        description: "Compare subagent_inspect modes: last vs recent vs full"
+        instruction: |
+          Demo: **subagent_inspect modes**.
+
+          1. `subagent_start` on `coder` with:
+             "Write a small Python function `is_prime(n)`, then write 3 unit
+              tests, then a short README paragraph — emit each as its own
+              chat message."
+          2. Wait for the wake-up envelope.
+          3. Call `subagent_inspect` THREE TIMES on the same child:
+             a) default (`mode: "last"`)   — note you get only the latest reply
+             b) `mode: "recent"`           — note you also see prior messages
+             c) `mode: "full"`             — note you see the whole transcript
+          4. `subagent_finalize` the child.
+
+          In your summary, show a tiny table contrasting roughly how much
+          context each mode returned (e.g. "1 message" vs "≤6 messages" vs
+          "entire transcript, capped").
+
+      ######################################################################
+      # 7. Nested delegation — root -> coordinator -> coordinator's children
+      ######################################################################
+      nested:
+        description: "Nested delegation — coordinator runs its own subagents"
+        instruction: |
+          Demo: **nested / recursive delegation**.
+
+          1. `subagent_start` on `coordinator` with:
+             "Produce a feature spec for a `/healthz` endpoint. You may
+              delegate sub-tasks to YOUR OWN subagents (planner, coder,
+              reviewer)."
+          2. End your turn. The coordinator will spawn its own grandchildren.
+             You won't see the grandchildren directly — only the coordinator's
+             eventual reply (the runtime wakes intermediate parents
+             automatically when their children publish updates).
+          3. Once the coordinator wakes you, `subagent_inspect` it.
+          4. `subagent_finalize` the coordinator (this CASCADES — every live
+             grandchild gets finalized too).
+
+          Summary should explicitly mention: "Cascaded finalize closed N
+          descendants under the coordinator" — even if you don't know N
+          exactly, point at the cascade behavior.
+
+      ######################################################################
+      # 8. Parallel specialists — different roles, synthesized answer
+      ######################################################################
+      parallel_specialists:
+        description: "3 different specialists in parallel, then synthesize one answer"
+        instruction: |
+          Demo: **parallel specialists** — different roles, combined answer.
+
+          Question: "What's the right way to add observability to a small
+          Go HTTP service in 2025?"
+
+          In a single tool batch, dispatch to THREE different specialists:
+            - `researcher`: "Survey current best-practices and OSS tooling."
+            - `planner`:    "Propose a phased rollout plan (logs → metrics → traces)."
+            - `reviewer`:   "List the top 5 anti-patterns to avoid."
+
+          Wait for all three wake-ups. For each child:
+            - `subagent_inspect` (default mode)
+            - `subagent_finalize`
+
+          THEN synthesize a single unified recommendation that explicitly
+          cites which subagent contributed which idea. Keep it under 250 words.
+
+      ######################################################################
+      # 9. Finalize vs stop — graceful close vs hard cancel
+      ######################################################################
+      finalize_vs_stop:
+        description: "Contrast subagent_finalize (graceful) with subagent_stop (hard)"
+        instruction: |
+          Demo: **finalize vs stop**.
+
+          1. Spawn TWO children in one tool batch:
+             - A: `subagent_start` on `planner` with
+                  "Plan a small REST API for a TODO app."
+             - B: `subagent_start` on `planner` with
+                  "Plan a small REST API for a notes app."
+          2. As soon as both are dispatched (do not wait for completion):
+             - Call `subagent_finalize` on A. Note: A is allowed to finish
+               its current safe point first, then closes cleanly.
+             - Call `subagent_stop`     on B. Note: B is cancelled immediately;
+               whatever it was producing is discarded.
+          3. Wait for any remaining envelopes. Inspect each child once.
+          4. In your summary, compare:
+               | Action   | Child | Saw final reply? | Cascaded? |
+             and call out that BOTH cascade to descendants in real systems.
+
+      ######################################################################
+      # 10. Listing live subagents
+      ######################################################################
+      list:
+        description: "List currently-attached subagents (subagent_list)"
+        instruction: |
+          Demo: **subagent_list**.
+
+          1. Fan out 3 quick `subagent_start` calls in one batch:
+             - planner:    "Plan a 1-paragraph haiku."
+             - researcher: "Find one fun fact about octopuses."
+             - reviewer:   "Critique this single sentence: 'Code is poetry.'"
+          2. Immediately (before any wake-ups), call `subagent_list` and
+             show the raw JSON output to the user verbatim — that's the
+             whole point of this demo: see what the live tree looks like.
+          3. Then wait for the wake-ups, inspect each one briefly, and
+             `subagent_finalize` all three.
+          4. Call `subagent_list` again and show the result — it should be
+             empty (or no longer include the finalized children).
+
+  ###########################################################################
+  # PLANNER — produces plans, no code, no shell
+  ###########################################################################
+  planner:
+    model: smart
+    description: Planning specialist that produces clear, ordered, actionable plans.
+    instruction: |
+      You are a planner. Given a task, produce a numbered, minimal-but-complete
+      plan. No code. No exploration of the filesystem. No tool calls beyond
+      `think`. Keep the output under ~200 words unless explicitly told otherwise.
+      End with a one-line "Acceptance criteria" bullet.
+    toolsets:
+      - type: think
+
+  ###########################################################################
+  # CODER — implements small changes
+  ###########################################################################
+  coder:
+    model: smart
+    description: Software engineer who writes small, focused code changes.
+    instruction: |
+      You are a coder. Given a plan or a small spec, produce the smallest
+      working code change that satisfies it. Prefer a single self-contained
+      file or diff. Include a brief test if it's natural to do so.
+      Keep your reply tight: code first, a 2–3 line rationale second.
+    max_iterations: 20
+    toolsets:
+      - type: think
+      - type: filesystem
+
+  ###########################################################################
+  # REVIEWER — critiques plans / code / writing
+  ###########################################################################
+  reviewer:
+    model: smart
+    description: Code reviewer focused on correctness, regressions, and quality.
+    instruction: |
+      You are a reviewer. When given a plan, code, or text, return:
+        1. ✅ Strengths (max 3 bullets)
+        2. ⚠️ Issues / risks (max 5 bullets, sorted by severity)
+        3. 🔧 Concrete suggested fixes (max 5 bullets)
+      No fluff. No re-statement of the input.
+    toolsets:
+      - type: think
+
+  ###########################################################################
+  # RESEARCHER — quick, citation-aware research summaries
+  ###########################################################################
+  researcher:
+    model: fast
+    description: Researcher that produces short, citation-aware summaries.
+    instruction: |
+      You are a researcher. Produce short, structured answers. When you cite
+      something, name the source explicitly. If you can't be sure, say so —
+      do not invent URLs. Stay under ~200 words unless asked otherwise.
+    toolsets:
+      - type: think
+      - type: fetch
+
+  ###########################################################################
+  # COORDINATOR — itself has subagents (demonstrates nested delegation)
+  ###########################################################################
+  coordinator:
+    model: smart
+    description: |
+      Mid-tier coordinator. Has its OWN subagents (planner, coder, reviewer)
+      so that the root can demonstrate nested / recursive delegation.
+    instruction: |
+      You are a coordinator. You receive a task from your parent (the root
+      orchestrator) and you may delegate sub-tasks to YOUR OWN subagents
+      (planner, coder, reviewer) using the same `subagent_*` tools.
+
+      Workflow:
+        1. Decompose the task into 1–3 sub-tasks.
+        2. Dispatch each via `subagent_start`. Use a single tool batch when
+           the sub-tasks are independent (fan-out).
+        3. Wait for envelopes. `subagent_inspect` each child (default mode).
+        4. `subagent_finalize` each child once you've consumed its output.
+        5. Reply to your parent with a single consolidated answer that
+           explicitly says which sub-task you delegated to which child.
+
+      Do not start more than 3 children. Keep the demo tractable.
+    max_iterations: 30
+    add_description_parameter: true
+    subagents:
+      - planner
+      - coder
+      - reviewer
+    toolsets:
+      - type: think

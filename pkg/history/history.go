@@ -133,8 +133,7 @@ func (h *History) Next() string {
 // LatestMatch returns the most recent history entry that extends the provided
 // prefix, or the latest message when no prefix is supplied.
 func (h *History) LatestMatch(prefix string) string {
-	for i := len(h.Messages) - 1; i >= 0; i-- {
-		msg := h.Messages[i]
+	for _, msg := range slices.Backward(h.Messages) {
 		if strings.HasPrefix(msg, prefix) && len(msg) > len(prefix) {
 			return msg
 		}
@@ -250,12 +249,12 @@ func (h *History) load() error {
 	// Deduplicate keeping the latest occurrence of each message.
 	seen := make(map[string]struct{}, len(all))
 	h.Messages = make([]string, 0, len(all))
-	for i := len(all) - 1; i >= 0; i-- {
-		if _, dup := seen[all[i]]; dup {
+	for _, msg := range slices.Backward(all) {
+		if _, dup := seen[msg]; dup {
 			continue
 		}
-		seen[all[i]] = struct{}{}
-		h.Messages = append(h.Messages, all[i])
+		seen[msg] = struct{}{}
+		h.Messages = append(h.Messages, msg)
 	}
 	slices.Reverse(h.Messages)
 

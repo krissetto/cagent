@@ -11,6 +11,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/components/markdown"
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
+	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/styles"
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
@@ -26,8 +27,9 @@ type Model interface {
 
 // messageModel implements Model
 type messageModel struct {
-	message  *types.Message
-	previous *types.Message
+	message      *types.Message
+	previous     *types.Message
+	sessionState service.SessionStateReader
 
 	width    int
 	height   int
@@ -38,14 +40,15 @@ type messageModel struct {
 }
 
 // New creates a new message view
-func New(msg, previous *types.Message) *messageModel {
+func New(msg, previous *types.Message, sessionState service.SessionStateReader) *messageModel {
 	return &messageModel{
-		message:  msg,
-		previous: previous,
-		width:    80, // Default width
-		height:   1,  // Will be calculated
-		focused:  false,
-		spinner:  spinner.New(spinner.ModeBoth, styles.SpinnerDotsAccentStyle),
+		message:      msg,
+		previous:     previous,
+		sessionState: sessionState,
+		width:        80, // Default width
+		height:       1,  // Will be calculated
+		focused:      false,
+		spinner:      spinner.New(spinner.ModeBoth, styles.SpinnerDotsAccentStyle),
 	}
 }
 
@@ -140,10 +143,11 @@ func (mv *messageModel) Render(width int) string {
 			rendered = msg.Content
 		}
 
-		var prefix string
-		if !mv.sameAgentAsPrevious(msg) {
-			prefix = mv.senderPrefix(msg.Sender)
-		}
+		// The per-message sender pill was intentionally removed: the sidebar's
+		// "selected agent" indicator + working spinner are the canonical places
+		// to look for agent attribution. Showing the pill inconsistently here —
+		// only when the turn opened with assistant text rather than a tool call
+		// or subagent delegation — was confusing in multi-agent sessions.
 
 		// Always reserve a top row to avoid layout shifts when the copy icon
 		// appears on hover. When not hovered, the row is filled with spaces
@@ -157,7 +161,7 @@ func (mv *messageModel) Render(width int) string {
 			padding := max(innerWidth-iconWidth, 0)
 			topRow = strings.Repeat(" ", padding) + copyIcon
 		}
-		return prefix + messageStyle.Width(width).Render(topRow+"\n"+rendered)
+		return messageStyle.Width(width).Render(topRow + "\n" + rendered)
 	case types.MessageTypeShellOutput:
 		if rendered, err := markdown.NewRenderer(width).Render(fmt.Sprintf("```console\n%s\n```", msg.Content)); err == nil {
 			return rendered
@@ -188,32 +192,109 @@ func (mv *messageModel) Render(width int) string {
 			description = ansi.Truncate(description, maxDescWidth, "…")
 		}
 		return spinnerView + " " + styles.MutedStyle.Render(description)
+	case types.MessageTypeSubAgent:
+		if msg.SubAgent == nil {
+			return styles.MutedStyle.Render("Subagent event")
+		}
+		return mv.renderSubAgent(width, msg.SubAgent)
 	default:
 		return msg.Content
 	}
 }
 
-func (mv *messageModel) senderPrefix(sender string) string {
-	if sender == "" {
-		return ""
+func (mv *messageModel) renderSubAgent(width int, info *types.SubAgentInfo) string {
+	agent := strings.TrimSpace(info.AgentName)
+	header := ""
+	if agent != "" {
+		header = styles.AgentBadgeStyleFor(agent).Render(agent)
 	}
-	return styles.AgentBadgeStyleFor(sender).MarginLeft(2).Render(sender) + "\n\n"
+	if info.ShortID != "" {
+		idPart := styles.MutedStyle.Render("(" + info.ShortID + ")")
+		if header == "" {
+			header = idPart
+		} else {
+			header += " " + idPart
+		}
+	}
+
+	// Glyph + trailing copy for each lifecycle kind. Turn-completed cards
+	// reuse the same ✓ status icon as completed tool rows so they read as
+	// part of the same cadence in the transcript instead of looking like a
+	// distinct message class.
+	var (
+		glyph   string
+		trailer string
+	)
+	switch info.Kind {
+	case types.SubAgentEventTurnCompleted:
+		// Turn-finished is a notification from a subagent, not a tool result.
+		// We use a plain '<' so the row reads as "incoming from a subagent"
+		// (mirroring the agent-section's '▶'), and because plain ASCII has
+		// guaranteed single-cell width across every monospace font / terminal
+		// combination, unlike fancier glyphs whose dimensions vary.
+		glyph = "<"
+		trailer = "turn finished"
+	case types.SubAgentEventClosed:
+		glyph = "◇"
+		trailer = "finalized"
+	case types.SubAgentEventStopped:
+		glyph = "■"
+		trailer = "stopped"
+	case types.SubAgentEventFailed:
+		glyph = "!"
+		trailer = "failed"
+	default:
+		glyph = "→"
+	}
+
+	// Render the leading glyph through the same icon style as completed tool
+	// rows. ToolCompletedIcon contributes the canonical MarginLeft(2) gutter,
+	// so subagent lifecycle cards line up column-for-column with adjacent
+	// `✓ inspecting ...` / `✓ replying to ...` tool rows.
+	line := styles.ToolCompletedIcon.Render(glyph)
+	if header != "" {
+		line += " " + header
+	}
+	if trailer != "" {
+		line += " " + styles.MutedStyle.Render(trailer)
+	}
+
+	// Keep subagent transcript cards brief. Lifecycle cards read like compact
+	// status rows, mirroring the delegation tool-call styling. Only failures
+	// earn a second line because the error text is actionable.
+	body := line
+	if info.Kind == types.SubAgentEventFailed {
+		detail := strings.TrimSpace(info.Detail)
+		if info.Truncated {
+			detail = strings.TrimRight(detail, " …") + "…"
+		}
+		if detail != "" {
+			body = line + "\n" + styles.MutedStyle.Render(detail)
+		}
+	}
+
+	// Wrap with ToolMessageStyle (no padding) instead of
+	// AssistantMessageStyle (which has Padding(0, 1)) so a lifecycle card and
+	// its surrounding tool rows share the exact same horizontal alignment
+	// and tight vertical rhythm. Selection is intentionally not styled here
+	// because the surrounding tool rows are not styled on selection either;
+	// keeping that consistent across rows avoids one row visually "jumping"
+	// out of the cluster as the user navigates with arrow keys.
+	return styles.ToolMessageStyle.Width(width).Render(body)
 }
 
-// sameAgentAsPrevious returns true if the previous message was from the same agent
-func (mv *messageModel) sameAgentAsPrevious(msg *types.Message) bool {
-	if mv.previous == nil || mv.previous.Sender != msg.Sender {
-		return false
+// SubAgentShortRef returns the short subagent reference represented by this
+// message view, if any. Tool rows and runtime-driven lifecycle cards both use
+// it so the transcript can open/attach to the live subagent session when the
+// user clicks the rendered `[agent] (id)` token.
+func (mv *messageModel) SubAgentShortRef() string {
+	if mv == nil || mv.message == nil {
+		return ""
 	}
-	switch mv.previous.Type {
-	case types.MessageTypeAssistant,
-		types.MessageTypeAssistantReasoningBlock,
-		types.MessageTypeToolCall,
-		types.MessageTypeToolResult:
-		return true
-	default:
-		return false
+	if mv.message.Type != types.MessageTypeSubAgent || mv.message.SubAgent == nil {
+		return ""
 	}
+	return strings.TrimSpace(mv.message.SubAgent.ShortID)
 }
 
 // Height calculates the height needed for this message view

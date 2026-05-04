@@ -3,10 +3,13 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +25,7 @@ import (
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
+	agenttool "github.com/docker/docker-agent/pkg/tools/builtin/agent"
 )
 
 type stubToolSet struct {
@@ -265,8 +269,8 @@ func TestSimple(t *testing.T) {
 
 	// Extract the actual message from MessageAddedEvent to use in comparison
 	// (it contains dynamic fields like CreatedAt that we can't predict)
-	require.Len(t, events, 10)
-	msgAdded := events[7].(*MessageAddedEvent)
+	require.Len(t, events, 12)
+	msgAdded := events[8].(*MessageAddedEvent)
 	require.NotNil(t, msgAdded.Message)
 	require.Equal(t, "Hello", msgAdded.Message.Message.Content)
 	require.Equal(t, chat.MessageRoleAssistant, msgAdded.Message.Message.Role)
@@ -276,15 +280,17 @@ func TestSimple(t *testing.T) {
 		ToolsetInfo(0, false, "root"),
 		UserMessage("Hi", sess.ID, nil, 0),
 		StreamStarted(sess.ID, "root"),
+		TurnStarted(sess.ID, "root"),
 		ToolsetInfo(0, false, "root"),
 		AgentInfo("root", "test/mock-model", "", ""),
 		AgentChoice("root", sess.ID, "Hello"),
-		MessageAdded(sess.ID, msgAdded.Message, "root"),
+		MessageAdded(sess.ID, 1, msgAdded.Message, "root"),
 		NewTokenUsageEvent(sess.ID, "root", &Usage{InputTokens: 3, OutputTokens: 2, ContextLength: 5, LastMessage: &MessageUsage{
 			Usage:        chat.Usage{InputTokens: 3, OutputTokens: 2},
 			Model:        "test/mock-model",
 			FinishReason: chat.FinishReasonStop,
 		}}),
+		TurnEnded(sess.ID, "root"),
 		StreamStopped(sess.ID, "root"),
 	}
 
@@ -307,8 +313,8 @@ func TestMultipleContentChunks(t *testing.T) {
 
 	// Extract the actual message from MessageAddedEvent to use in comparison
 	// (it contains dynamic fields like CreatedAt that we can't predict)
-	require.Len(t, events, 14)
-	msgAdded := events[11].(*MessageAddedEvent)
+	require.Len(t, events, 16)
+	msgAdded := events[12].(*MessageAddedEvent)
 	require.NotNil(t, msgAdded.Message)
 
 	expectedEvents := []Event{
@@ -316,6 +322,7 @@ func TestMultipleContentChunks(t *testing.T) {
 		ToolsetInfo(0, false, "root"),
 		UserMessage("Please greet me", sess.ID, nil, 0),
 		StreamStarted(sess.ID, "root"),
+		TurnStarted(sess.ID, "root"),
 		ToolsetInfo(0, false, "root"),
 		AgentInfo("root", "test/mock-model", "", ""),
 		AgentChoice("root", sess.ID, "Hello "),
@@ -323,12 +330,13 @@ func TestMultipleContentChunks(t *testing.T) {
 		AgentChoice("root", sess.ID, "how "),
 		AgentChoice("root", sess.ID, "are "),
 		AgentChoice("root", sess.ID, "you?"),
-		MessageAdded(sess.ID, msgAdded.Message, "root"),
+		MessageAdded(sess.ID, 1, msgAdded.Message, "root"),
 		NewTokenUsageEvent(sess.ID, "root", &Usage{InputTokens: 8, OutputTokens: 12, ContextLength: 20, LastMessage: &MessageUsage{
 			Usage:        chat.Usage{InputTokens: 8, OutputTokens: 12},
 			Model:        "test/mock-model",
 			FinishReason: chat.FinishReasonStop,
 		}}),
+		TurnEnded(sess.ID, "root"),
 		StreamStopped(sess.ID, "root"),
 	}
 
@@ -349,8 +357,8 @@ func TestWithReasoning(t *testing.T) {
 
 	// Extract the actual message from MessageAddedEvent to use in comparison
 	// (it contains dynamic fields like CreatedAt that we can't predict)
-	require.Len(t, events, 12)
-	msgAdded := events[9].(*MessageAddedEvent)
+	require.Len(t, events, 14)
+	msgAdded := events[10].(*MessageAddedEvent)
 	require.NotNil(t, msgAdded.Message)
 
 	expectedEvents := []Event{
@@ -358,17 +366,19 @@ func TestWithReasoning(t *testing.T) {
 		ToolsetInfo(0, false, "root"),
 		UserMessage("Hi", sess.ID, nil, 0),
 		StreamStarted(sess.ID, "root"),
+		TurnStarted(sess.ID, "root"),
 		ToolsetInfo(0, false, "root"),
 		AgentInfo("root", "test/mock-model", "", ""),
 		AgentChoiceReasoning("root", sess.ID, "Let me think about this..."),
 		AgentChoiceReasoning("root", sess.ID, " I should respond politely."),
 		AgentChoice("root", sess.ID, "Hello, how can I help you?"),
-		MessageAdded(sess.ID, msgAdded.Message, "root"),
+		MessageAdded(sess.ID, 1, msgAdded.Message, "root"),
 		NewTokenUsageEvent(sess.ID, "root", &Usage{InputTokens: 10, OutputTokens: 15, ContextLength: 25, LastMessage: &MessageUsage{
 			Usage:        chat.Usage{InputTokens: 10, OutputTokens: 15},
 			Model:        "test/mock-model",
 			FinishReason: chat.FinishReasonStop,
 		}}),
+		TurnEnded(sess.ID, "root"),
 		StreamStopped(sess.ID, "root"),
 	}
 
@@ -390,8 +400,8 @@ func TestMixedContentAndReasoning(t *testing.T) {
 
 	// Extract the actual message from MessageAddedEvent to use in comparison
 	// (it contains dynamic fields like CreatedAt that we can't predict)
-	require.Len(t, events, 13)
-	msgAdded := events[10].(*MessageAddedEvent)
+	require.Len(t, events, 15)
+	msgAdded := events[11].(*MessageAddedEvent)
 	require.NotNil(t, msgAdded.Message)
 
 	expectedEvents := []Event{
@@ -399,18 +409,20 @@ func TestMixedContentAndReasoning(t *testing.T) {
 		ToolsetInfo(0, false, "root"),
 		UserMessage("Hi there", sess.ID, nil, 0),
 		StreamStarted(sess.ID, "root"),
+		TurnStarted(sess.ID, "root"),
 		ToolsetInfo(0, false, "root"),
 		AgentInfo("root", "test/mock-model", "", ""),
 		AgentChoiceReasoning("root", sess.ID, "The user wants a greeting"),
 		AgentChoice("root", sess.ID, "Hello!"),
 		AgentChoiceReasoning("root", sess.ID, " I should be friendly"),
 		AgentChoice("root", sess.ID, " How can I help you today?"),
-		MessageAdded(sess.ID, msgAdded.Message, "root"),
+		MessageAdded(sess.ID, 1, msgAdded.Message, "root"),
 		NewTokenUsageEvent(sess.ID, "root", &Usage{InputTokens: 15, OutputTokens: 20, ContextLength: 35, LastMessage: &MessageUsage{
 			Usage:        chat.Usage{InputTokens: 15, OutputTokens: 20},
 			Model:        "test/mock-model",
 			FinishReason: chat.FinishReasonStop,
 		}}),
+		TurnEnded(sess.ID, "root"),
 		StreamStopped(sess.ID, "root"),
 	}
 
@@ -453,17 +465,19 @@ func TestErrorEvent(t *testing.T) {
 		events = append(events, ev)
 	}
 
-	require.Len(t, events, 8)
+	require.Len(t, events, 10)
 	require.IsType(t, &TeamInfoEvent{}, events[0])
 	require.IsType(t, &ToolsetInfoEvent{}, events[1])
 	require.IsType(t, &UserMessageEvent{}, events[2])
 	require.IsType(t, &StreamStartedEvent{}, events[3])
-	require.IsType(t, &ToolsetInfoEvent{}, events[4])
-	require.IsType(t, &AgentInfoEvent{}, events[5])
-	require.IsType(t, &ErrorEvent{}, events[6])
-	require.IsType(t, &StreamStoppedEvent{}, events[7])
+	require.IsType(t, &TurnStartedEvent{}, events[4])
+	require.IsType(t, &ToolsetInfoEvent{}, events[5])
+	require.IsType(t, &AgentInfoEvent{}, events[6])
+	require.IsType(t, &ErrorEvent{}, events[7])
+	require.IsType(t, &TurnEndedEvent{}, events[8])
+	require.IsType(t, &StreamStoppedEvent{}, events[9])
 
-	errorEvent := events[6].(*ErrorEvent)
+	errorEvent := events[7].(*ErrorEvent)
 	require.Contains(t, errorEvent.Error, "simulated error")
 }
 
@@ -499,6 +513,36 @@ func TestContextCancellation(t *testing.T) {
 	require.IsType(t, &UserMessageEvent{}, events[2])
 	require.IsType(t, &StreamStartedEvent{}, events[3])
 	require.IsType(t, &StreamStoppedEvent{}, events[len(events)-1])
+}
+
+func TestContextDeadlineStopsStreamWithoutErrorEvent(t *testing.T) {
+	// Regression test for context-derived stream termination being
+	// misclassified as a provider/model failure. A blocking provider that exits
+	// with ctx.Err() on deadline should cause the runtime stream to stop
+	// cleanly with StreamStopped, not emit an ErrorEvent.
+	prov := &blockingProvider{id: "test/blocking-deadline"}
+	root := agent.New("root", "You are a test agent", agent.WithModel(prov))
+	tm := team.New(team.WithAgents(root))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+
+	sess := session.New(session.WithUserMessage("Hi"))
+	sess.Title = "Unit Test"
+
+	ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
+	defer cancel()
+
+	var events []Event
+	for ev := range rt.RunStream(ctx, sess) {
+		events = append(events, ev)
+	}
+
+	require.NotEmpty(t, events)
+	assert.False(t, hasEventType(t, events, &ErrorEvent{}),
+		"context deadline on the active stream should be treated as graceful termination, not a model failure")
+	require.IsType(t, &StreamStoppedEvent{}, events[len(events)-1],
+		"stream should still terminate with StreamStoppedEvent")
 }
 
 func TestToolCallVariations(t *testing.T) {
@@ -797,7 +841,6 @@ func TestProcessToolCalls_UnknownTool_ReturnsErrorResponse(t *testing.T) {
 
 	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 	require.NoError(t, err)
-	rt.registerDefaultTools()
 
 	sess := session.New(session.WithUserMessage("Start"))
 
@@ -808,7 +851,7 @@ func TestProcessToolCalls_UnknownTool_ReturnsErrorResponse(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, nil, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, nil, events)
 	close(events)
 	for range events {
 	}
@@ -1097,7 +1140,7 @@ func TestPermissions_DenyBlocksToolExecution(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 	close(events)
 
 	// The tool should be denied, look for a ToolCallResponseEvent with error
@@ -1153,7 +1196,7 @@ func TestPermissions_AllowAutoApprovesTool(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 	close(events)
 
 	// The tool should have been executed due to allow pattern
@@ -1194,7 +1237,7 @@ func TestPermissions_DenyTakesPriorityOverAllow(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 	close(events)
 
 	// The tool should be denied despite wildcard allow
@@ -1242,7 +1285,7 @@ func TestSessionPermissions_DenyBlocksToolExecution(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 	close(events)
 
 	var toolResponse *ToolCallResponseEvent
@@ -1295,7 +1338,7 @@ func TestSessionPermissions_AllowAutoApprovesTool(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 	close(events)
 
 	require.True(t, executed, "expected tool to be auto-approved by session permissions")
@@ -1341,7 +1384,7 @@ func TestSessionPermissions_TakePriorityOverTeamPermissions(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 	close(events)
 
 	// Session deny should take priority over team allow
@@ -1391,7 +1434,7 @@ func TestToolRejectionWithReason(t *testing.T) {
 
 	// Run in goroutine since it will block waiting for confirmation
 	go func() {
-		rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+		newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 		close(events)
 	}()
 
@@ -1447,7 +1490,7 @@ func TestToolRejectionWithoutReason(t *testing.T) {
 
 	// Run in goroutine since it will block waiting for confirmation
 	go func() {
-		rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+		newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 		close(events)
 	}()
 
@@ -1497,7 +1540,7 @@ func TestTransferTaskRejectsNonSubAgent(t *testing.T) {
 		},
 	}
 
-	result, err := rt.handleTaskTransfer(t.Context(), sess, toolCall, evts)
+	result, err := rt.handleTaskTransfer(t.Context(), newRootSessionRunner(rt), sess, toolCall, evts)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.True(t, result.IsError, "transfer to non-sub-agent should return an error result")
@@ -1535,10 +1578,59 @@ func TestTransferTaskAllowsSubAgent(t *testing.T) {
 		},
 	}
 
-	result, err := rt.handleTaskTransfer(t.Context(), sess, toolCall, evts)
+	result, err := rt.handleTaskTransfer(t.Context(), newRootSessionRunner(rt), sess, toolCall, evts)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.False(t, result.IsError, "transfer to valid sub-agent should succeed")
+}
+
+func TestHandleTaskTransfer_SubSessionDoesNotMutateRootCurrentAgent(t *testing.T) {
+	// Regression test for the sessionRunner migration: child runtime-managed
+	// handlers must not leak temporary agent switches into the root
+	// LocalRuntime. A transfer_task executed from a child session pinned to
+	// "worker" should leave the root runtime's current agent as "root".
+	leafProv := &mockProvider{id: "test/leaf-model", stream: newStreamBuilder().AddContent("leaf done").AddStopWithUsage(5, 2).Build()}
+	workerProv := &mockProvider{id: "test/worker-model", stream: &mockStream{}}
+	rootProv := &mockProvider{id: "test/root-model", stream: &mockStream{}}
+
+	leaf := agent.New("leaf", "Leaf agent", agent.WithModel(leafProv))
+	worker := agent.New("worker", "Worker agent", agent.WithModel(workerProv))
+	root := agent.New("root", "Root agent", agent.WithModel(rootProv))
+
+	agent.WithSubAgents(worker)(root)
+	agent.WithSubAgents(leaf)(worker)
+
+	tm := team.New(team.WithAgents(root, worker, leaf))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+	require.Equal(t, "root", rt.CurrentAgentName())
+
+	childSess := session.New(
+		session.WithUserMessage("delegate from child"),
+		session.WithToolsApproved(true),
+		session.WithAgentName("worker"),
+		session.WithParentID("parent-session"),
+	)
+	evts := make(chan Event, 128)
+
+	toolCall := tools.ToolCall{
+		ID:   "call_child_transfer",
+		Type: "function",
+		Function: tools.FunctionCall{
+			Name:      "transfer_task",
+			Arguments: `{"agent":"leaf","task":"do leaf work","expected_output":"leaf result"}`,
+		},
+	}
+
+	result, err := rt.handleTaskTransfer(t.Context(), newRootSessionRunner(rt), childSess, toolCall, evts)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError, "transfer from child to valid child sub-agent should succeed")
+	assert.Equal(t, "leaf done", result.Output)
+
+	assert.Equal(t, "root", rt.CurrentAgentName(), "child transfer_task must not mutate the root runtime's current agent")
+	assert.Equal(t, "worker", childSess.AgentName, "child session agent identity should be restored after transfer")
 }
 
 func TestYoloMode_OverridesPermissionsDeny(t *testing.T) {
@@ -1580,7 +1672,7 @@ func TestYoloMode_OverridesPermissionsDeny(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 	close(events)
 
 	// With --yolo, the tool should execute despite deny permission
@@ -1626,7 +1718,7 @@ func TestYoloMode_OverridesForceAsk(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 	close(events)
 
 	// With --yolo, the tool should execute without asking
@@ -1671,7 +1763,7 @@ func TestYoloMode_OverridesSessionDeny(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, agentTools, events)
 	close(events)
 
 	// With --yolo, the tool should execute despite session deny
@@ -1871,7 +1963,6 @@ func TestProcessToolCalls_UsesPinnedAgent(t *testing.T) {
 
 	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 	require.NoError(t, err)
-	rt.registerDefaultTools()
 	assert.Equal(t, "root", rt.CurrentAgentName())
 
 	// Simulate a background session pinned to "worker".
@@ -1888,7 +1979,7 @@ func TestProcessToolCalls_UsesPinnedAgent(t *testing.T) {
 	}}
 
 	events := make(chan Event, 32)
-	rt.processToolCalls(t.Context(), sess, calls, []tools.Tool{workerTool}, events)
+	newRootSessionRunner(rt).processToolCalls(t.Context(), sess, calls, []tools.Tool{workerTool}, events)
 	close(events)
 
 	assert.True(t, executed, "worker_tool handler should have been called")
@@ -1980,4 +2071,345 @@ func TestRunStream_EmptyMessages_SendUserMessage(t *testing.T) {
 		events = append(events, ev)
 	}
 	require.NotEmpty(t, events)
+}
+
+func TestWithSubagentIdleAutoFinalize(t *testing.T) {
+	t.Parallel()
+
+	prov := &mockProvider{id: "test/mock-model"}
+	root := agent.New("root", "", agent.WithModel(prov))
+	tm := team.New(team.WithAgents(root))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}), WithSubagentIdleAutoFinalize(2*time.Minute))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rt.Close() })
+	require.Equal(t, 2*time.Minute, rt.subagents.IdleAutoFinalizeTimeout())
+
+	rt2, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rt2.Close() })
+	require.Equal(t, time.Duration(0), rt2.subagents.IdleAutoFinalizeTimeout())
+}
+
+// TestChildRunner_NestedSubSessionDoesNotConsumeRootFollowUp is a regression
+// test for the Phase 1 isolation bug where synchronous nested sub-sessions
+// launched from a child session via transfer_task / run_skill / background
+// RunAgent shared the root LocalRuntime's sessionState (followUp, steer,
+// resumeChan, elicitationRequestCh) instead of the invoking child runner's
+// state. Concretely, a follow-up enqueued on the root could be consumed by
+// a child-launched nested sub-session's wakePolicy, racing user input.
+//
+// The fix threads the active *sessionRunner through tool dispatch so child
+// runners launch nested sub-sessions through their own
+// runSubSessionForwarding/runSubSessionCollecting, which in turn call
+// runStreamWithConfig directly on the child runner (and therefore on the
+// child *sessionState).
+//
+// The assertion is direct: enqueue a follow-up on the ROOT runtime, drive a
+// nested sub-session via a CHILD sessionRunner's runSubSessionCollecting,
+// and verify the root follow-up queue still has the message afterward.
+func TestChildRunner_NestedSubSessionDoesNotConsumeRootFollowUp(t *testing.T) {
+	// Leaf agent that produces a single response and stops.
+	leafProv := &mockProvider{
+		id:     "test/leaf-model",
+		stream: newStreamBuilder().AddContent("leaf done").AddStopWithUsage(2, 1).Build(),
+	}
+	workerProv := &mockProvider{id: "test/worker-model", stream: &mockStream{}}
+	rootProv := &mockProvider{id: "test/root-model", stream: &mockStream{}}
+
+	leaf := agent.New("leaf", "Leaf agent", agent.WithModel(leafProv))
+	worker := agent.New("worker", "Worker agent", agent.WithModel(workerProv))
+	root := agent.New("root", "Root agent", agent.WithModel(rootProv))
+	agent.WithSubAgents(worker)(root)
+	agent.WithSubAgents(leaf)(worker)
+
+	tm := team.New(team.WithAgents(root, worker, leaf))
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rt.Close() })
+
+	// Enqueue a follow-up on the ROOT runtime's sessionState before triggering
+	// the nested sub-session. The fix must guarantee that the nested
+	// sub-session driven by the child runner does NOT pop this message.
+	require.NoError(t, rt.FollowUp(QueuedMessage{Content: "user-typed-followup-on-root"}))
+
+	// Build a child sessionRunner with its own *sessionState. The nested
+	// sub-session must be driven through this runner.
+	childState := newSessionState("worker")
+	childRunner := newChildSessionRunner(rt, childState)
+
+	// Parent session for the child runner (the worker's session).
+	parentSess := session.New(
+		session.WithUserMessage("parent-of-leaf"),
+		session.WithToolsApproved(true),
+		session.WithAgentName("worker"),
+		session.WithParentID("synthetic-parent"),
+	)
+
+	// The nested child session pinned to "leaf".
+	leafSess := newSubSession(parentSess, SubSessionConfig{
+		Task:          "do leaf work",
+		AgentName:     "leaf",
+		Title:         "leaf",
+		ToolsApproved: true,
+		PinAgent:      true,
+	}, leaf)
+
+	// Drive the nested sub-session through the CHILD runner. Before the fix,
+	// runSubSessionCollecting was on *LocalRuntime and called r.RunStream,
+	// which built a fresh root runner using rt.sessionState — meaning the
+	// nested sub-session's wakePolicy would observe the ROOT followUp queue.
+	result := childRunner.runSubSessionCollecting(t.Context(), parentSess, leafSess, nil)
+	require.NotNil(t, result)
+	require.Empty(t, result.ErrMsg, "leaf sub-session should complete cleanly")
+	require.Equal(t, "leaf done", result.Result)
+
+	// Critical assertion: the root's follow-up queue must still hold the
+	// user-typed message. If the nested sub-session ran on root state, its
+	// rootWakePolicy.wakeNext would have popped this entry.
+	remaining := rt.followUp.Drain(t.Context())
+	require.Len(t, remaining, 1, "root follow-up queue must not have been drained by a child-driven sub-session")
+	assert.Equal(t, "user-typed-followup-on-root", remaining[0].Content)
+
+	// Sanity: child runner's own follow-up queue should not equal root's.
+	assert.NotSame(t, rt.followUp, childState.followUp,
+		"child runner must own a distinct follow-up queue from the root")
+}
+
+// TestNestedSubSessionResolvesBackgroundAgentAgainstNestedAgent is a
+// regression test verifying that run_background_agent validation uses
+// the session-pinned agent's sub-agent list, not the runner's state
+// agent. This matters when a child runner (pinned to "worker") launches
+// a nested sub-session (pinned to "leaf") that tries to call
+// run_background_agent with target "twig". "twig" is in leaf's
+// sub-agents but NOT in worker's, so the old code would reject it.
+func TestNestedSubSessionResolvesBackgroundAgentAgainstNestedAgent(t *testing.T) {
+	prov := &mockProvider{id: "test/mock-model", stream: &mockStream{}}
+
+	twig := agent.New("twig", "Twig agent", agent.WithModel(prov))
+	leaf := agent.New("leaf", "Leaf agent", agent.WithModel(prov))
+	worker := agent.New("worker", "Worker agent", agent.WithModel(prov))
+	root := agent.New("root", "Root agent", agent.WithModel(prov))
+
+	agent.WithSubAgents(twig)(leaf)   // leaf -> [twig]
+	agent.WithSubAgents(leaf)(worker)  // worker -> [leaf]
+	agent.WithSubAgents(worker)(root)  // root -> [worker]
+
+	tm := team.New(team.WithAgents(root, worker, leaf, twig))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rt.Close() })
+
+	// Build a child runner pinned to "worker".
+	childState := newSessionState("worker")
+	childRunner := newChildSessionRunner(rt, childState)
+
+	// ── Test 1: child session pinned to "worker" calls run_background_agent
+	// with target "leaf". Worker's sub-agents include leaf -> should pass.
+	workerSess := session.New(
+		session.WithUserMessage("worker task"),
+		session.WithToolsApproved(true),
+		session.WithAgentName("worker"),
+		session.WithParentID("parent-session"),
+	)
+
+	toolCall := tools.ToolCall{
+		ID:   "call-bg-1",
+		Type: "function",
+		Function: tools.FunctionCall{
+			Name:      "run_background_agent",
+			Arguments: `{"agent":"leaf","task":"do leaf work"}`,
+		},
+	}
+
+	handler, ok := childRunner.toolMap["run_background_agent"]
+	require.True(t, ok, "run_background_agent should be in child runner's tool map")
+
+	events := make(chan Event, 128)
+	result, err := handler(t.Context(), childRunner, workerSess, toolCall, events)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	// Should succeed (not an error about agent not in sub-agents list).
+	assert.False(t, result.IsError, "run_background_agent(leaf) from worker session should succeed, got: %s", result.Output)
+
+	// ── Test 2: nested sub-session pinned to "leaf" calls
+	// run_background_agent with target "twig". Leaf's sub-agents include
+	// twig, but the child runner is still pinned to "worker" in its state.
+	// Before the fix, this would fail because CurrentAgentSubAgentNames()
+	// returned worker's sub-agents ([leaf]) and twig ∉ [leaf].
+	leafSess := session.New(
+		session.WithUserMessage("leaf task"),
+		session.WithToolsApproved(true),
+		session.WithAgentName("leaf"),
+		session.WithParentID(workerSess.ID),
+	)
+
+	twigToolCall := tools.ToolCall{
+		ID:   "call-bg-2",
+		Type: "function",
+		Function: tools.FunctionCall{
+			Name:      "run_background_agent",
+			Arguments: `{"agent":"twig","task":"do twig work"}`,
+		},
+	}
+
+	result2, err := handler(t.Context(), childRunner, leafSess, twigToolCall, events)
+	require.NoError(t, err)
+	require.NotNil(t, result2)
+	// Should succeed: twig is in leaf's sub-agents.
+	assert.False(t, result2.IsError, "run_background_agent(twig) from leaf-pinned session should succeed, got: %s", result2.Output)
+
+	// ── Test 3 (negative): from leaf-pinned session, target "worker" should be rejected
+	// because worker is NOT a sub-agent of leaf.
+	badToolCall := tools.ToolCall{
+		ID:   "call-bg-3",
+		Type: "function",
+		Function: tools.FunctionCall{
+			Name:      "run_background_agent",
+			Arguments: `{"agent":"worker","task":"bad target"}`,
+		},
+	}
+
+	result3, err := handler(t.Context(), childRunner, leafSess, badToolCall, events)
+	require.NoError(t, err)
+	require.NotNil(t, result3)
+	assert.True(t, result3.IsError, "run_background_agent(worker) from leaf session should be rejected")
+	assert.Contains(t, result3.Output, "not in the sub-agents list")
+}
+
+// TestRunBackgroundAgent_ConcurrentSessionValidation verifies that
+// concurrent run_background_agent invocations through the same child
+// sessionRunner — but from differently pinned sessions with different
+// allowed sub-agent lists — validate against their own session agent's
+// list and never observe each other's allowed set. This is the race
+// regression test for the validation wrapper: a previous implementation
+// temporarily mutated the runner's currentAgent for the duration of
+// each call, which under concurrency could leak one session's pinned
+// agent into another's validation.
+func TestRunBackgroundAgent_ConcurrentSessionValidation(t *testing.T) {
+	t.Parallel()
+
+	prov := &mockProvider{id: "test/mock-model", stream: &mockStream{}}
+
+	twig := agent.New("twig", "Twig agent", agent.WithModel(prov))
+	leaf := agent.New("leaf", "Leaf agent", agent.WithModel(prov))
+	worker := agent.New("worker", "Worker agent", agent.WithModel(prov))
+	root := agent.New("root", "Root agent", agent.WithModel(prov))
+
+	agent.WithSubAgents(twig)(leaf)    // leaf  -> [twig]
+	agent.WithSubAgents(leaf)(worker)  // worker -> [leaf]
+	agent.WithSubAgents(worker)(root)  // root -> [worker]
+
+	tm := team.New(team.WithAgents(root, worker, leaf, twig))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rt.Close() })
+
+	// One child runner pinned to "worker" drives BOTH calls. Each call
+	// uses a different session: one pinned to "worker", one pinned to
+	// "leaf". The wrapper must compute the allowed list from each
+	// session's own pinned agent rather than from the runner.
+	childState := newSessionState("worker")
+	childRunner := newChildSessionRunner(rt, childState)
+
+	handler, ok := childRunner.toolMap[agenttool.ToolNameRunBackgroundAgent]
+	require.True(t, ok)
+
+	// We use the rejection path on both sides on purpose: it returns
+	// before launching anything, so we don't spawn real sub-agent runs
+	// in a -race test, while still exercising the full validation
+	// codepath (parse -> resolveSessionAgent -> allowedAgents -> reject).
+	//   - From workerSess, target "twig" is NOT in worker's sub-agents [leaf].
+	//   - From leafSess,   target "worker" is NOT in leaf's   sub-agents [twig].
+	mkSess := func(pinned string) *session.Session {
+		return session.New(
+			session.WithUserMessage("task"),
+			session.WithToolsApproved(true),
+			session.WithAgentName(pinned),
+			session.WithParentID("synthetic-parent"),
+		)
+	}
+	workerCall := tools.ToolCall{
+		ID:   "call-worker",
+		Type: "function",
+		Function: tools.FunctionCall{
+			Name:      agenttool.ToolNameRunBackgroundAgent,
+			Arguments: `{"agent":"twig","task":"reject me"}`,
+		},
+	}
+	leafCall := tools.ToolCall{
+		ID:   "call-leaf",
+		Type: "function",
+		Function: tools.FunctionCall{
+			Name:      agenttool.ToolNameRunBackgroundAgent,
+			Arguments: `{"agent":"worker","task":"reject me"}`,
+		},
+	}
+
+	const iterations = 200
+	var wg sync.WaitGroup
+	wg.Add(iterations * 2)
+
+	workerErrs := make(chan error, iterations)
+	leafErrs := make(chan error, iterations)
+
+	check := func(out string, want string, errCh chan<- error) {
+		if !strings.Contains(out, want) {
+			errCh <- fmt.Errorf("expected %q in result, got %q", want, out)
+		}
+	}
+
+	for range iterations {
+		go func() {
+			defer wg.Done()
+			sess := mkSess("worker")
+			events := make(chan Event, 4)
+			res, err := handler(t.Context(), childRunner, sess, workerCall, events)
+			if err != nil {
+				workerErrs <- err
+				return
+			}
+			if res == nil || !res.IsError {
+				workerErrs <- fmt.Errorf("expected error result, got %+v", res)
+				return
+			}
+			// worker pinned -> available list must come from worker [leaf];
+			// must NOT mention twig as available, must NOT show leaf-only set.
+			check(res.Output, "Available: leaf", workerErrs)
+		}()
+		go func() {
+			defer wg.Done()
+			sess := mkSess("leaf")
+			events := make(chan Event, 4)
+			res, err := handler(t.Context(), childRunner, sess, leafCall, events)
+			if err != nil {
+				leafErrs <- err
+				return
+			}
+			if res == nil || !res.IsError {
+				leafErrs <- fmt.Errorf("expected error result, got %+v", res)
+				return
+			}
+			// leaf pinned -> available list must come from leaf [twig].
+			check(res.Output, "Available: twig", leafErrs)
+		}()
+	}
+	wg.Wait()
+	close(workerErrs)
+	close(leafErrs)
+
+	for err := range workerErrs {
+		t.Errorf("worker-pinned validation error: %v", err)
+	}
+	for err := range leafErrs {
+		t.Errorf("leaf-pinned validation error: %v", err)
+	}
+
+	// The runner's pinned currentAgent must never have been mutated by
+	// the wrapper. It should still equal "worker" (the value the child
+	// runner was constructed with).
+	assert.Equal(t, "worker", childState.currentAgentName(),
+		"wrapper must not mutate runner-shared currentAgent")
 }

@@ -24,10 +24,6 @@ Built-in tools are included with docker-agent and require no external dependenci
 | `lsp` | Language Server Protocol integration | [LSP]({{ '/tools/lsp/' | relative_url }}) |
 | `api` | Custom HTTP API tools | [API]({{ '/tools/api/' | relative_url }}) |
 | `user_prompt` | Interactive user input | [User Prompt]({{ '/tools/user-prompt/' | relative_url }}) |
-| `transfer_task` | Delegate to sub-agents (auto-enabled) | [Transfer Task]({{ '/tools/transfer-task/' | relative_url }}) |
-| `background_agents` | Parallel sub-agent dispatch | [Background Agents]({{ '/tools/background-agents/' | relative_url }}) |
-| `handoff` | A2A remote agent delegation | [Handoff]({{ '/tools/handoff/' | relative_url }}) |
-| `a2a` | A2A remote agent connection | [A2A]({{ '/tools/a2a/' | relative_url }}) |
 
 **Example:**
 
@@ -40,6 +36,17 @@ toolsets:
   - type: memory
     path: ./dev.db
 ```
+
+## Runtime-managed subagents
+
+The recommended multi-agent model is **runtime-managed subagents**. It provides persistent background child sessions, parent↔child conversation, recursive delegation, and a full live observability surface. See [Subagents (Runtime-Managed)]({{ '/tools/subagents/' | relative_url }}).
+
+<div class="callout callout-info" markdown="1">
+<div class="callout-title">ℹ️ Current rollout status
+</div>
+  <p>The runtime-managed subagent tools are enabled automatically by top-level <code>subagents:</code>. If an agent declares <code>subagents:</code>, do <strong>not</strong> also configure legacy <code>handoffs:</code> or <code>- type: background_agents</code> on the same agent — config validation rejects those combinations, and the legacy implicit <code>transfer_task</code> wiring is suppressed.</p>
+
+</div>
 
 ## MCP Tools
 
@@ -59,11 +66,11 @@ toolsets:
 
 Browse available tools at the [Docker MCP Catalog](https://hub.docker.com/search?q=&type=mcp).
 
-| Property      | Type   | Description                                                      |
-| ------------- | ------ | ---------------------------------------------------------------- |
-| `ref`         | string | Docker MCP reference (`docker:name`)                             |
-| `tools`       | array  | Optional: only expose these tools                                |
-| `instruction` | string | Custom instructions injected into the agent's context            |
+| Property      | Type   | Description |
+| ------------- | ------ | ----------- |
+| `ref`         | string | Docker MCP reference (`docker:name`) |
+| `tools`       | array  | Optional: only expose these tools |
+| `instruction` | string | Custom instructions injected into the agent's context |
 | `config`      | any    | MCP server-specific configuration (passed during initialization) |
 
 ### Local MCP (stdio)
@@ -104,10 +111,10 @@ toolsets:
     tools: ["search_web", "fetch_url"]
 ```
 
-| Property                | Type   | Description                       |
-| ----------------------- | ------ | --------------------------------- |
-| `remote.url`            | string | Base URL of the MCP server        |
-| `remote.transport_type` | string | `sse` or `streamable`             |
+| Property                | Type   | Description |
+| ----------------------- | ------ | ----------- |
+| `remote.url`            | string | Base URL of the MCP server |
+| `remote.transport_type` | string | `sse` or `streamable` |
 | `remote.headers`        | object | HTTP headers (typically for auth) |
 
 ## Auto-Installing Tools
@@ -168,10 +175,10 @@ export DOCKER_AGENT_AUTO_INSTALL=false
 
 ### Environment Variables
 
-| Variable                     | Default            | Description                                      |
-| ---------------------------- | ------------------ | ------------------------------------------------ |
-| `DOCKER_AGENT_AUTO_INSTALL`  | (enabled)          | Set to `false` to disable all auto-installation  |
-| `DOCKER_AGENT_TOOLS_DIR`     | `~/.cagent/tools/` | Base directory for installed tools               |
+| Variable                     | Default            | Description |
+| ---------------------------- | ------------------ | ----------- |
+| `DOCKER_AGENT_AUTO_INSTALL`  | (enabled)          | Set to `false` to disable all auto-installation |
+| `DOCKER_AGENT_TOOLS_DIR`     | `~/.cagent/tools/` | Base directory for installed tools |
 | `GITHUB_TOKEN`               | —                  | GitHub token to raise API rate limits (optional) |
 
 Installed binaries are placed in `~/.cagent/tools/bin/` and cached so they are only downloaded once.

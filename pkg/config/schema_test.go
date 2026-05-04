@@ -57,6 +57,10 @@ func TestSchemaMatchesGoTypes(t *testing.T) {
 	var root jsonSchema
 	require.NoError(t, json.Unmarshal(data, &root))
 
+	deprecatedSchemaOnly := map[string]map[string]bool{
+		"AgentConfig": {"sub_agents": true},
+	}
+
 	// mapping maps a JSON Schema definition name (or pseudo-name for inline
 	// schemas) to the corresponding Go type. For top-level definitions that
 	// live in the "definitions" section of the schema we use their exact
@@ -130,6 +134,9 @@ func TestSchemaMatchesGoTypes(t *testing.T) {
 
 		missingInSchema := diff(goFields, schemaProps)
 		missingInGo := diff(schemaProps, goFields)
+		for prop := range deprecatedSchemaOnly[e.schemaName] {
+			delete(missingInGo, prop)
+		}
 
 		assert.Empty(t, sortedKeys(missingInSchema),
 			"%s: Go struct has JSON fields not present in the schema", e.schemaName)

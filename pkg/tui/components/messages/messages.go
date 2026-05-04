@@ -56,7 +56,10 @@ type Model interface {
 	AppendToLastMessage(agentName, content string) tea.Cmd
 	AppendReasoning(agentName, content string) tea.Cmd
 	AddShellOutputMessage(content string) tea.Cmd
+	AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd
+	FocusSubAgentCard(shortID string) tea.Cmd
 	LoadFromSession(sess *session.Session) tea.Cmd
+	ToggleSelectedExpandableTool() tea.Cmd
 
 	RemoveSpinner()
 	ScrollToBottom() tea.Cmd
@@ -93,6 +96,8 @@ func nextBlockID() string {
 }
 
 // model implements Model
+type subagentRefProvider interface{ SubAgentShortRef() string }
+
 type model struct {
 	messages []*types.Message
 	views    []layout.Model
@@ -294,6 +299,20 @@ func (m *model) handleMouseClick(msg tea.MouseClickMsg) (layout.Model, tea.Cmd) 
 				return m, nil
 			}
 		}
+		if expandable, ok := m.views[msgIdx].(interface{ ToggleExpanded() bool }); ok {
+			// Subagent inspect rows are also attach targets. Mouse click should open
+			// the subagent session, not consume the click to expand the inline preview.
+			// Keyboard selection/enter still toggles expansion through the existing
+			// selected-message path, so no functionality is lost.
+			if _, isSubagentTool := m.views[msgIdx].(subagentRefProvider); !isSubagentTool {
+				if expandable.ToggleExpanded() {
+					m.bottomSlack = 0
+					m.invalidateItem(msgIdx)
+					m.renderDirty = true
+					return m, nil
+				}
+			}
+		}
 
 		if clicked, msg := m.isEditLabelClick(msgIdx, localLine, col); clicked {
 			return m, core.CmdHandler(messages.EditUserMessageMsg{
@@ -403,11 +422,18 @@ func (m *model) handleMouseRelease(msg tea.MouseReleaseMsg) (layout.Model, tea.C
 			line, col := m.mouseToLineCol(msg.X, msg.Y)
 			m.selection.update(line, col)
 
-			// If the mouse didn't move, this was a plain click — open URL if any
+			// If the mouse didn't move, this was a plain click — resolve any
+			// click target. URLs take precedence; subagent tool pills are next
+			// so clicking a compact subagent tool row opens its live tab.
 			if line == m.selection.startLine && col == m.selection.startCol {
 				m.selection.clear()
 				if url := m.urlAt(line, col); url != "" {
 					return m, core.CmdHandler(messages.OpenURLMsg{URL: url})
+				}
+				if msgIdx, _ := m.globalLineToMessageLine(line); msgIdx >= 0 {
+					if ref := m.subAgentShortRefAt(msgIdx); ref != "" {
+						return m, core.CmdHandler(messages.OpenSubAgentByShortRefMsg{ShortRef: ref})
+					}
 				}
 				return m, nil
 			}
@@ -472,6 +498,31 @@ func (m *model) handleKeyPress(msg tea.KeyPressMsg) (layout.Model, tea.Cmd) {
 			return m, cmd
 		} else {
 			m.scrollDown()
+		}
+		return m, nil
+	case "enter":
+		if m.focused && m.selectedMessageIndex >= 0 && m.selectedMessageIndex < len(m.views) {
+			// Subagent rows (tool calls and lifecycle cards) are attach targets.
+			// Enter should open the subagent session, mirroring the mouse-click
+			// behavior so keyboard and mouse semantics match exactly.
+			if ref := m.subAgentShortRefAt(m.selectedMessageIndex); ref != "" {
+				return m, core.CmdHandler(messages.OpenSubAgentByShortRefMsg{ShortRef: ref})
+			}
+			if block, ok := m.views[m.selectedMessageIndex].(*reasoningblock.Model); ok {
+				block.Toggle()
+				m.bottomSlack = 0
+				m.invalidateItem(m.selectedMessageIndex)
+				m.renderDirty = true
+				return m, nil
+			}
+			if expandable, ok := m.views[m.selectedMessageIndex].(interface{ ToggleExpanded() bool }); ok {
+				if expandable.ToggleExpanded() {
+					m.bottomSlack = 0
+					m.invalidateItem(m.selectedMessageIndex)
+					m.renderDirty = true
+					return m, nil
+				}
+			}
 		}
 		return m, nil
 	case "c":
@@ -671,8 +722,19 @@ func (m *model) Bindings() []key.Binding {
 	bindings := []key.Binding{
 		key.NewBinding(key.WithKeys("up"), key.WithHelp("↑", "select prev")),
 		key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "select next")),
-		key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy message")),
 	}
+
+	// Enter does double duty: when a subagent reference (tool row or lifecycle
+	// card) is selected, it attaches to the subagent session. Otherwise it
+	// expands/collapses reasoning blocks or other expandable rows.
+	enterHelp := "expand"
+	if ref := m.subAgentShortRefAt(m.selectedMessageIndex); ref != "" {
+		enterHelp = "open subagent"
+	}
+	bindings = append(bindings,
+		key.NewBinding(key.WithKeys("enter"), key.WithHelp("Enter", enterHelp)),
+		key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy message")),
+	)
 
 	// Only show edit binding when a user message with session position is selected
 	if m.selectedMessageIndex >= 0 && m.selectedMessageIndex < len(m.messages) {
@@ -790,7 +852,7 @@ func (m *model) isSelectableMessage(index int) bool {
 	}
 	msg := m.messages[index]
 	switch msg.Type {
-	case types.MessageTypeAssistant, types.MessageTypeAssistantReasoningBlock:
+	case types.MessageTypeAssistant, types.MessageTypeAssistantReasoningBlock, types.MessageTypeSubAgent:
 		return true
 	case types.MessageTypeUser:
 		// User messages are selectable only if they have a session position (editable)
@@ -801,7 +863,7 @@ func (m *model) isSelectableMessage(index int) bool {
 }
 
 func (m *model) findLastSelectableMessage() int {
-	for i := len(m.messages) - 1; i >= 0; i-- {
+	for i := range slices.Backward(m.messages) {
 		if m.isSelectableMessage(i) {
 			return i
 		}
@@ -812,11 +874,10 @@ func (m *model) findLastSelectableMessage() int {
 // findLastAssistantMessage finds the last assistant or reasoning block message.
 // Used for initial focus selection to start on assistant content.
 func (m *model) findLastAssistantMessage() int {
-	for i := len(m.messages) - 1; i >= 0; i-- {
-		if i >= len(m.messages) {
+	for i, msg := range slices.Backward(m.messages) {
+		if msg == nil {
 			continue
 		}
-		msg := m.messages[i]
 		if msg.Type == types.MessageTypeAssistant || msg.Type == types.MessageTypeAssistantReasoningBlock {
 			return i
 		}
@@ -1033,15 +1094,17 @@ func (m *model) needsSeparator(index int) bool {
 	if index >= len(m.messages)-1 {
 		return false
 	}
-	currentIsToolCall := m.messages[index].Type == types.MessageTypeToolCall
-	nextIsToolCall := m.messages[index+1].Type == types.MessageTypeToolCall
+	current := m.messages[index]
+	next := m.messages[index+1]
+	currentIsToolLike := current.Type == types.MessageTypeToolCall || current.Type == types.MessageTypeSubAgent
+	nextIsToolLike := next.Type == types.MessageTypeToolCall || next.Type == types.MessageTypeSubAgent
 
-	// Always add a separator before transfer_task, even between consecutive tool calls
-	if nextIsToolCall && m.messages[index+1].ToolCall.Function.Name == builtin.ToolNameTransferTask {
+	// Always add a separator before transfer_task, even between consecutive tool-like rows.
+	if next.Type == types.MessageTypeToolCall && next.ToolCall.Function.Name == builtin.ToolNameTransferTask {
 		return true
 	}
 
-	return !currentIsToolCall || !nextIsToolCall
+	return !currentIsToolLike || !nextIsToolLike
 }
 
 func (m *model) ensureAllItemsRendered() {
@@ -1118,8 +1181,8 @@ func (m *model) AddLoadingMessage(description string) tea.Cmd {
 }
 
 func (m *model) ReplaceLoadingWithUser(content string, sessionPos int) tea.Cmd {
-	for i := len(m.messages) - 1; i >= 0; i-- {
-		if m.messages[i].Type == types.MessageTypeLoading {
+	for i, msg := range slices.Backward(m.messages) {
+		if msg.Type == types.MessageTypeLoading {
 			m.messages = append(m.messages[:i], m.messages[i+1:]...)
 			if i < len(m.views) {
 				m.views = append(m.views[:i], m.views[i+1:]...)
@@ -1143,6 +1206,50 @@ func (m *model) AddErrorMessage(content string) tea.Cmd {
 
 func (m *model) AddShellOutputMessage(content string) tea.Cmd {
 	return m.addMessage(types.ShellOutput(content))
+}
+
+func (m *model) AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd {
+	return m.addMessage(types.SubAgent(info))
+}
+
+// FocusSubAgentCard focuses and scrolls to the most recent subagent card with
+// the given short id. Returns nil if no matching card exists.
+func (m *model) FocusSubAgentCard(shortID string) tea.Cmd {
+	if shortID == "" {
+		return nil
+	}
+	for i, msg := range slices.Backward(m.messages) {
+		if msg == nil || msg.Type != types.MessageTypeSubAgent || msg.SubAgent == nil {
+			continue
+		}
+		if msg.SubAgent.ShortID != shortID {
+			continue
+		}
+		oldIndex := m.selectedMessageIndex
+		m.focused = true
+		m.selectedMessageIndex = i
+		m.invalidateAllItems()
+		m.scrollToSelectedMessage()
+		if m.messageTypeChanged(oldIndex, i) {
+			return core.CmdHandler(messages.InvalidateStatusBarMsg{})
+		}
+		return nil
+	}
+	return nil
+}
+
+func (m *model) ToggleSelectedExpandableTool() tea.Cmd {
+	if m.selectedMessageIndex < 0 || m.selectedMessageIndex >= len(m.views) {
+		return nil
+	}
+	if expandable, ok := m.views[m.selectedMessageIndex].(interface{ ToggleExpanded() bool }); ok {
+		if expandable.ToggleExpanded() {
+			m.bottomSlack = 0
+			m.invalidateItem(m.selectedMessageIndex)
+			m.renderDirty = true
+		}
+	}
+	return nil
 }
 
 func (m *model) AddAssistantMessage() tea.Cmd {
@@ -1275,6 +1382,15 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 
 		switch smsg.Message.Role {
 		case chat.MessageRoleUser:
+			// Special internal user-role messages (e.g. subagent envelope
+			// reminders) are surfaced through dedicated UI paths. Skip them
+			// here so they don't show up as plain user-typed input. The
+			// substring fallback covers legacy sessions persisted before
+			// session.MessageKind was introduced.
+			if smsg.Kind == session.MessageKindSubagentEnvelope ||
+				strings.Contains(smsg.Message.Content, "<subagent_update>") {
+				continue
+			}
 			msg := types.User(smsg.Message.Content)
 			msgPos := pos
 			msg.SessionPosition = &msgPos
@@ -1340,7 +1456,7 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 
 func (m *model) AddOrUpdateToolCall(agentName string, toolCall tools.ToolCall, toolDef tools.Tool, status types.ToolStatus) tea.Cmd {
 	// First check if this tool call exists in any reasoning block
-	for i := len(m.messages) - 1; i >= 0; i-- {
+	for i := range slices.Backward(m.messages) {
 		if m.messages[i].Type == types.MessageTypeAssistantReasoningBlock {
 			if block, ok := m.views[i].(*reasoningblock.Model); ok {
 				if block.HasToolCall(toolCall.ID) {
@@ -1353,24 +1469,24 @@ func (m *model) AddOrUpdateToolCall(agentName string, toolCall tools.ToolCall, t
 	}
 
 	// Then try to update existing standalone tool by ID
-	for i := len(m.messages) - 1; i >= 0; i-- {
-		msg := m.messages[i]
-		if msg.Type == types.MessageTypeToolCall && msg.ToolCall.ID == toolCall.ID {
-			msg.ToolStatus = status
-			if status == types.ToolStatusRunning && msg.StartedAt == nil {
-				now := time.Now()
-				msg.StartedAt = &now
-			}
-			if toolCall.Function.Arguments != "" {
-				if status == types.ToolStatusPending {
-					msg.ToolCall.Function.Arguments += toolCall.Function.Arguments
-				} else {
-					msg.ToolCall.Function.Arguments = toolCall.Function.Arguments
-				}
-			}
-			m.invalidateItem(i)
-			return nil
+	for i, msg := range slices.Backward(m.messages) {
+		if msg.Type != types.MessageTypeToolCall || msg.ToolCall.ID != toolCall.ID {
+			continue
 		}
+		msg.ToolStatus = status
+		if status == types.ToolStatusRunning && msg.StartedAt == nil {
+			now := time.Now()
+			msg.StartedAt = &now
+		}
+		if toolCall.Function.Arguments != "" {
+			if status == types.ToolStatusPending {
+				msg.ToolCall.Function.Arguments += toolCall.Function.Arguments
+			} else {
+				msg.ToolCall.Function.Arguments = toolCall.Function.Arguments
+			}
+		}
+		m.invalidateItem(i)
+		return nil
 	}
 
 	m.removeSpinner()
@@ -1395,7 +1511,7 @@ func (m *model) AddOrUpdateToolCall(agentName string, toolCall tools.ToolCall, t
 
 func (m *model) AddToolResult(msg *runtime.ToolCallResponseEvent, status types.ToolStatus) tea.Cmd {
 	// First check reasoning blocks for the tool call
-	for i := len(m.messages) - 1; i >= 0; i-- {
+	for i := range slices.Backward(m.messages) {
 		if m.messages[i].Type == types.MessageTypeAssistantReasoningBlock {
 			if block, ok := m.views[i].(*reasoningblock.Model); ok {
 				if block.HasToolCall(msg.ToolCallID) {
@@ -1408,18 +1524,18 @@ func (m *model) AddToolResult(msg *runtime.ToolCallResponseEvent, status types.T
 	}
 
 	// Then check standalone tool call messages
-	for i := len(m.messages) - 1; i >= 0; i-- {
-		toolMessage := m.messages[i]
-		if toolMessage.Type == types.MessageTypeToolCall && toolMessage.ToolCall.ID == msg.ToolCallID {
-			toolMessage.Content = strings.ReplaceAll(msg.Response, "\t", "    ")
-			toolMessage.ToolStatus = status
-			toolMessage.ToolResult = msg.Result
-			m.invalidateItem(i)
-
-			view := m.createToolCallView(toolMessage)
-			m.views[i] = view
-			return view.Init()
+	for i, toolMessage := range slices.Backward(m.messages) {
+		if toolMessage.Type != types.MessageTypeToolCall || toolMessage.ToolCall.ID != msg.ToolCallID {
+			continue
 		}
+		toolMessage.Content = strings.ReplaceAll(msg.Response, "\t", "    ")
+		toolMessage.ToolStatus = status
+		toolMessage.ToolResult = msg.Result
+		m.invalidateItem(i)
+
+		view := m.createToolCallView(toolMessage)
+		m.views[i] = view
+		return view.Init()
 	}
 	return nil
 }
@@ -1556,7 +1672,7 @@ func (m *model) createToolCallView(msg *types.Message) layout.Model {
 }
 
 func (m *model) createMessageView(msg *types.Message) layout.Model {
-	view := message.New(msg, m.sessionState.PreviousMessage())
+	view := message.New(msg, m.sessionState.PreviousMessage(), m.sessionState)
 	view.SetSize(m.contentWidth(), 0)
 	return view
 }
@@ -1719,6 +1835,33 @@ func (m *model) copyMessageToClipboard(msgIdx int) tea.Cmd {
 		return nil
 	}
 	return copyTextToClipboard(content)
+}
+
+func (m *model) subAgentRefProviderAt(msgIdx int) subagentRefProvider {
+	if msgIdx < 0 || msgIdx >= len(m.messages) || msgIdx >= len(m.views) {
+		return nil
+	}
+	msg := m.messages[msgIdx]
+	if msg == nil {
+		return nil
+	}
+	switch msg.Type {
+	case types.MessageTypeToolCall, types.MessageTypeSubAgent:
+	default:
+		return nil
+	}
+	provider, ok := m.views[msgIdx].(subagentRefProvider)
+	if !ok {
+		return nil
+	}
+	return provider
+}
+
+func (m *model) subAgentShortRefAt(msgIdx int) string {
+	if provider := m.subAgentRefProviderAt(msgIdx); provider != nil {
+		return strings.TrimSpace(provider.SubAgentShortRef())
+	}
+	return ""
 }
 
 func (m *model) mouseToLineCol(x, y int) (line, col int) {

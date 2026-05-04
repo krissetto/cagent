@@ -7,6 +7,7 @@ import (
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/config/types"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
@@ -15,7 +16,7 @@ type Event interface {
 }
 
 // SessionScoped is implemented by events that belong to a specific session.
-// The PersistentRuntime uses this to filter out sub-session events that
+// The [SessionRecorder] uses this to filter out sub-session events that
 // should not be persisted into the parent session's history.
 type SessionScoped interface {
 	GetSessionID() string
@@ -39,11 +40,12 @@ func newAgentContext(agentName string) AgentContext {
 type UserMessageEvent struct {
 	AgentContext
 
-	Type            string             `json:"type"`
-	Message         string             `json:"message"`
-	MultiContent    []chat.MessagePart `json:"multi_content,omitempty"`
-	SessionID       string             `json:"session_id"`
-	SessionPosition int                `json:"session_position"` // Index in session.Messages, -1 if unknown
+	Type            string              `json:"type"`
+	Message         string              `json:"message"`
+	MultiContent    []chat.MessagePart  `json:"multi_content,omitempty"`
+	SessionID       string              `json:"session_id"`
+	SessionPosition int                 `json:"session_position"` // Index in session.Messages, -1 if unknown
+	Kind            session.MessageKind `json:"kind,omitempty"`
 }
 
 func UserMessage(message, sessionID string, multiContent []chat.MessagePart, sessionPos ...int) Event {
@@ -57,6 +59,22 @@ func UserMessage(message, sessionID string, multiContent []chat.MessagePart, ses
 		MultiContent:    multiContent,
 		SessionID:       sessionID,
 		SessionPosition: pos,
+		AgentContext:    newAgentContext(""),
+	}
+}
+
+func TypedUserMessage(kind session.MessageKind, message, sessionID string, multiContent []chat.MessagePart, sessionPos ...int) Event {
+	pos := -1
+	if len(sessionPos) > 0 {
+		pos = sessionPos[0]
+	}
+	return &UserMessageEvent{
+		Type:            "user_message",
+		Message:         message,
+		MultiContent:    multiContent,
+		SessionID:       sessionID,
+		SessionPosition: pos,
+		Kind:            kind,
 		AgentContext:    newAgentContext(""),
 	}
 }
@@ -146,6 +164,8 @@ type StreamStartedEvent struct {
 	Type      string `json:"type"`
 	SessionID string `json:"session_id,omitempty"`
 }
+
+func (e *StreamStartedEvent) GetSessionID() string { return e.SessionID }
 
 func StreamStarted(sessionID, agentName string) Event {
 	return &StreamStartedEvent{
@@ -373,9 +393,52 @@ type StreamStoppedEvent struct {
 	SessionID string `json:"session_id,omitempty"`
 }
 
+func (e *StreamStoppedEvent) GetSessionID() string { return e.SessionID }
+
 func StreamStopped(sessionID, agentName string) Event {
 	return &StreamStoppedEvent{
 		Type:         "stream_stopped",
+		SessionID:    sessionID,
+		AgentContext: newAgentContext(agentName),
+	}
+}
+
+// ParentIdleEvent is emitted when a parent session has finished its own turn
+// and is now only waiting for subagent inbox traffic. The parent is still live,
+// but from the TUI's perspective its main turn is idle and the root spinner can
+// stop while child-specific spinners continue.
+type ParentIdleEvent struct {
+	AgentContext
+
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+func (e *ParentIdleEvent) GetSessionID() string { return e.SessionID }
+
+func ParentIdle(sessionID, agentName string) Event {
+	return &ParentIdleEvent{
+		Type:         "parent_idle",
+		SessionID:    sessionID,
+		AgentContext: newAgentContext(agentName),
+	}
+}
+
+// ParentResumeEvent is emitted when a parent session leaves the subagent-idle
+// state because it is about to process new child envelopes as part of another
+// parent turn.
+type ParentResumeEvent struct {
+	AgentContext
+
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+func (e *ParentResumeEvent) GetSessionID() string { return e.SessionID }
+
+func ParentResume(sessionID, agentName string) Event {
+	return &ParentResumeEvent{
+		Type:         "parent_resume",
 		SessionID:    sessionID,
 		AgentContext: newAgentContext(agentName),
 	}
@@ -628,28 +691,109 @@ func HookBlocked(toolCall tools.ToolCall, toolDefinition tools.Tool, message, ag
 }
 
 // MessageAddedEvent is emitted when a message is added to the session.
-// This event is used by the PersistentRuntime wrapper to persist messages.
+// This event is used by the SessionRecorder to persist messages.
 type MessageAddedEvent struct {
 	AgentContext
 
-	Type      string           `json:"type"`
-	SessionID string           `json:"session_id"`
-	Message   *session.Message `json:"-"`
+	Type            string           `json:"type"`
+	SessionID       string           `json:"session_id"`
+	SessionPosition int              `json:"session_position"`
+	Message         *session.Message `json:"-"`
 }
 
 func (e *MessageAddedEvent) GetSessionID() string { return e.SessionID }
 
-func MessageAdded(sessionID string, msg *session.Message, agentName string) Event {
+func MessageAdded(sessionID string, position int, msg *session.Message, agentName string) Event {
 	return &MessageAddedEvent{
-		Type:         "message_added",
+		Type:            "message_added",
+		SessionID:       sessionID,
+		SessionPosition: position,
+		Message:         msg,
+		AgentContext:    newAgentContext(agentName),
+	}
+}
+
+// SubAgentStartedEvent is emitted when a runtime-managed subagent session is created.
+type SubAgentStartedEvent struct {
+	AgentContext
+
+	Type      string                  `json:"type"`
+	SessionID string                  `json:"session_id"`
+	SubAgent  subagent.HandleSnapshot `json:"subagent"`
+}
+
+func (e *SubAgentStartedEvent) GetSessionID() string { return e.SessionID }
+
+func SubAgentStarted(s subagent.HandleSnapshot, sessionID string) Event {
+	return &SubAgentStartedEvent{
+		Type:         "subagent_started",
 		SessionID:    sessionID,
-		Message:      msg,
+		SubAgent:     s,
+		AgentContext: newAgentContext(s.AgentName),
+	}
+}
+
+// SubAgentSentEvent is emitted when the parent sends a follow-up message to a subagent.
+type SubAgentSentEvent struct {
+	AgentContext
+
+	Type       string `json:"type"`
+	SessionID  string `json:"session_id"`
+	SubAgentID string `json:"subagent_id"`
+	Message    string `json:"message"`
+}
+
+func (e *SubAgentSentEvent) GetSessionID() string { return e.SessionID }
+
+func SubAgentSent(subAgentID, message, sessionID string) Event {
+	return &SubAgentSentEvent{
+		Type:       "subagent_sent",
+		SessionID:  sessionID,
+		SubAgentID: subAgentID,
+		Message:    message,
+	}
+}
+
+// SubAgentUpdateEvent is emitted when a runtime-managed subagent delivers an
+// update envelope to its parent.
+type SubAgentUpdateEvent struct {
+	AgentContext
+
+	Type      string            `json:"type"`
+	SessionID string            `json:"session_id"`
+	Envelope  subagent.Envelope `json:"envelope"`
+}
+
+func (e *SubAgentUpdateEvent) GetSessionID() string { return e.SessionID }
+
+func SubAgentUpdate(env subagent.Envelope, sessionID string) Event {
+	return &SubAgentUpdateEvent{
+		Type:         "subagent_update",
+		SessionID:    sessionID,
+		Envelope:     env,
+		AgentContext: newAgentContext(env.AgentName),
+	}
+}
+
+type LiveSessionTreeChangedEvent struct {
+	AgentContext
+
+	Type      string `json:"type"`
+	SessionID string `json:"session_id"`
+}
+
+func (e *LiveSessionTreeChangedEvent) GetSessionID() string { return e.SessionID }
+
+func LiveSessionTreeChanged(sessionID, agentName string) Event {
+	return &LiveSessionTreeChangedEvent{
+		Type:         "live_session_tree_changed",
+		SessionID:    sessionID,
 		AgentContext: newAgentContext(agentName),
 	}
 }
 
 // SubSessionCompletedEvent is emitted when a sub-session completes and is added to parent.
-// This event is used by the PersistentRuntime wrapper to persist sub-sessions.
+// This event is used by the [SessionRecorder] global observer to persist sub-sessions.
 type SubSessionCompletedEvent struct {
 	AgentContext
 
@@ -664,5 +808,47 @@ func SubSessionCompleted(parentSessionID string, subSession any, agentName strin
 		ParentSessionID: parentSessionID,
 		SubSession:      subSession,
 		AgentContext:    newAgentContext(agentName),
+	}
+}
+
+// TurnStartedEvent is emitted at the start of every model turn in the engine.
+// Both root and child sessions emit this event. It is the per-turn counterpart
+// to the per-session-lifetime [StreamStartedEvent].
+type TurnStartedEvent struct {
+	AgentContext
+
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+func (e *TurnStartedEvent) GetSessionID() string { return e.SessionID }
+
+func TurnStarted(sessionID, agentName string) Event {
+	return &TurnStartedEvent{
+		Type:         "turn_started",
+		SessionID:    sessionID,
+		AgentContext: newAgentContext(agentName),
+	}
+}
+
+// TurnEndedEvent is emitted when a single model turn completes (model
+// returned stop or an in-turn drain fired). The engine emits one
+// [TurnEndedEvent] for every [TurnStartedEvent]. After TurnEnded the
+// session may start another turn, go idle waiting for subagent envelopes,
+// or exit the stream entirely.
+type TurnEndedEvent struct {
+	AgentContext
+
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+func (e *TurnEndedEvent) GetSessionID() string { return e.SessionID }
+
+func TurnEnded(sessionID, agentName string) Event {
+	return &TurnEndedEvent{
+		Type:         "turn_ended",
+		SessionID:    sessionID,
+		AgentContext: newAgentContext(agentName),
 	}
 }

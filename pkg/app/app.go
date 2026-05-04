@@ -44,6 +44,23 @@ type App struct {
 	exitAfterFirstResponse bool                    // Exit TUI after first assistant response completes
 	titleGenerating        atomic.Bool             // True when title generation is in progress
 	titleGen               *sessiontitle.Generator // Title generator for local runtime (nil for remote)
+
+	// Attached-tab mode: the app renders and sends messages for an already-live
+	// descendant session owned by another runtime loop. In this mode Run() does
+	// not start a new RunStream; it forwards user turns via attachedSend and the
+	// transcript is driven entirely by the long-lived live-event subscription.
+	attached     bool
+	attachedSend func(context.Context, runtime.QueuedMessage) error
+
+	// busAvailable is true when the runtime supports [runtime.SessionObserverSubscriber].
+	// When true, session-scoped events are consumed from the event bus subscription
+	// (set up in New), and [App.Run] drains RunStream silently. When false (e.g.
+	// remote runtime), [App.Run] falls back to forwarding from RunStream's return
+	// channel.
+	busAvailable bool
+	// busCancelSub cancels the current per-session bus subscription goroutine;
+	// replaced on each call to resubscribeBus.
+	busCancelSub context.CancelFunc
 }
 
 // Opt is an option for creating a new App.
@@ -128,7 +145,215 @@ func New(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts ..
 		})
 	}
 
+	// Subscribe to the session's event bus as the single source of session-
+	// scoped events. This is the same path attached tabs use (via
+	// LiveEventSource), so root and attached tabs now share one event
+	// transport: the runtime's per-session bus is the single source of truth.
+	//
+	// Tracks SessionTitleEvent so background title generation can clear its
+	// in-flight flag without needing a parallel watcher in [App.Run].
+	//
+	// When the runtime does not support [runtime.SessionObserverSubscriber]
+	// (e.g. some remote configurations), no subscription is started and
+	// [App.Run] falls back to forwarding events from RunStream's return
+	// channel (see fallbackForwardRunStream).
+	if _, ok := rt.(runtime.SessionObserverSubscriber); ok {
+		app.busAvailable = true
+		app.resubscribeBus(ctx, sess.ID)
+	}
+
 	return app
+}
+
+// NewAttached builds an App that renders a live descendant session using the
+// normal chat UI. Unlike [New], it does not own a runtime loop itself; it is
+// fed by a long-lived live-event subscription and forwards user turns back into
+// the already-running descendant loop through attachedSend.
+func NewAttached(ctx context.Context, rt runtime.Runtime, sess *session.Session, node runtime.LiveSessionNode, opts ...Opt) *App {
+	app := &App{
+		runtime:          rt,
+		session:          sess,
+		events:           make(chan tea.Msg, 128),
+		throttleDuration: 50 * time.Millisecond,
+		attached:         true,
+	}
+	for _, opt := range opts {
+		opt(app)
+	}
+
+	if tree, ok := rt.(runtime.SessionTreeProvider); ok && liveNodeWritable(node) {
+		app.attachedSend = func(ctx context.Context, msg runtime.QueuedMessage) error {
+			return tree.FollowUpSessionByID(sess.ID, msg)
+		}
+	}
+
+	// Seed the sidebar/chat with basic session metadata immediately; subsequent
+	// live events keep everything up to date.
+	go func() {
+		// Attach the live event subscription BEFORE emitting startup metadata.
+		//
+		// The runtime's event bus does not replay past events, so any event
+		// published between tab-open and subscribe is lost to this attached
+		// tab. Startup emission (EmitSessionStartupInfo) can itself be slow
+		// because it starts the child agent's toolsets progressively — MCP
+		// servers alone can add seconds of latency before we would otherwise
+		// attach. In that window a subagent's first-turn title generation
+		// often completes and publishes SessionTitleEvent, so deferring the
+		// attach means attached tabs get stuck on the sidebar's default
+		// "New session" label. Attaching here lets the subscription buffer
+		// those events so they are delivered in order once we start
+		// forwarding below.
+		var (
+			liveStream <-chan runtime.Event
+			snapshot   runtime.StreamingSnapshot
+		)
+		switch src := rt.(type) {
+		case runtime.LiveEventSourceWithSnapshot:
+			stream, snap, err := src.AttachLiveSessionWithSnapshot(ctx, sess.ID)
+			if err != nil {
+				select {
+				case app.events <- runtime.Error(fmt.Sprintf("failed to attach live session: %v", err)):
+				case <-ctx.Done():
+				}
+				return
+			}
+			liveStream = stream
+			snapshot = snap
+		case runtime.LiveEventSource:
+			stream, err := src.AttachLiveSession(ctx, sess.ID)
+			if err != nil {
+				select {
+				case app.events <- runtime.Error(fmt.Sprintf("failed to attach live session: %v", err)):
+				case <-ctx.Done():
+				}
+				return
+			}
+			liveStream = stream
+		}
+
+		if emitter, ok := rt.(runtime.SessionStartupEmitter); ok {
+			startupEvents := make(chan runtime.Event, 16)
+			go func() {
+				defer close(startupEvents)
+				emitter.EmitSessionStartupInfo(ctx, sess, node.AgentName, startupEvents)
+			}()
+			for event := range startupEvents {
+				select {
+				case app.events <- event:
+				case <-ctx.Done():
+					return
+				}
+			}
+		} else {
+			// Fallback for runtimes (currently remote) that cannot yet emit a
+			// session-scoped startup batch. Keep a minimal seed so the normal
+			// chat UI remains usable even if the sidebar is less rich.
+			select {
+			case app.events <- runtime.TeamInfo([]runtime.AgentDetails{{Name: node.AgentName}}, node.AgentName):
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case app.events <- runtime.AgentInfo(node.AgentName, "", "", ""):
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		// Seed the session title from the freshest available snapshot. The
+		// tab-open path captured `node.Title` just before spawning this
+		// goroutine, but subagent title generation runs asynchronously off
+		// the child loop and may have updated the handle title in the
+		// meantime. Re-reading it here closes that race without relying on
+		// the non-replaying event bus to re-deliver the original
+		// SessionTitleEvent. When the title was already set before tab-open
+		// (e.g. seeded via StartConfig.Title) this is simply idempotent.
+		title := node.Title
+		if tp, ok := rt.(runtime.SessionTreeProvider); ok {
+			if latest, found := tp.LiveSessionNode(sess.ID); found && latest.Title != "" {
+				title = latest.Title
+			}
+		}
+		if title != "" {
+			select {
+			case app.events <- runtime.SessionTitle(sess.ID, title):
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		// Replay any in-progress assistant content that had already streamed
+		// before this tab attached. The subscription and snapshot were
+		// captured atomically by LiveEventSourceWithSnapshot, so these
+		// synthetic events are the exact prefix the attached tab missed;
+		// future live deltas continue seamlessly from here.
+		if snapshot.HasContent() {
+			if snapshot.ReasoningContent != "" {
+				select {
+				case app.events <- runtime.AgentChoiceReasoning(snapshot.AgentName, sess.ID, snapshot.ReasoningContent):
+				case <-ctx.Done():
+					return
+				}
+			}
+			if snapshot.Content != "" {
+				select {
+				case app.events <- runtime.AgentChoice(snapshot.AgentName, sess.ID, snapshot.Content):
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+
+		if liveStream != nil {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case ev, ok := <-liveStream:
+					if !ok {
+						return
+					}
+					select {
+					case app.events <- ev:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	return app
+}
+
+func (a *App) resubscribeBus(ctx context.Context, sessionID string) {
+	if a.busCancelSub != nil {
+		a.busCancelSub()
+		a.busCancelSub = nil
+	}
+
+	obs, ok := a.runtime.(runtime.SessionObserverSubscriber)
+	if !ok || sessionID == "" {
+		return
+	}
+
+	subCtx, cancel := context.WithCancel(ctx)
+	a.busCancelSub = cancel
+
+	go func() {
+		sub := obs.SubscribeSession(subCtx, sessionID, 128)
+		defer sub.Cancel()
+		for ev := range sub.Events {
+			if _, ok := ev.(*runtime.SessionTitleEvent); ok {
+				a.titleGenerating.Store(false)
+			}
+			select {
+			case a.events <- ev:
+			case <-subCtx.Done():
+				return
+			}
+		}
+	}()
 }
 
 func (a *App) SendFirstMessage() tea.Cmd {
@@ -170,16 +395,25 @@ func (a *App) SendFirstMessage() tea.Cmd {
 
 // CurrentAgentTools returns the tools available to the current agent.
 func (a *App) CurrentAgentTools(ctx context.Context) ([]tools.Tool, error) {
+	if a.attached {
+		return nil, nil
+	}
 	return a.runtime.CurrentAgentTools(ctx)
 }
 
 // CurrentAgentCommands returns the commands for the active agent
 func (a *App) CurrentAgentCommands(ctx context.Context) types.Commands {
+	if a.attached {
+		return nil
+	}
 	return a.runtime.CurrentAgentInfo(ctx).Commands
 }
 
 // CurrentAgentSkills returns the available skills if skills are enabled for the current agent.
 func (a *App) CurrentAgentSkills() []skills.Skill {
+	if a.attached {
+		return nil
+	}
 	st := a.runtime.CurrentAgentSkillsToolset()
 	if st == nil {
 		return nil
@@ -190,6 +424,9 @@ func (a *App) CurrentAgentSkills() []skills.Skill {
 // ResolveSkillCommand checks if the input matches a skill slash command (e.g. /skill-name args).
 // If matched, it reads the skill content and returns the resolved prompt. Otherwise returns "".
 func (a *App) ResolveSkillCommand(ctx context.Context, input string) (string, error) {
+	if a.attached {
+		return "", nil
+	}
 	if !strings.HasPrefix(input, "/") {
 		return "", nil
 	}
@@ -224,6 +461,9 @@ func (a *App) ResolveSkillCommand(ctx context.Context, input string) (string, er
 // ResolveInput resolves the user input by trying skill commands first,
 // then agent commands. Returns the resolved content ready to send to the agent.
 func (a *App) ResolveInput(ctx context.Context, input string) string {
+	if a.attached {
+		return input
+	}
 	if resolved, err := a.ResolveSkillCommand(ctx, input); err != nil {
 		return fmt.Sprintf("Error loading skill: %v", err)
 	} else if resolved != "" {
@@ -258,11 +498,17 @@ func (a *App) TrackCurrentAgentModel(model string) {
 
 // CurrentMCPPrompts returns the available MCP prompts for the active agent
 func (a *App) CurrentMCPPrompts(ctx context.Context) map[string]mcptools.PromptInfo {
+	if a.attached {
+		return map[string]mcptools.PromptInfo{}
+	}
 	return a.runtime.CurrentMCPPrompts(ctx)
 }
 
 // ExecuteMCPPrompt executes an MCP prompt with provided arguments and returns the content
 func (a *App) ExecuteMCPPrompt(ctx context.Context, promptName string, arguments map[string]string) (string, error) {
+	if a.attached {
+		return "", errors.New("MCP prompts are unavailable in attached child-session tabs")
+	}
 	return a.runtime.ExecuteMCPPrompt(ctx, promptName, arguments)
 }
 
@@ -280,6 +526,20 @@ func (a *App) EmitStartupInfo(ctx context.Context, events chan runtime.Event) {
 func (a *App) Run(ctx context.Context, cancel context.CancelFunc, message string, attachments []messages.Attachment) {
 	a.cancel = cancel
 
+	if a.attached {
+		go func() {
+			qm := a.buildQueuedMessage(ctx, message, attachments)
+			if a.attachedSend == nil {
+				a.sendEvent(ctx, runtime.Error("attached session is not writable"))
+				return
+			}
+			if err := a.attachedSend(ctx, qm); err != nil {
+				a.sendEvent(ctx, runtime.Error(fmt.Sprintf("failed to send message to attached session: %v", err)))
+			}
+		}()
+		return
+	}
+
 	// If this is the first message and no title exists, start local title generation
 	if a.session.Title == "" && a.titleGen != nil {
 		a.titleGenerating.Store(true)
@@ -287,57 +547,53 @@ func (a *App) Run(ctx context.Context, cancel context.CancelFunc, message string
 	}
 
 	go func() {
-		if len(attachments) > 0 {
-			// Build a single text string with the user's message and inlined text files.
-			// Keeping everything in one text block ensures the model sees file content
-			// together with the message, rather than as separate content blocks.
-			var textBuilder strings.Builder
-			textBuilder.WriteString(message)
-
-			// binaryParts holds non-text file parts (images, PDFs, etc.)
-			var binaryParts []chat.MessagePart
-
-			for _, att := range attachments {
-				switch {
-				case att.FilePath != "":
-					// File-reference attachment: read and classify from disk.
-					a.processFileAttachment(ctx, att, &textBuilder, &binaryParts)
-				case att.Content != "":
-					// Inline content attachment (e.g. pasted text).
-					a.processInlineAttachment(att, &textBuilder)
-				default:
-					slog.Debug("skipping attachment with no file path or content", "name", att.Name)
-				}
+		a.session.AddMessage(session.UserMessage(message, a.buildQueuedMessage(ctx, message, attachments).MultiContent...))
+		stream := a.runtime.RunStream(ctx, a.session)
+		if a.busAvailable {
+			// Events are delivered to app.events through the session-bus
+			// subscription started in New(). We only need to drain the
+			// RunStream channel so the goroutine inside wrapEventsForObservers
+			// can exit cleanly when the stream ends.
+			for range stream {
 			}
-
-			multiContent := []chat.MessagePart{
-				{Type: chat.MessagePartTypeText, Text: textBuilder.String()},
-			}
-			multiContent = append(multiContent, binaryParts...)
-
-			a.session.AddMessage(session.UserMessage(message, multiContent...))
 		} else {
-			a.session.AddMessage(session.UserMessage(message))
-		}
-		for event := range a.runtime.RunStream(ctx, a.session) {
-			// If context is cancelled, continue draining but don't forward events
-			// — except StreamStoppedEvent, which must always propagate so the
-			// supervisor can mark the session as no longer running.
-			if ctx.Err() != nil {
-				if _, ok := event.(*runtime.StreamStoppedEvent); ok {
-					a.sendEvent(context.Background(), event)
-				}
-				continue
-			}
-
-			// Clear titleGenerating flag when title is generated (from server for remote runtime)
-			if _, ok := event.(*runtime.SessionTitleEvent); ok {
-				a.titleGenerating.Store(false)
-			}
-
-			a.sendEvent(ctx, event)
+			// Fallback for runtimes without a session bus (remote): forward
+			// events from the RunStream return channel the old-fashioned way.
+			a.fallbackForwardRunStream(ctx, stream)
 		}
 	}()
+}
+
+// buildQueuedMessage prepares a runtime.QueuedMessage from user text plus any
+// attachments. It mirrors the normal Run path's attachment expansion so the
+// same payload shape can be used for normal sessions, parent follow-ups, and
+// attached child-session tabs.
+func (a *App) buildQueuedMessage(ctx context.Context, message string, attachments []messages.Attachment) runtime.QueuedMessage {
+	if len(attachments) == 0 {
+		return runtime.QueuedMessage{Content: message}
+	}
+
+	// Build a single text block that includes the user's message and any
+	// inlined text attachments, while binary attachments are emitted as
+	// structured MessageParts.
+	var textBuilder strings.Builder
+	textBuilder.WriteString(message)
+	var binaryParts []chat.MessagePart
+
+	for _, att := range attachments {
+		switch {
+		case att.FilePath != "":
+			a.processFileAttachment(ctx, att, &textBuilder, &binaryParts)
+		case att.Content != "":
+			a.processInlineAttachment(att, &textBuilder)
+		default:
+			slog.Debug("skipping attachment with no file path or content", "name", att.Name)
+		}
+	}
+
+	multiContent := []chat.MessagePart{{Type: chat.MessagePartTypeText, Text: textBuilder.String()}}
+	multiContent = append(multiContent, binaryParts...)
+	return runtime.QueuedMessage{Content: message, MultiContent: multiContent}
 }
 
 // processFileAttachment reads a file from disk, classifies it, and either
@@ -446,6 +702,29 @@ func (a *App) sendEvent(ctx context.Context, event tea.Msg) {
 	}
 }
 
+// fallbackForwardRunStream drains a RunStream return channel and forwards
+// events to app.events. This is the pre-bus-subscription path used only when
+// the runtime does not support [runtime.SessionObserverSubscriber] (e.g.
+// remote/HTTP runtimes). Local runtimes with a session bus never call this;
+// see App.Run for the bus-available path.
+func (a *App) fallbackForwardRunStream(ctx context.Context, stream <-chan runtime.Event) {
+	for event := range stream {
+		if ctx.Err() != nil {
+			// Context cancelled: suppress most events but always forward
+			// StreamStoppedEvent so the supervisor can mark the session as
+			// no longer running.
+			if _, ok := event.(*runtime.StreamStoppedEvent); ok {
+				a.sendEvent(context.Background(), event)
+			}
+			continue
+		}
+		if _, ok := event.(*runtime.SessionTitleEvent); ok {
+			a.titleGenerating.Store(false)
+		}
+		a.sendEvent(ctx, event)
+	}
+}
+
 // processInlineAttachment handles content that is already in memory (e.g. pasted
 // text). The content is appended to textBuilder wrapped in an XML tag for context.
 func (a *App) processInlineAttachment(att messages.Attachment, textBuilder *strings.Builder) {
@@ -476,28 +755,21 @@ func (a *App) RunWithMessage(ctx context.Context, cancel context.CancelFunc, msg
 
 	go func() {
 		a.session.AddMessage(msg)
-		for event := range a.runtime.RunStream(ctx, a.session) {
-			// If context is cancelled, continue draining but don't forward events
-			// — except StreamStoppedEvent, which must always propagate so the
-			// supervisor can mark the session as no longer running.
-			if ctx.Err() != nil {
-				if _, ok := event.(*runtime.StreamStoppedEvent); ok {
-					a.sendEvent(context.Background(), event)
-				}
-				continue
+		stream := a.runtime.RunStream(ctx, a.session)
+		if a.busAvailable {
+			for range stream {
 			}
-
-			// Clear titleGenerating flag when title is generated (from server for remote runtime)
-			if _, ok := event.(*runtime.SessionTitleEvent); ok {
-				a.titleGenerating.Store(false)
-			}
-
-			a.sendEvent(ctx, event)
+		} else {
+			a.fallbackForwardRunStream(ctx, stream)
 		}
 	}()
 }
 
 func (a *App) RunBangCommand(ctx context.Context, command string) {
+	if a.attached {
+		a.events <- runtime.Error("shell bang commands are unavailable in attached child-session tabs")
+		return
+	}
 	command = strings.TrimSpace(command)
 	if command == "" {
 		a.events <- runtime.ShellOutput("Error: empty command")
@@ -537,12 +809,63 @@ func (a *App) Resume(req runtime.ResumeRequest) {
 	a.runtime.Resume(context.Background(), req)
 }
 
+// InterruptAttachedSession cancels the currently-running turn of the attached
+// live session. It is only meaningful in attached mode: the attached App
+// doesn't own a runtime loop of its own, so the normal per-stream cancel used
+// by owned sessions has nothing local to cancel. Instead, we reach into the
+// runtime's live-tree surface and ask it to interrupt the descendant that
+// this App is attached to.
+//
+// Returns an error when the runtime doesn't support live-session control (e.g.
+// certain remote-runtime configurations), when the session is no longer live,
+// or when the underlying runtime refuses the interrupt.
+func (a *App) InterruptAttachedSession() error {
+	if !a.attached {
+		return errors.New("interrupt is only meaningful for attached live sessions")
+	}
+	if a.session == nil {
+		return errors.New("no active session")
+	}
+	tree, ok := a.runtime.(runtime.SessionTreeProvider)
+	if !ok {
+		return errors.New("runtime does not support live-session control")
+	}
+	return tree.InterruptSessionByID(a.session.ID)
+}
+
+// FollowUp routes a plain-text user message into the runtime's follow-up
+// queue so it is picked up as a fresh turn after the current one finishes
+// (or while the parent loop is idle-waiting on live subagents). Unlike
+// [Run], this never cancels or restarts the in-flight stream, which is
+// exactly what we want when the user keeps typing while subagents are
+// still working in the background.
+//
+// Returns an error when the runtime is not running or its queue is full.
+func (a *App) FollowUp(content string) error {
+	return a.FollowUpWithAttachments(content, nil)
+}
+
+// FollowUpWithAttachments is the multi-modal variant of [FollowUp]. It mirrors
+// the normal send path's attachment expansion so file/image attachments flow
+// through to the runtime queue exactly like they do on a fresh Run.
+func (a *App) FollowUpWithAttachments(content string, attachments []messages.Attachment) error {
+	content = strings.TrimSpace(content)
+	if content == "" && len(attachments) == 0 {
+		return nil
+	}
+	qm := a.buildQueuedMessage(context.Background(), content, attachments)
+	return a.runtime.FollowUp(qm)
+}
+
 // ResumeElicitation resumes an elicitation request with the given action and content
 func (a *App) ResumeElicitation(ctx context.Context, action tools.ElicitationAction, content map[string]any) error {
 	return a.runtime.ResumeElicitation(ctx, action, content)
 }
 
 func (a *App) NewSession() {
+	if a.attached {
+		return
+	}
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil
@@ -558,6 +881,9 @@ func (a *App) NewSession() {
 		)
 	}
 	a.session = session.New(opts...)
+	if a.busAvailable {
+		a.resubscribeBus(context.Background(), a.session.ID)
+	}
 	// Clear first message so it won't be re-sent on re-init
 	a.firstMessage = nil
 	a.firstMessageAttach = ""
@@ -594,6 +920,9 @@ func (a *App) Session() *session.Session {
 // PermissionsInfo returns combined permissions info from team and session.
 // Returns nil if no permissions are configured at either level.
 func (a *App) PermissionsInfo() *runtime.PermissionsInfo {
+	if a.attached {
+		return nil
+	}
 	// Get team-level permissions from runtime
 	teamPerms := a.runtime.PermissionsInfo()
 
@@ -637,6 +966,9 @@ func (a *App) HasPermissions() bool {
 
 // SwitchAgent switches the currently active agent for subsequent user messages
 func (a *App) SwitchAgent(agentName string) error {
+	if a.attached {
+		return errors.New("attached child-session tabs cannot switch agents")
+	}
 	return a.runtime.SetCurrentAgent(agentName)
 }
 
@@ -645,6 +977,9 @@ func (a *App) SwitchAgent(agentName string) error {
 // supported by the runtime (e.g., remote runtimes).
 // Pass an empty modelRef to clear the override and use the agent's default model.
 func (a *App) SetCurrentAgentModel(ctx context.Context, modelRef string) error {
+	if a.attached {
+		return errors.New("model switching is unavailable in attached child-session tabs")
+	}
 	modelSwitcher, ok := a.runtime.(runtime.ModelSwitcher)
 	if !ok {
 		return errors.New("model switching not supported by this runtime")
@@ -786,6 +1121,9 @@ func (a *App) trackCustomModel(modelRef string) {
 
 // SupportsModelSwitching returns true if the runtime supports model switching.
 func (a *App) SupportsModelSwitching() bool {
+	if a.attached {
+		return false
+	}
 	_, ok := a.runtime.(runtime.ModelSwitcher)
 	return ok
 }
@@ -797,6 +1135,10 @@ func (a *App) ShouldExitAfterFirstResponse() bool {
 }
 
 func (a *App) CompactSession(ctx context.Context, additionalPrompt string) {
+	if a.attached {
+		a.sendEvent(ctx, runtime.Warning("Session compaction is unavailable in attached child-session tabs.", ""))
+		return
+	}
 	sess := a.session
 	if sess == nil {
 		return
@@ -824,7 +1166,63 @@ func (a *App) PlainTextTranscript() string {
 // SessionStore returns the session store for browsing/loading sessions.
 // Returns nil if no session store is configured.
 func (a *App) SessionStore() session.Store {
+	if a.attached {
+		return nil
+	}
 	return a.runtime.SessionStore()
+}
+
+// Runtime exposes the underlying runtime implementation. This is used by the
+// TUI when it needs to construct a second App view over the same live runtime
+// tree (for attached child-session tabs).
+func (a *App) Runtime() runtime.Runtime {
+	return a.runtime
+}
+
+// LiveSessionTree returns the live session tree rooted at rootID, or nil when
+// the underlying runtime does not expose session-tree observability.
+func (a *App) LiveSessionTree(rootID string) []runtime.LiveSessionNode {
+	provider, ok := a.runtime.(runtime.SessionTreeProvider)
+	if !ok {
+		return nil
+	}
+	return provider.LiveSessionTree(rootID)
+}
+
+// LiveEventSource returns a LiveEventSource view of the underlying runtime,
+// or nil when the runtime does not support live observability (e.g. certain
+// remote runtime configurations).
+//
+// The supervisor uses this to attach a secondary event subscription when the
+// user opens a live subagent tab from the sidebar.
+func (a *App) LiveEventSource() runtime.LiveEventSource {
+	if src, ok := a.runtime.(runtime.LiveEventSource); ok {
+		return src
+	}
+	return nil
+}
+
+// LiveSessionNode returns a snapshot of the live-session node with the given
+// id, or ok=false when the runtime cannot resolve it. The call is a thin
+// pass-through to runtime.SessionTreeProvider so callers outside pkg/runtime
+// do not need to type-assert themselves.
+func (a *App) LiveSessionNode(sessionID string) (runtime.LiveSessionNode, bool) {
+	provider, ok := a.runtime.(runtime.SessionTreeProvider)
+	if !ok {
+		return runtime.LiveSessionNode{}, false
+	}
+	return provider.LiveSessionNode(sessionID)
+}
+
+// LiveSession resolves the in-memory session pointer for a live descendant.
+// Only local runtimes can satisfy this because it exposes a direct pointer to
+// mutable session state.
+func (a *App) LiveSession(sessionID string) (*session.Session, bool) {
+	provider, ok := a.runtime.(runtime.LiveSessionProvider)
+	if !ok {
+		return nil, false
+	}
+	return provider.LiveSession(sessionID)
 }
 
 // ReplaceSession replaces the current session with the given session.
@@ -837,6 +1235,9 @@ func (a *App) ReplaceSession(ctx context.Context, sess *session.Session) {
 		a.cancel = nil
 	}
 	a.session = sess
+	if a.busAvailable {
+		a.resubscribeBus(ctx, sess.ID)
+	}
 	// Clear first message so it won't be re-sent on re-init
 	a.firstMessage = nil
 	a.firstMessageAttach = ""
@@ -1035,6 +1436,9 @@ var ErrTitleGenerating = errors.New("title generation in progress, please wait")
 // UpdateSessionTitle updates the current session's title and persists it.
 // It works with both local and remote runtimes.
 func (a *App) UpdateSessionTitle(ctx context.Context, title string) error {
+	if a.attached {
+		return errors.New("attached child-session tabs cannot edit titles")
+	}
 	if a.session == nil {
 		return errors.New("no active session")
 	}
@@ -1111,6 +1515,9 @@ func (a *App) generateTitle(ctx context.Context, userMessages []string) {
 // RegenerateSessionTitle triggers AI-based title regeneration for the current session.
 // Returns ErrTitleGenerating if a title generation is already in progress.
 func (a *App) RegenerateSessionTitle(ctx context.Context) error {
+	if a.attached {
+		return errors.New("attached child-session tabs cannot regenerate titles")
+	}
 	if a.session == nil {
 		return errors.New("no active session")
 	}
@@ -1140,4 +1547,16 @@ func (a *App) RegenerateSessionTitle(ctx context.Context) error {
 	// (the server would need to implement this)
 	slog.Debug("Title regeneration not available for remote runtime", "session_id", a.session.ID)
 	return errors.New("title regeneration not available")
+}
+
+// liveNodeWritable returns true when the live session node represents a session
+// that can accept new user messages. Finalized (closed/stopped/failed)
+// sessions are read-only: the user can read the transcript but not send.
+func liveNodeWritable(node runtime.LiveSessionNode) bool {
+	switch node.Status {
+	case "closed", "stopped", "failed":
+		return false
+	default:
+		return true
+	}
 }

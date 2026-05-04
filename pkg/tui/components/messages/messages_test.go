@@ -87,6 +87,56 @@ func TestLoadFromSessionIncludesReasoningContent(t *testing.T) {
 	assert.Equal(t, "root", m.messages[2].Sender)
 }
 
+func TestLoadFromSessionSkipsLegacySubagentUpdateUserMessages(t *testing.T) {
+	t.Parallel()
+
+	sessionState := &service.SessionState{}
+	m := NewScrollableView(80, 24, sessionState).(*model)
+	m.SetSize(80, 24)
+
+	sess := &session.Session{
+		ID: "test-session",
+		Messages: []session.Item{
+			session.NewMessageItem(&session.Message{
+				Message: chat.Message{Role: chat.MessageRoleUser, Content: "<subagent_update>legacy blob</subagent_update>"},
+			}),
+			session.NewMessageItem(&session.Message{
+				AgentName: "root",
+				Message:   chat.Message{Role: chat.MessageRoleAssistant, Content: "real assistant reply"},
+			}),
+		},
+	}
+
+	m.LoadFromSession(sess)
+	require.Len(t, m.messages, 1)
+	assert.Equal(t, types.MessageTypeAssistant, m.messages[0].Type)
+	assert.Equal(t, "real assistant reply", m.messages[0].Content)
+}
+
+func TestLoadFromSessionShowsInitialNormalUserMessageForSubSessions(t *testing.T) {
+	t.Parallel()
+
+	sessionState := service.NewSessionState(session.New(session.WithParentID("root")))
+	sessionState.SetSubSession(true)
+	m := NewScrollableView(80, 24, sessionState).(*model)
+	m.SetSize(80, 24)
+
+	sess := &session.Session{
+		ID:       "child-session",
+		ParentID: "root",
+		Messages: []session.Item{
+			session.NewMessageItem(session.UserMessage("Please review this patch.")),
+			session.NewMessageItem(session.NewAgentMessage("reviewer", &chat.Message{Role: chat.MessageRoleAssistant, Content: "Got it."})),
+		},
+	}
+
+	m.LoadFromSession(sess)
+	require.Len(t, m.messages, 2)
+	assert.Equal(t, types.MessageTypeUser, m.messages[0].Type)
+	assert.Equal(t, "Please review this patch.", m.messages[0].Content)
+	assert.Equal(t, types.MessageTypeAssistant, m.messages[1].Type)
+}
+
 func TestLoadFromSessionReasoningOrderWithToolCalls(t *testing.T) {
 	t.Parallel()
 
@@ -1156,6 +1206,251 @@ func TestAddOrUpdateToolCallFindsToolInNonActiveReasoningBlock(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, block.HasToolCall("call_1"))
 	assert.Equal(t, 1, block.ToolCount(), "reasoning block should still have exactly one tool call")
+}
+
+func TestToolRowsAndSubagentLifecycleRowsDoNotInsertExtraSeparatorsBetweenEachOther(t *testing.T) {
+	t.Parallel()
+
+	sessionState := &service.SessionState{}
+	m := NewScrollableView(120, 40, sessionState).(*model)
+	m.SetSize(120, 40)
+
+	inspect := types.ToolCallMessage("root", tools.ToolCall{
+		ID:       "call-1",
+		Function: tools.FunctionCall{Name: "subagent_inspect", Arguments: `{"subagent_id":"0d584"}`},
+	}, tools.Tool{Name: "subagent_inspect", Description: "inspect subagent"}, types.ToolStatusCompleted)
+	inspect.Content = `{"subagent_id":"0d584","agent":"planner","status":"waiting","last":"hi"}`
+
+	turnFinished := types.SubAgent(types.SubAgentInfo{
+		Kind:      types.SubAgentEventTurnCompleted,
+		AgentName: "planner",
+		ShortID:   "0d584",
+	})
+
+	reply := types.ToolCallMessage("root", tools.ToolCall{
+		ID:       "call-2",
+		Function: tools.FunctionCall{Name: "subagent_send", Arguments: `{"subagent_id":"0d584","message":"continue"}`},
+	}, tools.Tool{Name: "subagent_send", Description: "reply to subagent"}, types.ToolStatusCompleted)
+	reply.Content = `{"subagent_id":"0d584","agent":"planner","status":"running"}`
+
+	m.messages = append(m.messages, inspect, turnFinished, reply)
+	m.views = append(m.views,
+		m.createToolCallView(inspect),
+		m.createMessageView(turnFinished),
+		m.createToolCallView(reply),
+	)
+
+	plain := ansi.Strip(m.View())
+	assert.Contains(t, plain, "inspecting")
+	assert.Contains(t, plain, "turn finished")
+	assert.Contains(t, plain, "replying to")
+
+	lines := strings.Split(plain, "\n")
+	inspectLine, turnLine, replyLine := -1, -1, -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case inspectLine == -1 && strings.Contains(trimmed, "inspecting"):
+			inspectLine = i
+		case turnLine == -1 && strings.Contains(trimmed, "turn finished"):
+			turnLine = i
+		case replyLine == -1 && strings.Contains(trimmed, "replying to"):
+			replyLine = i
+		}
+	}
+	require.NotEqual(t, -1, inspectLine, "expected inspect row in rendered output")
+	require.NotEqual(t, -1, turnLine, "expected turn-finished row in rendered output")
+	require.NotEqual(t, -1, replyLine, "expected reply row in rendered output")
+	assert.Equal(t, inspectLine+1, turnLine,
+		"no blank separator should appear between a tool row and a subagent lifecycle row")
+	assert.Equal(t, turnLine+1, replyLine,
+		"no blank separator should appear between a subagent lifecycle row and the next tool row")
+}
+
+func TestMouseClickOnSubagentToolRowEmitsOpenByShortRef(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		toolName  string
+		arguments string
+		content   string
+	}{
+		{
+			name:      "reply",
+			toolName:  "subagent_send",
+			arguments: `{"subagent_id":"abcde","message":"hi"}`,
+			content:   `{"subagent_id":"abcde","agent":"planner","status":"running"}`,
+		},
+		{
+			name:      "inspect",
+			toolName:  "subagent_inspect",
+			arguments: `{"subagent_id":"abcde"}`,
+			content:   `{"subagent_id":"abcde","agent":"planner","status":"waiting","last":"hello"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sessionState := &service.SessionState{}
+			m := NewScrollableView(80, 24, sessionState).(*model)
+			m.SetSize(80, 24)
+			m.SetPosition(0, 0)
+
+			toolMsg := types.ToolCallMessage("root", tools.ToolCall{
+				ID: "call-1",
+				Function: tools.FunctionCall{
+					Name:      tc.toolName,
+					Arguments: tc.arguments,
+				},
+			}, tools.Tool{Name: tc.toolName, Description: tc.name + " subagent"}, types.ToolStatusCompleted)
+			toolMsg.Content = tc.content
+			m.messages = append(m.messages, toolMsg)
+			m.views = append(m.views, m.createToolCallView(toolMsg))
+
+			// Force a normal update round-trip before clicking. This used to swap the
+			// specialised subagent row out for the embedded Base view and silently
+			// erase its SubAgentShortRef click target.
+			_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+			// Prime render/layout state so line mapping is stable.
+			view := m.View()
+			require.NotEmpty(t, view)
+
+			_, clickCmd := m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 0, Y: 0})
+			assert.Nil(t, clickCmd, "press should only start the click/drag gesture")
+
+			_, releaseCmd := m.Update(tea.MouseReleaseMsg{Button: tea.MouseLeft, X: 0, Y: 0})
+			require.NotNil(t, releaseCmd, "plain click on a subagent tool row should emit an open command")
+			msg := releaseCmd()
+			open, ok := msg.(tuimessages.OpenSubAgentByShortRefMsg)
+			require.True(t, ok, "expected OpenSubAgentByShortRefMsg, got %T", msg)
+			assert.Equal(t, "abcde", open.ShortRef)
+		})
+	}
+}
+
+func TestEnterOnSelectedSubagentRowEmitsOpenByShortRef(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		setup   func(m *model)
+		wantRef string
+	}{
+		{
+			name: "reply tool row",
+			setup: func(m *model) {
+				toolMsg := types.ToolCallMessage("root", tools.ToolCall{
+					ID:       "call-1",
+					Function: tools.FunctionCall{Name: "subagent_send", Arguments: `{"subagent_id":"abcde","message":"hi"}`},
+				}, tools.Tool{Name: "subagent_send", Description: "send to subagent"}, types.ToolStatusCompleted)
+				toolMsg.Content = `{"subagent_id":"abcde","agent":"planner","status":"running"}`
+				m.messages = append(m.messages, toolMsg)
+				m.views = append(m.views, m.createToolCallView(toolMsg))
+			},
+			wantRef: "abcde",
+		},
+		{
+			name: "inspect tool row",
+			setup: func(m *model) {
+				toolMsg := types.ToolCallMessage("root", tools.ToolCall{
+					ID:       "call-1",
+					Function: tools.FunctionCall{Name: "subagent_inspect", Arguments: `{"subagent_id":"abcde"}`},
+				}, tools.Tool{Name: "subagent_inspect", Description: "inspect subagent"}, types.ToolStatusCompleted)
+				toolMsg.Content = `{"subagent_id":"abcde","agent":"planner","status":"waiting","last":"hi"}`
+				m.messages = append(m.messages, toolMsg)
+				m.views = append(m.views, m.createToolCallView(toolMsg))
+			},
+			wantRef: "abcde",
+		},
+		{
+			name: "lifecycle card",
+			setup: func(m *model) {
+				card := types.SubAgent(types.SubAgentInfo{
+					Kind:      types.SubAgentEventTurnCompleted,
+					AgentName: "planner",
+					ShortID:   "abcde",
+				})
+				m.messages = append(m.messages, card)
+				m.views = append(m.views, m.createMessageView(card))
+			},
+			wantRef: "abcde",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sessionState := &service.SessionState{}
+			m := NewScrollableView(80, 24, sessionState).(*model)
+			m.SetSize(80, 24)
+			m.SetPosition(0, 0)
+			tc.setup(m)
+
+			// Force a normal update round-trip and a render so layout is stable.
+			_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			require.NotEmpty(t, m.View())
+
+			m.focused = true
+			m.selectedMessageIndex = 0
+
+			_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			require.NotNil(t, cmd, "Enter on a selected subagent row should emit an attach command")
+			open, ok := cmd().(tuimessages.OpenSubAgentByShortRefMsg)
+			require.True(t, ok, "expected OpenSubAgentByShortRefMsg")
+			assert.Equal(t, tc.wantRef, open.ShortRef)
+		})
+	}
+}
+
+func TestEnterOnSelectedReasoningBlockStillToggles(t *testing.T) {
+	t.Parallel()
+
+	sessionState := &service.SessionState{}
+	m := NewScrollableView(80, 24, sessionState).(*model)
+	m.SetSize(80, 24)
+
+	// AppendReasoning creates a reasoning block message + view and returns a
+	// batch command for spinner ticks; we only need the message+view here.
+	_ = m.AppendReasoning("root", "thinking")
+	require.Len(t, m.messages, 1)
+	require.Equal(t, types.MessageTypeAssistantReasoningBlock, m.messages[0].Type)
+	block, ok := m.views[0].(*reasoningblock.Model)
+	require.True(t, ok)
+
+	initialExpanded := block.IsExpanded()
+	m.focused = true
+	m.selectedMessageIndex = 0
+
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	assert.Nil(t, cmd, "Enter on a reasoning block must keep toggling expansion, not emit an attach command")
+	assert.NotEqual(t, initialExpanded, block.IsExpanded(), "reasoning block should toggle on Enter")
+}
+
+func TestMouseClickOnSubagentLifecycleCardEmitsOpenByShortRef(t *testing.T) {
+	t.Parallel()
+
+	sessionState := &service.SessionState{}
+	m := NewScrollableView(80, 24, sessionState).(*model)
+	m.SetSize(80, 24)
+	m.SetPosition(0, 0)
+
+	card := types.SubAgent(types.SubAgentInfo{
+		Kind:      types.SubAgentEventTurnCompleted,
+		AgentName: "planner",
+		ShortID:   "abcde",
+	})
+	m.messages = append(m.messages, card)
+	m.views = append(m.views, m.createMessageView(card))
+
+	view := m.View()
+	require.NotEmpty(t, view)
+
+	_, clickCmd := m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 0, Y: 0})
+	assert.Nil(t, clickCmd, "press should only start the click/drag gesture")
+
+	_, releaseCmd := m.Update(tea.MouseReleaseMsg{Button: tea.MouseLeft, X: 0, Y: 0})
+	require.NotNil(t, releaseCmd, "plain click on a subagent lifecycle card should emit an open command")
+	msg := releaseCmd()
+	open, ok := msg.(tuimessages.OpenSubAgentByShortRefMsg)
+	require.True(t, ok, "expected OpenSubAgentByShortRefMsg, got %T", msg)
+	assert.Equal(t, "abcde", open.ShortRef)
 }
 
 func TestBindingsExcludesEditKeyWhenAssistantMessageSelected(t *testing.T) {

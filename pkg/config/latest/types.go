@@ -16,7 +16,7 @@ import (
 	"github.com/docker/docker-agent/pkg/effort"
 )
 
-const Version = "8"
+const Version = "9"
 
 // Config represents the entire configuration file
 type Config struct {
@@ -365,7 +365,7 @@ type AgentConfig struct {
 	WelcomeMessage string          `json:"welcome_message,omitempty"`
 	Toolsets       []Toolset       `json:"toolsets,omitempty"`
 	Instruction    string          `json:"instruction,omitempty"`
-	SubAgents      []string        `json:"sub_agents,omitempty"`
+	SubAgents      []string        `json:"subagents,omitempty" yaml:"subagents,omitempty"`
 	Handoffs       []string        `json:"handoffs,omitempty"`
 
 	AddDate                 bool              `json:"add_date,omitempty"`

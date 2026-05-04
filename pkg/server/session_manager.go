@@ -31,6 +31,22 @@ type activeRuntimes struct {
 	streaming sync.Mutex // Held while a RunStream is in progress; serialises concurrent requests
 }
 
+// liveSessionRuntime is the optional runtime capability surface SessionManager
+// uses for tree observability and descendant control.
+type liveSessionRuntime interface {
+	runtime.SessionObserverSubscriber
+	runtime.SessionTreeProvider
+}
+
+// liveSessionOwner couples tree observability with the ability to hand out a
+// live in-memory session pointer for a descendant subagent. SessionManager
+// uses it when serving the "full snapshot" endpoint so remote clients can
+// open the subagent in a normal chat tab.
+type liveSessionOwner interface {
+	liveSessionRuntime
+	runtime.LiveSessionProvider
+}
+
 // SessionManager manages sessions for HTTP and Connect-RPC servers.
 type SessionManager struct {
 	runtimeSessions *concurrent.Map[string, *activeRuntimes]
@@ -418,6 +434,9 @@ func (sm *SessionManager) runtimeForSession(ctx context.Context, sess *session.S
 		runtime.WithCurrentAgent(currentAgent),
 		runtime.WithManagedOAuth(false),
 		runtime.WithSessionStore(sm.sessionStore),
+	}
+	if rc.SubagentIdleAutoFinalize > 0 {
+		opts = append(opts, runtime.WithSubagentIdleAutoFinalize(rc.SubagentIdleAutoFinalize))
 	}
 	run, err := runtime.New(t, opts...)
 	if err != nil {

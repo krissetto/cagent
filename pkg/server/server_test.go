@@ -232,6 +232,10 @@ func (s mockStore) GetSessions(context.Context) ([]*session.Session, error) {
 	return nil, nil
 }
 
+func (s mockStore) GetChildSessions(context.Context, string) ([]*session.Session, error) {
+	return nil, nil
+}
+
 func (s mockStore) GetSessionSummaries(context.Context) ([]session.Summary, error) {
 	return nil, nil
 }

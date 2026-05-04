@@ -9,9 +9,10 @@ import (
 )
 
 // ragEventForwarder returns a callback that converts RAG manager events to runtime events.
-func ragEventForwarder(ragName string, r *LocalRuntime, sendEvent func(Event)) builtin.RAGEventCallback {
+// agentName is the session-resolved agent name captured at configuration time so
+// the callback does not read the root runtime's mutable CurrentAgentName().
+func ragEventForwarder(ragName, agentName string, sendEvent func(Event)) builtin.RAGEventCallback {
 	return func(ragEvent ragtypes.Event) {
-		agentName := r.CurrentAgentName()
 		slog.Debug("Forwarding RAG event", "type", ragEvent.Type, "rag", ragName, "agent", agentName)
 
 		switch ragEvent.Type {

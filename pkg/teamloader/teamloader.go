@@ -23,6 +23,7 @@ import (
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/permissions"
 	"github.com/docker/docker-agent/pkg/skills"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin"
@@ -449,10 +450,20 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 		toolSets = append(toolSets, deferredToolset)
 	}
 
-	if len(a.SubAgents) > 0 {
-		toolSets = append(toolSets, builtin.NewTransferTaskTool())
-	}
-	if len(a.Handoffs) > 0 {
+	// Runtime-managed subagents are the replacement for the legacy
+	// `transfer_task` (auto-injected when `subagents`/`sub_agents` is set)
+	// and `handoff` tools. Presence of `subagents:` on the agent is the
+	// sole opt-in: it both exposes the six `subagent_*` tools and
+	// suppresses the legacy implicit injection on this agent.
+	//
+	// Config-level validation (see AgentConfig.validateSubagentsExclusivity)
+	// already rejects combinations with `handoffs:` / `background_agents`
+	// so we don't need to double-check here.
+	runtimeManagedSubagents := len(a.SubAgents) > 0
+
+	if runtimeManagedSubagents {
+		toolSets = append(toolSets, subagent.NewToolSet())
+	} else if len(a.Handoffs) > 0 {
 		toolSets = append(toolSets, builtin.NewHandoffTool())
 	}
 

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 
 	"github.com/blevesearch/bleve/v2"
@@ -248,9 +249,9 @@ func (c *Client) defaultProvider() Provider {
 }
 
 func getLastUserMessage(messages []chat.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == chat.MessageRoleUser {
-			return messages[i].Content
+	for _, msg := range slices.Backward(messages) {
+		if msg.Role == chat.MessageRoleUser {
+			return msg.Content
 		}
 	}
 	return ""

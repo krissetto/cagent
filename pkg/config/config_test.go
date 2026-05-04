@@ -466,6 +466,97 @@ func TestApplyModelOverrides(t *testing.T) {
 	}
 }
 
+func TestLoad_SubagentsField(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		yaml string
+		want []string
+	}{
+		{
+			name: "canonical subagents key",
+			yaml: `version: "9"
+agents:
+  root:
+    model: openai/gpt-4o
+    subagents:
+      - helper
+  helper:
+    model: openai/gpt-4o
+`,
+			want: []string{"helper"},
+		},
+		{
+			name: "legacy sub_agents key on v9",
+			yaml: `version: "9"
+agents:
+  root:
+    model: openai/gpt-4o
+    sub_agents:
+      - helper
+  helper:
+    model: openai/gpt-4o
+`,
+			want: []string{"helper"},
+		},
+		{
+			name: "legacy sub_agents key migrated from v8",
+			yaml: `version: "8"
+agents:
+  root:
+    model: openai/gpt-4o
+    sub_agents:
+      - helper
+  helper:
+    model: openai/gpt-4o
+`,
+			want: []string{"helper"},
+		},
+		{
+			name: "canonical wins when both keys are present",
+			yaml: `version: "9"
+agents:
+  root:
+    model: openai/gpt-4o
+    subagents:
+      - helper
+    sub_agents:
+      - should_lose
+  helper:
+    model: openai/gpt-4o
+  should_lose:
+    model: openai/gpt-4o
+`,
+			want: []string{"helper"},
+		},
+		{
+			name: "external OCI reference via subagents",
+			yaml: `version: "9"
+agents:
+  root:
+    model: openai/gpt-4o
+    subagents:
+      - agentcatalog/pirate
+`,
+			want: []string{"agentcatalog/pirate"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := Load(t.Context(), NewBytesSource("test.yaml", []byte(tc.yaml)))
+			require.NoError(t, err)
+
+			root, ok := cfg.Agents.Lookup("root")
+			require.True(t, ok)
+			assert.Equal(t, tc.want, root.SubAgents)
+		})
+	}
+}
+
 func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 	t.Parallel()
 

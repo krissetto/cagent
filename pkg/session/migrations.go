@@ -387,6 +387,36 @@ func getAllMigrations() []Migration {
 			Description: "Add first_kept_entry column to session_items for compaction-preserved messages",
 			UpSQL:       `ALTER TABLE session_items ADD COLUMN first_kept_entry INTEGER DEFAULT 0`,
 		},
+		{
+			ID:          22,
+			Name:        "022_add_message_kind_column",
+			Description: "Add kind column to session_items for typed dispatch of special message categories",
+			UpSQL:       `ALTER TABLE session_items ADD COLUMN kind TEXT DEFAULT ''`,
+		},
+		{
+			ID:          23,
+			Name:        "023_add_agent_name_column",
+			Description: "Add agent_name column to sessions table for subagent identity persistence",
+			UpSQL:       `ALTER TABLE sessions ADD COLUMN agent_name TEXT DEFAULT ''`,
+		},
+		{
+			ID:          24,
+			Name:        "024_unique_session_item_position",
+			Description: "Deduplicate session_items and add unique index on (session_id, position)",
+			UpSQL: `
+				-- Clean up any existing duplicate (session_id, position) rows,
+				-- keeping only the row with the lowest rowid per pair.
+				DELETE FROM session_items
+				WHERE rowid NOT IN (
+					SELECT MIN(rowid)
+					FROM session_items
+					GROUP BY session_id, position
+				);
+
+				CREATE UNIQUE INDEX IF NOT EXISTS idx_session_items_unique_pos
+					ON session_items(session_id, position);
+			`,
+		},
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/browser"
 	"github.com/docker/docker-agent/pkg/evaluation"
+	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/shellpath"
 	"github.com/docker/docker-agent/pkg/tools"
@@ -83,6 +84,7 @@ func (m *appModel) handleBranchFromEdit(msg messages.BranchFromEditMsg) (tea.Mod
 
 	// Restore sidebar settings
 	m.chatPage.SetSidebarSettings(sidebarSettings)
+	m.chatPage.SeedSubagentsFromLiveTree(m.application.LiveSessionTree(newSess.ID))
 
 	m.reapplyKeyboardEnhancements()
 
@@ -377,6 +379,76 @@ func (m *appModel) handleShowToolsDialog() (tea.Model, tea.Cmd) {
 	return m, core.CmdHandler(dialog.OpenDialogMsg{
 		Model: dialog.NewToolsDialog(agentTools),
 	})
+}
+
+// handleShowSessionTreeDialog builds a snapshot of the current session tree
+// and opens the [dialog.NewSessionTreeDialog] with it.
+//
+// Root resolution priority:
+//  1. The sessionState's RootSessionID when known (populated at tab-open time
+//     for attached descendant tabs).
+//  2. The live app's current session id (owned tabs).
+//
+// If the runtime doesn't expose a SessionTreeProvider we still fall back to a
+// single-node tree built from the active session so the dialog is always
+// useful — even for remote runtimes that lack live-tree support, the user
+// sees the current session's title and status at a glance.
+func (m *appModel) handleShowSessionTreeDialog() (tea.Model, tea.Cmd) {
+	rootID, currentID := m.resolveTreeSessionIDs()
+	if rootID == "" {
+		return m, notification.InfoCmd("No active session to inspect.")
+	}
+
+	nodes := m.application.LiveSessionTree(rootID)
+	if len(nodes) == 0 {
+		nodes = m.fallbackSessionTreeNodes(rootID)
+	}
+
+	return m, core.CmdHandler(dialog.OpenDialogMsg{
+		Model: dialog.NewSessionTreeDialog(nodes, rootID, currentID),
+	})
+}
+
+// resolveTreeSessionIDs returns the root session id to ask the runtime for,
+// and the id of the currently active session (so the dialog can mark "you are
+// here"). Both strings may be empty when there is no active session.
+func (m *appModel) resolveTreeSessionIDs() (rootID, currentID string) {
+	if m.sessionState != nil {
+		currentID = m.sessionState.RootSessionID()
+		rootID = currentID
+	}
+	if sess := m.application.Session(); sess != nil {
+		if rootID == "" {
+			rootID = sess.ID
+		}
+		// currentID should be the tab's own session, not the root; refresh
+		// it with the active app's session id when available.
+		currentID = sess.ID
+	}
+	return rootID, currentID
+}
+
+// fallbackSessionTreeNodes returns a single-node tree built from the active
+// session. It is used when the runtime does not implement SessionTreeProvider
+// so the dialog can still render something meaningful.
+func (m *appModel) fallbackSessionTreeNodes(rootID string) []runtime.LiveSessionNode {
+	sess := m.application.Session()
+	if sess == nil {
+		return nil
+	}
+	title := sess.GetTitle()
+	agent := ""
+	if m.sessionState != nil {
+		agent = m.sessionState.CurrentAgentName()
+	}
+	return []runtime.LiveSessionNode{{
+		SessionID:     rootID,
+		RootSessionID: rootID,
+		Kind:          runtime.LiveSessionRoot,
+		AgentName:     agent,
+		Title:         title,
+		Status:        "running",
+	}}
 }
 
 // --- MCP prompts ---

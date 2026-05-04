@@ -2,6 +2,7 @@ package root
 
 import (
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -261,6 +262,28 @@ func TestDefaultModelLogic(t *testing.T) {
 				assert.Equal(t, tt.expectedProvider, runConfig.DefaultModel.Provider)
 				assert.Equal(t, tt.expectedModel, runConfig.DefaultModel.Model)
 			}
+		})
+	}
+}
+
+func TestSubagentIdleAutoFinalizeFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want time.Duration
+	}{
+		{name: "unset defaults to zero", want: 0},
+		{name: "explicit 15m", args: []string{"--subagent-idle-auto-finalize", "15m"}, want: 15 * time.Minute},
+		{name: "explicit 90s", args: []string{"--subagent-idle-auto-finalize", "90s"}, want: 90 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{RunE: func(*cobra.Command, []string) error { return nil }}
+			runConfig := config.RuntimeConfig{}
+			addRuntimeConfigFlags(cmd, &runConfig)
+			cmd.SetArgs(tc.args)
+			require.NoError(t, cmd.Execute())
+			assert.Equal(t, tc.want, runConfig.SubagentIdleAutoFinalize)
 		})
 	}
 }

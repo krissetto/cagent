@@ -86,7 +86,7 @@ agents:
   root:
     model: anthropic/claude-sonnet-4-0
     description: Main coordinator
-    sub_agents: [designer, engineer]
+    subagents: [designer, engineer]
   designer:
     model: openai/gpt-5-mini
     description: UI/UX design specialist
@@ -96,6 +96,13 @@ agents:
 ```
 
 All three agents (`root`, `designer`, `engineer`) appear as separate tools in Claude Desktop or Claude Code.
+
+<div class="callout callout-info" markdown="1">
+<div class="callout-title">ℹ️ About subagents in MCP Mode
+</div>
+  <p><code>subagents</code> is the canonical schema-v9 field name; <code>sub_agents</code> is a legacy alias. MCP Mode simply exposes the configured agents as top-level MCP tools; it does not change the runtime-managed subagent rollout status. See <a href="{{ '/tools/subagents/' | relative_url }}">Subagents (Runtime-Managed)</a>.</p>
+
+</div>
 
 ## Troubleshooting
 

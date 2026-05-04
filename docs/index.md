@@ -28,7 +28,7 @@ permalink: /
   <div class="feature">
     <div class="feature-icon">👥</div>
     <h3>Multi-Agent Orchestration</h3>
-    <p>Create teams of specialized agents that delegate tasks to each other automatically via a coordinator.</p>
+    <p>Create teams of specialized agents using runtime-managed subagents: persistent child sessions, parent↔child messaging, and full live tree observability.</p>
   </div>
   <div class="feature">
     <div class="feature-icon">🧠</div>

@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tools/builtin"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/api"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/defaulttool"
@@ -12,6 +13,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/components/tool/readmultiplefiles"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/searchfilescontent"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/shell"
+	subagenttool "github.com/docker/docker-agent/pkg/tui/components/tool/subagent"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/todotool"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/transfertask"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/writefile"
@@ -64,6 +66,18 @@ func newDefaultRegistry() *Registry {
 	registry.RegisterAll([]Registration{
 		{[]string{builtin.ToolNameTransferTask}, transfertask.New},
 		{[]string{builtin.ToolNameHandoff}, handoff.New},
+		{
+			[]string{
+				subagent.ToolNameStart,
+				subagent.ToolNameSend,
+				subagent.ToolNameInspect,
+				subagent.ToolNameList,
+				subagent.ToolNameFinalize,
+				subagent.ToolNameClose,
+				subagent.ToolNameStop,
+			},
+			subagenttool.New,
+		},
 		{[]string{builtin.ToolNameEditFile}, editfile.New},
 		{[]string{builtin.ToolNameWriteFile}, writefile.New},
 		{[]string{builtin.ToolNameReadFile}, readfile.New},

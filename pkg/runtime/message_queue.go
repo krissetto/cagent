@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/docker/docker-agent/pkg/chat"
+	"github.com/docker/docker-agent/pkg/inbox"
 )
 
 // QueuedMessage is a user message waiting to be injected into the agent loop,
@@ -33,11 +34,19 @@ type MessageQueue interface {
 	// Drain returns all pending messages and removes them from the queue.
 	// Must not block — if the queue is empty it returns nil.
 	Drain(ctx context.Context) []QueuedMessage
+	// Signal returns a receive-only channel that is notified whenever a
+	// message is enqueued. The channel has a buffer of 1 so a slow reader
+	// can miss intermediate enqueues, but a fresh receive is guaranteed
+	// for any enqueue that happens after the last drain. Callers should
+	// therefore treat a signal as "something might be available" and
+	// re-check via Dequeue/Drain.
+	Signal() <-chan struct{}
 }
 
-// inMemoryMessageQueue is the default MessageQueue backed by a buffered channel.
+// inMemoryMessageQueue is the default MessageQueue adapter over the shared
+// inbox.Queue primitive.
 type inMemoryMessageQueue struct {
-	ch chan QueuedMessage
+	q *inbox.Queue[QueuedMessage]
 }
 
 const (
@@ -48,38 +57,24 @@ const (
 	defaultFollowUpQueueCapacity = 20
 )
 
-// NewInMemoryMessageQueue creates a MessageQueue backed by a buffered channel
+// NewInMemoryMessageQueue creates a MessageQueue backed by a shared inbox.Queue
 // with the given capacity.
 func NewInMemoryMessageQueue(capacity int) MessageQueue {
-	return &inMemoryMessageQueue{ch: make(chan QueuedMessage, capacity)}
+	return &inMemoryMessageQueue{q: inbox.NewQueue[QueuedMessage](capacity)}
 }
 
 func (q *inMemoryMessageQueue) Enqueue(_ context.Context, msg QueuedMessage) bool {
-	select {
-	case q.ch <- msg:
-		return true
-	default:
-		return false
-	}
+	return q.q.Push(msg)
 }
 
 func (q *inMemoryMessageQueue) Dequeue(_ context.Context) (QueuedMessage, bool) {
-	select {
-	case m := <-q.ch:
-		return m, true
-	default:
-		return QueuedMessage{}, false
-	}
+	return q.q.Dequeue()
 }
 
 func (q *inMemoryMessageQueue) Drain(_ context.Context) []QueuedMessage {
-	var msgs []QueuedMessage
-	for {
-		select {
-		case m := <-q.ch:
-			msgs = append(msgs, m)
-		default:
-			return msgs
-		}
-	}
+	return q.q.Drain()
+}
+
+func (q *inMemoryMessageQueue) Signal() <-chan struct{} {
+	return q.q.Signal()
 }

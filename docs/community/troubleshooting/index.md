@@ -136,7 +136,7 @@ docker-agent validates config at startup and reports errors with line numbers. C
 
 ### Missing references
 
-- Local agents in `sub_agents` must be defined in the `agents` section (external OCI references like `agentcatalog/pirate` are resolved from registries automatically)
+- Local agents in `subagents` must be defined in the `agents` section (the legacy `sub_agents` alias is still accepted; external OCI references like `agentcatalog/pirate` are resolved from registries automatically)
 - Named model references must exist in the `models` section (or use inline format like `openai/gpt-4o`)
 - RAG source names referenced by agents must be defined in the `rag` section
 
@@ -229,6 +229,7 @@ When reviewing debug logs, search for these key patterns:
 | `"Tool call"`               | A tool is being executed                                                   |
 | `"Tool call result"`        | Tool execution completed                                                   |
 | `"Stream stopped"`          | Agent finished processing                                                  |
+| `subagent_started`, `subagent_sent`, `subagent_update` | Runtime-managed subagent lifecycle / envelope delivery |
 | `HTTP 429`                  | Rate limiting — consider adding a [fallback model]({{ '/configuration/agents/' | relative_url }}) |
 | `context canceled`          | Operation was interrupted (timeout or user cancel)                         |
 | `[RAG Manager]`             | RAG retrieval operations                                                   |

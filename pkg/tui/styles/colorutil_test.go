@@ -2,6 +2,7 @@ package styles
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"charm.land/lipgloss/v2"
@@ -329,4 +330,70 @@ func TestLabF_BelowThreshold(t *testing.T) {
 	result := labF(0.001)
 	assert.False(t, math.IsNaN(result))
 	assert.False(t, math.IsInf(result, 0))
+}
+
+// --- Brightening ---
+
+func TestBrightenHex_InvalidInputReturnsOriginal(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "not-a-color", BrightenHex("not-a-color", 0.4))
+}
+
+func TestBrightenHex_Repeatable(t *testing.T) {
+	t.Parallel()
+	got1 := BrightenHex("#336699", 0.35)
+	got2 := BrightenHex("#336699", 0.35)
+	assert.Equal(t, got1, got2, "brightening must be deterministic")
+}
+
+func TestBrightenHex_ZeroAmountUnchanged(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "#336699", BrightenHex("#336699", 0))
+}
+
+func TestBrightenHex_ClampsAmount(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t,
+		BrightenHex("#336699", 1),
+		BrightenHex("#336699", 10),
+		"amount > 1 should clamp to 1")
+}
+
+func TestBrightenColor_IncreasesLuminance(t *testing.T) {
+	t.Parallel()
+	base := lipgloss.Color("#336699")
+	bright := BrightenColor(base, 0.35)
+	assert.Greater(t, relativeLuminanceColor(bright), relativeLuminanceColor(base),
+		"brightened color should have greater luminance")
+}
+
+func TestBrightenColor_PreservesHueFamily(t *testing.T) {
+	t.Parallel()
+	baseR, baseG, baseB, ok := parseHexRGB("#336699")
+	require.True(t, ok)
+	baseH, _, _ := rgbToHSL(baseR, baseG, baseB)
+
+	brightHex := BrightenHex("#336699", 0.35)
+	br, bg, bb, ok := parseHexRGB(brightHex)
+	require.True(t, ok)
+	brightH, _, _ := rgbToHSL(br, bg, bb)
+
+	assert.InDelta(t, baseH, brightH, 1.0,
+		"brightening should preserve hue so hover states stay recognisably 'the same color'")
+}
+
+func TestBrightenHex_GrayscaleStaysGrayscale(t *testing.T) {
+	t.Parallel()
+	got := BrightenHex("#444444", 0.35)
+	r, g, b, ok := parseHexRGB(got)
+	require.True(t, ok)
+	assert.InDelta(t, r, g, 0.001)
+	assert.InDelta(t, g, b, 0.001)
+}
+
+func TestBrightenHex_LowercaseStableOutput(t *testing.T) {
+	t.Parallel()
+	got := BrightenHex("#ABCDEF", 0.35)
+	assert.Equal(t, strings.ToLower(got), got,
+		"hex formatter should remain stable for snapshot/testing friendliness")
 }

@@ -77,6 +77,14 @@ func (r *LocalRuntime) handleStream(ctx context.Context, stream chat.MessageStre
 			break
 		}
 		if err != nil {
+			// Stream cancellation/deadline are control-flow, not model failures.
+			// Preserve the raw context error so outer layers can treat an
+			// interrupted turn as a graceful stop rather than wrapping it as
+			// "error receiving from stream: ..." and misclassifying it as a
+			// provider failure.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return streamResult{Stopped: true}, err
+			}
 			return streamResult{Stopped: true}, fmt.Errorf("error receiving from stream: %w", err)
 		}
 

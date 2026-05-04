@@ -68,6 +68,17 @@ func New(ctx context.Context, sessionStore session.Store, runConfig *config.Runt
 	// Follow-up: queue messages for end-of-turn processing
 	group.POST("/sessions/:id/followup", s.followUpSession)
 
+	// Live session tree / descendant observability.
+	group.GET("/sessions/:id/tree", s.getLiveSessionTree)
+	group.GET("/live-sessions/:id", s.getLiveSession)
+	group.GET("/live-sessions/:id/snapshot", s.getLiveSessionSnapshot)
+	group.GET("/live-sessions/:id/attach", s.attachLiveSession)
+	group.POST("/live-sessions/:id/steer", s.steerLiveSession)
+	group.POST("/live-sessions/:id/followup", s.followUpLiveSession)
+	group.POST("/live-sessions/:id/close", s.closeLiveSession)
+	group.POST("/live-sessions/:id/interrupt", s.interruptLiveSession)
+	group.POST("/live-sessions/:id/stop", s.stopLiveSession)
+
 	// Agent tool count
 	group.GET("/agents/:id/:agent_name/tools/count", s.getAgentToolCount)
 
@@ -360,4 +371,116 @@ func (s *Server) followUpSession(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusAccepted, map[string]string{"status": "queued"})
+}
+
+func (s *Server) getLiveSessionTree(c echo.Context) error {
+	tree, err := s.sm.LiveSessionTree(c.Param("id"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("failed to get live tree: %v", err))
+	}
+	return c.JSON(http.StatusOK, api.LiveSessionTreeResponse{
+		RootSessionID: c.Param("id"),
+		Nodes:         apiLiveNodes(tree),
+	})
+}
+
+func (s *Server) getLiveSession(c echo.Context) error {
+	node, err := s.sm.LiveSessionNode(c.Param("id"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("failed to get live session: %v", err))
+	}
+	return c.JSON(http.StatusOK, api.LiveSessionResponse{Node: apiLiveNode(node)})
+}
+
+// getLiveSessionSnapshot returns the live session's transcript plus live-tree
+// metadata, so a remote client can open the session in a normal chat tab.
+func (s *Server) getLiveSessionSnapshot(c echo.Context) error {
+	sess, node, err := s.sm.LiveSessionSnapshot(c.Request().Context(), c.Param("id"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("failed to get live session snapshot: %v", err))
+	}
+	return c.JSON(http.StatusOK, api.LiveSessionSnapshotResponse{
+		Node: apiLiveNode(node),
+		Session: api.SessionResponse{
+			ID:            sess.ID,
+			Title:         sess.Title,
+			CreatedAt:     sess.CreatedAt,
+			Messages:      sess.GetAllMessages(),
+			ToolsApproved: sess.ToolsApproved,
+			InputTokens:   sess.InputTokens,
+			OutputTokens:  sess.OutputTokens,
+			WorkingDir:    sess.WorkingDir,
+			Permissions:   sess.Permissions,
+		},
+	})
+}
+
+func (s *Server) attachLiveSession(c echo.Context) error {
+	sub, err := s.sm.AttachLiveSession(c.Request().Context(), c.Param("id"), 256)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("failed to attach live session: %v", err))
+	}
+
+	c.Response().Header().Set("Content-Type", "text/event-stream")
+	c.Response().Header().Set("Cache-Control", "no-cache")
+	c.Response().Header().Set("Connection", "keep-alive")
+	c.Response().WriteHeader(http.StatusOK)
+	for event := range sub.Events {
+		data, marshalErr := json.Marshal(event)
+		if marshalErr != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("failed to marshal event: %v", marshalErr))
+		}
+		fmt.Fprintf(c.Response(), "data: %s\n\n", string(data))
+		c.Response().Flush()
+	}
+	return nil
+}
+
+func (s *Server) steerLiveSession(c echo.Context) error {
+	var req api.SteerSessionRequest
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+	}
+	if len(req.Messages) == 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, "at least one message is required")
+	}
+	if err := s.sm.SteerLiveSession(c.Request().Context(), c.Param("id"), req.Messages); err != nil {
+		return echo.NewHTTPError(http.StatusConflict, fmt.Sprintf("failed to steer live session: %v", err))
+	}
+	return c.JSON(http.StatusAccepted, api.LiveSessionControlResponse{Status: "queued"})
+}
+
+func (s *Server) followUpLiveSession(c echo.Context) error {
+	var req api.SteerSessionRequest
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+	}
+	if len(req.Messages) == 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, "at least one message is required")
+	}
+	if err := s.sm.FollowUpLiveSession(c.Request().Context(), c.Param("id"), req.Messages); err != nil {
+		return echo.NewHTTPError(http.StatusConflict, fmt.Sprintf("failed to enqueue live follow-up: %v", err))
+	}
+	return c.JSON(http.StatusAccepted, api.LiveSessionControlResponse{Status: "queued"})
+}
+
+func (s *Server) closeLiveSession(c echo.Context) error {
+	if err := s.sm.CloseLiveSession(c.Request().Context(), c.Param("id")); err != nil {
+		return echo.NewHTTPError(http.StatusConflict, fmt.Sprintf("failed to close live session: %v", err))
+	}
+	return c.JSON(http.StatusAccepted, api.LiveSessionControlResponse{Status: "closing"})
+}
+
+func (s *Server) interruptLiveSession(c echo.Context) error {
+	if err := s.sm.InterruptLiveSession(c.Request().Context(), c.Param("id")); err != nil {
+		return echo.NewHTTPError(http.StatusConflict, fmt.Sprintf("failed to interrupt live session: %v", err))
+	}
+	return c.JSON(http.StatusAccepted, api.LiveSessionControlResponse{Status: "interrupting"})
+}
+
+func (s *Server) stopLiveSession(c echo.Context) error {
+	if err := s.sm.StopLiveSession(c.Request().Context(), c.Param("id")); err != nil {
+		return echo.NewHTTPError(http.StatusConflict, fmt.Sprintf("failed to stop live session: %v", err))
+	}
+	return c.JSON(http.StatusAccepted, api.LiveSessionControlResponse{Status: "stopping"})
 }

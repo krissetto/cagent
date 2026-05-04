@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
+	"slices"
 )
 
 // Stop is a function returned by Start that stops profiling and flushes
@@ -53,8 +54,8 @@ func Start(cpuProfile, memProfile string) (Stop, error) {
 	return func() error {
 		// Run in reverse order so CPU profile is stopped before mem profile is written.
 		var errs []error
-		for i := len(closers) - 1; i >= 0; i-- {
-			if err := closers[i](); err != nil {
+		for _, fn := range slices.Backward(closers) {
+			if err := fn(); err != nil {
 				errs = append(errs, err)
 			}
 		}

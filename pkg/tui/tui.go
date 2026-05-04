@@ -873,6 +873,12 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case messages.SwitchAgentMsg:
 		return m.handleSwitchAgent(msg.AgentName)
 
+	case messages.OpenSubAgentTabMsg:
+		return m.handleOpenSubAgentTab(msg.SessionID)
+
+	case messages.OpenParentSessionMsg:
+		return m.handleOpenParentSession(msg.SessionID)
+
 	// --- Session browser ---
 
 	case messages.OpenSessionBrowserMsg:
@@ -946,6 +952,9 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.ShowToolsDialogMsg:
 		return m.handleShowToolsDialog()
+
+	case messages.ShowSessionTreeDialogMsg:
+		return m.handleShowSessionTreeDialog()
 
 	case messages.AgentCommandMsg:
 		return m.handleAgentCommand(msg.Command)
@@ -1252,6 +1261,7 @@ func (m *appModel) replaceActiveSession(ctx context.Context, sess *session.Sessi
 	// Replace the session in the app and rebuild all per-session components.
 	m.application.ReplaceSession(ctx, sess)
 	m.initSessionComponents(activeID, m.application, sess)
+	m.chatPage.SeedSubagentsFromLiveTree(m.application.LiveSessionTree(sess.ID))
 
 	if sess.Title != "" {
 		m.supervisor.SetRunnerTitle(activeID, sess.Title)
@@ -1349,8 +1359,29 @@ func (m *appModel) openWorkingDirPicker() (tea.Model, tea.Cmd) {
 // handleSwitchTab switches to a different session.
 // Existing chat pages and editors are preserved (not recreated) so that in-flight streaming
 // content and draft text are retained when switching back to a tab.
+func (m *appModel) clearTransientUIForLeavingCurrentPage() {
+	if m.chatPage != nil {
+		m.chatPage.ClearSidebarTransientHover()
+	}
+}
+
 func (m *appModel) handleSwitchTab(sessionID string) (tea.Model, tea.Cmd) {
-	runner := m.supervisor.SwitchTo(sessionID)
+	// Clear transient hover affordances from the page we're leaving. Sidebar
+	// hover is purely mouse-derived UI state and must never survive a tab
+	// switch; otherwise returning to the parent tab can leave a stale
+	// subagent row highlighted until the next mouse-motion event.
+	m.clearTransientUIForLeavingCurrentPage()
+
+	runner := m.supervisor.GetRunner(sessionID)
+	if runner == nil {
+		return m, notification.ErrorCmd("Session not found")
+	}
+
+	if runner.App == nil {
+		return m, notification.InfoCmd("Attached live session viewing is not implemented yet. The session is attached and visible in the tab bar, but cannot be opened as the active page yet.")
+	}
+
+	runner = m.supervisor.SwitchTo(sessionID)
 	if runner == nil {
 		return m, notification.ErrorCmd("Session not found")
 	}
@@ -1388,6 +1419,7 @@ func (m *appModel) handleSwitchTab(sessionID string) (tea.Model, tea.Cmd) {
 	if !pageExists || !editorExists {
 		// Create all missing components at once.
 		m.initSessionComponents(sessionID, runner.App, runner.App.Session())
+		m.chatPage.SeedSubagentsFromLiveTree(m.application.LiveSessionTree(runner.App.Session().ID))
 		m.applySidebarCollapsed(sessionID)
 	} else {
 		// Reuse existing components — just update convenience pointers.
@@ -1395,6 +1427,13 @@ func (m *appModel) handleSwitchTab(sessionID string) (tea.Model, tea.Cmd) {
 		m.sessionState = m.sessionStates[sessionID]
 		m.chatPage = m.chatPages[sessionID]
 		m.editor = m.editors[sessionID]
+		// Even when reusing the existing page instance we must refresh the
+		// sidebar's live subagent tree snapshot: nested descendants may have
+		// started while this tab was inactive, and those start/update events are
+		// only published on the direct parent's session bus. Re-seeding from the
+		// current runtime tree ensures a grandparent tab sees grandchildren when
+		// it becomes active again.
+		m.chatPage.SeedSubagentsFromLiveTree(m.application.LiveSessionTree(runner.App.Session().ID))
 	}
 
 	m.reapplyKeyboardEnhancements()
@@ -1426,6 +1465,159 @@ func (m *appModel) handleSwitchTab(sessionID string) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, pendingCmd)
 	}
 
+	return m, tea.Batch(cmds...)
+}
+
+func (m *appModel) resolveParentAgentName(parentSessionID string) string {
+	if strings.TrimSpace(parentSessionID) == "" {
+		return ""
+	}
+	if runner := m.supervisor.GetRunner(parentSessionID); runner != nil {
+		if runner.AgentName != "" {
+			return runner.AgentName
+		}
+		if ss := m.sessionStates[parentSessionID]; ss != nil && ss.CurrentAgentName() != "" {
+			return ss.CurrentAgentName()
+		}
+	}
+	if node, ok := m.application.LiveSessionNode(parentSessionID); ok && node.AgentName != "" {
+		return node.AgentName
+	}
+	// Fallback: when the parent is the currently active owned tab, its current
+	// agent name is the best available source.
+	if m.application != nil && m.application.Session() != nil && m.application.Session().ID == parentSessionID {
+		return m.sessionState.CurrentAgentName()
+	}
+	// Last resort: return a generic name so callers never receive an empty string.
+	return "agent"
+}
+
+// handleOpenParentSession jumps from an attached child-session tab back to its
+// parent. We deliberately funnel through handleOpenSubAgentTab because it
+// already implements the desired preference order: switch to an existing tab if
+// it's open, otherwise resolve and attach a live subagent tab when possible.
+// If the parent is not a live descendant session, the helper surfaces a gentle
+// info notice instead of failing noisily.
+func (m *appModel) handleOpenParentSession(sessionID string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(sessionID) == "" {
+		return m, nil
+	}
+	return m.handleOpenSubAgentTab(sessionID)
+}
+
+func (m *appModel) focusEditorForNewTab() {
+	m.focusedPanel = PanelEditor
+	if m.chatPage != nil {
+		m.chatPage.BlurMessages()
+	}
+	m.statusBar.InvalidateCache()
+}
+
+// handleOpenSubAgentTab registers an attached live tab for the given subagent
+// session. The sidebar single-click flow lives here so the runtime-level
+// LiveEventSource + LiveSessionNode plumbing is owned by tui.go.
+//
+// When the runtime does not expose live observability (older / remote
+// configurations without tree support), we surface a friendly warning rather
+// than crashing. When the session cannot be resolved (e.g. the child already
+// terminated), we warn for the same reason.
+func (m *appModel) handleOpenSubAgentTab(sessionID string) (tea.Model, tea.Cmd) {
+	if sessionID == "" {
+		return m, nil
+	}
+
+	if runner := m.supervisor.GetRunner(sessionID); runner != nil {
+		return m.handleSwitchTab(sessionID)
+	}
+	if existing := m.findTabByPersistedID(sessionID); existing != "" {
+		return m.handleSwitchTab(existing)
+	}
+
+	// We're about to swap the active page out for a brand-new attached tab
+	// (no existing runner / persisted tab matched). The current page is being
+	// left exactly the same way it would on a regular tab switch — except this
+	// path does not flow through handleSwitchTab — so we have to drop its
+	// transient mouse-driven UI state here too. Without this, a subagent the
+	// user clicked from the sidebar stays highlighted on the parent tab until
+	// a fresh mouse-motion event happens to clear it.
+	m.clearTransientUIForLeavingCurrentPage()
+
+	node, ok := m.application.LiveSessionNode(sessionID)
+	if !ok {
+		return m, notification.InfoCmd("Subagent session is no longer live.")
+	}
+	sess, ok := m.application.LiveSession(sessionID)
+	if !ok || sess == nil {
+		return m, notification.InfoCmd("This runtime cannot open live child sessions as full chat tabs.")
+	}
+	if src := m.application.LiveEventSource(); src == nil {
+		return m, notification.InfoCmd("This runtime does not expose live events; cannot open a full chat tab.")
+	}
+
+	attachedCtx, attachedCancel := context.WithCancel(context.Background())
+	attachedApp := app.NewAttached(attachedCtx, m.application.Runtime(), sess, node)
+
+	// Blur current editor before switching — mirrors handleSwitchTab so focus
+	// state is consistent with a normal tab switch.
+	m.editor.Blur()
+
+	// Build per-session components up front and run their Init synchronously
+	// *before* the subscription starts firing events. chatPage.Init() loads
+	// the session snapshot synchronously, so this guarantees the transcript
+	// is already populated when the first live event arrives. Doing this
+	// after AddSession would drop or reorder early events because the chat
+	// page would not exist yet when the subscription goroutine started
+	// routing RoutedMsgs to it.
+	m.initSessionComponents(sess.ID, attachedApp, sess)
+	m.sessionState.SetCurrentAgentName(node.AgentName)
+	m.sessionState.SetParentSessionID(node.ParentSessionID)
+	if root := cmp.Or(node.RootSessionID, node.SessionID); root != "" {
+		m.sessionState.SetRootSessionID(root)
+	}
+	if parentName := m.resolveParentAgentName(node.ParentSessionID); parentName != "" {
+		m.sessionState.SetParentAgentName(parentName)
+	}
+	// Attaching mid-run is supported: the sidebar is otherwise event-driven, so
+	// we seed it from the runtime's current live-tree snapshot. Without this
+	// seed, any subagents that started before the tab subscribed to live
+	// events would stay invisible until they emitted their next update.
+	m.chatPage.SeedSubagentsFromLiveTree(m.application.LiveSessionTree(sess.ID))
+	m.applySidebarCollapsed(sess.ID)
+	pageInitCmd := m.chatPage.Init()
+	editorInitCmd := m.editor.Init()
+
+	m.supervisor.AddSession(context.Background(), attachedApp, sess, sess.WorkingDir, attachedCancel)
+	m.supervisor.SwitchTo(sess.ID)
+
+	m.reapplyKeyboardEnhancements()
+	m.persistActiveTab(m.persistedSessionID(sess.ID))
+
+	m.editor.SetWorking(m.chatPage.IsWorking())
+	m.workingSpinner.Stop()
+	m.workingSpinner = spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
+
+	cmds := []tea.Cmd{pageInitCmd, editorInitCmd, m.editor.Focus(), m.resizeAll()}
+	// Attaching to a subagent is a "jump into a ready-to-type conversation"
+	// action. The sidebar click that opened this tab may have routed focus to
+	// the parent tab's content panel (to highlight the matching transcript
+	// card); that intent does NOT carry over to the freshly-opened attached
+	// tab, which should start with the editor focused so the user can type
+	// immediately.
+	m.focusEditorForNewTab()
+	// Seed the working indicator when the live child is currently taking a
+	// turn. The event bus does not replay past events, so attaching mid-turn
+	// misses the child's original StreamStartedEvent; without this, the
+	// working spinner stays off until the next event (often not until
+	// content actually arrives). The next real StreamStoppedEvent will
+	// naturally toggle the spinner off.
+	if node.Status == "running" || node.Status == "starting" {
+		if cmd := m.chatPage.SetWorking(true); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if m.chatPage.IsWorking() {
+		cmds = append(cmds, m.workingSpinner.Init())
+	}
 	return m, tea.Batch(cmds...)
 }
 
@@ -2398,19 +2590,27 @@ func (m *appModel) cleanupAll() {
 // If the tab has a pending restore (session not yet lazily loaded), the
 // persisted ID from pendingRestores is returned — this is the original
 // session-store ID that was saved across restarts. Otherwise the live
-// session ID from the app is used.
+// session ID from the app is used. For attached (non-owned) runners with
+// no *app.App, the runner's SessionID is returned instead.
 func (m *appModel) persistedSessionID(tabID string) string {
 	if persistedID, ok := m.pendingRestores[tabID]; ok {
 		return persistedID
 	}
 	if runner := m.supervisor.GetRunner(tabID); runner != nil {
-		return runner.App.Session().ID
+		if runner.App != nil {
+			return runner.App.Session().ID
+		}
+		if runner.SessionID != "" {
+			return runner.SessionID
+		}
 	}
 	return tabID
 }
 
 // findTabByPersistedID scans all open tabs and returns the runtime tab ID
 // whose persisted session-store ID matches the given ID. Returns "" if not found.
+// Attached runners (no *app.App) are skipped — they represent live views of
+// sessions rather than owned persisted sessions.
 func (m *appModel) findTabByPersistedID(persistedID string) string {
 	// Check pending restores first (tabs not yet lazily loaded).
 	for tabID, pid := range m.pendingRestores {
@@ -2422,6 +2622,9 @@ func (m *appModel) findTabByPersistedID(persistedID string) string {
 	tabs, _ := m.supervisor.GetTabs()
 	for _, tab := range tabs {
 		if runner := m.supervisor.GetRunner(tab.SessionID); runner != nil {
+			if runner.App == nil {
+				continue
+			}
 			if runner.App.Session().ID == persistedID {
 				return tab.SessionID
 			}

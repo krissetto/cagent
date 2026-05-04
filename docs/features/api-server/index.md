@@ -12,6 +12,8 @@ _Expose your agents via an HTTP API for programmatic access, web frontends, and 
 
 The `docker agent serve api` command starts an HTTP server that exposes your agents through a REST-style API with Server-Sent Events (SSE) streaming. Use it to build web UIs, integrate with CI/CD pipelines, or connect agents to other services.
 
+When you use the runtime-managed subagent subsystem, the API server also exposes the full **live session tree** rooted at any running session: you can inspect descendants, attach to a child session's event stream, and steer or stop arbitrary nodes. See [Live Sessions]({{ '/features/live-sessions/' | relative_url }}).
+
 ```bash
 # Start the API server
 $ docker agent serve api agent.yaml
@@ -86,6 +88,20 @@ curl -N -X POST http://localhost:8080/api/sessions/$SID/agent/team/reviewer \
   -d '[{"role": "user", "content": "Review this PR"}]'
 ```
 
+### Live sessions / subagent tree
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `GET`  | `/api/sessions/:id/tree` | Get the currently-live agent/subagent tree rooted at `:id` |
+| `GET`  | `/api/live-sessions/:id` | Get metadata for a live session node (root or descendant) |
+| `GET`  | `/api/live-sessions/:id/attach` | Attach to a live session's SSE stream |
+| `POST` | `/api/live-sessions/:id/steer` | Inject user messages into a live root or descendant session |
+| `POST` | `/api/live-sessions/:id/followup` | Queue end-of-turn messages for a live root or descendant session |
+| `POST` | `/api/live-sessions/:id/close` | Ask a live descendant session to close cleanly |
+| `POST` | `/api/live-sessions/:id/stop` | Forcibly stop a live descendant session |
+
+See [Live Sessions]({{ '/features/live-sessions/' | relative_url }}) for the detailed event model and examples.
+
 ### Health
 
 | Method | Path        | Description                               |
@@ -118,7 +134,12 @@ Event types include:
 - `tool_call` — Agent requesting tool execution
 - `tool_call_confirmation` — Tool call waiting for user approval
 - `tool_call_response` — Tool execution result
+- `subagent_started` — A runtime-managed subagent session was created
+- `subagent_sent` — The parent sent a follow-up message to a live subagent
+- `subagent_update` — A child envelope was injected into the parent session
 - `error` — Error during execution
+
+If you attach to a child session with `/api/live-sessions/:id/attach`, you also see parent→child injected messages as normal `user_message` events on that child session stream.
 
 ## Typical Workflow
 
@@ -187,6 +208,6 @@ Toggle auto-approve with `POST /api/sessions/:id/tools/toggle` for automated wor
 <div class="callout callout-info" markdown="1">
 <div class="callout-title">ℹ️ See also
 </div>
-  <p>For interactive use, see the <a href="{{ '/features/tui/' | relative_url }}">Terminal UI</a>. For agent-to-agent communication, see <a href="{{ '/features/a2a/' | relative_url }}">A2A Protocol</a> and <a href="{{ '/features/acp/' | relative_url }}">ACP</a>. For MCP integration, see <a href="{{ '/features/mcp-mode/' | relative_url }}">MCP Mode</a>.</p>
+  <p>For interactive use, see the <a href="{{ '/features/tui/' | relative_url }}">Terminal UI</a>. For runtime-managed multi-agent observability and control, see <a href="{{ '/features/live-sessions/' | relative_url }}">Live Sessions</a> and <a href="{{ '/tools/subagents/' | relative_url }}">Subagents</a>. For agent-to-agent communication, see <a href="{{ '/features/a2a/' | relative_url }}">A2A Protocol</a> and <a href="{{ '/features/acp/' | relative_url }}">ACP</a>. For MCP integration, see <a href="{{ '/features/mcp-mode/' | relative_url }}">MCP Mode</a>.</p>
 
 </div>

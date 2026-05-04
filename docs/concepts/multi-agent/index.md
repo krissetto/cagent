@@ -1,12 +1,12 @@
 ---
 title: "Multi-Agent Systems"
-description: "Build teams of specialized agents that collaborate and delegate tasks to each other."
+description: "Build teams of specialized agents that collaborate using runtime-managed subagents — a persistent, bidirectional, observable agent tree model."
 permalink: /concepts/multi-agent/
 ---
 
 # Multi-Agent Systems
 
-_Build teams of specialized agents that collaborate and delegate tasks to each other._
+_Build teams of specialized agents that collaborate using **runtime-managed subagents** — a persistent, bidirectional, observable agent tree model._
 
 ## Why Multi-Agent?
 
@@ -19,184 +19,133 @@ Complex tasks benefit from specialization. Instead of one monolithic agent tryin
 
 Each agent has its own model, tools, and instructions — optimized for its specific role.
 
-## Two Patterns: Delegation vs. Handoffs
+## The docker-agent multi-agent model
 
-docker-agent supports two multi-agent patterns:
+docker-agent is converging on a **single** multi-agent model: **runtime-managed subagents**. A parent agent can start subagents that run on their own sessions, in the background, and communicate with their parent bidirectionally — the parent can send follow-up messages, and the child wakes the parent when it has something to report. Subagents can themselves start further subagents, forming a tree.
 
-| | **Delegation** (`sub_agents`) | **Handoffs** (`handoffs`) |
-|---|---|---|
-| **Topology** | Hierarchical (parent → child → parent) | Peer-to-peer graph (A → B → C → A) |
-| **Session** | Child runs in a **sub-session** | Conversation stays in the **same session** |
-| **Context** | Child gets a clean task description | Next agent sees the **full conversation history** |
-| **Control flow** | Parent blocks until child finishes, then continues | Active agent switches — previous agent is no longer in the loop |
-| **Tool** | `transfer_task` | `handoff` |
-| **Best for** | Task delegation to specialists | Pipeline workflows, conversational routing |
+This replaces three older patterns (`transfer_task` + `sub_agents`, `background_agents`, and `handoffs`). Each one solved a slice of the problem; the runtime-managed subsystem subsumes them into one coherent design.
 
-You can combine both patterns in the same configuration — an agent can have both `sub_agents` and `handoffs`.
-
-<div class="callout callout-tip" markdown="1">
-<div class="callout-title">💡 When to use which
+<div class="callout callout-warning" markdown="1">
+<div class="callout-title">⚠️ Do not mix legacy multi-agent features with runtime-managed subagents
 </div>
-  <p><strong><code>sub_agents</code></strong> — Use when a coordinator needs to send tasks to specialists and synthesize their results.</p>
-  <p><strong><code>handoffs</code></strong> — Use when agents should take turns processing the same conversation (pipelines, routing).</p>
-  <p><strong><code>background_agents</code></strong> — Use when multiple independent tasks can run simultaneously.</p>
+  <p>Runtime-managed subagents are designed to <strong>replace</strong> <code>transfer_task</code>, <code>handoff</code>, and <code>background_agents</code>. Do not combine them on the same agent — the legacy and new surfaces are not intended to coexist, and mixing them produces confusing delegation semantics and inconsistent session trees. Pick one model per agent. See the dedicated page: <a href="{{ '/tools/subagents/' | relative_url }}">Subagents (Runtime-Managed)</a>.</p>
 
 </div>
-
-## Delegation with `sub_agents`
-
-Agents delegate tasks using the built-in `transfer_task` tool, which is automatically available to any agent with `sub_agents`. The parent agent sends a task to a child agent, waits for the result, and then continues.
-
-1. **User** sends a message to the root agent
-2. **Root agent** analyzes the request and decides which sub-agent should handle it
-3. **Root agent** calls `transfer_task` with the target agent, task description, and expected output
-4. **Sub-agent** processes the task in its own agentic loop using its tools
-5. **Results** flow back to the root agent, which responds to the user
-
-```bash
-# The transfer_task tool call looks like:
-transfer_task(
-  agent="developer",
-  task="Create a REST API endpoint for user authentication",
-  expected_output="Working Go code with tests"
-)
-```
 
 <div class="callout callout-info" markdown="1">
-<div class="callout-title">ℹ️ Auto-Approved
+<div class="callout-title">ℹ️ Transition status
 </div>
-  <p>Unlike other tools, <code>transfer_task</code> is always auto-approved — no user confirmation needed. This allows seamless delegation between agents.</p>
+  <p>The runtime-managed subagent tools are now enabled by top-level <code>subagents:</code>. Schema v9 also makes <code>subagents</code> the canonical delegation field, while the legacy <code>sub_agents</code> spelling is still accepted for backward compatibility.</p>
+  <p>When an agent opts into runtime-managed subagents, do <strong>not</strong> also configure legacy <code>handoffs:</code> or <code>- type: background_agents</code> on that same agent — config validation rejects those combinations. Legacy <code>transfer_task</code>, <code>handoff</code>, and <code>background_agents</code> still exist for compatibility, but they remain on a deprecation path and should not be mixed with the new subsystem.</p>
 
 </div>
 
-## Handoffs Routing
+## Core concept: subagents on their own sessions
 
-Handoffs are a peer-to-peer routing pattern where agents **hand off the entire conversation** to another agent. Unlike delegation, there is no sub-session — the conversation stays in a single session and the active agent simply switches.
+Every subagent in the runtime-managed model has:
 
-This pattern is ideal for:
+- its **own session** (own message history, own token budget, own events)
+- its **own agent configuration** (model, instructions, tools)
+- a **persistent background loop** that stays alive between turns
+- a **parent inbox** the runtime publishes compact update envelopes to
 
-- **Pipeline workflows** — data flows through a chain of specialized agents
-- **Conversational routing** — a coordinator routes the user to the right specialist, who can route back when done
-- **Graph topologies** — agents can form cycles (A → B → C → A), enabling iterative workflows
+This gives you:
 
-### How It Works
+- **Parallelism** — a parent can start several subagents and let them work concurrently.
+- **Bidirectionality** — the parent can `subagent_send` follow-up messages to a running subagent; the subagent can wake the parent without polling.
+- **Nesting** — a subagent can start its own subagents, up to a configurable depth.
+- **Observability** — any external client can attach to any session in the tree via SSE.
+- **Control** — any session can be steered, closed, or stopped individually.
 
-1. **User** sends a message to the starting agent
-2. **Agent A** processes the message, then calls `handoff` to route to **Agent B**
-3. **Agent B** becomes the active agent and sees the **full conversation history**
-4. **Agent B** can respond, use its own tools, or hand off to another agent
-5. This continues until an agent responds directly without handing off
+## The canonical subagent tools
 
-```bash
-# The handoff tool call looks like:
-handoff(
-  agent="summarizer"
-)
+The runtime exposes:
+
+| Tool | Purpose |
+| --- | --- |
+| `subagent_start` | Create a new subagent on its own session |
+| `subagent_send` | Send a follow-up or steer-mode message to a live subagent (`mode` is optional; default is follow-up) |
+| `subagent_list` | List the subagents owned by the current session |
+| `subagent_inspect` | Return the subagent's status + latest assistant response by default, with optional recent/full transcript modes |
+| `subagent_finalize` | Graceful shutdown after the next safe point (cascades to descendants) |
+| `subagent_stop` | Immediate cancellation (cascades to descendants) |
+
+The runtime still accepts `subagent_close` as a deprecated alias for `subagent_finalize` so older recordings replay cleanly, but it is no longer advertised to the model.
+
+Full semantics and examples: [Subagents (Runtime-Managed)]({{ '/tools/subagents/' | relative_url }}).
+
+## Parent wake-ups
+
+When a subagent completes a turn, the runtime publishes a **compact envelope** to the parent's session as an implicit user-role reminder:
+
+```text
+<subagent_update>
+subagent_id: ...
+agent: researcher
+kind: turn_completed
+status: waiting
+preview: Found three highly-cited papers; one critical piece is by…
+Use subagent_inspect to inspect the session or subagent_send to reply.
+</subagent_update>
 ```
 
-<div class="callout callout-info" markdown="1">
-<div class="callout-title">ℹ️ Scoped Handoff Targets
-</div>
-  <p>Each agent can only hand off to agents listed in its own <code>handoffs</code> array. The <code>handoff</code> tool is automatically injected — you don't need to add it manually.</p>
+The parent only ever consumes envelopes at safe points in its loop, so streamed chat state is never corrupted. If the parent has already finished its own turn but still has in-flight subagents, it waits on the inbox until one of them reports back.
 
-</div>
+## Configuration
 
-### Example
-
-A coordinator routes to a researcher, who hands off to a summarizer, who returns to the coordinator:
-
-```
-Root ──→ Researcher ──→ Summarizer ──→ Root
-```
+Schema v9 introduces `subagents` as the canonical YAML field. The legacy `sub_agents` spelling is still accepted; see [Agent Configuration]({{ '/configuration/agents/' | relative_url }}#subagents-canonical).
 
 ```yaml
+version: "9"
+
 agents:
   root:
     model: anthropic/claude-sonnet-4-5
-    description: Coordinator that routes queries
+    description: Research coordinator
     instruction: |
-      Route research queries to the researcher.
-    handoffs:
+      Plan the task, delegate work to specialists via subagent_start,
+      follow up with subagent_send when you need more detail, and
+      call subagent_finalize when a subagent is done.
+    subagents:
       - researcher
+      - writer
 
   researcher:
     model: openai/gpt-4o
-    description: Web researcher
-    instruction: |
-      Search the web, then hand off to the summarizer.
-    toolsets:
-      - type: mcp
-        ref: docker:duckduckgo
-    handoffs:
-      - summarizer
+    description: Finds facts, papers, and citations.
+    instruction: Be concise. Cite sources.
 
-  summarizer:
-    model: openai/gpt-4o-mini
-    description: Summarizes findings
-    instruction: |
-      Summarize the research results, then hand off
-      back to root.
-    handoffs:
-      - root
+  writer:
+    model: anthropic/claude-sonnet-4-5
+    description: Turns research into polished prose.
+    instruction: Write clearly and consistently.
 ```
 
-<div class="callout callout-tip" markdown="1">
-<div class="callout-title">💡 Full pipeline example
-</div>
-  <p>For a more complex handoff graph with branching and multiple processing stages, see <a href="https://github.com/docker/docker-agent/blob/main/examples/handoff.yaml"><code>examples/handoff.yaml</code></a>.</p>
+The agent's `subagents` list controls **which agents** the runtime will allow this parent to start — just like the legacy `sub_agents` list did for `transfer_task`. External references (OCI, URL, `name:reference`) work the same way, see [External subagents from registries](#external-subagents-from-registries).
 
-</div>
+## Live observability and remote control
 
-## Parallel Delegation with Background Agents
+The HTTP API exposes every session in the live tree — root or descendant — as a first-class, addressable node:
 
-`transfer_task` is **sequential** — the coordinator waits for the sub-agent to finish before continuing. When you need to fan out work to multiple agents at the same time, use the `background_agents` toolset instead.
+- `GET /api/sessions/:id/tree` — the full live tree
+- `GET /api/live-sessions/:id/attach` — SSE stream for any node
+- `POST /api/live-sessions/:id/{steer,followup,close,stop}` — control any node
 
-Add it to your coordinator's toolsets:
+This is what lets external UIs (dashboards, IDEs, supervisors) watch any subagent's conversation in real time and inject instructions mid-flight. See [Live Sessions]({{ '/features/live-sessions/' | relative_url }}).
 
-```yaml
-agents:
-  root:
-    model: anthropic/claude-sonnet-4-0
-    description: Research coordinator
-    sub_agents: [researcher, analyst, writer]
-    toolsets:
-      - type: think
-      - type: background_agents
-```
+## External subagents from registries
 
-The coordinator can then:
-
-1. **Dispatch** several tasks at once with `run_background_agent` — each returns a task ID immediately
-2. **Monitor** progress with `list_background_agents` or `view_background_agent`
-3. **Collect** results once tasks complete
-4. **Cancel** tasks that are no longer needed with `stop_background_agent`
-
-```bash
-# Start two tasks in parallel
-run_background_agent(agent="researcher", task="Find recent papers on LLM agents")
-run_background_agent(agent="analyst", task="Analyze our current architecture")
-
-# Check on all tasks
-list_background_agents()
-
-# Read results when ready
-view_background_agent(task_id="agent_task_abc123")
-```
-
-## External Sub-Agents from Registries
-
-Sub-agents don't have to be defined locally — you can reference agents from OCI registries (such as the [Docker Agent Catalog](https://hub.docker.com/u/agentcatalog)) directly in your `sub_agents` list. This lets you compose teams using pre-built, shared agents without duplicating their configuration.
+Subagents don't have to be defined locally — you can reference agents from OCI registries (such as the [Docker Agent Catalog](https://hub.docker.com/u/agentcatalog)) or URLs directly in your `subagents` list.
 
 ```yaml
 agents:
   root:
     model: openai/gpt-4o
-    description: Coordinator that delegates to local and catalog sub-agents
-    instruction: |
-      Delegate tasks to the most appropriate sub-agent.
-    sub_agents:
+    description: Coordinator that delegates to local and catalog subagents
+    instruction: Delegate tasks to the most appropriate subagent.
+    subagents:
       - local_helper
-      - agentcatalog/pirate # pulled from registry automatically
+      - agentcatalog/pirate  # pulled from registry automatically
 
   local_helper:
     model: openai/gpt-4o
@@ -204,42 +153,37 @@ agents:
     instruction: You are a helpful assistant.
 ```
 
-External sub-agents are automatically named after their last path segment — for example, `agentcatalog/pirate` becomes `pirate`. You can also give them an explicit name using the `name:reference` syntax:
+External subagents are automatically named after their last path segment — `agentcatalog/pirate` becomes `pirate`. Use `name:reference` to pick an explicit name:
 
 ```yaml
-    sub_agents:
+    subagents:
       - my_pirate:agentcatalog/pirate  # available as "my_pirate"
       - reviewer:docker.io/myorg/review-agent:latest
 ```
 
-<div class="callout callout-tip" markdown="1">
-<div class="callout-title">💡 Tip
-</div>
-  <p>External sub-agents work with any OCI-compatible registry, not just the Docker Agent Catalog. See <a href="{{ '/concepts/distribution/' | relative_url }}">Agent Distribution</a> for more on registry references.</p>
+External references work with any OCI-compatible registry, not just the Docker Agent Catalog. See [Agent Distribution]({{ '/concepts/distribution/' | relative_url }}).
 
-</div>
-
-## Example: Development Team
+## Example: development team
 
 ```yaml
+version: "9"
+
 agents:
   root:
-    model: anthropic/claude-sonnet-4-0
+    model: anthropic/claude-sonnet-4-5
     description: Technical lead coordinating development
     instruction: |
       You are a technical lead managing a development team.
       Analyze requests and delegate to the right specialist.
       Ensure quality by reviewing results before responding.
-    sub_agents: [developer, reviewer, tester]
+    subagents: [developer, reviewer, tester]
     toolsets:
       - type: think
 
   developer:
-    model: anthropic/claude-sonnet-4-0
+    model: anthropic/claude-sonnet-4-5
     description: Expert software developer
-    instruction: |
-      You are an expert developer. Write clean, efficient code
-      and follow best practices.
+    instruction: Write clean, efficient code and follow best practices.
     toolsets:
       - type: filesystem
       - type: shell
@@ -248,56 +192,20 @@ agents:
   reviewer:
     model: openai/gpt-4o
     description: Code review specialist
-    instruction: |
-      You review code for quality, security, and maintainability.
-      Provide actionable feedback.
+    instruction: Review code for quality, security, and maintainability.
     toolsets:
       - type: filesystem
 
   tester:
     model: openai/gpt-4o
     description: Quality assurance engineer
-    instruction: |
-      You write tests and ensure software quality. Run tests
-      and report results.
+    instruction: Write tests, run the suite, and report results.
     toolsets:
       - type: shell
       - type: todo
 ```
 
-## Example: Research Team
-
-```yaml
-agents:
-  root:
-    model: anthropic/claude-sonnet-4-0
-    description: Research coordinator
-    instruction: |
-      Coordinate research tasks. Delegate web searches to
-      the researcher and writing to the writer.
-    sub_agents: [researcher, writer]
-    toolsets:
-      - type: think
-
-  researcher:
-    model: openai/gpt-4o
-    description: Web researcher
-    instruction: Search the web and gather information.
-    toolsets:
-      - type: mcp
-        ref: docker:duckduckgo
-      - type: memory
-        path: ./research.db
-
-  writer:
-    model: anthropic/claude-sonnet-4-0
-    description: Content writer
-    instruction: Write clear, well-structured content.
-    toolsets:
-      - type: filesystem
-```
-
-## Multi-Model Teams
+## Multi-model teams
 
 A key advantage of multi-agent systems is using different models for different roles — picking the best model for each job:
 
@@ -319,14 +227,14 @@ models:
 
 agents:
   analyst:
-    model: fast # cheap and fast for analysis
+    model: fast     # cheap and fast for analysis
   writer:
     model: creative # creative for content
   helper:
-    model: local # free for simple tasks
+    model: local    # free for simple tasks
 ```
 
-## Shared Tools
+## Shared tools
 
 Tools like `todo` can be shared between agents for collaborative task tracking:
 
@@ -338,16 +246,20 @@ toolsets:
 
 ## Best Practices
 
-- **Keep agents focused** — Each agent should have a clear, narrow role
-- **Write clear descriptions** — The coordinator uses descriptions to decide who to delegate to
-- **Give minimal tools** — Only give each agent the tools it needs for its specific role
-- **Use the think tool when needed** — For models without native reasoning, give coordinators the think tool so they reason about delegation. Models with built-in thinking (e.g., via `thinking_budget`) don't need it
-- **Use the right model** — Use capable models for complex reasoning, cheap models for simple tasks
-- **Choose the right pattern** — Use `sub_agents` for hierarchical task delegation, `handoffs` for pipeline workflows and conversational routing
+- **Keep agents focused.** Each agent should have a clear, narrow role.
+- **Write clear descriptions.** The coordinator uses descriptions to decide who to delegate to.
+- **Give minimal tools.** Only give each agent the tools it needs for its specific role.
+- **Use the right model for each role.** Use capable models for complex reasoning, cheap models for simple tasks.
+- **Stick to one multi-agent model per agent.** Do not combine `subagents` with legacy `handoffs` or `background_agents` — pick one.
+- **Let subagents own their context.** The parent should delegate specific tasks, not relay every detail — subagents keep their own session and transcript.
 
-<div class="callout callout-info" markdown="1">
-<div class="callout-title">ℹ️ Beyond docker-agent
-</div>
-  <p>For interoperability with other agent frameworks, docker-agent supports the <a href="{{ '/features/a2a/' | relative_url }}">A2A protocol</a> and can expose agents via <a href="{{ '/features/mcp-mode/' | relative_url }}">MCP Mode</a>.</p>
+## Current rollout status
 
-</div>
+Runtime-managed subagents are the documented multi-agent model:
+
+- `subagents` is the canonical schema-v9 field name and the sole opt-in for the runtime-managed subagent tools
+- live trees can be observed and controlled through the HTTP API
+
+Older multi-agent code paths remain in the product for backward compatibility, but are not covered as first-class workflows in the main docs.
+
+## Example: development team

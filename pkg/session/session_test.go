@@ -536,7 +536,81 @@ func TestGetMessages_SanitizesOrphanedToolCalls(t *testing.T) {
 	}
 }
 
-func TestTransferTaskPromptExcludesParents(t *testing.T) {
+func TestSubAgentHarnessPrompt_PrecedesInstructionAndDiscouragesPolling(t *testing.T) {
+	t.Parallel()
+
+	helper := agent.New("helper", "", agent.WithDescription("Helper agent"))
+	root := agent.New("root", "USER_INSTRUCTION_BLOCK",
+		agent.WithDescription("Root agent"),
+	)
+	agent.WithSubAgents(helper)(root)
+
+	s := New()
+	messages := s.GetMessages(root)
+
+	// The very first message must be the harness system prompt, before the
+	// user's own instruction. This ensures the harness rules always come
+	// first regardless of what the user puts in their instruction.
+	require.NotEmpty(t, messages, "expected at least one system message")
+	assert.Equal(t, chat.MessageRoleSystem, messages[0].Role, "first message must be a system message")
+	assert.Contains(t, messages[0].Content, "Runtime-managed subagents",
+		"the very first system message must be the runtime-managed subagent harness prompt")
+	assert.Contains(t, messages[0].Content, "helper",
+		"harness prompt must list available subagents")
+
+	// Locate the user-defined instruction block and confirm it appears AFTER
+	// the harness prompt.
+	harnessIdx := -1
+	instructionIdx := -1
+	for i, msg := range messages {
+		if msg.Role != chat.MessageRoleSystem {
+			continue
+		}
+		if strings.Contains(msg.Content, "Runtime-managed subagents") && harnessIdx == -1 {
+			harnessIdx = i
+		}
+		if strings.Contains(msg.Content, "USER_INSTRUCTION_BLOCK") && instructionIdx == -1 {
+			instructionIdx = i
+		}
+	}
+	require.NotEqual(t, -1, harnessIdx, "harness prompt must be present")
+	require.NotEqual(t, -1, instructionIdx, "user instruction must be present")
+	assert.Less(t, harnessIdx, instructionIdx,
+		"harness prompt must precede the user-defined instruction")
+
+	// The harness prompt must explicitly steer the model away from polling
+	// and from searching for subagent outputs out-of-band. We assert against
+	// stable substrings rather than the entire prompt so phrasing tweaks
+	// don't make the test brittle.
+	harness := messages[harnessIdx].Content
+	assert.Contains(t, harness, "NEVER poll",
+		"harness prompt must explicitly tell the model not to poll subagents")
+	assert.Contains(t, harness, "<subagent_update>",
+		"harness prompt must reference the runtime-injected update envelope")
+	assert.Contains(t, harness, "Do not search the filesystem",
+		"harness prompt must discourage searching the filesystem for subagent outputs")
+	assert.Contains(t, harness, "sleep",
+		"harness prompt must explicitly forbid sleep/wait shell commands")
+}
+
+func TestGetMessages_NoSubAgents_NoHarnessPrompt(t *testing.T) {
+	t.Parallel()
+
+	// An agent with no subagents must NOT receive the runtime-managed
+	// subagent harness prompt. Otherwise we'd be polluting solo-agent
+	// system prompts with rules they have no tools to follow.
+	solo := agent.New("solo", "plain instruction")
+
+	s := New()
+	messages := s.GetMessages(solo)
+
+	for _, msg := range messages {
+		assert.NotContains(t, msg.Content, "Runtime-managed subagents",
+			"agents with no subagents must not receive the runtime-managed subagent harness prompt")
+	}
+}
+
+func TestSubAgentPromptExcludesParents(t *testing.T) {
 	t.Parallel()
 
 	// Build hierarchy: planner -> root -> librarian
@@ -561,16 +635,16 @@ func TestTransferTaskPromptExcludesParents(t *testing.T) {
 	s := New()
 	messages := s.GetMessages(root)
 
-	// Find the system message about sub-agents
+	// Find the system message about sub-agents (now uses subagent_start instead of transfer_task)
 	var subAgentMsg string
 	for _, msg := range messages {
-		if msg.Role == chat.MessageRoleSystem && strings.Contains(msg.Content, "transfer_task") {
+		if msg.Role == chat.MessageRoleSystem && strings.Contains(msg.Content, "subagent_start") {
 			subAgentMsg = msg.Content
 			break
 		}
 	}
 
-	require.NotEmpty(t, subAgentMsg, "should have a sub-agent system message")
+	require.NotEmpty(t, subAgentMsg, "should have a sub-agent harness system message")
 	assert.Contains(t, subAgentMsg, "librarian", "should list librarian as a valid sub-agent")
-	assert.NotContains(t, subAgentMsg, "planner", "should NOT list parent agent planner as a valid transfer target")
+	assert.NotContains(t, subAgentMsg, "planner", "should NOT list parent agent planner as a valid subagent")
 }

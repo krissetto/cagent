@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/docker/docker-agent/pkg/agent"
@@ -166,13 +167,12 @@ func splitIndexForKeep(messages []chat.Message, maxTokens int64) int {
 	var tokens int64
 	// Walk from the end; find the earliest index whose suffix fits in maxTokens.
 	lastValidBoundary := len(messages)
-	for i := len(messages) - 1; i >= 0; i-- {
+	for i, msg := range slices.Backward(messages) {
 		tokens += compaction.EstimateMessageTokens(&messages[i])
 		if tokens > maxTokens {
 			return lastValidBoundary
 		}
-		role := messages[i].Role
-		if role == chat.MessageRoleUser || role == chat.MessageRoleAssistant {
+		if msg.Role == chat.MessageRoleUser || msg.Role == chat.MessageRoleAssistant {
 			lastValidBoundary = i
 		}
 	}
@@ -202,14 +202,13 @@ func firstMessageToKeep(messages []chat.Message, contextLimit int64) int {
 
 	lastValidMessageSeen := len(messages)
 
-	for i := len(messages) - 1; i >= 0; i-- {
+	for i, msg := range slices.Backward(messages) {
 		tokens += compaction.EstimateMessageTokens(&messages[i])
 		if tokens > contextLimit {
 			return lastValidMessageSeen
 		}
 
-		role := messages[i].Role
-		if role == chat.MessageRoleUser || role == chat.MessageRoleAssistant {
+		if msg.Role == chat.MessageRoleUser || msg.Role == chat.MessageRoleAssistant {
 			lastValidMessageSeen = i
 		}
 	}

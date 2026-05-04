@@ -6,10 +6,10 @@ agents:
     description: An agent to demonstrate how to setup a shared todo.
     instruction: |
       Here is your workflow:
-        - Transfer to the `first` agent, the task should be: create a todo
-        - Transfer to the `second` agent, the task should be: what todos do you have?
+        - Use `subagent_start` to dispatch a task to the `first` agent: create a todo
+        - Use `subagent_start` to dispatch a task to the `second` agent: what todos do you have?
 
-    sub_agents:
+    subagents:
       - first
       - second
 

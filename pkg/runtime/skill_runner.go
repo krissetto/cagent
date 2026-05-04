@@ -22,13 +22,22 @@ import (
 //
 // This implements the `context: fork` behaviour from the SKILL.md
 // frontmatter, following the same convention as Claude Code.
-func (r *LocalRuntime) handleRunSkill(ctx context.Context, sess *session.Session, toolCall tools.ToolCall, evts chan Event) (*tools.ToolCallResult, error) {
+func (r *LocalRuntime) handleRunSkill(ctx context.Context, sr *sessionRunner, sess *session.Session, toolCall tools.ToolCall, evts chan Event) (*tools.ToolCallResult, error) {
 	var params builtin.RunSkillArgs
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &params); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	st := r.CurrentAgentSkillsToolset()
+	a := r.resolveSessionAgent(sess)
+
+	// Find the skills toolset on the session-resolved agent.
+	var st *builtin.SkillsToolset
+	for _, ts := range a.ToolSets() {
+		if found, ok := tools.As[*builtin.SkillsToolset](ts); ok {
+			st = found
+			break
+		}
+	}
 	if st == nil {
 		return tools.ResultError("no skills are available for the current agent"), nil
 	}
@@ -51,7 +60,6 @@ func (r *LocalRuntime) handleRunSkill(ctx context.Context, sess *session.Session
 		return tools.ResultError(fmt.Sprintf("failed to read skill content: %s", err)), nil
 	}
 
-	a := r.CurrentAgent()
 	ca := a.Name()
 
 	ctx, span := r.startSpan(ctx, "runtime.run_skill", trace.WithAttributes(
@@ -74,9 +82,10 @@ func (r *LocalRuntime) handleRunSkill(ctx context.Context, sess *session.Session
 		AgentName:           ca,
 		Title:               "Skill: " + params.Name,
 		ToolsApproved:       sess.ToolsApproved,
+		PinAgent:            true,
 		ExcludedTools:       []string{builtin.ToolNameRunSkill},
 	}
 
 	s := newSubSession(sess, cfg, a)
-	return r.runSubSessionForwarding(ctx, sess, s, span, evts, ca)
+	return sr.runSubSessionForwarding(ctx, sess, s, span, evts, ca)
 }

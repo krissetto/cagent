@@ -3,6 +3,7 @@ package toolcommon
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -82,8 +83,8 @@ func tryFixPartialJSON(s string) (string, bool) {
 		result.WriteByte('"')
 	}
 
-	for i := len(stack) - 1; i >= 0; i-- {
-		result.WriteByte(stack[i])
+	for _, r := range slices.Backward(stack) {
+		result.WriteByte(r)
 	}
 
 	return result.String(), true

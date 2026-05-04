@@ -1,0 +1,142 @@
+version: 7
+
+models:
+  gpt-5.4:
+    provider: openai
+    model: gpt-5.4
+    thinking_budget: medium
+  
+  gpt-5.4-low:
+    provider: openai
+    model: gpt-5.4
+    thinking_budget: low
+
+  gpt-5.4-high:
+    provider: openai
+    model: gpt-5.4
+    thinking_budget: high
+  
+  gpt-5.4-xhigh:
+    provider: openai
+    model: gpt-5.4
+    thinking_budget: xhigh
+  
+  ###
+
+  opus-4.7-xhigh:
+    provider: anthropic
+    model: claude-opus-4-7
+    thinking_budget: adaptive/xhigh
+    provider_opts:
+      interleaved_thinking: true
+
+  opus-4.6:
+    provider: anthropic
+    model: claude-opus-4-6
+    thinking_budget: medium
+    provider_opts:
+      interleaved_thinking: true
+
+  opus-4.6-low:
+    provider: anthropic
+    model: claude-opus-4-6
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: low
+
+  opus-4.6-high:
+    provider: anthropic
+    model: claude-opus-4-6
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: high
+
+  ###
+
+  sonnet-4.6: &sonnet-4.6
+    provider: anthropic
+    model: claude-sonnet-4-6
+    thinking_budget: medium
+    provider_opts:
+      interleaved_thinking: true
+
+  sonnet-4.6-low:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: low
+  
+  sonnet-4.6-high:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: high
+
+  ###
+  
+  haiku-4.5: &haiku-4.5
+    provider: anthropic
+    model: claude-haiku-4-5
+    thinking_budget: 4096
+    provider_opts:
+      interleaved_thinking: true
+  
+  haiku-4.5-low:
+    provider: anthropic
+    model: claude-haiku-4-5
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: 1024
+
+  haiku-4.5-high:
+    provider: anthropic
+    model: claude-haiku-4-5
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: 16384
+  
+  ###
+  
+  low:
+    model: gpt-5.4-low,opus-4.6-low,sonnet-4.6,haiku-4.5-high
+  mid:
+    model: gpt-5.4,opus-4.6,sonnet-4.6-high
+  high:
+    model: gpt-5.4-high,opus-4.6-high
+  xhigh:
+    model: gpt-5.4-xhigh,opus-4.7-xhigh
+
+
+agents:
+  root:
+    model: xhigh
+    description: Technical lead coordinating planning, implementation, and review for coding tasks
+    welcome_message: |
+      Ask anything... "Fix the tests", "Add this feature"
+    instruction: |
+      You are an expert software engineering lead responsible for delivering correct, validated changes.
+      Your attitude is friendly, a wee bit whimsical, but with a hardcore bias towards radical honesty and accuracy.
+
+      Your workflow:
+        1. Understand the request by exploring the repository and identifying the affected code.
+        2. Decide whether the task is simple or complex.
+        3. For complex, ambiguous, or multi-file tasks, write a markdown plan with [ ]/[x] checkboxes first so we don't lose track of things
+        4. Execute the plan by implementing what's needed without overthinking
+        5. After implementation is complete, always review the work done
+        6. Validate by running the relevant tests, linters, or build commands.
+        7. Summarize what changed, how it was validated, and any remaining risks.
+
+      Your core guiding principles:
+      - Read before you write.
+      - Check docs online when needed.
+      - Prefer minimal, focused changes.
+      - Match the existing style and architecture.
+      - When in doubt, ask the user for clarification, avoid making assumptions.
+      - Be concise and direct in user-facing responses.
+
+    max_old_tool_call_tokens: -1
+    toolsets:
+      - type: filesystem
+      - type: shell

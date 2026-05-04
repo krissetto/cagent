@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/environment"
@@ -26,6 +27,10 @@ type Config struct {
 	WorkingDir     string
 	Models         map[string]latest.ModelConfig
 	Providers      map[string]latest.ProviderConfig
+
+	// SubagentIdleAutoFinalize configures optional auto-finalization for
+	// stale idle subagents. Zero means disabled (default).
+	SubagentIdleAutoFinalize time.Duration
 
 	// Hook overrides from CLI flags
 	HookPreToolUse   []string

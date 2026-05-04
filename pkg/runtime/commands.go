@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -202,8 +203,7 @@ func executeToolCommands(ctx context.Context, rt Runtime, instruction string) st
 
 	// Process in reverse order to maintain correct indices
 	result := instruction
-	for i := len(commands) - 1; i >= 0; i-- {
-		cmd := commands[i]
+	for _, cmd := range slices.Backward(commands) {
 		replacement := executeSingleToolCommand(ctx, toolMap, cmd.toolName, cmd.argsStr)
 		result = result[:cmd.start] + replacement + result[cmd.end:]
 	}

@@ -17,7 +17,8 @@ agents:
     model: string # Required: model reference
     description: string # Required: what this agent does
     instruction: string # Required: system prompt
-    sub_agents: [list] # Optional: local or external sub-agent references
+    subagents: [list] # Optional: canonical local or external subagent references
+    # sub_agents: [list] # Legacy alias for subagents (still accepted)
     toolsets: [list] # Optional: tool configurations
     rag: [list] # Optional: RAG source references
     fallback: # Optional: fallback config
@@ -37,7 +38,7 @@ agents:
     commands: # Optional: named prompts
       name: "prompt text"
     welcome_message: string # Optional: message shown at session start
-    handoffs: [list] # Optional: agent names this agent can hand off to
+    handoffs: [list] # Legacy: peer-to-peer agent routing (do not mix with subagents)
     hooks: # Optional: lifecycle hooks
       pre_tool_use: [list]
       post_tool_use: [list]
@@ -60,30 +61,38 @@ agents:
 
 ## Properties Reference
 
-| Property                    | Type    | Required | Description                                                                                                                                                                   |
-| --------------------------- | ------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model`                     | string  | ✓        | Model reference. Either inline (`openai/gpt-4o`) or a named model from the `models` section.                                                                                  |
-| `description`               | string  | ✓        | Brief description of the agent's purpose. Used by coordinators to decide delegation.                                                                                          |
-| `instruction`               | string  | ✓        | System prompt that defines the agent's behavior, personality, and constraints.                                                                                                |
-| `sub_agents`                | array   | ✗        | List of agent names or external OCI references this agent can delegate to. Supports local agents, registry references (e.g., `agentcatalog/pirate`), and named references (`name:reference`). Automatically enables the `transfer_task` tool. See [External Sub-Agents]({{ '/concepts/multi-agent/#external-sub-agents-from-registries' | relative_url }}). |
-| `toolsets`                  | array   | ✗        | List of tool configurations. See [Tool Config]({{ '/configuration/tools/' | relative_url }}).                                                                                                        |
-| `fallback`                  | object  | ✗        | Automatic model failover configuration.                                                                                                                                       |
-| `add_date`                  | boolean | ✗        | When `true`, injects the current date into the agent's context.                                                                                                               |
-| `add_environment_info`      | boolean | ✗        | When `true`, injects working directory, OS, CPU architecture, and git info into context.                                                                                      |
-| `add_prompt_files`          | array   | ✗        | List of file paths whose contents are appended to the system prompt. Useful for including coding standards, guidelines, or additional context.                                |
-| `add_description_parameter` | boolean | ✗        | When `true`, adds agent descriptions as a parameter in tool schemas. Helps with tool selection in multi-agent scenarios.                                                      |
-| `code_mode_tools`           | boolean | ✗        | When `true`, formats tool responses in a code-optimized format with structured output schemas. Useful for MCP gateway and programmatic access.                                |
-| `max_iterations`            | int     | ✗        | Maximum number of tool-calling loops. Default: unlimited (0). Set this to prevent infinite loops.                                                                             |
-| `max_consecutive_tool_calls` | int     | ✗        | Maximum consecutive identical tool calls before the agent is terminated, preventing degenerate loops. Default: `5`.                                                          |
+| Property                    | Type    | Required | Description |
+| --------------------------- | ------- | -------- | ----------- |
+| `model`                     | string  | ✓        | Model reference. Either inline (`openai/gpt-4o`) or a named model from the `models` section. |
+| `description`               | string  | ✓        | Brief description of the agent's purpose. Used by coordinators to decide delegation. |
+| `instruction`               | string  | ✓        | System prompt that defines the agent's behavior, personality, and constraints. |
+| `subagents`                 | array   | ✗        | **Canonical** list of agent names or external OCI/URL references this agent can delegate to. Supports local agents, registry references (e.g. `agentcatalog/pirate`), and named references (`name:reference`). This is the forward-compatible replacement for `sub_agents`. See [Subagents (Runtime-Managed)]({{ '/tools/subagents/' | relative_url }}). |
+| `sub_agents`                | array   | ✗        | **Legacy alias** for `subagents`. Still accepted for backward compatibility. New configs should use `subagents`. If both `subagents` and `sub_agents` are present, the canonical `subagents` value wins. |
+| `toolsets`                  | array   | ✗        | List of tool configurations. See [Tool Config]({{ '/configuration/tools/' | relative_url }}). |
+| `fallback`                  | object  | ✗        | Automatic model failover configuration. |
+| `add_date`                  | boolean | ✗        | When `true`, injects the current date into the agent's context. |
+| `add_environment_info`      | boolean | ✗        | When `true`, injects working directory, OS, CPU architecture, and git info into context. |
+| `add_prompt_files`          | array   | ✗        | List of file paths whose contents are appended to the system prompt. Useful for including coding standards, guidelines, or additional context. |
+| `add_description_parameter` | boolean | ✗        | When `true`, adds agent descriptions as a parameter in tool schemas. Helps with tool selection in multi-agent scenarios. |
+| `code_mode_tools`           | boolean | ✗        | When `true`, formats tool responses in a code-optimized format with structured output schemas. Useful for MCP gateway and programmatic access. |
+| `max_iterations`            | int     | ✗        | Maximum number of tool-calling loops. Default: unlimited (`0`). Set this to prevent infinite loops. |
+| `max_consecutive_tool_calls` | int     | ✗        | Maximum consecutive identical tool calls before the agent is terminated, preventing degenerate loops. Default: `5`. |
 | `max_old_tool_call_tokens`  | int     | ✗        | Maximum number of tokens to keep from old tool call arguments and results. Older tool calls beyond this budget have their content replaced with a placeholder, saving context space. Tokens are approximated as `len/4`. Set to `-1` to disable truncation (unlimited). Default: `40000`. |
 | `num_history_items`         | int     | ✗        | Limit the number of conversation history messages sent to the model. Useful for managing context window size with long conversations. Default: unlimited (all messages sent). |
-| `rag`                       | array   | ✗        | List of RAG source names to attach to this agent. References sources defined in the top-level `rag` section. See [RAG]({{ '/features/rag/' | relative_url }}).                                       |
-| `skills`                    | boolean | ✗        | Enable automatic skill discovery from standard directories.                                                                                                                   |
-| `commands`                  | object  | ✗        | Named prompts that can be run with `docker agent run config.yaml /command_name`.                                                                                              |
-| `welcome_message`           | string  | ✗        | Message displayed to the user when a session starts. Useful for providing context or instructions.                                                                            |
-| `handoffs`                  | array   | ✗        | List of agent names this agent can hand off the conversation to. Enables the `handoff` tool. See [Handoffs Routing]({{ '/concepts/multi-agent/#handoffs-routing' | relative_url }}).                  |
-| `hooks`                     | object  | ✗        | Lifecycle hooks for running commands at various points. See [Hooks]({{ '/configuration/hooks/' | relative_url }}).                                                                                   |
-| `structured_output`         | object  | ✗        | Constrain agent output to match a JSON schema. See [Structured Output]({{ '/configuration/structured-output/' | relative_url }}).                                                                    |
+| `rag`                       | array   | ✗        | List of RAG source names to attach to this agent. References sources defined in the top-level `rag` section. See [RAG]({{ '/features/rag/' | relative_url }}). |
+| `skills`                    | boolean | ✗        | Enable automatic skill discovery from standard directories. |
+| `commands`                  | object  | ✗        | Named prompts that can be run with `docker agent run config.yaml /command_name`. |
+| `welcome_message`           | string  | ✗        | Message displayed to the user when a session starts. Useful for providing context or instructions. |
+| `handoffs`                  | array   | ✗        | **Legacy** peer-to-peer conversation routing targets. Do not combine `handoffs` with `subagents` on the same agent; runtime-managed subagents are the replacement path. See [Multi-Agent Systems]({{ '/concepts/multi-agent/' | relative_url }}). |
+| `hooks`                     | object  | ✗        | Lifecycle hooks for running commands at various points. See [Hooks]({{ '/configuration/hooks/' | relative_url }}). |
+| `structured_output`         | object  | ✗        | Constrain agent output to match a JSON schema. See [Structured Output]({{ '/configuration/structured-output/' | relative_url }}). |
+
+<div class="callout callout-warning" markdown="1">
+<div class="callout-title">⚠️ subagents is canonical in schema v9
+</div>
+  <p>Use <code>subagents</code> in new configs. The old <code>sub_agents</code> spelling still parses, but only as a compatibility alias. The runtime-managed subagent subsystem is the future multi-agent model; the legacy <code>transfer_task</code>, <code>background_agents</code>, and <code>handoff</code> flows are on a deprecation path and should not be mixed with it.</p>
+
+</div>
 
 <div class="callout callout-warning" markdown="1">
 <div class="callout-title">⚠️ max_iterations
@@ -91,6 +100,71 @@ agents:
   <p>Default is <code>0</code> (unlimited). Always set <code>max_iterations</code> for agents with powerful tools like <code>shell</code> to prevent infinite loops. A value of 20–50 is typical for development agents.</p>
 
 </div>
+
+## `subagents` (canonical)
+
+Schema v9 introduces `subagents` as the canonical field name for hierarchical delegation. It replaces the legacy `sub_agents` spelling.
+
+```yaml
+version: "9"
+
+agents:
+  root:
+    model: anthropic/claude-sonnet-4-5
+    description: Coordinator
+    instruction: Delegate work to specialists.
+    subagents: [developer, researcher]
+```
+
+### Backward compatibility
+
+Each of these parses successfully today:
+
+**Canonical**
+
+```yaml
+subagents: [developer, researcher]
+```
+
+**Legacy**
+
+```yaml
+sub_agents: [developer, researcher]
+```
+
+**Both present (canonical wins)**
+
+```yaml
+subagents: [developer]
+sub_agents: [researcher]
+```
+
+### External references
+
+Like the old `sub_agents` field, `subagents` supports:
+
+- local agent names
+- OCI references: `agentcatalog/pirate`
+- URLs: `https://example.com/agent.yaml`
+- named external references: `reviewer:agentcatalog/review-pr`
+
+```yaml
+agents:
+  root:
+    model: openai/gpt-4o
+    description: Coordinator
+    instruction: Delegate to the right specialist.
+    subagents:
+      - helper
+      - reviewer:agentcatalog/review-pr
+
+  helper:
+    model: openai/gpt-4o
+    description: Local helper
+    instruction: You are helpful.
+```
+
+See [Subagents (Runtime-Managed)]({{ '/tools/subagents/' | relative_url }}) for the runtime model and migration guidance.
 
 ## Welcome Message
 
@@ -134,10 +208,10 @@ agents:
 
 Automatically switch to backup models when the primary fails:
 
-| Property   | Type   | Default | Description                                                |
-| ---------- | ------ | ------- | ---------------------------------------------------------- |
-| `models`   | array  | `[]`    | Fallback models to try in order                            |
-| `retries`  | int    | `2`     | Retries per model for 5xx errors. `-1` to disable.         |
+| Property   | Type   | Default | Description |
+| ---------- | ------ | ------- | ----------- |
+| `models`   | array  | `[]`    | Fallback models to try in order |
+| `retries`  | int    | `2`     | Retries per model for 5xx errors. `-1` to disable. |
 | `cooldown` | string | `1m`    | How long to stick with a fallback after a rate limit (429) |
 
 **Error handling:**
@@ -185,10 +259,12 @@ Commands use JavaScript template literal syntax for environment variable interpo
 ## Complete Example
 
 ```yaml
+version: "9"
+
 models:
   claude:
     provider: anthropic
-    model: claude-sonnet-4-0
+    model: claude-sonnet-4-5
     max_tokens: 64000
 
 agents:
@@ -199,7 +275,7 @@ agents:
       You are a technical lead. Analyze requests and delegate
       to the right specialist. Always review work before responding.
     welcome_message: "👋 I'm your tech lead. How can I help today?"
-    sub_agents: [developer, researcher]
+    subagents: [developer, researcher]
     add_date: true
     add_environment_info: true
     fallback:

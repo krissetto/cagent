@@ -24,9 +24,14 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
-// processToolCalls handles the execution of tool calls for an agent
-func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Session, calls []tools.ToolCall, agentTools []tools.Tool, events chan Event) {
-	a := r.resolveSessionAgent(sess)
+// processToolCalls handles the execution of tool calls for an agent.
+//
+// Tool handler lookup uses this runner's toolMap so child sessions
+// dispatch against their own handler registration rather than the root's.
+// Approval flow still delegates to the root runtime because the session-
+// local coordination channels are threaded explicitly via runner.state.
+func (sr *sessionRunner) processToolCalls(ctx context.Context, sess *session.Session, calls []tools.ToolCall, agentTools []tools.Tool, events chan Event) {
+	a := sr.root.resolveSessionAgent(sess)
 	slog.Debug("Processing tool calls", "agent", a.Name(), "call_count", len(calls))
 
 	// Build a map of agent tools for quick lookup
@@ -36,7 +41,7 @@ func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Sessi
 	}
 
 	for i, toolCall := range calls {
-		callCtx, callSpan := r.startSpan(ctx, "runtime.tool.call", trace.WithAttributes(
+		callCtx, callSpan := sr.root.startSpan(ctx, "runtime.tool.call", trace.WithAttributes(
 			attribute.String("tool.name", toolCall.Function.Name),
 			attribute.String("tool.type", string(toolCall.Type)),
 			attribute.String("agent", a.Name()),
@@ -54,23 +59,23 @@ func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Sessi
 		if !available {
 			slog.Warn("Tool call for unavailable tool", "agent", a.Name(), "tool", toolCall.Function.Name, "session_id", sess.ID)
 			errTool := tools.Tool{Name: toolCall.Function.Name}
-			r.addToolErrorResponse(ctx, sess, toolCall, errTool, events, a, fmt.Sprintf("Tool '%s' is not available. You can only use the tools provided to you.", toolCall.Function.Name))
+			sr.root.addToolErrorResponse(ctx, sess, toolCall, errTool, events, a, fmt.Sprintf("Tool '%s' is not available. You can only use the tools provided to you.", toolCall.Function.Name))
 			callSpan.SetStatus(codes.Error, "tool not available")
 			callSpan.End()
 			continue
 		}
 
-		// Pick the handler: runtime-managed tools (transfer_task, handoff)
-		// have dedicated handlers; everything else goes through the toolset.
+		// Pick the handler: runtime-managed tools have dedicated handlers;
+		// everything else goes through the toolset.
 		var runTool func()
-		if handler, exists := r.toolMap[toolCall.Function.Name]; exists {
-			runTool = func() { r.runAgentTool(callCtx, handler, sess, toolCall, tool, events, a) }
+		if handler, exists := sr.toolMap[toolCall.Function.Name]; exists {
+			runTool = func() { sr.root.runAgentTool(callCtx, sr, handler, sess, toolCall, tool, events, a) }
 		} else {
-			runTool = func() { r.runTool(callCtx, tool, toolCall, events, sess, a) }
+			runTool = func() { sr.root.runTool(callCtx, tool, toolCall, events, sess, a) }
 		}
 
 		// Execute tool with approval check
-		canceled := r.executeWithApproval(callCtx, sess, toolCall, tool, events, a, runTool)
+		canceled := sr.root.executeWithApproval(callCtx, sr.state, sess, toolCall, tool, events, a, runTool)
 		if canceled {
 			callSpan.SetStatus(codes.Ok, "tool call canceled by user")
 			callSpan.End()
@@ -80,7 +85,7 @@ func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Sessi
 			// without matching outputs (which the Responses API rejects).
 			for _, remaining := range calls[i+1:] {
 				remainingTool := agentToolMap[remaining.Function.Name]
-				r.addToolErrorResponse(ctx, sess, remaining, remainingTool, events, a, "The tool call was canceled because a previous tool call in the same batch was canceled by the user.")
+				sr.root.addToolErrorResponse(ctx, sess, remaining, remainingTool, events, a, "The tool call was canceled because a previous tool call in the same batch was canceled by the user.")
 			}
 			return
 		}
@@ -102,6 +107,7 @@ func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Sessi
 //  5. Default: ask for user confirmation
 func (r *LocalRuntime) executeWithApproval(
 	ctx context.Context,
+	state *sessionState,
 	sess *session.Session,
 	toolCall tools.ToolCall,
 	tool tools.Tool,
@@ -142,7 +148,7 @@ func (r *LocalRuntime) executeWithApproval(
 			return false
 		case permissions.ForceAsk:
 			slog.Debug("Tool requires confirmation (ask pattern)", "tool", toolName, "source", pc.source, "session_id", sess.ID)
-			return r.askUserForConfirmation(ctx, sess, toolCall, tool, events, a, runTool)
+			return r.askUserForConfirmation(ctx, state, sess, toolCall, tool, events, a, runTool)
 		case permissions.Ask:
 			// No explicit match at this level; fall through to next checker
 		}
@@ -155,7 +161,7 @@ func (r *LocalRuntime) executeWithApproval(
 	}
 
 	// Default: ask the user for confirmation
-	return r.askUserForConfirmation(ctx, sess, toolCall, tool, events, a, runTool)
+	return r.askUserForConfirmation(ctx, state, sess, toolCall, tool, events, a, runTool)
 }
 
 // permissionChecker pairs a checker with a human-readable source label.
@@ -190,6 +196,7 @@ func (r *LocalRuntime) permissionCheckers(sess *session.Session) []permissionChe
 // This is only called when --yolo is not active and no permission rule auto-approved the tool.
 func (r *LocalRuntime) askUserForConfirmation(
 	ctx context.Context,
+	state *sessionState,
 	sess *session.Session,
 	toolCall tools.ToolCall,
 	tool tools.Tool,
@@ -201,10 +208,10 @@ func (r *LocalRuntime) askUserForConfirmation(
 	slog.Debug("Tools not approved, waiting for resume", "tool", toolName, "session_id", sess.ID)
 	events <- ToolCallConfirmation(toolCall, tool, a.Name())
 
-	r.executeOnUserInputHooks(ctx, sess.ID, "tool confirmation")
+	r.executeOnUserInputHooks(ctx, a, sess.ID, "tool confirmation")
 
 	select {
-	case req := <-r.resumeChan:
+	case req := <-state.resumeChan:
 		switch req.Type {
 		case ResumeTypeApprove:
 			slog.Debug("Resume signal received, approving tool", "tool", toolName, "session_id", sess.ID)
@@ -422,19 +429,19 @@ func parseToolInput(arguments string) map[string]any {
 	return result
 }
 
-func (r *LocalRuntime) runAgentTool(ctx context.Context, handler ToolHandlerFunc, sess *session.Session, toolCall tools.ToolCall, tool tools.Tool, events chan Event, a *agent.Agent) {
+func (r *LocalRuntime) runAgentTool(ctx context.Context, sr *sessionRunner, handler toolHandlerFunc, sess *session.Session, toolCall tools.ToolCall, tool tools.Tool, events chan Event, a *agent.Agent) {
 	r.executeToolWithHandler(ctx, toolCall, tool, events, sess, a, "runtime.tool.handler.runtime",
 		func(ctx context.Context) (*tools.ToolCallResult, time.Duration, error) {
 			start := time.Now()
-			res, err := handler(ctx, sess, toolCall, events)
+			res, err := handler(ctx, sr, sess, toolCall, events)
 			return res, time.Since(start), err
 		})
 }
 
 func addAgentMessage(sess *session.Session, a *agent.Agent, msg *chat.Message, events chan Event) {
 	agentMsg := session.NewAgentMessage(a.Name(), msg)
-	sess.AddMessage(agentMsg)
-	events <- MessageAdded(sess.ID, agentMsg, a.Name())
+	pos := sess.AddMessage(agentMsg)
+	events <- MessageAdded(sess.ID, pos, agentMsg, a.Name())
 }
 
 // addToolErrorResponse adds a tool error response to the session and emits the event.

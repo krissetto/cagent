@@ -24,4 +24,8 @@ type (
 
 	// ShowToolsDialogMsg shows the tools dialog.
 	ShowToolsDialogMsg struct{}
+
+	// ShowSessionTreeDialogMsg shows a read-only tree of the current root
+	// session and all live descendant sub-sessions.
+	ShowSessionTreeDialogMsg struct{}
 )

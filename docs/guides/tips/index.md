@@ -272,22 +272,29 @@ agents:
 
 ## Multi-Agent Tips
 
-### Handoffs vs Sub-Agents
+## Runtime-managed subagents only
 
-Understand the difference between `sub_agents` and `handoffs`:
+For new work, use **runtime-managed subagents**. This is the direction docker-agent is moving toward for all multi-agent flows:
+
+- persistent child sessions
+- parent↔child follow-up messaging
+- parent wake-ups without polling
+- recursive delegation with depth / descendant caps
+- full live tree observability and HTTP control
+
+If you are maintaining an older config, the legacy code paths still exist for backward compatibility — but they are intentionally omitted from the main docs. Do not mix them with runtime-managed subagents on the same agent.
+
+See [Subagents (Runtime-Managed)]({{ '/tools/subagents/' | relative_url }}) and [Multi-Agent Systems]({{ '/concepts/multi-agent/' | relative_url }}).
+
+### Choosing a multi-agent pattern
+
+Understand the recommended pattern:
 
 <div class="cards">
   <div class="card" style="cursor:default;">
-    <h3>sub_agents (transfer_task)</h3>
-    <p>Delegates task to a child in a sub-session, waits for result, then continues. Hierarchical — the parent remains in control.</p>
-    <pre style="margin-top:12px"><code class="language-yaml">sub_agents: [researcher, writer]</code></pre>
-  </div>
-  <div class="card" style="cursor:default;">
-    <h3>handoffs (peer-to-peer)</h3>
-    <p>Hands off the entire conversation to another agent in the same session. The active agent switches and sees the full history. Agents can form cycles.</p>
-    <pre style="margin-top:12px"><code class="language-yaml">handoffs:
-  - specialist
-  - summarizer</code></pre>
+    <h3>Runtime-managed subagents</h3>
+    <p>Persistent child sessions, parent↔child messaging, child wake-ups without polling, recursive delegation, and live tree observability.</p>
+    <pre style="margin-top:12px"><code class="language-yaml">subagents: [researcher, writer]</code></pre>
   </div>
 </div>
 
@@ -303,7 +310,7 @@ agents:
     model: anthropic/claude-sonnet-4-0
     description: Technical lead
     instruction: Delegate to specialists based on the task.
-    sub_agents: [frontend, backend, devops]
+    subagents: [frontend, backend, devops]
 
   frontend:
     model: openai/gpt-4o

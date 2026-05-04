@@ -167,6 +167,48 @@ type SteerSessionRequest struct {
 	Messages []Message `json:"messages"`
 }
 
+// LiveSessionNode represents a node in the currently-live agent/subagent tree.
+type LiveSessionNode struct {
+	SessionID       string    `json:"session_id"`
+	ParentSessionID string    `json:"parent_session_id,omitempty"`
+	RootSessionID   string    `json:"root_session_id"`
+	AgentName       string    `json:"agent_name"`
+	Title           string    `json:"title,omitempty"`
+	Kind            string    `json:"kind"`
+	Depth           int       `json:"depth"`
+	Status          string    `json:"status"`
+	CreatedAt       time.Time `json:"created_at,omitzero"`
+	LastUpdateAt    time.Time `json:"last_update_at,omitzero"`
+	LastPreview     string    `json:"last_preview,omitempty"`
+	Error           string    `json:"error,omitempty"`
+}
+
+// LiveSessionTreeResponse describes the current live tree for a root session.
+type LiveSessionTreeResponse struct {
+	RootSessionID string            `json:"root_session_id"`
+	Nodes         []LiveSessionNode `json:"nodes"`
+}
+
+// LiveSessionResponse describes a single live session node (root or descendant).
+type LiveSessionResponse struct {
+	Node LiveSessionNode `json:"node"`
+}
+
+// LiveSessionSnapshotResponse describes the full current state of a live
+// session: the live-tree node metadata (kind, agent, status) plus the current
+// transcript. Used by remote clients that open the subagent in a normal chat
+// tab and therefore need a populated [*session.Session] pointer locally, not
+// just a live event subscription.
+type LiveSessionSnapshotResponse struct {
+	Node    LiveSessionNode `json:"node"`
+	Session SessionResponse `json:"session"`
+}
+
+// LiveSessionControlResponse is returned by live-session control endpoints.
+type LiveSessionControlResponse struct {
+	Status string `json:"status"`
+}
+
 // UpdateSessionTitleRequest represents a request to update a session's title
 type UpdateSessionTitleRequest struct {
 	Title string `json:"title"`

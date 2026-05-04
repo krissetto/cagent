@@ -1,12 +1,12 @@
 ---
 title: "Agents"
-description: "Agents are the core building blocks of docker-agent. Each agent is an AI-powered entity with a model, instructions, tools, and optional sub-agents."
+description: "Agents are the core building blocks of docker-agent. Each agent is an AI-powered entity with a model, instructions, tools, and optional subagents."
 permalink: /concepts/agents/
 ---
 
 # Agents
 
-_Agents are the core building blocks of docker-agent. Each agent is an AI-powered entity with a model, instructions, tools, and optional sub-agents._
+_Agents are the core building blocks of docker-agent. Each agent is an AI-powered entity with a model, instructions, tools, and optional subagents._
 
 ## What is an Agent?
 
@@ -16,7 +16,7 @@ An agent in docker-agent is defined by:
 - **Description** — A brief summary of what the agent does (used by other agents for delegation)
 - **Instruction** — The system prompt that defines the agent's behavior and personality
 - **Tools** — Capabilities like filesystem access, shell commands, or external APIs
-- **Sub-agents** — Other agents it can delegate tasks to
+- **Subagents** — Other agents it can delegate tasks to
 
 ```yaml
 agents:
@@ -34,7 +34,7 @@ agents:
 
 ## The Root Agent
 
-Every docker-agent configuration has a **root agent** — the entry point that receives user messages. In a single-agent setup, this is the only agent. In a multi-agent setup, the root agent acts as a coordinator, delegating tasks to specialized sub-agents.
+Every docker-agent configuration has a **root agent** — the entry point that receives user messages. In a single-agent setup, this is the only agent. In a multi-agent setup, the root agent acts as a coordinator, delegating tasks to specialized subagents.
 
 <div class="callout callout-info" markdown="1">
 <div class="callout-title">ℹ️ Naming
@@ -45,19 +45,27 @@ Every docker-agent configuration has a **root agent** — the entry point that r
 
 ## Agent Properties
 
-| Property               | Type    | Required | Description                                                    |
-| ---------------------- | ------- | -------- | -------------------------------------------------------------- |
+| Property               | Type    | Required | Description |
+| ---------------------- | ------- | -------- | ----------- |
 | `model`                | string  | ✓        | Model reference (inline like `openai/gpt-4o` or a named model) |
-| `description`          | string  | ✓        | What the agent does — used by other agents for delegation      |
-| `instruction`          | string  | ✓        | System prompt defining behavior                                |
-| `toolsets`             | array   | ✗        | List of tool configurations                                    |
-| `sub_agents`           | array   | ✗        | Names of agents this agent can delegate to                     |
-| `fallback`             | object  | ✗        | Fallback model configuration for resilience                    |
-| `add_date`             | boolean | ✗        | Include current date in context                                |
-| `add_environment_info` | boolean | ✗        | Include OS, working directory, git info in context             |
-| `max_iterations`       | int     | ✗        | Max tool-calling loops (default: unlimited)                    |
-| `commands`             | object  | ✗        | Named prompts callable via `/command`                          |
-| `skills`               | boolean | ✗        | Enable skill discovery and loading                             |
+| `description`          | string  | ✓        | What the agent does — used by other agents for delegation |
+| `instruction`          | string  | ✓        | System prompt defining behavior |
+| `toolsets`             | array   | ✗        | List of tool configurations |
+| `subagents`            | array   | ✗        | Canonical list of agents this agent can delegate to |
+| `sub_agents`           | array   | ✗        | Legacy alias for `subagents` |
+| `fallback`             | object  | ✗        | Fallback model configuration for resilience |
+| `add_date`             | boolean | ✗        | Include current date in context |
+| `add_environment_info` | boolean | ✗        | Include OS, working directory, git info in context |
+| `max_iterations`       | int     | ✗        | Max tool-calling loops (default: unlimited) |
+| `commands`             | object  | ✗        | Named prompts callable via `/command` |
+| `skills`               | boolean | ✗        | Enable skill discovery and loading |
+
+<div class="callout callout-warning" markdown="1">
+<div class="callout-title">⚠️ Canonical field name
+</div>
+  <p>Use <code>subagents</code> in new configs. The old <code>sub_agents</code> spelling is still accepted for backward compatibility but is now a legacy alias.</p>
+
+</div>
 
 ## Model Fallbacks
 
@@ -113,6 +121,6 @@ $ docker agent run  # now runs your custom agent
 <div class="callout callout-tip" markdown="1">
 <div class="callout-title">💡 See also
 </div>
-  <p>For reusable task-specific instructions, see <a href="{{ '/features/skills/' | relative_url }}">Skills</a>. For multi-agent patterns, see <a href="{{ '/concepts/multi-agent/' | relative_url }}">Multi-Agent</a>. For full config reference, see <a href="{{ '/configuration/agents/' | relative_url }}">Agent Config</a>.</p>
+  <p>For reusable task-specific instructions, see <a href="{{ '/features/skills/' | relative_url }}">Skills</a>. For the runtime-managed multi-agent model, see <a href="{{ '/tools/subagents/' | relative_url }}">Subagents (Runtime-Managed)</a> and <a href="{{ '/concepts/multi-agent/' | relative_url }}">Multi-Agent</a>. For full config reference, see <a href="{{ '/configuration/agents/' | relative_url }}">Agent Config</a>.</p>
 
 </div>

@@ -1,6 +1,7 @@
 package notification
 
 import (
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -178,8 +179,8 @@ func (n *Manager) View() string {
 
 	mw := n.maxWidth()
 	views := make([]string, 0, len(n.items))
-	for i := len(n.items) - 1; i >= 0; i-- {
-		views = append(views, n.items[i].render(mw))
+	for _, item := range slices.Backward(n.items) {
+		views = append(views, item.render(mw))
 	}
 	return lipgloss.JoinVertical(lipgloss.Right, views...)
 }
@@ -224,8 +225,7 @@ func (n *Manager) HandleClick(x, y int) tea.Cmd {
 	notifY := row
 
 	// Walk items bottom-to-top (same render order as View)
-	for i := len(n.items) - 1; i >= 0; i-- {
-		item := n.items[i]
+	for _, item := range slices.Backward(n.items) {
 		view := item.render(mw)
 		viewHeight := lipgloss.Height(view)
 

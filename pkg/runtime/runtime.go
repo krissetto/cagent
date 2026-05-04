@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sessiontitle"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin"
@@ -80,8 +82,12 @@ func ResumeReject(reason string) ResumeRequest {
 	return ResumeRequest{Type: ResumeTypeReject, Reason: reason}
 }
 
-// ToolHandlerFunc is a function type for handling tool calls
-type ToolHandlerFunc func(ctx context.Context, sess *session.Session, toolCall tools.ToolCall, events chan Event) (*tools.ToolCallResult, error)
+// toolHandlerFunc is a function type for handling tool calls.
+// The sr parameter is the invoking [sessionRunner], which gives handlers
+// access to the correct per-session state (e.g. for launching nested
+// sub-sessions that share the invoking runner's coordination channels
+// rather than the root's).
+type toolHandlerFunc func(ctx context.Context, sr *sessionRunner, sess *session.Session, toolCall tools.ToolCall, events chan Event) (*tools.ToolCallResult, error)
 
 // ElicitationRequestHandler is a function type for handling elicitation requests
 type ElicitationRequestHandler func(ctx context.Context, message string, schema map[string]any) (map[string]any, error)
@@ -178,24 +184,76 @@ type ToolsChangeSubscriber interface {
 	OnToolsChanged(handler func(Event))
 }
 
-// LocalRuntime manages the execution of agents
-type LocalRuntime struct {
-	toolMap                     map[string]ToolHandlerFunc
-	team                        *team.Team
-	currentAgent                string
-	resumeChan                  chan ResumeRequest
-	tracer                      trace.Tracer
-	modelsStore                 ModelStore
-	sessionCompaction           bool
-	managedOAuth                bool
-	startupInfoEmitted          bool                   // Track if startup info has been emitted to avoid unnecessary duplication
-	elicitationRequestCh        chan ElicitationResult // Channel for receiving elicitation responses
-	elicitationEventsChannel    chan Event             // Current events channel for sending elicitation requests
-	elicitationEventsChannelMux sync.RWMutex           // Protects elicitationEventsChannel
-	sessionStore                session.Store
-	workingDir                  string   // Working directory for hooks execution
-	env                         []string // Environment variables for hooks execution
-	modelSwitcherCfg            *ModelSwitcherConfig
+// SessionObserverSubscriber is implemented by runtimes that can fan out
+// live session-scoped events to multiple observers. This is the core
+// observability surface required for attaching to live subagent sessions.
+type SessionObserverSubscriber interface {
+	SubscribeSession(ctx context.Context, sessionID string, buffer int) *Subscription
+}
+
+// SessionTreeProvider is implemented by runtimes that can expose the
+// live agent/subagent tree and control descendant sessions directly.
+type SessionTreeProvider interface {
+	LiveSessionTree(rootSessionID string) []LiveSessionNode
+	LiveSessionNode(sessionID string) (LiveSessionNode, bool)
+	SteerSessionByID(sessionID string, msg QueuedMessage) error
+	FollowUpSessionByID(sessionID string, msg QueuedMessage) error
+	InterruptSessionByID(sessionID string) error
+	CloseSessionByID(sessionID string) error
+	StopSessionByID(sessionID string) error
+}
+
+// SessionStartupEmitter is an optional runtime capability that emits a
+// fresh batch of startup events (AgentInfo, TeamInfo, ToolsetInfo,
+// TokenUsage) scoped to a specific session and agent.
+//
+// Unlike [Runtime.EmitStartupInfo], this variant does not carry a
+// "startup already emitted" guard and does not depend on the runtime's
+// currently-selected agent. It is used by the TUI when seeding an
+// attached child-session tab so the sidebar can show the child agent's
+// real model/description/tool count/token usage immediately rather than a
+// placeholder. Runtimes that cannot resolve a specific agent by name
+// (today: the remote runtime) simply omit this interface; the caller is
+// expected to fall back to a minimal seed.
+type SessionStartupEmitter interface {
+	EmitSessionStartupInfo(ctx context.Context, sess *session.Session, agentName string, events chan Event)
+}
+
+// LiveSessionProvider exposes the in-memory [*session.Session] for a
+// descendant subagent. The TUI's attached-tab flow uses this so it can back
+// a tab's [*app.App] with the real child session pointer and render live
+// transcript updates without copying state. Only local runtimes can satisfy
+// this because it hands out a direct pointer.
+type LiveSessionProvider interface {
+	LiveSession(sessionID string) (*session.Session, bool)
+}
+
+// runtimeCore holds the runtime-wide services that are safe to share
+// across every live session managed by a single runtime instance: the
+// team, tool/session/model stores, the subagent manager, the event bus,
+// and other immutable configuration. It exists to make the per-session
+// split painless: a per-session runner can hold a *runtimeCore directly
+// without needing access to LocalRuntime's per-session coordination state.
+//
+// Today runtimeCore is consumed by [LocalRuntime] (which embeds it as an
+// anonymous pointer field) and by internal [sessionRunner] instances,
+// which pair the shared services here with fresh per-session state.
+//
+// Note: toolMap intentionally does not live here. Each [sessionRunner]
+// (root or child) builds its own per-session toolMap during construction
+// because handler registration still closes over receiver methods on
+// the root runtime. See [registerDefaultToolsInto].
+//
+// bgAgents lives on [LocalRuntime] (not here) so its lifecycle hooks
+// (StopAll on Close) have a stable owner; child runners construct their
+// own bgAgents handler isolated from the root.
+type runtimeCore struct {
+	team        *team.Team
+	tracer      trace.Tracer
+	modelsStore ModelStore
+
+	sessionCompaction bool
+	managedOAuth      bool
 
 	// retryOnRateLimit enables retry-with-backoff for HTTP 429 (rate limit) errors
 	// when no fallback models are configured. When false (default), 429 errors are
@@ -203,27 +261,118 @@ type LocalRuntime struct {
 	// Library consumers can enable this via WithRetryOnRateLimit().
 	retryOnRateLimit bool
 
-	// fallbackCooldowns tracks per-agent cooldown state for sticky fallback behavior
+	sessionStore session.Store
+
+	workingDir string   // Working directory for hooks execution
+	env        []string // Environment variables for hooks execution
+
+	modelSwitcherCfg *ModelSwitcherConfig
+
+	// fallbackCooldowns tracks per-agent cooldown state for sticky fallback behavior.
+	// Cooldowns are runtime-wide so a fallback decision made by one session is
+	// honoured by every other session sharing the same runtime core.
 	fallbackCooldowns    map[string]*fallbackCooldownState
 	fallbackCooldownsMux sync.RWMutex
 
-	currentAgentMu sync.RWMutex
+	// subagents owns the runtime-managed subagent lifecycle, envelope
+	// routing, and parent wakeup queues. It is shared because parent and
+	// child sessions must observe the same tree.
+	subagents *subagent.Manager
 
-	// steerQueue stores urgent mid-turn messages. The agent loop drains
-	// ALL pending messages after tool execution, before the stop check.
-	steerQueue MessageQueue
+	// eventBus fans out every event emitted by any session this runtime
+	// owns (root + subagents) to registered observers. Sharing the same
+	// bus is what allows attaching to a child session from any layer.
+	eventBus *EventBus
 
-	// followUpQueue stores end-of-turn messages. The agent loop pops
-	// exactly ONE message after the model stops and stop-hooks have run.
-	followUpQueue MessageQueue
+	// liveSessions tracks every session (root and subagent) whose engine
+	// is currently running. The registry is the canonical source for
+	// [LocalRuntime.LiveSessionTree] and [LocalRuntime.LiveSessionNode];
+	// engines self-register in [sessionEngine.run] and unregister on exit.
+	liveSessions *liveSessionRegistry
+
+	// recorder, when non-nil, is the SessionRecorder registered as a global
+	// EventBus observer in [New]. The runtime owns its lifecycle so that
+	// [LocalRuntime.Close] can drain in-flight async store writes before
+	// returning. Nil when New() was not used.
+	recorder *SessionRecorder
+}
+
+// LocalRuntime manages the execution of agents.
+//
+// NOTE — shared vs session-local state:
+//
+// LocalRuntime carries both runtime-wide shared services (via the embedded
+// *runtimeCore) and the root session's mutable coordination state (via the
+// embedded *sessionState). Root execution uses those fields directly through
+// a root [sessionRunner]. Child sessions are driven through a child
+// [sessionRunner] that pairs this runtime's shared *runtimeCore with a fresh
+// *sessionState, without any child LocalRuntime.
+//
+// The comment on each field below indicates whether it is runtime-wide
+// (shared) or root-session-only.
+type LocalRuntime struct {
+	// Embedded shared services. Field accesses like r.team or r.tracer
+	// resolve here transparently through Go's promoted-field rules.
+	*runtimeCore
+
+	// Embedded root-session coordination state. Field accesses like
+	// r.resumeChan, r.inbox, and r.currentAgent resolve here through
+	// promoted-field rules. Child sessions do not get a child
+	// LocalRuntime anymore; they run through a [sessionRunner] with its
+	// own distinct *sessionState while sharing the same *runtimeCore.
+	*sessionState
+
+	// bgAgents holds the root background-agent dispatcher. Child
+	// sessionRunners construct their own dispatcher during runner
+	// creation. The root dispatcher lives on LocalRuntime so its
+	// StopAll lifecycle hook has a stable owner accessible from
+	// [LocalRuntime.Close].
+	bgAgents *agenttool.Handler
 
 	// onToolsChanged is called when an MCP toolset reports a tool list change.
 	onToolsChanged func(Event)
 
-	bgAgents *agenttool.Handler
+	// subagentIdleAutoFinalize controls the optional idle sweeper in the
+	// subagent manager. Zero means disabled (the default). It is consumed
+	// only during construction; the value beyond that lives on the manager.
+	subagentIdleAutoFinalize time.Duration
+
+	// customSubagentRunner, when non-nil, replaces LocalRuntime as the
+	// [subagent.Runner] passed to [subagent.NewManager]. This is the
+	// injection point for alternative child-loop backends.
+	// Set via [WithSubagentRunner]; consumed once during construction.
+	customSubagentRunner subagent.Runner
 }
 
 type Opt func(*LocalRuntime)
+
+// WithSubagentIdleAutoFinalize enables auto-finalizing stale idle subagents
+// after the given timeout. A zero or negative timeout disables the feature.
+//
+// This is intentionally opt-in. Leaving the timeout unset preserves the
+// historic behaviour where background subagents remain alive until the agent
+// explicitly finalizes or stops them.
+func WithSubagentIdleAutoFinalize(timeout time.Duration) Opt {
+	return func(r *LocalRuntime) {
+		if timeout > 0 {
+			r.subagentIdleAutoFinalize = timeout
+		}
+	}
+}
+
+// WithSubagentRunner overrides the default child-loop implementation used by
+// the [subagent.Manager] for new subagents. By default [LocalRuntime] uses
+// itself (which drives child sessions through the same [sessionEngine] as
+// root sessions). Embedders can supply a custom [subagent.Runner] to route
+// child loops to an alternative backend — for example a remote runner.
+//
+// The runner is wired during [NewLocalRuntime] construction. It cannot be
+// changed after the runtime is created.
+func WithSubagentRunner(runner subagent.Runner) Opt {
+	return func(r *LocalRuntime) {
+		r.customSubagentRunner = runner
+	}
+}
 
 func WithCurrentAgent(agentName string) Opt {
 	return func(r *LocalRuntime) {
@@ -248,7 +397,10 @@ func WithTracer(t trace.Tracer) Opt {
 // If not provided, an in-memory buffered queue is used.
 func WithSteerQueue(q MessageQueue) Opt {
 	return func(r *LocalRuntime) {
-		r.steerQueue = q
+		if r.sessionState == nil {
+			r.sessionState = newSessionState("")
+		}
+		r.steer = q
 	}
 }
 
@@ -256,7 +408,10 @@ func WithSteerQueue(q MessageQueue) Opt {
 // messages. If not provided, an in-memory buffered queue is used.
 func WithFollowUpQueue(q MessageQueue) Opt {
 	return func(r *LocalRuntime) {
-		r.followUpQueue = q
+		if r.sessionState == nil {
+			r.sessionState = newSessionState("")
+		}
+		r.followUp = q
 	}
 }
 
@@ -309,7 +464,7 @@ func WithRetryOnRateLimit() Opt {
 	}
 }
 
-// NewLocalRuntime creates a new LocalRuntime without the persistence wrapper.
+// NewLocalRuntime creates a new LocalRuntime without persistence.
 // This is useful for testing or when persistence is handled externally.
 func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 	defaultAgent, err := agents.DefaultAgent()
@@ -318,23 +473,38 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 	}
 
 	r := &LocalRuntime{
-		toolMap:              make(map[string]ToolHandlerFunc),
-		team:                 agents,
-		currentAgent:         defaultAgent.Name(),
-		resumeChan:           make(chan ResumeRequest),
-		elicitationRequestCh: make(chan ElicitationResult),
-		steerQueue:           NewInMemoryMessageQueue(defaultSteerQueueCapacity),
-		followUpQueue:        NewInMemoryMessageQueue(defaultFollowUpQueueCapacity),
-		sessionCompaction:    true,
-		managedOAuth:         true,
-		sessionStore:         session.NewInMemorySessionStore(),
-		fallbackCooldowns:    make(map[string]*fallbackCooldownState),
+		runtimeCore: &runtimeCore{
+			team:              agents,
+			sessionCompaction: true,
+			managedOAuth:      true,
+			sessionStore:      session.NewInMemorySessionStore(),
+			fallbackCooldowns: make(map[string]*fallbackCooldownState),
+		},
+		sessionState: newSessionState(defaultAgent.Name()),
 	}
-	r.bgAgents = agenttool.NewHandler(r)
 
 	for _, opt := range opts {
 		opt(r)
 	}
+
+	r.bgAgents = agenttool.NewHandler(r)
+	runner := subagent.Runner(r)
+	if r.customSubagentRunner != nil {
+		runner = r.customSubagentRunner
+	}
+	if r.subagentIdleAutoFinalize > 0 {
+		r.subagents = subagent.NewManager(runner, subagent.WithIdleAutoFinalize(r.subagentIdleAutoFinalize))
+	} else {
+		r.subagents = subagent.NewManager(runner)
+	}
+	r.subagents.AddEnvelopePublishedListener(func(env subagent.Envelope) {
+		r.publishTreeChangeFromChild(env.SubAgentID, env.ParentSessionID)
+	})
+	r.subagents.AddChildRegisteredListener(func(h *subagent.Handle) {
+		r.publishTreeChangeFromChild(h.ID(), h.ParentSessionID())
+	})
+	r.eventBus = NewEventBus()
+	r.liveSessions = newLiveSessionRegistry()
 
 	if r.modelsStore == nil {
 		modelsStore, err := modelsdev.NewStore()
@@ -354,11 +524,6 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 	if defaultAgent.Model() == nil {
 		return nil, fmt.Errorf("agent %s has no valid model", defaultAgent.Name())
 	}
-
-	// Register runtime-managed tool handlers once during construction.
-	// This avoids concurrent map writes when multiple goroutines call
-	// RunStream on the same runtime (e.g. background agent sessions).
-	r.registerDefaultTools()
 
 	slog.Debug("Creating new runtime", "agent", r.currentAgent, "available_agents", agents.Size())
 
@@ -473,17 +638,29 @@ func (r *LocalRuntime) discoverMCPPrompts(ctx context.Context, toolset *mcptools
 	return prompts
 }
 
-// CurrentAgent returns the current agent
-func (r *LocalRuntime) CurrentAgent() *agent.Agent {
-	// We validated already that the agent exists
+// currentRootAgent returns the runtime's currently selected root-session
+// agent. This is the agent used for new user work entering the root session.
+// It is intentionally distinct from [resolveSessionAgent], which answers a
+// different question: which agent identity is pinned to *this* session.
+func (r *LocalRuntime) currentRootAgent() *agent.Agent {
+	// We validated already that the agent exists.
 	current, _ := r.team.Agent(r.CurrentAgentName())
 	return current
 }
 
-// resolveSessionAgent returns the agent for the given session. When the session
-// is pinned to a specific agent (e.g. background agent tasks), it returns that
-// agent directly instead of reading the shared currentAgent field, which may
-// point to a different agent.
+// CurrentAgent returns the runtime's currently selected root-session agent.
+// Session-scoped execution should prefer [resolveSessionAgent] so pinned
+// child/background sessions do not accidentally observe the mutable global
+// currentAgent selection.
+func (r *LocalRuntime) CurrentAgent() *agent.Agent {
+	return r.currentRootAgent()
+}
+
+// resolveSessionAgent returns the agent identity pinned to the given session.
+// If sess.AgentName is set, that agent wins even when the runtime's mutable
+// currentAgent points somewhere else (for example while an attached child tab
+// is open or a background session is running concurrently). When the session
+// is not pinned, we fall back to the root runtime's current agent selection.
 func (r *LocalRuntime) resolveSessionAgent(sess *session.Session) *agent.Agent {
 	if sess.AgentName != "" {
 		if a, err := r.team.Agent(sess.AgentName); err == nil {
@@ -681,9 +858,11 @@ func (r *LocalRuntime) executeNotificationHooks(ctx context.Context, a *agent.Ag
 	}
 }
 
-// executeOnUserInputHooks executes on-user-input hooks for the current agent
-func (r *LocalRuntime) executeOnUserInputHooks(ctx context.Context, sessionID, logContext string) {
-	a, _ := r.team.Agent(r.CurrentAgentName())
+// executeOnUserInputHooks executes on-user-input hooks for the given agent.
+// The caller is responsible for passing the session-resolved agent so that
+// child sessions use the correct agent identity instead of the runtime's
+// mutable global CurrentAgentName().
+func (r *LocalRuntime) executeOnUserInputHooks(ctx context.Context, a *agent.Agent, sessionID, logContext string) {
 	if a == nil {
 		return
 	}
@@ -779,6 +958,18 @@ func (r *LocalRuntime) SessionStore() session.Store {
 // Close releases resources held by the runtime, including the session store.
 func (r *LocalRuntime) Close() error {
 	r.bgAgents.StopAll()
+	if r.subagents != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = r.subagents.StopAll(ctx)
+		r.subagents.Shutdown()
+	}
+	// Drain any in-flight recorder writes before closing the store so we do
+	// not race a worker goroutine performing an AddMessage against a closed
+	// SQLite handle.
+	if r.recorder != nil {
+		r.recorder.Close()
+	}
 	if r.sessionStore != nil {
 		return r.sessionStore.Close()
 	}
@@ -786,10 +977,21 @@ func (r *LocalRuntime) Close() error {
 }
 
 // UpdateSessionTitle persists the session title via the session store.
+//
+// The in-memory update goes through [session.Session.SetTitle] because child
+// sessions (subagents) run in their own goroutines and may have concurrent
+// readers — e.g. the TUI snapshotting `sess.Title` when opening an attached
+// tab. A raw `sess.Title = title` is a data race in that path even though the
+// store persistence itself is serialised.
+//
+// Persistence uses the narrow [session.Store.UpdateSessionTitle] rather than
+// the full [session.Store.UpdateSession] to avoid racing with the child-loop
+// goroutine that concurrently writes InputTokens/OutputTokens on the same
+// session object.
 func (r *LocalRuntime) UpdateSessionTitle(ctx context.Context, sess *session.Session, title string) error {
-	sess.Title = title
+	sess.SetTitle(title)
 	if r.sessionStore != nil {
-		return r.sessionStore.UpdateSession(ctx, sess)
+		return r.sessionStore.UpdateSessionTitle(ctx, sess.ID, title)
 	}
 	return nil
 }
@@ -860,8 +1062,29 @@ func (r *LocalRuntime) EmitStartupInfo(ctx context.Context, sess *session.Sessio
 	}
 	r.startupInfoEmitted = true
 
-	a := r.CurrentAgent()
+	r.emitStartupInfoForAgent(ctx, sess, r.CurrentAgent(), events)
+}
 
+// EmitSessionStartupInfo emits startup metadata scoped to the provided
+// session/agent pair, without consulting or mutating the runtime's global
+// current-agent selection. It shares the implementation path
+// [emitStartupInfoForAgent] with [EmitStartupInfo]; the only difference is
+// that it has no once-guard and resolves the agent by name instead of via
+// the runtime's mutable currentAgent field.
+//
+// Primary use: attached child-session tabs that need the child agent's real
+// model/description/tool count immediately.
+func (r *LocalRuntime) EmitSessionStartupInfo(ctx context.Context, sess *session.Session, agentName string, events chan Event) {
+	a, err := r.team.Agent(agentName)
+	if err != nil || a == nil {
+		return
+	}
+	r.emitStartupInfoForAgent(ctx, sess, a, events)
+}
+
+// emitStartupInfoForAgent contains the actual startup-info emission logic shared
+// by the normal root-tab path and the attached child-session path.
+func (r *LocalRuntime) emitStartupInfoForAgent(ctx context.Context, sess *session.Session, a *agent.Agent, events chan Event) {
 	// Helper to send events with context check
 	send := func(event Event) bool {
 		select {
@@ -872,13 +1095,13 @@ func (r *LocalRuntime) EmitStartupInfo(ctx context.Context, sess *session.Sessio
 		}
 	}
 
-	// Emit agent and team information immediately for fast sidebar display
-	// Use getEffectiveModelID to account for active fallback cooldowns
+	// Emit agent and team information immediately for fast sidebar display.
+	// Use getEffectiveModelID to account for active fallback cooldowns.
 	modelID := r.getEffectiveModelID(a)
 	if !send(AgentInfo(a.Name(), modelID, a.Description(), a.WelcomeMessage())) {
 		return
 	}
-	if !send(TeamInfo(r.agentDetailsFromTeam(), r.CurrentAgentName())) {
+	if !send(TeamInfo(r.agentDetailsFromTeam(), a.Name())) {
 		return
 	}
 
@@ -898,24 +1121,14 @@ func (r *LocalRuntime) EmitStartupInfo(ctx context.Context, sess *session.Sessio
 		usage := SessionUsage(sess, contextLimit)
 		usage.Cost = sess.TotalCost()
 
-		// Reconstruct LastMessage from the parent session's last assistant
-		// message so that FinishReason (and other per-message fields) are
-		// available on session restore.  We intentionally iterate
-		// sess.Messages (not GetAllMessages) so the result reflects the
-		// parent agent's state: this event carries the parent session_id,
-		// and sub-agents emit their own token_usage events with their own
-		// session_id during live streaming.
-		for i := len(sess.Messages) - 1; i >= 0; i-- {
-			item := &sess.Messages[i]
+		// Reconstruct LastMessage from the session's last assistant message so
+		// FinishReason (and other per-message fields) are available on restore.
+		for _, item := range slices.Backward(sess.Messages) {
 			if !item.IsMessage() || item.Message.Message.Role != chat.MessageRoleAssistant {
 				continue
 			}
-			msg := &item.Message.Message
-			lm := &MessageUsage{
-				Model:        msg.Model,
-				Cost:         msg.Cost,
-				FinishReason: msg.FinishReason,
-			}
+			msg := item.Message.Message
+			lm := &MessageUsage{Model: msg.Model, Cost: msg.Cost, FinishReason: msg.FinishReason}
 			if msg.Usage != nil {
 				lm.Usage = *msg.Usage
 			}
@@ -923,32 +1136,30 @@ func (r *LocalRuntime) EmitStartupInfo(ctx context.Context, sess *session.Sessio
 			break
 		}
 
-		send(NewTokenUsageEvent(sess.ID, r.CurrentAgentName(), usage))
+		if !send(NewTokenUsageEvent(sess.ID, a.Name(), usage)) {
+			return
+		}
 	}
 
-	// Emit agent warnings (if any) - these are quick
+	// Emit agent warnings (if any) - these are quick.
 	r.emitAgentWarnings(a, func(e Event) { send(e) })
 
-	// Tool loading can be slow (MCP servers need to start)
-	// Emit progressive updates as each toolset loads
-	r.emitToolsProgressively(ctx, a, send)
+	// Tool loading can be slow (MCP servers need to start).
+	r.emitToolsProgressivelyForAgent(ctx, a, send)
 }
 
-// emitToolsProgressively loads tools from each toolset and emits progress updates.
-// This allows the UI to show the tool count incrementally as each toolset loads,
-// with a spinner indicating that more tools may be coming.
-func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agent, send func(Event) bool) {
+func (r *LocalRuntime) emitToolsProgressivelyForAgent(ctx context.Context, a *agent.Agent, send func(Event) bool) {
 	toolsets := a.ToolSets()
 	totalToolsets := len(toolsets)
 
 	// If no toolsets, emit final state immediately
 	if totalToolsets == 0 {
-		send(ToolsetInfo(0, false, r.CurrentAgentName()))
+		send(ToolsetInfo(0, false, a.Name()))
 		return
 	}
 
 	// Emit initial loading state
-	if !send(ToolsetInfo(0, true, r.CurrentAgentName())) {
+	if !send(ToolsetInfo(0, true, a.Name())) {
 		return
 	}
 
@@ -982,13 +1193,13 @@ func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agen
 		totalTools += len(ts)
 
 		// Emit progress update - still loading unless this is the last toolset
-		if !send(ToolsetInfo(totalTools, !isLast, r.CurrentAgentName())) {
+		if !send(ToolsetInfo(totalTools, !isLast, a.Name())) {
 			return
 		}
 	}
 
 	// Emit final state (not loading)
-	send(ToolsetInfo(totalTools, false, r.CurrentAgentName()))
+	send(ToolsetInfo(totalTools, false, a.Name()))
 }
 
 func (r *LocalRuntime) Resume(_ context.Context, req ResumeRequest) {
@@ -1040,7 +1251,7 @@ func (r *LocalRuntime) ResumeElicitation(ctx context.Context, action tools.Elici
 	case <-ctx.Done():
 		slog.Debug("Context cancelled while sending elicitation response")
 		return ctx.Err()
-	case r.elicitationRequestCh <- result:
+	case r.sessionState.elicitationRequestCh <- result:
 		slog.Debug("Elicitation response sent successfully", "action", action)
 		return nil
 	default:
@@ -1053,7 +1264,7 @@ func (r *LocalRuntime) ResumeElicitation(ctx context.Context, action tools.Elici
 // running agent loop. The message will be picked up after the current batch
 // of tool calls finishes but before the loop checks whether to stop.
 func (r *LocalRuntime) Steer(msg QueuedMessage) error {
-	if !r.steerQueue.Enqueue(context.Background(), msg) {
+	if !r.steer.Enqueue(context.Background(), msg) {
 		return errors.New("steer queue full")
 	}
 	return nil
@@ -1063,7 +1274,7 @@ func (r *LocalRuntime) Steer(msg QueuedMessage) error {
 // finishes. Unlike Steer, follow-ups are popped one at a time and each gets
 // a full undivided agent turn.
 func (r *LocalRuntime) FollowUp(msg QueuedMessage) error {
-	if !r.followUpQueue.Enqueue(context.Background(), msg) {
+	if !r.followUp.Enqueue(context.Background(), msg) {
 		return errors.New("follow-up queue full")
 	}
 	return nil
@@ -1096,50 +1307,31 @@ func (r *LocalRuntime) Summarize(ctx context.Context, sess *session.Session, add
 	events <- NewTokenUsageEvent(sess.ID, a.Name(), SessionUsage(sess, contextLimit))
 }
 
-// swapElicitationEventsChannel atomically replaces the current elicitation
-// events channel and returns the previous one. Each RunStream call swaps in
-// its own channel on entry and swaps the previous one back on exit, so nested
-// streams (sub-sessions, background agents) don't lose the parent's channel.
-func (r *LocalRuntime) swapElicitationEventsChannel(ch chan Event) chan Event {
-	r.elicitationEventsChannelMux.Lock()
-	defer r.elicitationEventsChannelMux.Unlock()
-	prev := r.elicitationEventsChannel
-	r.elicitationEventsChannel = ch
-	return prev
-}
-
-// elicitationHandler creates an elicitation handler that can be used by MCP clients
-// This handler propagates elicitation requests to the runtime's client via events
-func (r *LocalRuntime) elicitationHandler(ctx context.Context, req *mcp.ElicitParams) (tools.ElicitationResult, error) {
-	slog.Debug("Elicitation request received from MCP server", "message", req.Message)
-
-	// Hold the read lock while sending to the channel to prevent a race
-	// with swapElicitationEventsChannel / close(events).
-	r.elicitationEventsChannelMux.RLock()
-	eventsChannel := r.elicitationEventsChannel
-	if eventsChannel == nil {
-		r.elicitationEventsChannelMux.RUnlock()
-		return tools.ElicitationResult{}, errors.New("no events channel available for elicitation")
+// New creates a new runtime for an agent team with persistence enabled.
+//
+// The runtime automatically persists session changes to the configured store
+// via a [SessionRecorder] registered as a global EventBus observer. Every
+// event published on any session topic (root or subagent) is handled through
+// a single, unified path — no per-session wrapper drains are needed.
+//
+// Initial session metadata for root sessions is persisted synchronously at
+// the start of [sessionRunner.runStreamWithConfig] (for non-sub-sessions).
+//
+// Returns a [Runtime] interface backed by a [*LocalRuntime].
+func New(agents *team.Team, opts ...Opt) (Runtime, error) {
+	r, err := NewLocalRuntime(agents, opts...)
+	if err != nil {
+		return nil, err
 	}
 
-	r.executeOnUserInputHooks(ctx, "", "elicitation")
+	// Register a SessionRecorder as a global event-bus observer so every
+	// event published on any session topic is persisted through a single,
+	// unified path — no per-session wrappers or child-subscription drains.
+	recorder := NewSessionRecorder(r.sessionStore)
+	r.recorder = recorder
+	r.eventBus.AddGlobalObserver(func(sessionID string, ev Event) {
+		recorder.Handle(sessionID, ev)
+	})
 
-	slog.Debug("Sending elicitation request event to client", "message", req.Message, "mode", req.Mode, "requested_schema", req.RequestedSchema, "url", req.URL)
-	slog.Debug("Elicitation request meta", "meta", req.Meta)
-
-	// Send elicitation request event to the runtime's client
-	eventsChannel <- ElicitationRequest(req.Message, req.Mode, req.RequestedSchema, req.URL, req.ElicitationID, req.Meta, r.CurrentAgentName())
-	r.elicitationEventsChannelMux.RUnlock()
-
-	// Wait for response from the client
-	select {
-	case result := <-r.elicitationRequestCh:
-		return tools.ElicitationResult{
-			Action:  result.Action,
-			Content: result.Content,
-		}, nil
-	case <-ctx.Done():
-		slog.Debug("Context cancelled while waiting for elicitation response")
-		return tools.ElicitationResult{}, ctx.Err()
-	}
+	return r, nil
 }

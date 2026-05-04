@@ -435,11 +435,15 @@ func TestHandleRun_ConcurrencyCapEnforced(t *testing.T) {
 	assert.Contains(t, result.Output, "maximum concurrent")
 }
 
-func TestHandleRun_InvalidJSON(t *testing.T) {
-	h := newTestHandlerWithRunner(&mockRunner{subAgentNames: []string{"sub"}})
-	bad := tools.ToolCall{Function: tools.FunctionCall{Arguments: "not-json"}}
-	_, err := h.HandleRun(t.Context(), session.New(), bad)
-	require.Error(t, err, "invalid JSON should return an error")
+func TestHandleRunWithAllowedAgents_UsesExplicitList(t *testing.T) {
+	h := newTestHandlerWithRunner(&mockRunner{subAgentNames: []string{"runner-sub"}})
+	tc := makeToolCall(t, RunBackgroundAgentArgs{Agent: "explicit-sub", Task: "do something"})
+
+	result, err := h.HandleRunWithAllowedAgents(t.Context(), session.New(), tc, []string{"explicit-sub"})
+	require.NoError(t, err)
+	assert.False(t, result.IsError, "explicit allowed list should override runner.CurrentAgentSubAgentNames")
+
+	h.wg.Wait()
 }
 
 func TestHandleRun_StartsTask(t *testing.T) {

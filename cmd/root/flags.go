@@ -35,6 +35,7 @@ func addRuntimeConfigFlags(cmd *cobra.Command, runConfig *config.RuntimeConfig) 
 	cmd.PersistentFlags().StringArrayVar(&runConfig.HookSessionStart, "hook-session-start", nil, "Add a session-start hook command (repeatable)")
 	cmd.PersistentFlags().StringArrayVar(&runConfig.HookSessionEnd, "hook-session-end", nil, "Add a session-end hook command (repeatable)")
 	cmd.PersistentFlags().StringArrayVar(&runConfig.HookOnUserInput, "hook-on-user-input", nil, "Add an on-user-input hook command (repeatable)")
+	cmd.PersistentFlags().DurationVar(&runConfig.SubagentIdleAutoFinalize, "subagent-idle-auto-finalize", 0, "Auto-finalize subagents that have been idle for at least this long (e.g. 15m). Zero disables the sweeper (default).")
 }
 
 func setupWorkingDirectory(workingDir string) error {

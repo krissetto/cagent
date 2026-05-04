@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/audio/transcribe"
+	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/tui/components/completion"
 	"github.com/docker/docker-agent/pkg/tui/components/editor"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
@@ -26,26 +27,31 @@ import (
 )
 
 // mockChatPage implements chat.Page for testing.
-type mockChatPage struct{}
+type mockChatPage struct {
+	clearedSidebarTransientHover bool
+}
 
-func (m *mockChatPage) Init() tea.Cmd                            { return nil }
-func (m *mockChatPage) Update(tea.Msg) (layout.Model, tea.Cmd)   { return m, nil }
-func (m *mockChatPage) View() string                             { return "" }
-func (m *mockChatPage) SetSize(int, int) tea.Cmd                 { return nil }
-func (m *mockChatPage) CompactSession(string) tea.Cmd            { return nil }
-func (m *mockChatPage) SetSessionStarred(bool)                   {}
-func (m *mockChatPage) SetTitleRegenerating(bool) tea.Cmd        { return nil }
-func (m *mockChatPage) ScrollToBottom() tea.Cmd                  { return nil }
-func (m *mockChatPage) IsWorking() bool                          { return false }
-func (m *mockChatPage) IsInlineEditing() bool                    { return false }
-func (m *mockChatPage) QueueLength() int                         { return 0 }
-func (m *mockChatPage) FocusMessages() tea.Cmd                   { return nil }
-func (m *mockChatPage) FocusMessageAt(int, int) tea.Cmd          { return nil }
-func (m *mockChatPage) BlurMessages()                            {}
-func (m *mockChatPage) GetSidebarSettings() chat.SidebarSettings { return chat.SidebarSettings{} }
-func (m *mockChatPage) SetSidebarSettings(chat.SidebarSettings)  {}
-func (m *mockChatPage) Bindings() []key.Binding                  { return nil }
-func (m *mockChatPage) Help() help.KeyMap                        { return nil }
+func (m *mockChatPage) Init() tea.Cmd                                       { return nil }
+func (m *mockChatPage) Update(tea.Msg) (layout.Model, tea.Cmd)              { return m, nil }
+func (m *mockChatPage) View() string                                        { return "" }
+func (m *mockChatPage) SetSize(int, int) tea.Cmd                            { return nil }
+func (m *mockChatPage) CompactSession(string) tea.Cmd                       { return nil }
+func (m *mockChatPage) SetSessionStarred(bool)                              {}
+func (m *mockChatPage) SetTitleRegenerating(bool) tea.Cmd                   { return nil }
+func (m *mockChatPage) ScrollToBottom() tea.Cmd                             { return nil }
+func (m *mockChatPage) IsWorking() bool                                     { return false }
+func (m *mockChatPage) SetWorking(bool) tea.Cmd                             { return nil }
+func (m *mockChatPage) IsInlineEditing() bool                               { return false }
+func (m *mockChatPage) QueueLength() int                                    { return 0 }
+func (m *mockChatPage) FocusMessages() tea.Cmd                              { return nil }
+func (m *mockChatPage) FocusMessageAt(int, int) tea.Cmd                     { return nil }
+func (m *mockChatPage) BlurMessages()                                       {}
+func (m *mockChatPage) GetSidebarSettings() chat.SidebarSettings            { return chat.SidebarSettings{} }
+func (m *mockChatPage) SetSidebarSettings(chat.SidebarSettings)             {}
+func (m *mockChatPage) Bindings() []key.Binding                             { return nil }
+func (m *mockChatPage) Help() help.KeyMap                                   { return nil }
+func (m *mockChatPage) SeedSubagentsFromLiveTree([]runtime.LiveSessionNode) {}
+func (m *mockChatPage) ClearSidebarTransientHover()                         { m.clearedSidebarTransientHover = true }
 
 // mockEditor implements editor.Editor for testing.
 type mockEditor struct {
@@ -155,6 +161,37 @@ func neutralizeExitFunc(t *testing.T) {
 	orig := exitFunc
 	exitFunc = func(int) {}
 	t.Cleanup(func() { exitFunc = orig })
+}
+
+func TestFocusEditorForNewTab_PrefersEditorOverMessages(t *testing.T) {
+	t.Parallel()
+
+	m, _ := newTestModel()
+	m.focusedPanel = PanelContent // simulate sidebar-click flow having focused messages first
+
+	m.focusEditorForNewTab()
+
+	assert.Equal(t, PanelEditor, m.focusedPanel,
+		"opening a new attached sub-session tab should leave focus on the editor by default")
+}
+
+func TestClearTransientUIForLeavingCurrentPage_ClearsSidebarHover(t *testing.T) {
+	t.Parallel()
+
+	// This is the choke-point that both handleSwitchTab and handleOpenSubAgentTab
+	// call when the active page is about to lose focus. It must always drop the
+	// outgoing page's mouse-driven UI affordances (notably the sidebar's hovered
+	// subagent row), otherwise returning to a previously-active parent tab keeps
+	// the previously hovered subagent highlighted until a fresh mouse-motion
+	// event happens to overwrite it.
+	m, _ := newTestModel()
+	page := m.chatPage.(*mockChatPage)
+	require.False(t, page.clearedSidebarTransientHover)
+
+	m.clearTransientUIForLeavingCurrentPage()
+
+	assert.True(t, page.clearedSidebarTransientHover,
+		"leaving the active page must always clear sidebar hover state")
 }
 
 func TestExitSessionMsg_ExitsImmediately(t *testing.T) {

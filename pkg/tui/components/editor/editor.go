@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -305,8 +306,8 @@ func (e *editor) applySuggestionOverlay(view string) string {
 		// Cursor is on the line after the last content line.
 		// Find the first empty line after content.
 		contentLine := -1
-		for i := len(lines) - 1; i >= 0; i-- {
-			if lineHasContent(lines[i], e.textarea.Prompt) {
+		for i, line := range slices.Backward(lines) {
+			if lineHasContent(line, e.textarea.Prompt) {
 				contentLine = i
 				break
 			}
@@ -329,8 +330,8 @@ func (e *editor) applySuggestionOverlay(view string) string {
 
 		// First, find the last visual line with content
 		lastContentLine := -1
-		for i := len(lines) - 1; i >= 0; i-- {
-			if lineHasContent(lines[i], e.textarea.Prompt) {
+		for i, line := range slices.Backward(lines) {
+			if lineHasContent(line, e.textarea.Prompt) {
 				lastContentLine = i
 				break
 			}

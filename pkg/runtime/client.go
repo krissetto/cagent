@@ -59,35 +59,43 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 			Timeout: 30 * time.Second,
 		},
 		registry: map[string]func() Event{
-			"user_message":           func() Event { return &UserMessageEvent{} },
-			"tool_call":              func() Event { return &ToolCallEvent{} },
-			"tool_call_response":     func() Event { return &ToolCallResponseEvent{} },
-			"tool_call_confirmation": func() Event { return &ToolCallConfirmationEvent{} },
-			"token_usage":            func() Event { return &TokenUsageEvent{} },
-			"stream_stopped":         func() Event { return &StreamStoppedEvent{} },
-			"stream_started":         func() Event { return &StreamStartedEvent{} },
-			"shell":                  func() Event { return &ShellOutputEvent{} },
-			"session_title":          func() Event { return &SessionTitleEvent{} },
-			"session_summary":        func() Event { return &SessionSummaryEvent{} },
-			"session_compaction":     func() Event { return &SessionCompactionEvent{} },
-			"partial_tool_call":      func() Event { return &PartialToolCallEvent{} },
-			"max_iterations_reached": func() Event { return &MaxIterationsReachedEvent{} },
-			"error":                  func() Event { return &ErrorEvent{} },
-			"elicitation_request":    func() Event { return &ElicitationRequestEvent{} },
-			"authorization_event":    func() Event { return &AuthorizationEvent{} },
-			"agent_choice":           func() Event { return &AgentChoiceEvent{} },
-			"agent_choice_reasoning": func() Event { return &AgentChoiceReasoningEvent{} },
-			"mcp_init_started":       func() Event { return &MCPInitStartedEvent{} },
-			"mcp_init_finished":      func() Event { return &MCPInitFinishedEvent{} },
-			"agent_info":             func() Event { return &AgentInfoEvent{} },
-			"team_info":              func() Event { return &TeamInfoEvent{} },
-			"toolset_info":           func() Event { return &ToolsetInfoEvent{} },
-			"agent_switching":        func() Event { return &AgentSwitchingEvent{} },
-			"warning":                func() Event { return &WarningEvent{} },
-			"hook_blocked":           func() Event { return &HookBlockedEvent{} },
-			"rag_indexing_started":   func() Event { return &RAGIndexingStartedEvent{} },
-			"rag_indexing_progress":  func() Event { return &RAGIndexingProgressEvent{} },
-			"rag_indexing_completed": func() Event { return &RAGIndexingCompletedEvent{} },
+			"user_message":              func() Event { return &UserMessageEvent{} },
+			"tool_call":                 func() Event { return &ToolCallEvent{} },
+			"tool_call_response":        func() Event { return &ToolCallResponseEvent{} },
+			"tool_call_confirmation":    func() Event { return &ToolCallConfirmationEvent{} },
+			"token_usage":               func() Event { return &TokenUsageEvent{} },
+			"stream_stopped":            func() Event { return &StreamStoppedEvent{} },
+			"stream_started":            func() Event { return &StreamStartedEvent{} },
+			"shell":                     func() Event { return &ShellOutputEvent{} },
+			"session_title":             func() Event { return &SessionTitleEvent{} },
+			"session_summary":           func() Event { return &SessionSummaryEvent{} },
+			"session_compaction":        func() Event { return &SessionCompactionEvent{} },
+			"partial_tool_call":         func() Event { return &PartialToolCallEvent{} },
+			"max_iterations_reached":    func() Event { return &MaxIterationsReachedEvent{} },
+			"error":                     func() Event { return &ErrorEvent{} },
+			"elicitation_request":       func() Event { return &ElicitationRequestEvent{} },
+			"authorization_event":       func() Event { return &AuthorizationEvent{} },
+			"agent_choice":              func() Event { return &AgentChoiceEvent{} },
+			"agent_choice_reasoning":    func() Event { return &AgentChoiceReasoningEvent{} },
+			"mcp_init_started":          func() Event { return &MCPInitStartedEvent{} },
+			"mcp_init_finished":         func() Event { return &MCPInitFinishedEvent{} },
+			"agent_info":                func() Event { return &AgentInfoEvent{} },
+			"team_info":                 func() Event { return &TeamInfoEvent{} },
+			"toolset_info":              func() Event { return &ToolsetInfoEvent{} },
+			"agent_switching":           func() Event { return &AgentSwitchingEvent{} },
+			"warning":                   func() Event { return &WarningEvent{} },
+			"hook_blocked":              func() Event { return &HookBlockedEvent{} },
+			"rag_indexing_started":      func() Event { return &RAGIndexingStartedEvent{} },
+			"rag_indexing_progress":     func() Event { return &RAGIndexingProgressEvent{} },
+			"rag_indexing_completed":    func() Event { return &RAGIndexingCompletedEvent{} },
+			"subagent_started":          func() Event { return &SubAgentStartedEvent{} },
+			"subagent_sent":             func() Event { return &SubAgentSentEvent{} },
+			"subagent_update":           func() Event { return &SubAgentUpdateEvent{} },
+			"parent_idle":               func() Event { return &ParentIdleEvent{} },
+			"parent_resume":             func() Event { return &ParentResumeEvent{} },
+			"turn_started":              func() Event { return &TurnStartedEvent{} },
+			"turn_ended":                func() Event { return &TurnEndedEvent{} },
+			"live_session_tree_changed": func() Event { return &LiveSessionTreeChangedEvent{} },
 		},
 	}
 
@@ -418,4 +426,143 @@ func (c *Client) GetAgentToolCount(ctx context.Context, agentFilename, agentName
 	}
 
 	return resp.AvailableTools, nil
+}
+
+// --- Live session observability & control ---
+
+// GetLiveSessionTree retrieves the live subagent tree rooted at the given root session id.
+func (c *Client) GetLiveSessionTree(ctx context.Context, rootSessionID string) (*api.LiveSessionTreeResponse, error) {
+	var resp api.LiveSessionTreeResponse
+	err := c.doRequest(ctx, http.MethodGet, "/api/sessions/"+rootSessionID+"/tree", nil, &resp)
+	return &resp, err
+}
+
+// GetLiveSession retrieves metadata for a specific live session (root or descendant).
+func (c *Client) GetLiveSession(ctx context.Context, sessionID string) (*api.LiveSessionResponse, error) {
+	var resp api.LiveSessionResponse
+	err := c.doRequest(ctx, http.MethodGet, "/api/live-sessions/"+sessionID, nil, &resp)
+	return &resp, err
+}
+
+// GetLiveSessionSnapshot retrieves the current transcript plus metadata for a
+// specific live session (root or descendant).
+func (c *Client) GetLiveSessionSnapshot(ctx context.Context, sessionID string) (*api.LiveSessionSnapshotResponse, error) {
+	var resp api.LiveSessionSnapshotResponse
+	err := c.doRequest(ctx, http.MethodGet, "/api/live-sessions/"+sessionID+"/snapshot", nil, &resp)
+	return &resp, err
+}
+
+// AttachLiveSession opens an SSE stream of events for the given session id.
+func (c *Client) AttachLiveSession(ctx context.Context, sessionID string) (<-chan Event, error) {
+	return c.openSSEStream(ctx, http.MethodGet, "/api/live-sessions/"+sessionID+"/attach", nil)
+}
+
+// SteerLiveSession injects user messages into an arbitrary live session.
+func (c *Client) SteerLiveSession(ctx context.Context, sessionID string, messages []api.Message) error {
+	req := api.SteerSessionRequest{Messages: messages}
+	return c.doRequest(ctx, http.MethodPost, "/api/live-sessions/"+sessionID+"/steer", req, nil)
+}
+
+// FollowUpLiveSession queues messages for an arbitrary live session.
+func (c *Client) FollowUpLiveSession(ctx context.Context, sessionID string, messages []api.Message) error {
+	req := api.SteerSessionRequest{Messages: messages}
+	return c.doRequest(ctx, http.MethodPost, "/api/live-sessions/"+sessionID+"/followup", req, nil)
+}
+
+// CloseLiveSession asks a live session to close cleanly.
+func (c *Client) CloseLiveSession(ctx context.Context, sessionID string) error {
+	return c.doRequest(ctx, http.MethodPost, "/api/live-sessions/"+sessionID+"/close", nil, nil)
+}
+
+// InterruptLiveSession cancels the currently-running turn of a live session
+// without stopping the session itself.
+func (c *Client) InterruptLiveSession(ctx context.Context, sessionID string) error {
+	return c.doRequest(ctx, http.MethodPost, "/api/live-sessions/"+sessionID+"/interrupt", nil, nil)
+}
+
+// StopLiveSession forcibly stops a live session.
+func (c *Client) StopLiveSession(ctx context.Context, sessionID string) error {
+	return c.doRequest(ctx, http.MethodPost, "/api/live-sessions/"+sessionID+"/stop", nil, nil)
+}
+
+// openSSEStream opens a server-sent-events response and returns a channel of
+// decoded Event values. It is used by both run-agent and live-session attach.
+func (c *Client) openSSEStream(ctx context.Context, method, endpoint string, body []byte) (<-chan Event, error) {
+	u := *c.baseURL
+	u.Path = path.Join(u.Path, endpoint)
+
+	var reqBody io.Reader
+	if len(body) > 0 {
+		reqBody = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := c.httpClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below
+	if err != nil {
+		return nil, fmt.Errorf("performing request: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("reading error response body: %w", err)
+		}
+
+		var errResp ErrorResponse
+		if err := json.Unmarshal(respBody, &errResp); err == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, errResp.Error)
+		}
+		return nil, fmt.Errorf("HTTP error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	eventChan := make(chan Event, 128)
+	go func() {
+		defer close(eventChan)
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(line) == 0 || line[0] == ':' {
+				continue
+			}
+			after, ok := bytes.CutPrefix(line, []byte("data: "))
+			if !ok {
+				continue
+			}
+
+			var baseEvent struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(after, &baseEvent); err != nil {
+				slog.Debug("sse decode", "error", err)
+				continue
+			}
+			createEvent, found := c.registry[baseEvent.Type]
+			if !found {
+				slog.Debug("sse decode", "invalid_type", baseEvent.Type)
+				continue
+			}
+			ev := createEvent()
+			if err := json.Unmarshal(after, &ev); err != nil {
+				slog.Debug("sse decode", "error", err)
+				continue
+			}
+			select {
+			case eventChan <- ev:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return eventChan, nil
 }

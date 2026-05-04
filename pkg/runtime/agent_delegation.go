@@ -157,9 +157,14 @@ func mergeExcludedTools(parent, child []string) []string {
 // back to the parent when done.
 //
 // This is the "interactive" path used by transfer_task where the parent agent
-// loop is blocked while the child executes.
-func (r *LocalRuntime) runSubSessionForwarding(ctx context.Context, parent, child *session.Session, span trace.Span, evts chan Event, callerAgent string) (*tools.ToolCallResult, error) {
-	childEvents := r.RunStream(ctx, child)
+// loop is blocked while the child executes. The child session is driven through
+// this runner so nested child-launched sub-sessions inherit the invoking
+// runner's sessionState rather than falling back to the root runtime's state.
+func (sr *sessionRunner) runSubSessionForwarding(ctx context.Context, parent, child *session.Session, span trace.Span, evts chan Event, callerAgent string) (*tools.ToolCallResult, error) {
+	childEvents := sr.runStreamWithConfig(ctx, sessionRunConfig{
+		sess:   child,
+		policy: rootWakePolicy{runner: sr},
+	})
 	for event := range childEvents {
 		evts <- event
 		if errEvent, ok := event.(*ErrorEvent); ok {
@@ -188,10 +193,15 @@ func (r *LocalRuntime) runSubSessionForwarding(ctx context.Context, parent, chil
 // used by background agents and other non-interactive callers.
 //
 // It returns a RunResult containing either the final assistant message or
-// an error message.
-func (r *LocalRuntime) runSubSessionCollecting(ctx context.Context, parent, child *session.Session, onContent func(string)) *agenttool.RunResult {
+// an error message. Like runSubSessionForwarding, the child is driven through
+// the invoking runner so nested child-launched sessions reuse the correct
+// sessionState.
+func (sr *sessionRunner) runSubSessionCollecting(ctx context.Context, parent, child *session.Session, onContent func(string)) *agenttool.RunResult {
 	var errMsg string
-	events := r.RunStream(ctx, child)
+	events := sr.runStreamWithConfig(ctx, sessionRunConfig{
+		sess:   child,
+		policy: rootWakePolicy{runner: sr},
+	})
 	for event := range events {
 		if ctx.Err() != nil {
 			break
@@ -220,7 +230,6 @@ func (r *LocalRuntime) runSubSessionCollecting(ctx context.Context, parent, chil
 	return &agenttool.RunResult{Result: result}
 }
 
-// CurrentAgentSubAgentNames implements agenttool.Runner.
 func (r *LocalRuntime) CurrentAgentSubAgentNames() []string {
 	a := r.CurrentAgent()
 	if a == nil {
@@ -229,8 +238,6 @@ func (r *LocalRuntime) CurrentAgentSubAgentNames() []string {
 	return agentNames(a.SubAgents())
 }
 
-// RunAgent implements agenttool.Runner. It starts a sub-agent synchronously and
-// blocks until completion or cancellation.
 func (r *LocalRuntime) RunAgent(ctx context.Context, params agenttool.RunParams) *agenttool.RunResult {
 	child, err := r.team.Agent(params.AgentName)
 	if err != nil {
@@ -258,10 +265,10 @@ func (r *LocalRuntime) RunAgent(ctx context.Context, params agenttool.RunParams)
 
 	s := newSubSession(sess, cfg, child)
 
-	return r.runSubSessionCollecting(ctx, sess, s, params.OnContent)
+	return newRootSessionRunner(r).runSubSessionCollecting(ctx, sess, s, params.OnContent)
 }
 
-func (r *LocalRuntime) handleTaskTransfer(ctx context.Context, sess *session.Session, toolCall tools.ToolCall, evts chan Event) (*tools.ToolCallResult, error) {
+func (r *LocalRuntime) handleTaskTransfer(ctx context.Context, sr *sessionRunner, sess *session.Session, toolCall tools.ToolCall, evts chan Event) (*tools.ToolCallResult, error) {
 	var params struct {
 		Agent          string `json:"agent"`
 		Task           string `json:"task"`
@@ -272,7 +279,7 @@ func (r *LocalRuntime) handleTaskTransfer(ctx context.Context, sess *session.Ses
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	a := r.CurrentAgent()
+	a := r.resolveSessionAgent(sess)
 
 	// Validate that the target agent is in the current agent's sub-agents list
 	if errResult := validateAgentInList(a.Name(), params.Agent, "transfer task to", "sub-agents list", a.SubAgents()); errResult != nil {
@@ -291,16 +298,31 @@ func (r *LocalRuntime) handleTaskTransfer(ctx context.Context, sess *session.Ses
 	// Emit agent switching start event
 	evts <- AgentSwitching(true, a.Name(), params.Agent)
 
-	r.setCurrentAgent(params.Agent)
-	defer func() {
-		r.setCurrentAgent(a.Name())
-
-		// Emit agent switching end event
-		evts <- AgentSwitching(false, params.Agent, a.Name())
-
-		// Restore original agent info in sidebar
-		evts <- AgentInfo(a.Name(), getAgentModelID(a), a.Description(), a.WelcomeMessage())
-	}()
+	// Scope the agent-switch mutation correctly:
+	//   - For root sessions, mutate the runtime's global current-agent selection
+	//     so resolveSessionAgent (which falls back to it) returns params.Agent for
+	//     the unpinned child session created below.
+	//   - For sub-sessions, do not mutate the parent session's AgentName at all.
+	//     The parent keeps its own pinned identity while the newly created child
+	//     sub-session is pinned to params.Agent via PinAgent below.
+	isSubSession := sess != nil && sess.IsSubSession()
+	if isSubSession {
+		defer func() {
+			// Emit agent switching end event
+			evts <- AgentSwitching(false, params.Agent, a.Name())
+			// Restore original agent info in sidebar
+			evts <- AgentInfo(a.Name(), getAgentModelID(a), a.Description(), a.WelcomeMessage())
+		}()
+	} else {
+		r.setCurrentAgent(params.Agent)
+		defer func() {
+			r.setCurrentAgent(a.Name())
+			// Emit agent switching end event
+			evts <- AgentSwitching(false, params.Agent, a.Name())
+			// Restore original agent info in sidebar
+			evts <- AgentInfo(a.Name(), getAgentModelID(a), a.Description(), a.WelcomeMessage())
+		}()
+	}
 
 	// Emit agent info for the new agent
 	child, err := r.team.Agent(params.Agent)
@@ -317,14 +339,28 @@ func (r *LocalRuntime) handleTaskTransfer(ctx context.Context, sess *session.Ses
 		AgentName:      params.Agent,
 		Title:          "Transferred task",
 		ToolsApproved:  sess.ToolsApproved,
+		// Pin every transferred child session to the resolved target agent. Root
+		// sessions still temporarily switch the runtime's current agent for legacy
+		// UI/event behaviour, but the child session itself should resolve entirely
+		// via its own AgentName.
+		PinAgent: true,
 	}
 
 	s := newSubSession(sess, cfg, child)
 
-	return r.runSubSessionForwarding(ctx, sess, s, span, evts, a.Name())
+	return sr.runSubSessionForwarding(ctx, sess, s, span, evts, a.Name())
 }
 
-func (r *LocalRuntime) handleHandoff(_ context.Context, _ *session.Session, toolCall tools.ToolCall, _ chan Event) (*tools.ToolCallResult, error) {
+func (r *LocalRuntime) handleHandoff(_ context.Context, _ *sessionRunner, sess *session.Session, toolCall tools.ToolCall, _ chan Event) (*tools.ToolCallResult, error) {
+	// Handoff mutates the runtime-wide root current-agent selection. Child
+	// sessions are pinned to their own agent and may run concurrently with the
+	// root, so allowing a child to call handoff would corrupt root state and
+	// violate session-local execution. Subagents should use their own configured
+	// tools, not root handoff routing.
+	if sess != nil && sess.IsSubSession() {
+		return tools.ResultError("handoff is only available from the root session; subagent sessions cannot mutate the root agent selection"), nil
+	}
+
 	var params builtin.HandoffArgs
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &params); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)

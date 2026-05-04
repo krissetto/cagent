@@ -19,11 +19,10 @@ agents:
         3. Call the `writer` agent to write a 750-word technical blog post based on the research done by the web_search_agent
       </WORKFLOW>
 
-      - Use the transfer_to_agent tool to call the right agent at the right time to complete the workflow.
-      - DO NOT transfer to multiple members at once
+      - Use `subagent_start` to dispatch work to the right specialist and `subagent_send` to follow up. Do not call multiple subagents at once for this workflow.
       - ONLY CALL ONE AGENT AT A TIME
-      - When using the `transfer_to_agent` tool, make exactly one call and wait for the result before making another. Do not batch or parallelize tool calls.
-    sub_agents:
+      - Make exactly one subagent call and wait for its update before making another. Do not batch or parallelize delegation calls.
+    subagents:
       - web_search_agent
       - writer
     toolsets:

@@ -4,7 +4,7 @@ import (
 	"github.com/goccy/go-yaml"
 
 	"github.com/docker/docker-agent/pkg/config/types"
-	previous "github.com/docker/docker-agent/pkg/config/v7"
+	previous "github.com/docker/docker-agent/pkg/config/v8"
 )
 
 func Register(parsers map[string]func([]byte) (any, error), upgraders *[]func(any, []byte) (any, error)) {

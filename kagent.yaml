@@ -1,0 +1,464 @@
+version: 9
+
+models:
+
+  gpt-5.5:
+    provider: openai
+    model: gpt-5.5
+    thinking_budget: medium
+  
+  gpt-5.5-low:
+    provider: openai
+    model: gpt-5.5
+    thinking_budget: low
+
+  gpt-5.5-high:
+    provider: openai
+    model: gpt-5.5
+    thinking_budget: high
+  
+  gpt-5.5-xhigh:
+    provider: openai
+    model: gpt-5.5
+    thinking_budget: xhigh
+
+  gpt-5.4:
+    provider: openai
+    model: gpt-5.4
+    thinking_budget: medium
+  
+  gpt-5.4-low:
+    provider: openai
+    model: gpt-5.4
+    thinking_budget: low
+
+  gpt-5.4-high:
+    provider: openai
+    model: gpt-5.4
+    thinking_budget: high
+  
+  gpt-5.4-xhigh:
+    provider: openai
+    model: gpt-5.4
+    thinking_budget: xhigh
+  
+  ###
+
+  opus-4.6:
+    provider: anthropic
+    model: claude-opus-4-6
+    thinking_budget: medium
+    provider_opts:
+      interleaved_thinking: true
+
+  opus-4.6-low:
+    provider: anthropic
+    model: claude-opus-4-6
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: low
+
+  opus-4.6-high:
+    provider: anthropic
+    model: claude-opus-4-6
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: high
+
+  opus-4.6-xhigh:
+    provider: anthropic
+    model: claude-opus-4-6
+    thinking_budget: adaptive/xhigh
+    provider_opts:
+      interleaved_thinking: true
+
+  opus-4.7-low:
+    provider: anthropic
+    model: claude-opus-4-7
+    thinking_budget: adaptive/low
+    provider_opts:
+      interleaved_thinking: true
+
+  opus-4.7-medium:
+    provider: anthropic
+    model: claude-opus-4-7
+    thinking_budget: adaptive/medium
+    provider_opts:
+      interleaved_thinking: true
+
+  opus-4.7-high:
+    provider: anthropic
+    model: claude-opus-4-7
+    thinking_budget: adaptive/high
+    provider_opts:
+      interleaved_thinking: true
+
+  opus-4.7-xhigh:
+    provider: anthropic
+    model: claude-opus-4-7
+    thinking_budget: adaptive/xhigh
+    provider_opts:
+      interleaved_thinking: true
+
+  ###
+
+  sonnet-4.6: &sonnet-4.6
+    provider: anthropic
+    model: claude-sonnet-4-6
+    thinking_budget: medium
+    provider_opts:
+      interleaved_thinking: true
+
+  sonnet-4.6-low:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: low
+  
+  sonnet-4.6-high:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: high
+
+  ###
+  
+  haiku-4.5: &haiku-4.5
+    provider: anthropic
+    model: claude-haiku-4-5
+    thinking_budget: 4096
+    provider_opts:
+      interleaved_thinking: true
+  
+  haiku-4.5-low:
+    provider: anthropic
+    model: claude-haiku-4-5
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: 1024
+
+  haiku-4.5-high:
+    provider: anthropic
+    model: claude-haiku-4-5
+    provider_opts:
+      interleaved_thinking: true
+    thinking_budget: 16384
+  
+  ###
+  
+  low:
+    model: gpt-5.4-low,opus-4.6-low,opus-4.7-low,sonnet-4.6,haiku-4.5-high
+  mid:
+    model: gpt-5.4,opus-4.6,opus-4.7-medium,sonnet-4.6-high
+  high:
+    model: gpt-5.5-high,opus-4.6-high,opus-4.7-high
+  xhigh:
+    model: gpt-5.5-xhigh,opus-4.6-xhigh,opus-4.7-xhigh
+
+  l-high:
+    provider: dmr
+    base_url: http://192.168.50.205:12434/engines/v1
+    model: gemma4:31B # glm-4.7-flash:31B-UD-Q8_K_XL #
+    thinking_budget: high
+    max_tokens: 16384
+    temperature: 1.0
+    top_p: 0.95
+    #presence_penalty: 0.0
+    provider_opts:
+      context_size: 524288
+      runtime_flags: |
+        --cache-type-k q8_0
+        --cache-type-v q8_0
+      # -c 524288
+
+  qwen3.6-35B-general:
+    provider: dmr
+    base_url: http://192.168.50.205:12434/engines/v1
+    model: hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL
+    thinking_budget: high
+    max_tokens: 16384
+    temperature: 1.0
+    top_p: 0.95
+    # top_k: 20
+    # min_p: 0.0
+    # repetition_penalty: 1.0
+    presence_penalty: 1.5
+    provider_opts:
+      context_size: 262144
+      runtime_flags: |
+        --cache-type-k q8_0
+        --cache-type-v q8_0
+
+  qwen3.6-35B-code:
+    provider: dmr
+    base_url: http://192.168.50.205:12434/engines/v1
+    model: hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL
+    thinking_budget: high
+    max_tokens: 16384
+    temperature: 0.6
+    top_p: 0.95
+#    # top_k: 20
+#    # min_p: 0.0
+#    # repetition_penalty: 1.0
+    presence_penalty: 0.0
+    provider_opts:
+      context_size: 262144
+      runtime_flags: |
+        --cache-type-k q8_0
+        --cache-type-v q8_0
+
+  gemma4-26B:
+    provider: dmr
+    base_url: http://192.168.50.205:12434/engines/v1
+    model: gemma4:26B # huggingface.co/unsloth/qwen3.5-35b-a3b-gguf:UD-Q4_K_XL
+    thinking_budget: high
+    # max_tokens: 16384
+    temperature: 1.0
+    top_p: 0.95
+    #presence_penalty: 0.0
+    provider_opts:
+      context_size: 262144
+      runtime_flags: |
+        --cache-type-k q8_0
+        --cache-type-v q8_0
+
+#  l-low:
+#    provider: dmr
+#    model: huggingface.co/unsloth/qwen3.5-9b-gguf:UD-Q4_K_XL   
+#    max_tokens: 2048
+#    temperature: 0.6
+#    provider_opts:
+      # speculative_draft_model: huggingface.co/unsloth/qwen3.5-2b-gguf:UD-Q4_K_XL
+      # speculative_num_tokens: 5
+      # speculative_acceptance_rate: 0.75
+#     context_size: 262144
+#      runtime_flags: |
+#        --cache-type-k q8_0
+#        --cache-type-v q8_0
+      # -c 262144
+      #--cache-type-k f16
+      # --temp=0.6
+      # --top_p=0.95
+      # --top_k=20
+      # --min_p=0.0
+      # --n_ctx 262144
+      # --repetition_penalty=1.0
+      # --presence_penalty=0.0
+### less code duplication with yaml anchors
+#   gpt-5.4: &gpt-5.4
+#     provider: openai
+#     model: gpt-5.4
+#     thinking_budget: medium
+
+#   gpt-5.4-low:
+#     <<: *gpt-5.4
+#     thinking_budget: low
+
+#   gpt-5.4-xhigh:
+#     <<: *gpt-5.4
+#     thinking_budget: xhigh
+# ###
+#   anthropic: &anthropic
+#     provider: anthropic
+#     thinking_budget: medium
+#     provider_opts:
+#       interleaved_thinking: true
+
+#   opus-4.6: &opus-4.6
+#     <<: *anthropic
+#     model: claude-opus-4-6
+
+#   opus-4.6-low:
+#     <<: *opus-4.6
+#     thinking_budget: low
+
+#   opus-4.6-high:
+#     <<: *opus-4.6
+#     thinking_budget: high
+# ###
+#   sonnet-4.6: &sonnet-4.6
+#     <<: *anthropic
+#     model: claude-sonnet-4-6
+
+#   sonnet-4.6-low:
+#     <<: *sonnet-4.6
+#     thinking_budget: low
+  
+#   sonnet-4.6-high:
+#     <<: *sonnet-4.6
+#     thinking_budget: high
+# ###
+#   haiku-4.5: &haiku-4.5
+#     <<: *anthropic
+#     model: claude-haiku-4-5
+  
+#   haiku-4.5-low:
+#     <<: *haiku-4.5
+#     thinking_budget: low
+
+#   haiku-4.5-high:
+#     <<: *haiku-4.5
+#     thinking_budget: high
+# ###
+#   low:
+#     model: gpt-5.4-low,opus-4.6-low,sonnet-4.6,haiku-4.5-high
+#   mid:
+#     model: gpt-5.4,opus-4.6,sonnet-4.6-high
+#   high:
+#     model: gpt-5.4-high,opus-4.6-high
+# ###
+
+agents:
+  root:
+    model: high # qwen3.6-35B-general
+    description: Technical lead coordinating planning, implementation, and review for coding tasks
+    welcome_message: |
+      Ask anything... "Fix the tests", "Add this feature"
+    instruction: |
+      You are an expert software engineering lead responsible for delivering correct, validated changes.
+
+      <workflow>
+      Follow this workflow for every coding task:
+
+      1. Understand the request by exploring the repository and identifying the affected code.
+      2. Decide whether the task is simple or complex.
+      3. For complex, ambiguous, or multi-file tasks, ask the relevant subagent for a detailed implementation plan before touching code.
+      4. Use other relevant subagents to help you with the task, if possible. Delegate in parallel when safe to do so.
+      5. Once changes are in place, always review them with the relevant subagent if present before declaring success.
+      6. Validate by running the relevant tests, linters, or build commands.
+      7. Summarize what changed, how it was validated, and any remaining risks.
+      </workflow>
+
+      <principles>
+      - Read before you write.
+      - Check docs online when needed.
+      - Prefer minimal, focused changes.
+      - Match the existing style and architecture.
+      - Prefer tools over assumptions.
+      - Be concise and direct in user-facing responses.
+      </principles>
+
+    skills: true
+    add_date: true
+    add_environment_info: true
+    add_prompt_files:
+      - AGENTS.md
+    max_old_tool_call_tokens: -1
+    subagents:
+      - planner
+      - coder
+      - reviewer
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: todo
+
+  planner:
+    model: mid #qwen3.6-35B-general
+    description: Planning specialist who analyzes complex coding tasks and produces actionable implementation plans
+    instruction: |
+      You are a senior engineering planner.
+
+      Your job is to analyze a coding task and produce a concrete implementation plan that another agent can execute.
+
+      <workflow>
+      1. Explore the codebase enough to understand the affected systems.
+      2. Identify constraints, dependencies, risks, and unknowns.
+      3. Break the work into small, executable steps.
+      4. Note validation steps and review checkpoints.
+      5. Write the plan in .md format into the ./docker-agent/plans/ directory using [ ]/[x] checkboxes so agents can mark the steps as complete (provide that guidance at the top of the plan).
+      </workflow>
+
+      <output>
+      Return a concise plan with:
+      1. summary
+      2. assumptions or open questions
+      3. implementation steps
+      4. validation plan
+      5. risks
+      </output>
+
+      <delegation>
+      You may spawn a planner subagent (`subagent_start` with agent `planner`) when a task is large enough that splitting the exploration across parallel investigations is genuinely useful — for example, mapping two unrelated subsystems at once. Keep the delegated `task` self-contained, fold the result into your own plan, and don't narrate the mechanics.
+      </delegation>
+
+      Do not implement code or perform any actions beyond reading and searching. Focus on producing a useful execution plan.
+    skills: true
+    add_date: true
+    add_environment_info: true
+    add_prompt_files:
+      - AGENTS.md
+    max_old_tool_call_tokens: -1
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: todo
+    subagents:
+      - planner
+
+  coder:
+    model: mid #qwen3.6-35B-code
+    description: Software engineer who reads, modifies, and validates code changes
+    instruction: |
+      You are an expert software engineer. Execute implementation tasks carefully and validate your work.
+
+      <workflow>
+      1. Explore the relevant code and understand the assigned task.
+      2. If a plan was provided, follow it closely and stay within your assigned scope.
+      3. Make the required code changes.
+      4. Run targeted validation commands.
+      5. If validation fails, fix the issues and re-run validation.
+      6. Return a concise summary of the changes, validation performed, and any follow-ups.
+      </workflow>
+
+      <principles>
+      - Make the smallest change that fully solves the task.
+      - Preserve existing conventions and patterns.
+      - Do not claim success without attempting validation.
+      - Use todo tracking for multi-step tasks.
+      - Use fetch only when external documentation is genuinely needed.
+      - You receive your task as a normal user message; do your work and reply with the result. The parent will be woken automatically when you finish.
+      </principles>
+    skills: true
+    add_date: true
+    add_environment_info: true
+    add_prompt_files:
+      - AGENTS.md
+    max_old_tool_call_tokens: -1
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: todo
+
+  reviewer:
+    model: gemma4-26B
+    description: Code reviewer focused on correctness, regressions, and quality
+    instruction: |
+      You are a thorough code reviewer.
+
+      Review the proposed changes for:
+      - correctness
+      - regressions and edge cases
+      - test coverage and validation gaps
+      - security and reliability issues
+      - maintainability and clarity
+
+      Return:
+      1. verdict: pass or fail
+      2. key findings
+      3. required fixes, if any
+      4. residual risks or follow-ups
+
+      Be specific and actionable. Reference files and code paths when possible.
+      Your review goes back to the parent automatically — finish your turn with the verdict, don't ask follow-up questions unless something is genuinely blocking.
+    skills: true
+    add_date: true
+    add_environment_info: true
+    add_prompt_files:
+      - AGENTS.md
+    max_old_tool_call_tokens: -1
+    toolsets:
+      - type: filesystem
+      - type: shell

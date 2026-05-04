@@ -491,4 +491,124 @@ func (r *RemoteRuntime) Close() error {
 	return nil
 }
 
-var _ Runtime = (*RemoteRuntime)(nil)
+// AttachLiveSession delegates to the remote client so callers can observe an
+// arbitrary live session (root or descendant) over the server's SSE endpoint.
+func (r *RemoteRuntime) AttachLiveSession(ctx context.Context, sessionID string) (<-chan Event, error) {
+	return r.client.AttachLiveSession(ctx, sessionID)
+}
+
+// LiveSessionTree retrieves the current live tree rooted at rootSessionID.
+// On failure it returns nil so callers can gracefully degrade.
+func (r *RemoteRuntime) LiveSessionTree(rootSessionID string) []LiveSessionNode {
+	resp, err := r.client.GetLiveSessionTree(context.Background(), rootSessionID)
+	if err != nil {
+		slog.Debug("remote live tree lookup failed", "root_session_id", rootSessionID, "error", err)
+		return nil
+	}
+	out := make([]LiveSessionNode, len(resp.Nodes))
+	for i, n := range resp.Nodes {
+		out[i] = liveNodeFromAPI(n)
+	}
+	return out
+}
+
+// LiveSessionNode resolves a single live session snapshot through the remote API.
+func (r *RemoteRuntime) LiveSessionNode(sessionID string) (LiveSessionNode, bool) {
+	resp, err := r.client.GetLiveSession(context.Background(), sessionID)
+	if err != nil {
+		slog.Debug("remote live node lookup failed", "session_id", sessionID, "error", err)
+		return LiveSessionNode{}, false
+	}
+	return liveNodeFromAPI(resp.Node), true
+}
+
+// LiveSession fetches a full snapshot of a live descendant session from the
+// remote server and hydrates a [*session.Session] so the TUI can render the
+// subagent in a normal chat tab. The returned pointer is a local copy; to
+// keep it in sync, the caller should pair it with a live event subscription
+// via [RemoteRuntime.AttachLiveSession].
+func (r *RemoteRuntime) LiveSession(sessionID string) (*session.Session, bool) {
+	resp, err := r.client.GetLiveSessionSnapshot(context.Background(), sessionID)
+	if err != nil {
+		slog.Debug("remote live session snapshot failed", "session_id", sessionID, "error", err)
+		return nil, false
+	}
+	items := make([]session.Item, 0, len(resp.Session.Messages))
+	for _, m := range resp.Session.Messages {
+		msg := m
+		items = append(items, session.NewMessageItem(&msg))
+	}
+	opts := []session.Opt{
+		session.WithID(resp.Session.ID),
+		session.WithTitle(resp.Session.Title),
+		session.WithToolsApproved(resp.Session.ToolsApproved),
+		session.WithWorkingDir(resp.Session.WorkingDir),
+		session.WithMessages(items),
+		session.WithAgentName(resp.Node.AgentName),
+		session.WithParentID(resp.Node.ParentSessionID),
+	}
+	if resp.Session.Permissions != nil {
+		opts = append(opts, session.WithPermissions(resp.Session.Permissions))
+	}
+	sess := session.New(opts...)
+	sess.CreatedAt = resp.Session.CreatedAt
+	sess.InputTokens = resp.Session.InputTokens
+	sess.OutputTokens = resp.Session.OutputTokens
+	return sess, true
+}
+
+// SteerSessionByID injects a message into an arbitrary live session via the server.
+func (r *RemoteRuntime) SteerSessionByID(sessionID string, msg QueuedMessage) error {
+	return r.client.SteerLiveSession(context.Background(), sessionID, []api.Message{{
+		Content:      msg.Content,
+		MultiContent: msg.MultiContent,
+	}})
+}
+
+// FollowUpSessionByID queues a follow-up on an arbitrary live session via the server.
+func (r *RemoteRuntime) FollowUpSessionByID(sessionID string, msg QueuedMessage) error {
+	return r.client.FollowUpLiveSession(context.Background(), sessionID, []api.Message{{
+		Content:      msg.Content,
+		MultiContent: msg.MultiContent,
+	}})
+}
+
+// CloseSessionByID requests a clean close for an arbitrary live session.
+func (r *RemoteRuntime) CloseSessionByID(sessionID string) error {
+	return r.client.CloseLiveSession(context.Background(), sessionID)
+}
+
+// InterruptSessionByID cancels the currently-running turn of an arbitrary live
+// session without terminating the session itself.
+func (r *RemoteRuntime) InterruptSessionByID(sessionID string) error {
+	return r.client.InterruptLiveSession(context.Background(), sessionID)
+}
+
+// StopSessionByID forcibly stops an arbitrary live session.
+func (r *RemoteRuntime) StopSessionByID(sessionID string) error {
+	return r.client.StopLiveSession(context.Background(), sessionID)
+}
+
+func liveNodeFromAPI(n api.LiveSessionNode) LiveSessionNode {
+	return LiveSessionNode{
+		SessionID:       n.SessionID,
+		ParentSessionID: n.ParentSessionID,
+		RootSessionID:   n.RootSessionID,
+		AgentName:       n.AgentName,
+		Title:           n.Title,
+		Kind:            LiveSessionNodeKind(n.Kind),
+		Depth:           n.Depth,
+		Status:          n.Status,
+		CreatedAt:       n.CreatedAt,
+		LastUpdateAt:    n.LastUpdateAt,
+		LastPreview:     n.LastPreview,
+		Error:           n.Error,
+	}
+}
+
+var (
+	_ Runtime             = (*RemoteRuntime)(nil)
+	_ LiveEventSource     = (*RemoteRuntime)(nil)
+	_ SessionTreeProvider = (*RemoteRuntime)(nil)
+	_ LiveSessionProvider = (*RemoteRuntime)(nil)
+)

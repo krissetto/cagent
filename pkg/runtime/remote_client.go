@@ -39,6 +39,17 @@ type RemoteClient interface {
 	// UpdateSessionTitle updates the title of a session
 	UpdateSessionTitle(ctx context.Context, sessionID, title string) error
 
+	// Live session tree / observability APIs
+	GetLiveSessionTree(ctx context.Context, rootSessionID string) (*api.LiveSessionTreeResponse, error)
+	GetLiveSession(ctx context.Context, sessionID string) (*api.LiveSessionResponse, error)
+	GetLiveSessionSnapshot(ctx context.Context, sessionID string) (*api.LiveSessionSnapshotResponse, error)
+	AttachLiveSession(ctx context.Context, sessionID string) (<-chan Event, error)
+	SteerLiveSession(ctx context.Context, sessionID string, messages []api.Message) error
+	FollowUpLiveSession(ctx context.Context, sessionID string, messages []api.Message) error
+	InterruptLiveSession(ctx context.Context, sessionID string) error
+	CloseLiveSession(ctx context.Context, sessionID string) error
+	StopLiveSession(ctx context.Context, sessionID string) error
+
 	// GetAgentToolCount returns the number of tools available for an agent
 	GetAgentToolCount(ctx context.Context, agentFilename, agentName string) (int, error)
 }

@@ -252,6 +252,17 @@ func builtInSessionCommands() []Item {
 			},
 		},
 		{
+			ID:           "session.tree",
+			Label:        "Tree",
+			SlashCommand: "/tree",
+			Description:  "Show the live session tree with all subagents",
+			Category:     "Session",
+			Immediate:    true,
+			Execute: func(string) tea.Cmd {
+				return core.CmdHandler(messages.ShowSessionTreeDialogMsg{})
+			},
+		},
+		{
 			ID:           "session.title",
 			Label:        "Title",
 			SlashCommand: "/title",

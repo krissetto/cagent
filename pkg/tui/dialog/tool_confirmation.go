@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/core"
@@ -79,9 +80,23 @@ func (d *toolConfirmationDialog) SetSize(width, height int) tea.Cmd {
 	options := RenderHelpKeys(contentWidth, "Y", "yes", "N", "no", "T", d.alwaysAllowHelpText(), "A", "all tools")
 	optionsHeight := lipgloss.Height(options)
 
-	// Calculate available height for scroll view
+	delegationHeight := 0
+	if delegationView, ok := d.subagentDelegationView(contentWidth); ok {
+		// One blank line before the delegation block, matching View().
+		delegationHeight = 1 + lipgloss.Height(delegationView)
+	}
+
+	relationshipHeight := 0
+	if rel := d.subagentRelationshipLine(); rel != "" {
+		relationshipHeight = 2 // one blank line before + the line itself
+	}
+
+	// Calculate available height for scroll view.
+	// For subagent_start the dedicated delegation block replaces the normal
+	// scroll-view content, so we reserve its full rendered height and let the
+	// (mostly empty) scroll view collapse to the minimum harmless size.
 	frameHeight := styles.DialogStyle.GetVerticalFrameSize()
-	fixedContentHeight := titleHeight + separatorHeight + toolConfirmEmptyLinesBefore + questionHeight + toolConfirmEmptyLinesAfter + optionsHeight
+	fixedContentHeight := titleHeight + separatorHeight + delegationHeight + relationshipHeight + toolConfirmEmptyLinesBefore + questionHeight + toolConfirmEmptyLinesAfter + optionsHeight
 	availableHeight := max(maxDialogHeight-frameHeight-fixedContentHeight, toolConfirmMinScrollHeight)
 	d.scrollView.SetSize(contentWidth, availableHeight)
 
@@ -168,18 +183,125 @@ func buildPermissionPattern(toolCall tools.ToolCall) string {
 	return toolName
 }
 
+// subagentRelationshipLine returns a contextual `[parent] → [child]` line for
+// subagent tool confirmations. It is only rendered for the runtime-managed
+// subagent tools, and only when the dialog knows enough about the parent/child
+// names to make the line useful.
+//
+// This line is intentionally suppressed for [subagent.ToolNameStart]: that tool
+// gets a dedicated, more prominent "[parent] wants to delegate to [child]"
+// header rendered by [toolConfirmationDialog.subagentDelegationView], so we
+// don't want both to show up and duplicate the relationship information.
+func (d *toolConfirmationDialog) subagentRelationshipLine() string {
+	if d.msg == nil || d.sessionState == nil || !d.sessionState.IsSubSession() {
+		return ""
+	}
+	if d.msg.ToolCall.Function.Name == subagent.ToolNameStart {
+		return ""
+	}
+
+	parentName := strings.TrimSpace(d.sessionState.ParentAgentName())
+	if parentName == "" {
+		parentName = "parent"
+	}
+
+	childName := strings.TrimSpace(d.sessionState.CurrentAgentName())
+	if childName == "" {
+		switch d.msg.ToolCall.Function.Name {
+		case subagent.ToolNameSend, subagent.ToolNameInspect, subagent.ToolNameFinalize, subagent.ToolNameClose, subagent.ToolNameStop:
+			// For already-attached child tabs, CurrentAgentName should normally be
+			// available. If it isn't, fall back to a generic label rather than
+			// rendering an empty badge.
+			childName = "child"
+		}
+	}
+	if childName == "" {
+		return ""
+	}
+
+	left := styles.AgentBadgeStyleFor(parentName).Render(parentName)
+	right := styles.AgentBadgeStyleFor(childName).Render(childName)
+	return left + styles.MutedStyle.Render(" → ") + right
+}
+
+// subagentDelegationView renders a dedicated confirmation header + body for
+// [subagent.ToolNameStart] tool calls:
+//
+//	[parent] wants to delegate to [child]
+//
+//	<task body>
+//
+// It returns ok=false when the tool call isn't a subagent_start, so the caller
+// falls back to the default scroll-view rendering used by every other tool.
+//
+// Parent name priority:
+//  1. The tool call event's AgentName (the agent that actually issued the call).
+//  2. The session state's current agent (best effort when the event didn't
+//     carry one — e.g. some older replay paths).
+//  3. The literal string "parent" as a last-resort label so we never render
+//     an empty badge.
+//
+// This is intentionally scoped to the confirmation dialog only. The compact
+// `→ [child]` rendering the chat transcript uses for subagent_start is still
+// produced by pkg/tui/components/tool/subagent and is not affected.
+func (d *toolConfirmationDialog) subagentDelegationView(contentWidth int) (string, bool) {
+	if d.msg == nil || d.msg.ToolCall.Function.Name != subagent.ToolNameStart {
+		return "", false
+	}
+
+	var args subagent.StartArgs
+	_ = json.Unmarshal([]byte(d.msg.ToolCall.Function.Arguments), &args)
+
+	parent := strings.TrimSpace(d.msg.AgentName)
+	if parent == "" && d.sessionState != nil {
+		parent = strings.TrimSpace(d.sessionState.CurrentAgentName())
+	}
+	if parent == "" {
+		parent = "parent"
+	}
+	child := strings.TrimSpace(args.Agent)
+	if child == "" {
+		child = "subagent"
+	}
+
+	parentBadge := styles.AgentBadgeStyleFor(parent).Render(parent)
+	childBadge := styles.AgentBadgeStyleFor(child).Render(child)
+	header := parentBadge + styles.MutedStyle.Render(" wants to delegate to ") + childBadge
+
+	// Body: task text, width-wrapped so long tasks reflow to the dialog width
+	// instead of overflowing the frame. A blank line separates the header from
+	// the body.
+	wrap := lipgloss.NewStyle().Width(max(contentWidth, 1))
+
+	parts := []string{header}
+	if task := strings.TrimSpace(args.Task); task != "" {
+		parts = append(parts, "", wrap.Render(task))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, parts...), true
+}
+
 // NewToolConfirmationDialog creates a new tool confirmation dialog
 func NewToolConfirmationDialog(msg *runtime.ToolCallConfirmationEvent, sessionState *service.SessionState) Dialog {
 	// Create scrollable view with minimal initial size (will be updated in SetSize)
 	scrollView := messages.NewScrollableView(1, 1, sessionState)
 
-	// Add the tool call message to the view
-	scrollView.AddOrUpdateToolCall(
-		"", // agentName - empty for dialog context
-		msg.ToolCall,
-		msg.ToolDefinition,
-		types.ToolStatusConfirmation,
-	)
+	// Add the tool call message to the view. The agent name is carried on
+	// the confirmation event (AgentContext.AgentName) so it must be threaded
+	// through; otherwise custom tool renderers that rely on it — notably the
+	// subagent renderer's parent pill — end up drawing an empty badge.
+	//
+	// Exception: subagent_start gets a dedicated "[parent] wants to delegate
+	// to [child]" view rendered directly in View(). Feeding the scrollable
+	// view as well would double up on the delegation representation.
+	if msg.ToolCall.Function.Name != subagent.ToolNameStart {
+		scrollView.AddOrUpdateToolCall(
+			msg.AgentName,
+			msg.ToolCall,
+			msg.ToolDefinition,
+			types.ToolStatusConfirmation,
+		)
+	}
 
 	// Build and cache the permission pattern for display and use
 	pattern := buildPermissionPattern(msg.ToolCall)
@@ -322,14 +444,22 @@ func (d *toolConfirmationDialog) View() string {
 	// Separator
 	separator := d.renderSeparator(contentWidth)
 
-	// Get scrollable tool call view
-	argumentsSection := d.scrollView.View()
-
-	// Combine all parts with proper spacing
 	parts := []string{title, separator}
 
-	if argumentsSection != "" {
-		parts = append(parts, "", argumentsSection)
+	// For subagent_start, we render a dedicated delegation header + task body
+	// in place of the default compact tool-call preview. The subagent
+	// relationship line is intentionally suppressed in this branch because
+	// the delegation header already conveys the same [parent]→[child]
+	// relationship, just more prominently.
+	if delegationView, ok := d.subagentDelegationView(contentWidth); ok {
+		parts = append(parts, "", delegationView)
+	} else {
+		if relationshipLine := d.subagentRelationshipLine(); relationshipLine != "" {
+			parts = append(parts, "", relationshipLine)
+		}
+		if argumentsSection := d.scrollView.View(); argumentsSection != "" {
+			parts = append(parts, "", argumentsSection)
+		}
 	}
 
 	// Confirmation prompt

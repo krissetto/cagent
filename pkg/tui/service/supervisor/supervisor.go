@@ -16,12 +16,33 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/messages"
 )
 
-// SessionRunner represents a running session.
+// SessionKind distinguishes tabs the TUI owns directly from live attached tabs.
+type SessionKind string
+
+const (
+	SessionKindOwned    SessionKind = "owned"
+	SessionKindAttached SessionKind = "attached"
+)
+
+// SessionRunner represents a running or attached session tab.
 type SessionRunner struct {
-	ID           string
-	App          *app.App
-	WorkingDir   string
-	Title        string
+	// ID is the supervisor/tab identifier. In Slice 1 we keep it equal to the
+	// underlying runtime/live session id for both owned and attached tabs.
+	ID string
+	// SessionID is the underlying session being represented. It currently
+	// matches ID but is kept explicit so future slices can decouple tab identity
+	// from session identity without invasive churn.
+	SessionID string
+	Kind      SessionKind
+
+	App *app.App
+
+	WorkingDir      string
+	Title           string
+	ParentSessionID string
+	RootSessionID   string
+	AgentName       string
+
 	IsRunning    bool    // True when stream is active
 	NeedsAttn    bool    // True when user attention is needed
 	PendingEvent tea.Msg // Event that triggered attention (for replay on tab switch)
@@ -68,17 +89,42 @@ func (s *Supervisor) SetProgram(p *tea.Program) {
 	})
 }
 
-// AddSession adds an existing session to the supervisor.
+// AddSession adds an existing owned session to the supervisor.
+//
+// AddSession does not deduplicate by session id. Callers are expected to check
+// for an existing runner (e.g. via [Supervisor.GetRunner]) before calling this
+// method; inserting a duplicate would overwrite the old runner's cancel/cleanup
+// callbacks and append a second entry to the tab order. See
+// [Supervisor.AttachSession] for the attach-side path that does dedupe.
 func (s *Supervisor) AddSession(ctx context.Context, a *app.App, sess *session.Session, workingDir string, cleanup func()) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if existing, ok := s.runners[sess.ID]; ok {
+		// Defensive dedup: a repeated AddSession for the same session id would
+		// silently clobber the existing runner (leaking its cancel/cleanup) and
+		// append a duplicate tab to s.order, corrupting reorder/close math.
+		// None of our current callers hit this path, but the invariant matters
+		// for future work (e.g. if handleOpenSubAgentTab's GetRunner check
+		// races with anything that inserts concurrently), so we surface it
+		// loudly in debug logs rather than silently breaking tab state.
+		slog.Debug("Supervisor.AddSession: runner already exists for session id, keeping the existing one",
+			"session_id", sess.ID,
+			"existing_kind", existing.Kind)
+		return existing.ID
+	}
+
 	runner := &SessionRunner{
 		ID:         sess.ID,
+		SessionID:  sess.ID,
+		Kind:       SessionKindOwned,
 		App:        a,
 		WorkingDir: workingDir,
-		Title:      sess.Title,
-		cleanup:    cleanup,
+		// GetTitle is concurrency-safe; a raw sess.Title read would race with
+		// background title generation for subagent-backed sessions (see
+		// pkg/runtime.generateSubagentTitle).
+		Title:   sess.GetTitle(),
+		cleanup: cleanup,
 	}
 
 	// Create a cancellable context for this session
@@ -93,9 +139,81 @@ func (s *Supervisor) AddSession(ctx context.Context, a *app.App, sess *session.S
 	}
 
 	// Start the subscription goroutine with routing
-	go s.subscribeWithRouting(sessionCtx, a, sess.ID)
+	go s.subscribeOwnedWithRouting(sessionCtx, a, sess.ID)
 
 	return sess.ID
+}
+
+// AttachSession registers an attached live session tab backed by a LiveEventSource.
+//
+// The attached runner has no *app.App; it is simply a live event subscription that
+// routes incoming runtime events through the same RoutedMsg path used by owned tabs.
+// If the session is already attached or owned in this supervisor, the existing
+// runner is returned.
+func (s *Supervisor) AttachSession(ctx context.Context, node runtime.LiveSessionNode, source runtime.LiveEventSource) (*SessionRunner, error) {
+	if source == nil {
+		return nil, errors.New("live event source is required")
+	}
+	if node.SessionID == "" {
+		return nil, errors.New("live session id is required")
+	}
+
+	s.mu.Lock()
+	if existing := s.runners[node.SessionID]; existing != nil {
+		s.mu.Unlock()
+		return existing, nil
+	}
+
+	runner := &SessionRunner{
+		ID:              node.SessionID,
+		SessionID:       node.SessionID,
+		Kind:            SessionKindAttached,
+		Title:           node.Title,
+		ParentSessionID: node.ParentSessionID,
+		RootSessionID:   node.RootSessionID,
+		AgentName:       node.AgentName,
+	}
+	if runner.Title == "" {
+		runner.Title = node.AgentName
+	}
+
+	sessionCtx, cancel := context.WithCancel(ctx)
+	runner.cancel = cancel
+
+	s.runners[runner.ID] = runner
+	s.order = append(s.order, runner.ID)
+	if s.activeID == "" {
+		s.activeID = runner.ID
+	}
+	captureID := runner.ID
+	s.notifyTabsUpdated()
+	s.mu.Unlock()
+
+	if err := s.subscribeAttachedWithRouting(sessionCtx, source, captureID, node.SessionID); err != nil {
+		s.mu.Lock()
+		if current := s.runners[captureID]; current == runner {
+			delete(s.runners, captureID)
+			for i, id := range s.order {
+				if id == captureID {
+					s.order = append(s.order[:i], s.order[i+1:]...)
+					break
+				}
+			}
+			if s.activeID == captureID {
+				if len(s.order) > 0 {
+					s.activeID = s.order[0]
+				} else {
+					s.activeID = ""
+				}
+			}
+			s.notifyTabsUpdated()
+		}
+		s.mu.Unlock()
+		cancel()
+		return nil, err
+	}
+
+	return runner, nil
 }
 
 // SpawnSession creates and adds a new session.
@@ -113,10 +231,10 @@ func (s *Supervisor) SpawnSession(ctx context.Context, workingDir string) (strin
 	return sessionID, nil
 }
 
-// subscribeWithRouting subscribes to app events and wraps them with session ID.
+// subscribeOwnedWithRouting subscribes to app events and wraps them with session ID.
 // It waits for the program to be set before consuming events so that startup
 // events (welcome message, agent/team/tool info) are not dropped.
-func (s *Supervisor) subscribeWithRouting(ctx context.Context, a *app.App, sessionID string) {
+func (s *Supervisor) subscribeOwnedWithRouting(ctx context.Context, a *app.App, runnerID string) {
 	// Wait for the program to be available before consuming any events.
 	// Events are buffered in app.events, so nothing is lost during this wait.
 	select {
@@ -126,20 +244,20 @@ func (s *Supervisor) subscribeWithRouting(ctx context.Context, a *app.App, sessi
 	}
 
 	send := func(msg tea.Msg) {
+		// Always update supervisor state from runtime events, even when the
+		// program is not yet (or ever) attached. Forwarding to the program is
+		// what we gate on p != nil.
+		s.handleRuntimeEvent(runnerID, msg)
+
 		s.mu.RLock()
 		p := s.program
 		s.mu.RUnlock()
-
 		if p == nil {
 			return
 		}
 
-		// Check if this is a runtime event that should update state
-		s.handleRuntimeEvent(sessionID, msg)
-
-		// Wrap the message with session ID
 		p.Send(messages.RoutedMsg{
-			SessionID: sessionID,
+			SessionID: runnerID,
 			Inner:     msg,
 		})
 	}
@@ -147,12 +265,56 @@ func (s *Supervisor) subscribeWithRouting(ctx context.Context, a *app.App, sessi
 	a.SubscribeWith(ctx, send)
 }
 
+// subscribeAttachedWithRouting subscribes to live session events and routes them
+// through the same RoutedMsg path used by owned sessions.
+func (s *Supervisor) subscribeAttachedWithRouting(ctx context.Context, source runtime.LiveEventSource, runnerID, liveSessionID string) error {
+	events, err := source.AttachLiveSession(ctx, liveSessionID)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		select {
+		case <-s.programReady:
+		case <-ctx.Done():
+			return
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-events:
+				if !ok {
+					return
+				}
+
+				s.handleRuntimeEvent(runnerID, msg)
+
+				s.mu.RLock()
+				p := s.program
+				s.mu.RUnlock()
+				if p == nil {
+					continue
+				}
+
+				p.Send(messages.RoutedMsg{
+					SessionID: runnerID,
+					Inner:     msg,
+				})
+			}
+		}
+	}()
+
+	return nil
+}
+
 // handleRuntimeEvent updates runner state based on runtime events.
-func (s *Supervisor) handleRuntimeEvent(sessionID string, msg tea.Msg) {
+func (s *Supervisor) handleRuntimeEvent(runnerID string, msg tea.Msg) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	runner, ok := s.runners[sessionID]
+	runner, ok := s.runners[runnerID]
 	if !ok {
 		return
 	}
@@ -171,13 +333,20 @@ func (s *Supervisor) handleRuntimeEvent(sessionID string, msg tea.Msg) {
 		}
 		s.notifyTabsUpdated()
 
+	case *runtime.TurnStartedEvent, *runtime.TurnEndedEvent:
+		// Deliberately ignored here: tab IsRunning reflects stream/session
+		// lifetime, not per-turn activity. The chat/sidebar components own the
+		// finer-grained TurnStarted/TurnEnded working indicators.
+
 	case *runtime.SessionTitleEvent:
 		runner.Title = ev.Title
 		s.notifyTabsUpdated()
 
 	case *runtime.ToolCallConfirmationEvent, *runtime.MaxIterationsReachedEvent, *runtime.ElicitationRequestEvent:
-		// These require user attention
-		if sessionID != s.activeID {
+		// These require user attention.
+		// Slice 1 keeps the current runner-local attention model. Future slices may
+		// lift this to a shared session-tree interaction registry.
+		if runnerID != s.activeID {
 			runner.NeedsAttn = true
 			runner.PendingEvent = msg
 			s.notifyTabsUpdated()
@@ -218,15 +387,23 @@ func (s *Supervisor) buildTabInfoLocked() []messages.TabInfo {
 
 		title := runner.Title
 		if title == "" {
-			title = filepath.Base(runner.WorkingDir)
+			if runner.WorkingDir != "" {
+				title = filepath.Base(runner.WorkingDir)
+			} else if runner.AgentName != "" {
+				title = runner.AgentName
+			}
 		}
 
 		tabs = append(tabs, messages.TabInfo{
-			SessionID:      id,
-			Title:          title,
-			IsActive:       id == s.activeID,
-			IsRunning:      runner.IsRunning,
-			NeedsAttention: runner.NeedsAttn,
+			SessionID:       id,
+			Title:           title,
+			IsActive:        id == s.activeID,
+			IsRunning:       runner.IsRunning,
+			NeedsAttention:  runner.NeedsAttn,
+			Kind:            string(runner.Kind),
+			ParentSessionID: runner.ParentSessionID,
+			RootSessionID:   runner.RootSessionID,
+			AgentName:       runner.AgentName,
 		})
 	}
 	return tabs
@@ -324,6 +501,10 @@ func (s *Supervisor) ReplaceRunnerApp(ctx context.Context, sessionID string, new
 	runner.App = newApp
 	runner.WorkingDir = workingDir
 	runner.cleanup = cleanup
+	runner.Kind = SessionKindOwned
+	if runner.SessionID == "" {
+		runner.SessionID = sessionID
+	}
 
 	// Create a new cancellable context for the replacement.
 	sessionCtx, cancel := context.WithCancel(ctx)
@@ -338,7 +519,7 @@ func (s *Supervisor) ReplaceRunnerApp(ctx context.Context, sessionID string, new
 	}
 
 	// Start routing events from the new app.
-	go s.subscribeWithRouting(sessionCtx, newApp, sessionID)
+	go s.subscribeOwnedWithRouting(sessionCtx, newApp, sessionID)
 }
 
 // ActiveID returns the ID of the currently active session.
@@ -364,7 +545,7 @@ func (s *Supervisor) CloseSession(sessionID string) (nextActiveID string) {
 		return nextActiveID
 	}
 
-	// Cancel the session context
+	// Cancel the session context / attachment subscription.
 	if runner.cancel != nil {
 		runner.cancel()
 	}
@@ -399,6 +580,8 @@ func (s *Supervisor) CloseSession(sessionID string) (nextActiveID string) {
 	s.mu.Unlock()
 
 	// Run cleanup outside the lock so it can't deadlock.
+	// Attached tabs have no cleanup, and cancelling them is intentionally
+	// non-destructive: it only drops the subscription.
 	if cleanup != nil {
 		go cleanup()
 	}

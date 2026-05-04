@@ -223,9 +223,11 @@ func TestGetAvailableProviders(t *testing.T) {
 			t.Parallel()
 
 			r := &LocalRuntime{
-				modelSwitcherCfg: &ModelSwitcherConfig{
-					EnvProvider:   environment.NewMapEnvProvider(tt.envVars),
-					ModelsGateway: tt.modelsGateway,
+				runtimeCore: &runtimeCore{
+					modelSwitcherCfg: &ModelSwitcherConfig{
+						EnvProvider:   environment.NewMapEnvProvider(tt.envVars),
+						ModelsGateway: tt.modelsGateway,
+					},
 				},
 			}
 
@@ -291,14 +293,16 @@ func TestBuildCatalogChoices(t *testing.T) {
 	}
 
 	r := &LocalRuntime{
-		modelsStore: &mockCatalogStore{db: db},
-		modelSwitcherCfg: &ModelSwitcherConfig{
-			EnvProvider: environment.NewMapEnvProvider(map[string]string{
-				"OPENAI_API_KEY":    "sk-test",
-				"ANTHROPIC_API_KEY": "sk-ant-test",
-			}),
-			Models: map[string]latest.ModelConfig{
-				"my_model": {Provider: "openai", Model: "gpt-4o"}, // This should be excluded from catalog (duplicate)
+		runtimeCore: &runtimeCore{
+			modelsStore: &mockCatalogStore{db: db},
+			modelSwitcherCfg: &ModelSwitcherConfig{
+				EnvProvider: environment.NewMapEnvProvider(map[string]string{
+					"OPENAI_API_KEY":    "sk-test",
+					"ANTHROPIC_API_KEY": "sk-ant-test",
+				}),
+				Models: map[string]latest.ModelConfig{
+					"my_model": {Provider: "openai", Model: "gpt-4o"}, // This should be excluded from catalog (duplicate)
+				},
 			},
 		},
 	}
@@ -351,14 +355,16 @@ func TestBuildCatalogChoicesWithDuplicates(t *testing.T) {
 	}
 
 	r := &LocalRuntime{
-		modelsStore: &mockCatalogStore{db: db},
-		modelSwitcherCfg: &ModelSwitcherConfig{
-			EnvProvider: environment.NewMapEnvProvider(map[string]string{
-				"OPENAI_API_KEY": "sk-test",
-			}),
-			Models: map[string]latest.ModelConfig{
-				// This model has the same provider/model as the catalog entry
-				"my_gpt4o": {Provider: "openai", Model: "gpt-4o"},
+		runtimeCore: &runtimeCore{
+			modelsStore: &mockCatalogStore{db: db},
+			modelSwitcherCfg: &ModelSwitcherConfig{
+				EnvProvider: environment.NewMapEnvProvider(map[string]string{
+					"OPENAI_API_KEY": "sk-test",
+				}),
+				Models: map[string]latest.ModelConfig{
+					// This model has the same provider/model as the catalog entry
+					"my_gpt4o": {Provider: "openai", Model: "gpt-4o"},
+				},
 			},
 		},
 	}
@@ -375,10 +381,12 @@ func TestResolveModelRef_RejectsAlloyConfig(t *testing.T) {
 	t.Parallel()
 
 	r := &LocalRuntime{
-		modelSwitcherCfg: &ModelSwitcherConfig{
-			Models: map[string]latest.ModelConfig{
-				// Alloy config: no provider, comma-separated models
-				"alloy_model": {Model: "openai/gpt-4o,anthropic/claude-sonnet-4-0"},
+		runtimeCore: &runtimeCore{
+			modelSwitcherCfg: &ModelSwitcherConfig{
+				Models: map[string]latest.ModelConfig{
+					// Alloy config: no provider, comma-separated models
+					"alloy_model": {Model: "openai/gpt-4o,anthropic/claude-sonnet-4-0"},
+				},
 			},
 		},
 	}
@@ -391,7 +399,7 @@ func TestResolveModelRef_RejectsAlloyConfig(t *testing.T) {
 func TestResolveModelRef_NilConfig(t *testing.T) {
 	t.Parallel()
 
-	r := &LocalRuntime{}
+	r := &LocalRuntime{runtimeCore: &runtimeCore{}}
 
 	_, err := r.resolveModelRef(t.Context(), "openai/gpt-4o")
 	require.Error(t, err)
@@ -402,8 +410,10 @@ func TestResolveModelRef_InvalidFormat(t *testing.T) {
 	t.Parallel()
 
 	r := &LocalRuntime{
-		modelSwitcherCfg: &ModelSwitcherConfig{
-			Models: map[string]latest.ModelConfig{},
+		runtimeCore: &runtimeCore{
+			modelSwitcherCfg: &ModelSwitcherConfig{
+				Models: map[string]latest.ModelConfig{},
+			},
 		},
 	}
 
