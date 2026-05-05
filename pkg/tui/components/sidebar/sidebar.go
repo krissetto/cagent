@@ -1002,18 +1002,24 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		// itself is gated by !m.parentIdle below; here we only care whether
 		// *some* row still needs the shared frame ticker.
 		if m.mcpInit || m.toolsLoading || (m.workingAgent != "" && !m.parentIdle) || m.titleRegenerating || m.liveSubagentCount() > 0 {
+			oldFrame := m.spinner.RawFrame()
 			model, cmd := m.spinner.Update(msg)
 			m.spinner = model.(spinner.Spinner)
 			cmds = append(cmds, cmd)
-			needsInvalidate = true
+			if m.spinner.RawFrame() != oldFrame {
+				needsInvalidate = true
+			}
 		}
 
 		// Update each RAG indexing spinner
 		for _, state := range m.ragIndexing {
+			oldFrame := state.spinner.RawFrame()
 			model, cmd := state.spinner.Update(msg)
 			state.spinner = model.(spinner.Spinner)
 			cmds = append(cmds, cmd)
-			needsInvalidate = true
+			if state.spinner.RawFrame() != oldFrame {
+				needsInvalidate = true
+			}
 		}
 
 		// Invalidate cache when spinners update to show new animation frames

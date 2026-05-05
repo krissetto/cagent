@@ -244,12 +244,22 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		return m.forwardToReasoningBlock(msg.GetBlockID(), msg)
 
 	case animation.TickMsg:
-		// Invalidate render cache if there's animated content that needs redrawing.
-		// This ensures fades, spinners, etc. actually update visually on each tick.
+		// Only forward ticks to animated views instead of all N views
+		for i, view := range m.views {
+			if !m.isAnimatedView(i) {
+				continue
+			}
+			updatedView, cmd := view.Update(msg)
+			m.views[i] = updatedView
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			m.invalidateItem(i)
+		}
 		if m.hasAnimatedContent() {
 			m.renderDirty = true
 		}
-		// Fall through to forward tick to all views
+		return m, tea.Batch(cmds...)
 
 	case tea.PasteMsg:
 		// Insert paste content into the inline edit textarea
@@ -910,7 +920,8 @@ func (m *model) selectPreviousMessage() tea.Cmd {
 	if prevIndex := m.findPreviousSelectableMessage(m.selectedMessageIndex); prevIndex >= 0 {
 		oldIndex := m.selectedMessageIndex
 		m.selectedMessageIndex = prevIndex
-		m.invalidateAllItems()
+		m.invalidateItem(oldIndex)
+		m.invalidateItem(prevIndex)
 		m.scrollToSelectedMessage()
 		if m.messageTypeChanged(oldIndex, prevIndex) {
 			return core.CmdHandler(messages.InvalidateStatusBarMsg{})
@@ -926,7 +937,8 @@ func (m *model) selectNextMessage() tea.Cmd {
 	if nextIndex := m.findNextSelectableMessage(m.selectedMessageIndex); nextIndex >= 0 {
 		oldIndex := m.selectedMessageIndex
 		m.selectedMessageIndex = nextIndex
-		m.invalidateAllItems()
+		m.invalidateItem(oldIndex)
+		m.invalidateItem(nextIndex)
 		m.scrollToSelectedMessage()
 		if m.messageTypeChanged(oldIndex, nextIndex) {
 			return core.CmdHandler(messages.InvalidateStatusBarMsg{})
@@ -1897,30 +1909,34 @@ func (m *model) handleScrollviewUpdate(msg tea.Msg) (layout.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// isAnimatedView returns true if the view at the given index needs animation ticks.
+func (m *model) isAnimatedView(index int) bool {
+	if index < 0 || index >= len(m.messages) || index >= len(m.views) {
+		return false
+	}
+
+	msg := m.messages[index]
+	switch msg.Type {
+	case types.MessageTypeSpinner, types.MessageTypeLoading:
+		return true
+	case types.MessageTypeToolCall:
+		return msg.ToolStatus == types.ToolStatusPending || msg.ToolStatus == types.ToolStatusRunning
+	case types.MessageTypeAssistantReasoningBlock:
+		if block, ok := m.views[index].(*reasoningblock.Model); ok {
+			return block.NeedsTick()
+		}
+	}
+
+	return false
+}
+
 // hasAnimatedContent returns true if the message list contains content that
 // requires tick-driven updates (spinners, fades, etc.). Used to decide whether
 // to invalidate the render cache on animation ticks.
 func (m *model) hasAnimatedContent() bool {
-	for i, msg := range m.messages {
-		switch msg.Type {
-		case types.MessageTypeSpinner, types.MessageTypeLoading:
-			// Spinner/loading messages always need ticks
+	for i := range m.messages {
+		if m.isAnimatedView(i) {
 			return true
-		case types.MessageTypeToolCall:
-			// Tool calls with pending/running status have spinners
-			if msg.ToolStatus == types.ToolStatusPending ||
-				msg.ToolStatus == types.ToolStatusRunning {
-				return true
-			}
-		case types.MessageTypeAssistantReasoningBlock:
-			// Check if reasoning block needs tick updates
-			if i < len(m.views) {
-				if block, ok := m.views[i].(*reasoningblock.Model); ok {
-					if block.NeedsTick() {
-						return true
-					}
-				}
-			}
 		}
 	}
 	return false
