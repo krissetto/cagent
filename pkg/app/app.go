@@ -47,6 +47,17 @@ type App struct {
 	titleGen               *sessiontitle.Generator     // Title generator for local runtime (nil for remote)
 	snapshotController     builtins.SnapshotController // Drives /undo, /snapshots, /reset; nil for runtimes that don't capture snapshots
 
+	// attached is true when this App represents a live descendant session
+	// that it does not own. In attached mode Run() is a no-op for the
+	// runtime loop; user messages are forwarded via attachedSend.
+	attached     bool
+	attachedSend func(context.Context, runtime.QueuedMessage) error
+
+	// attachedTeam is the full team-wide agent list seeded by
+	// [WithAttachedTeam]. When non-nil it replaces the minimal
+	// single-entry TeamInfoEvent that [NewAttached] would otherwise emit.
+	attachedTeam []runtime.AgentDetails
+
 	subsMu     sync.Mutex
 	subs       []chan tea.Msg
 	fanoutOnce sync.Once
@@ -106,6 +117,21 @@ func WithSnapshotController(c builtins.SnapshotController) Opt {
 	}
 }
 
+// WithAttachedTeam overrides the minimal agent list that [NewAttached] emits as
+// its startup TeamInfoEvent. Callers should pass the parent session's full
+// team list so that:
+//   - the child tab's sidebar can render Description / Provider / Model rows,
+//     and
+//   - [styles.SetAgentOrder] preserves the team-wide palette indices, keeping
+//     per-agent colors consistent across parent and child tabs.
+//
+// When empty the fallback is a single entry with just the node's agent name.
+func WithAttachedTeam(agents []runtime.AgentDetails) Opt {
+	return func(a *App) {
+		a.attachedTeam = agents
+	}
+}
+
 func New(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts ...Opt) *App {
 	app := &App{
 		runtime:          rt,
@@ -144,6 +170,109 @@ func New(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts ..
 		case <-ctx.Done():
 		}
 	})
+
+	return app
+}
+
+// NewAttached builds an App that renders a live descendant session using the
+// normal chat UI without owning a runtime loop.
+func NewAttached(ctx context.Context, rt runtime.Runtime, sess *session.Session, node runtime.LiveSessionNode, opts ...Opt) *App {
+	app := &App{
+		runtime:          rt,
+		session:          sess,
+		events:           make(chan tea.Msg, 128),
+		throttleDuration: 50 * time.Millisecond,
+		attached:         true,
+	}
+	for _, opt := range opts {
+		opt(app)
+	}
+
+	if tree, ok := rt.(runtime.LiveSessionRuntime); ok {
+		app.attachedSend = func(_ context.Context, msg runtime.QueuedMessage) error {
+			return tree.FollowUpSessionByID(sess.ID, msg)
+		}
+	}
+
+	go func() {
+		// Emit agent/team info so the sidebar has something to show.
+		// When the caller supplied the parent's team via WithAttachedTeam,
+		// use that list so Description/Provider/Model and palette colors
+		// stay consistent with the parent tab. Otherwise fall back to a
+		// minimal entry.
+		teamAgents := app.attachedTeam
+		if len(teamAgents) == 0 {
+			teamAgents = []runtime.AgentDetails{{Name: node.AgentName}}
+		}
+		select {
+		case app.events <- runtime.TeamInfo(teamAgents, node.AgentName):
+		case <-ctx.Done():
+			return
+		}
+
+		// Emit AgentInfo with whatever detail the team list carries.
+		var model, description string
+		for _, a := range teamAgents {
+			if a.Name == node.AgentName {
+				if a.Provider != "" {
+					model = a.Provider + "/" + a.Model
+				} else {
+					model = a.Model
+				}
+				description = a.Description
+				break
+			}
+		}
+		select {
+		case app.events <- runtime.AgentInfo(node.AgentName, model, description, ""):
+		case <-ctx.Done():
+			return
+		}
+
+		if node.Title != "" {
+			select {
+			case app.events <- runtime.SessionTitle(sess.ID, node.Title):
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		// Attach to the live event stream.
+		src, ok := rt.(runtime.LiveEventSource)
+		if !ok {
+			select {
+			case app.events <- runtime.Error("runtime does not support live events"):
+			case <-ctx.Done():
+			}
+			return
+		}
+
+		stream, cancel, err := src.AttachLiveSession(ctx, sess.ID)
+		if err != nil {
+			select {
+			case app.events <- runtime.Error(fmt.Sprintf("failed to attach live session: %v", err)):
+			case <-ctx.Done():
+			}
+			return
+		}
+		defer cancel()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-stream:
+				if !ok {
+					return
+				}
+				select {
+				case app.events <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
 
 	return app
 }
@@ -904,6 +1033,137 @@ func (a *App) PlainTextTranscript() string {
 // Returns nil if no session store is configured.
 func (a *App) SessionStore() session.Store {
 	return a.runtime.SessionStore()
+}
+
+// Runtime exposes the underlying runtime implementation for TUI attach flows.
+func (a *App) Runtime() runtime.Runtime {
+	return a.runtime
+}
+
+// LiveSessionTree returns the runtime's current live session tree as a flat
+// slice for TUI consumers. It degrades to nil when the runtime doesn't expose
+// session-tree observability.
+func (a *App) LiveSessionTree(rootID string) []runtime.LiveSessionNode {
+	provider, ok := a.runtime.(runtime.SessionTreeProvider)
+	if !ok {
+		return nil
+	}
+	tree, err := provider.LiveSessionTree(rootID)
+	if err != nil || tree == nil {
+		return nil
+	}
+	return tree.Slice()
+}
+
+// LiveSessionNode resolves a single node out of the runtime's live session tree.
+func (a *App) LiveSessionNode(sessionID string) (runtime.LiveSessionNode, bool) {
+	provider, ok := a.runtime.(runtime.SessionTreeProvider)
+	if !ok {
+		return runtime.LiveSessionNode{}, false
+	}
+	// Prefer the parent (current) session's tree first: the node will appear
+	// as a descendant with accurate metadata (Status, ParentID, AgentName,
+	// Depth, etc.) derived from the live subagent handle or the persisted
+	// store. Querying LiveSessionTree(sessionID) directly would make the
+	// child the synthetic root — with hardcoded Status="running", empty
+	// ParentID, and the parent's agent name — which is wrong for finalized
+	// or otherwise non-root sessions.
+	if a.session != nil {
+		tree, err := provider.LiveSessionTree(a.session.ID)
+		if err == nil && tree != nil {
+			if n, ok := tree.Node(sessionID); ok {
+				return n, true
+			}
+		}
+	}
+	// Fallback: try building a tree rooted at the requested session ID.
+	// This covers the case where sessionID is itself a root session or the
+	// current session's tree doesn't contain it.
+	node, err := provider.LiveSessionTree(sessionID)
+	if err == nil && node != nil {
+		if n, ok := node.Node(sessionID); ok {
+			return n, true
+		}
+	}
+	return runtime.LiveSessionNode{}, false
+}
+
+// LiveSession resolves a session pointer for the given live session id. For
+// local runtime this checks in-memory subagent handles first (the session may
+// not be persisted to the store yet), then falls back to the session store.
+func (a *App) LiveSession(sessionID string) (*session.Session, bool) {
+	if a.session != nil && a.session.ID == sessionID {
+		return a.session, true
+	}
+	// Try the live subagent manager first — the child session is always
+	// available in memory from the moment subagent_start returns, but the
+	// async store.AddSession goroutine may not have flushed it yet.
+	type liveChildProvider interface {
+		LiveChildSession(id string) (*session.Session, bool)
+	}
+	if provider, ok := a.runtime.(liveChildProvider); ok {
+		if sess, ok := provider.LiveChildSession(sessionID); ok {
+			return sess, true
+		}
+	}
+	store := a.runtime.SessionStore()
+	if store == nil {
+		return nil, false
+	}
+	sess, err := store.GetSession(context.Background(), sessionID)
+	if err != nil || sess == nil {
+		return nil, false
+	}
+	return sess, true
+}
+
+// LiveEventSource exposes the runtime as a live event source when supported.
+func (a *App) LiveEventSource() runtime.LiveEventSource {
+	src, _ := a.runtime.(runtime.LiveEventSource)
+	return src
+}
+
+// InterruptAttachedSession cancels the current turn of the active session when
+// the runtime exposes per-session live control.
+func (a *App) InterruptAttachedSession() error {
+	if a.session == nil {
+		return errors.New("no active session")
+	}
+	provider, ok := a.runtime.(runtime.LiveSessionRuntime)
+	if !ok {
+		return errors.New("runtime does not support live-session control")
+	}
+	return provider.InterruptSessionByID(a.session.ID)
+}
+
+// FollowUpWithAttachments queues a follow-up message, expanding attachments in
+// the same way as the main Run path so attached tabs and idle parents can send
+// rich input without restarting the runtime loop.
+func (a *App) FollowUpWithAttachments(content string, attachments []messages.Attachment) error {
+	content = strings.TrimSpace(content)
+	if content == "" && len(attachments) == 0 {
+		return nil
+	}
+
+	qm := runtime.QueuedMessage{Content: content}
+	if len(attachments) == 0 {
+		return a.runtime.FollowUp(qm)
+	}
+
+	var textBuilder strings.Builder
+	textBuilder.WriteString(content)
+	var binaryParts []chat.MessagePart
+	for _, att := range attachments {
+		switch {
+		case att.FilePath != "":
+			_ = a.processFileAttachment(context.Background(), att, &textBuilder, &binaryParts)
+		case att.Content != "":
+			a.processInlineAttachment(att, &textBuilder)
+		}
+	}
+	qm.MultiContent = []chat.MessagePart{{Type: chat.MessagePartTypeText, Text: textBuilder.String()}}
+	qm.MultiContent = append(qm.MultiContent, binaryParts...)
+	return a.runtime.FollowUp(qm)
 }
 
 // ReplaceSession replaces the current session with the given session.

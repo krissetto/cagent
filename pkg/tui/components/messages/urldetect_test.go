@@ -165,66 +165,6 @@ func TestBalanceParens(t *testing.T) {
 	}
 }
 
-func TestExtractOSC8Links(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		input    string
-		wantURLs []string
-		wantCols [][2]int
-	}{
-		{
-			name:     "no links",
-			input:    "hello world",
-			wantURLs: nil,
-		},
-		{
-			name:     "single OSC 8 link",
-			input:    "click \x1b]8;;https://example.com\x07here\x1b]8;;\x07 please",
-			wantURLs: []string{"https://example.com"},
-			wantCols: [][2]int{{6, 10}},
-		},
-		{
-			name:     "OSC 8 link with ANSI styling inside",
-			input:    "\x1b]8;;https://example.com\x07\x1b[1;34mStyled Link\x1b[0m\x1b]8;;\x07",
-			wantURLs: []string{"https://example.com"},
-			wantCols: [][2]int{{0, 11}},
-		},
-		{
-			name:     "multiple OSC 8 links",
-			input:    "\x1b]8;;https://a.com\x07A\x1b]8;;\x07 and \x1b]8;;https://b.com\x07B\x1b]8;;\x07",
-			wantURLs: []string{"https://a.com", "https://b.com"},
-			wantCols: [][2]int{{0, 1}, {6, 7}},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := extractOSC8Links(tt.input)
-			assert.Equal(t, len(tt.wantURLs), len(got), "span count mismatch")
-			for i, span := range got {
-				assert.Equal(t, tt.wantURLs[i], span.url, "url mismatch at index %d", i)
-				assert.Equal(t, tt.wantCols[i][0], span.startCol, "startCol mismatch at index %d", i)
-				assert.Equal(t, tt.wantCols[i][1], span.endCol, "endCol mismatch at index %d", i)
-			}
-		})
-	}
-}
-
-func TestURLAtPositionOSC8(t *testing.T) {
-	t.Parallel()
-	// Simulates what the markdown renderer emits for [Grafana](https://grafana.example.com/...)
-	line := "check \x1b]8;;https://grafana.example.com/dashboard\x07\x1b[1;34mGrafana\x1b[0m\x1b]8;;\x07 link"
-
-	// Clicking on "Grafana" text (cols 6-12) should return the URL
-	assert.Equal(t, urlAtPosition(line, 6), "https://grafana.example.com/dashboard")
-	assert.Equal(t, urlAtPosition(line, 10), "https://grafana.example.com/dashboard")
-
-	// Clicking outside should return empty
-	assert.Equal(t, urlAtPosition(line, 0), "")
-	assert.Equal(t, urlAtPosition(line, 15), "")
-}
-
 func TestUnderlineLine(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -7,34 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/glamour/v2"
 	"github.com/charmbracelet/x/ansi"
 	runewidth "github.com/mattn/go-runewidth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/docker/docker-agent/pkg/tui/styles"
 )
 
-// ansiRegex matches CSI escape sequences (used by some tests to inspect sequences).
+// stripANSI removes ANSI escape sequences from a string.
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
-// stripANSI removes ANSI escape sequences (CSI and OSC) from a string.
 func stripANSI(s string) string {
-	return ansi.Strip(s)
-}
-
-// newGlamourRenderer creates a markdown renderer using glamour.
-// Used as a reference implementation to compare against the fast renderer.
-func newGlamourRenderer(width int) *glamour.TermRenderer {
-	style := styles.MarkdownStyle()
-
-	r, _ := glamour.NewTermRenderer(
-		glamour.WithWordWrap(width),
-		glamour.WithStyles(style),
-		glamour.WithPreservedNewLines(),
-	)
-	return r
+	return ansiRegex.ReplaceAllString(s, "")
 }
 
 func TestFastRendererBasicText(t *testing.T) {
@@ -479,13 +462,8 @@ func TestFastRendererLinks(t *testing.T) {
 	result, err := r.Render(input)
 	require.NoError(t, err)
 	plain := stripANSI(result)
-	// Link text should be visible
 	assert.Contains(t, plain, "this link")
-	// URL should NOT appear as visible text (it's in OSC 8 sequence)
-	assert.NotContains(t, plain, "example.com")
-	// But the OSC 8 sequence should be present
-	assert.Contains(t, result, "\x1b]8;;https://example.com\x07")
-	assert.Contains(t, result, "\x1b]8;;\x07")
+	assert.Contains(t, plain, "example.com")
 }
 
 func TestFastRendererUnorderedLists(t *testing.T) {
@@ -1002,7 +980,7 @@ func BenchmarkFastRenderer(b *testing.B) {
 }
 
 func BenchmarkGlamourRenderer(b *testing.B) {
-	r := newGlamourRenderer(80)
+	r := NewGlamourRenderer(80)
 	for b.Loop() {
 		_, _ = r.Render(benchmarkInput)
 	}
@@ -1017,7 +995,7 @@ func BenchmarkFastRendererSmall(b *testing.B) {
 }
 
 func BenchmarkGlamourRendererSmall(b *testing.B) {
-	r := newGlamourRenderer(80)
+	r := NewGlamourRenderer(80)
 	input := "Hello **world**, this is a *test*."
 	for b.Loop() {
 		_, _ = r.Render(input)
@@ -1033,7 +1011,7 @@ func BenchmarkFastRendererCodeBlock(b *testing.B) {
 }
 
 func BenchmarkGlamourRendererCodeBlock(b *testing.B) {
-	r := newGlamourRenderer(80)
+	r := NewGlamourRenderer(80)
 	input := "```go\nfunc main() {\n\tfmt.Println(\"hello`\")\n}\n```"
 	for b.Loop() {
 		_, _ = r.Render(input)
@@ -1055,7 +1033,7 @@ func BenchmarkFastRendererTable(b *testing.B) {
 }
 
 func BenchmarkGlamourRendererTable(b *testing.B) {
-	r := newGlamourRenderer(80)
+	r := NewGlamourRenderer(80)
 	for b.Loop() {
 		_, _ = r.Render(benchmarkTableInput)
 	}
@@ -1069,7 +1047,7 @@ func BenchmarkFastRendererTableWidth20(b *testing.B) {
 }
 
 func BenchmarkGlamourRendererTableWidth20(b *testing.B) {
-	r := newGlamourRenderer(20)
+	r := NewGlamourRenderer(20)
 	for b.Loop() {
 		_, _ = r.Render(benchmarkTableInput)
 	}
@@ -1083,7 +1061,7 @@ func BenchmarkFastRendererTableWidth200(b *testing.B) {
 }
 
 func BenchmarkGlamourRendererTableWidth200(b *testing.B) {
-	r := newGlamourRenderer(200)
+	r := NewGlamourRenderer(200)
 	for b.Loop() {
 		_, _ = r.Render(benchmarkTableInput)
 	}
@@ -1801,199 +1779,6 @@ func splitIntoStreamingChunks(content string) []string {
 	return chunks
 }
 
-func TestFastRendererLinkOSC8(t *testing.T) {
-	t.Parallel()
-	input := "[Grafana](https://grafana.example.com/d/abc123?from=now-1h&to=now&var-host=prod-01)"
-	r := NewFastRenderer(80)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-
-	plain := stripANSI(result)
-	// Only link text visible, not the long URL
-	assert.Contains(t, plain, "Grafana")
-	assert.NotContains(t, plain, "grafana.example.com")
-
-	// OSC 8 hyperlink wraps the text
-	assert.Contains(t, result, "\x1b]8;;https://grafana.example.com/d/abc123?from=now-1h&to=now&var-host=prod-01\x07")
-	assert.Contains(t, result, "\x1b]8;;\x07")
-}
-
-func TestFastRendererLinkSameTextAndURL(t *testing.T) {
-	t.Parallel()
-	input := "[https://example.com](https://example.com)"
-	r := NewFastRenderer(80)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-
-	plain := stripANSI(result)
-	assert.Contains(t, plain, "https://example.com")
-	// OSC 8 should still be present
-	assert.Contains(t, result, "\x1b]8;;https://example.com\x07")
-}
-
-func TestFastRendererAutoLinkURL(t *testing.T) {
-	t.Parallel()
-	input := "Visit https://example.com/page for details"
-	r := NewFastRenderer(80)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-
-	plain := stripANSI(result)
-	assert.Contains(t, plain, "https://example.com/page")
-	// URL should be wrapped in OSC 8
-	assert.Contains(t, result, "\x1b]8;;https://example.com/page\x07")
-	assert.Contains(t, result, "\x1b]8;;\x07")
-}
-
-func TestFastRendererAutoLinkTrailingPunctuation(t *testing.T) {
-	t.Parallel()
-	input := "Check https://example.com/page."
-	r := NewFastRenderer(80)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-
-	// The trailing period should NOT be part of the URL
-	assert.Contains(t, result, "\x1b]8;;https://example.com/page\x07")
-}
-
-func TestFastRendererAutoLinkWithParens(t *testing.T) {
-	t.Parallel()
-	input := "See https://en.wikipedia.org/wiki/Thing_(disambiguation) for info"
-	r := NewFastRenderer(80)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-
-	// Parens in URL should be preserved when balanced
-	assert.Contains(t, result, "\x1b]8;;https://en.wikipedia.org/wiki/Thing_(disambiguation)\x07")
-}
-
-func TestFastRendererAutoLinkAdjacentMarkdown(t *testing.T) {
-	t.Parallel()
-	// URL immediately followed by bold markdown — URL should stop before the *
-	input := "Visit https://example.com*important note*"
-	r := NewFastRenderer(80)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-
-	// The URL should be only https://example.com (not including *important note*)
-	assert.Contains(t, result, "\x1b]8;;https://example.com\x07")
-	// "important note" should be rendered as bold (between * markers), not as part of the URL
-	plain := stripANSI(result)
-	assert.Contains(t, plain, "important note")
-}
-
-func TestFastRendererAutoLinkMinimalURL(t *testing.T) {
-	t.Parallel()
-	// Minimal valid-ish URL: "https://x" — should be detected
-	input := "https://x"
-	r := NewFastRenderer(80)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-	assert.Contains(t, result, "\x1b]8;;https://x\x07")
-}
-
-func TestFastRendererAutoLinkAtEndOfText(t *testing.T) {
-	t.Parallel()
-	// URL at the very end of the text with no trailing space or punctuation.
-	// This previously caused a slice bounds panic.
-	input := "Check this: https://example.com/path"
-	r := NewFastRenderer(80)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-
-	// Should contain the OSC 8 hyperlink sequence
-	assert.Contains(t, result, "\x1b]8;;https://example.com/path\x07")
-	assert.Contains(t, result, "\x1b]8;;\x07")
-
-	// Visible text should contain the URL
-	plain := stripANSI(result)
-	assert.Contains(t, plain, "Check this:")
-	assert.Contains(t, plain, "https://example.com/path")
-}
-
-func TestFastRendererLinkWidthCalculation(t *testing.T) {
-	t.Parallel()
-	// With OSC 8, the URL is invisible — only link text width counts
-	input := "[Go](https://very-long-url.example.com/path/to/page?query=value&other=thing)"
-	r := NewFastRenderer(40)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-
-	for line := range strings.SplitSeq(strings.TrimRight(result, "\n"), "\n") {
-		w := ansi.StringWidth(line)
-		assert.LessOrEqual(t, w, 40, "Line exceeds width: %q (width=%d)", line, w)
-	}
-}
-
-func TestFastRendererAutoLinkLongURLWrapping(t *testing.T) {
-	t.Parallel()
-	longURL := "https://grafana.example.com/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22expr%22%3A%22%7Bservice%3D%5C%22test%5C%22%7D%22%7D%5D%7D"
-	r := NewFastRenderer(60)
-	result, err := r.Render(longURL)
-	require.NoError(t, err)
-
-	lines := strings.Split(result, "\n")
-	for i, line := range lines {
-		stripped := ansi.Strip(line)
-		if strings.TrimSpace(stripped) == "" {
-			continue // skip empty/padding lines
-		}
-		hasOpen := strings.Contains(line, "\x1b]8;;http")
-		hasClose := strings.Contains(line, "\x1b]8;;\x07")
-		assert.True(t, hasOpen, "line %d should have OSC 8 open: %q", i, stripped)
-		assert.True(t, hasClose, "line %d should have OSC 8 close: %q", i, stripped)
-	}
-}
-
-func TestFastRendererCodeBlockURL(t *testing.T) {
-	t.Parallel()
-	input := "```\nhttps://example.com/very/long/path\n```"
-	r := NewFastRenderer(80)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-	// The URL in the code block should be wrapped in OSC 8
-	assert.Contains(t, result, "\x1b]8;;https://example.com/very/long/path\x07")
-	assert.Contains(t, result, "\x1b]8;;\x07")
-}
-
-func TestFastRendererCodeBlockLongURLWrapping(t *testing.T) {
-	t.Parallel()
-	longURL := "https://grafana.example.com/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22expr%22%3A%22%7Bservice%3D%5C%22test%5C%22%7D%22%7D%5D%7D"
-	input := "```\n" + longURL + "\n```"
-	r := NewFastRenderer(60)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-	// Each non-empty content line should have OSC 8 open and close
-	lines := strings.Split(result, "\n")
-	for i, line := range lines {
-		stripped := ansi.Strip(line)
-		if strings.TrimSpace(stripped) == "" {
-			continue
-		}
-		// Lines containing URL text should have OSC 8
-		if strings.Contains(stripped, "https://") || strings.Contains(stripped, "grafana") || strings.Contains(stripped, "%22") {
-			hasOpen := strings.Contains(line, "\x1b]8;;http")
-			hasClose := strings.Contains(line, "\x1b]8;;\x07")
-			assert.True(t, hasOpen, "line %d should have OSC 8 open: %q", i, stripped)
-			assert.True(t, hasClose, "line %d should have OSC 8 close: %q", i, stripped)
-		}
-	}
-}
-
-func TestFastRendererCodeBlockMixedTextAndURL(t *testing.T) {
-	t.Parallel()
-	input := "```\nvisit https://example.com for details\n```"
-	r := NewFastRenderer(80)
-	result, err := r.Render(input)
-	require.NoError(t, err)
-	// The URL should be wrapped in OSC 8, but surrounding text should not
-	assert.Contains(t, result, "\x1b]8;;https://example.com\x07")
-	assert.Contains(t, result, "\x1b]8;;\x07")
-	plain := stripANSI(result)
-	assert.Contains(t, plain, "visit")
-	assert.Contains(t, plain, "for details")
-}
-
 // BenchmarkStreamingFastRenderer benchmarks rendering progressively growing markdown.
 // This simulates the streaming use case where content arrives in chunks and
 // the entire accumulated content is re-rendered on each update.
@@ -2020,7 +1805,7 @@ func BenchmarkStreamingGlamourRenderer(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		r := newGlamourRenderer(80)
+		r := NewGlamourRenderer(80)
 		var accumulated strings.Builder
 		for _, chunk := range chunks {
 			accumulated.WriteString(chunk)

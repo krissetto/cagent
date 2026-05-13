@@ -36,6 +36,7 @@ func New() (*Store, error) {
 // migrate runs database migrations.
 func (s *Store) migrate() error {
 	ctx := context.Background()
+
 	_, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS tabs (
 			session_id TEXT PRIMARY KEY,

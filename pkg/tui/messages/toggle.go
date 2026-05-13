@@ -35,4 +35,8 @@ type (
 	// RestartToolsetMsg asks the runtime to restart the named toolset by
 	// triggering its supervisor's RestartAndWait.
 	RestartToolsetMsg struct{ Name string }
+
+	// ShowSessionTreeDialogMsg shows a read-only tree of the current root
+	// session and all live descendant sub-sessions.
+	ShowSessionTreeDialogMsg struct{}
 )

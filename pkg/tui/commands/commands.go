@@ -218,17 +218,6 @@ func builtInSessionCommands() []Item {
 			},
 		},
 		{
-			ID:           "session.pause",
-			Label:        "Pause",
-			SlashCommand: "/pause",
-			Description:  "Pause/resume the runtime loop after the current request",
-			Category:     "Session",
-			Immediate:    true,
-			Execute: func(string) tea.Cmd {
-				return core.CmdHandler(messages.TogglePauseMsg{})
-			},
-		},
-		{
 			ID:           "session.permissions",
 			Label:        "Permissions",
 			SlashCommand: "/permissions",
@@ -277,7 +266,7 @@ func builtInSessionCommands() []Item {
 			ID:           "session.tools",
 			Label:        "Tools",
 			SlashCommand: "/tools",
-			Description:  "Show every toolset (with lifecycle state) and the tools they expose",
+			Description:  "Show all tools available to the current agent",
 			Category:     "Session",
 			Immediate:    true,
 			Execute: func(string) tea.Cmd {
@@ -285,15 +274,14 @@ func builtInSessionCommands() []Item {
 			},
 		},
 		{
-			ID:           "session.toolset.restart",
-			Label:        "Restart Toolset",
-			SlashCommand: "/toolset-restart",
-			Description:  "Force a supervisor-driven restart of one toolset (usage: /toolset-restart <name>)",
+			ID:           "session.tree",
+			Label:        "Tree",
+			SlashCommand: "/tree",
+			Description:  "Show the live session tree with all subagents",
 			Category:     "Session",
 			Immediate:    true,
-			Execute: func(arg string) tea.Cmd {
-				name := strings.TrimSpace(arg)
-				return core.CmdHandler(messages.RestartToolsetMsg{Name: name})
+			Execute: func(string) tea.Cmd {
+				return core.CmdHandler(messages.ShowSessionTreeDialogMsg{})
 			},
 		},
 		{

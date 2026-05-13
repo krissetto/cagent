@@ -14,9 +14,11 @@ import (
 // Computing this once avoids duplicating the layout logic between CollapsedHeight and collapsedView.
 type CollapsedViewModel struct {
 	TitleWithStar    string
+	ParentLine       string
 	WorkingIndicator string
 	WorkingDir       string
 	UsageSummary     string
+	SubagentSummary  string
 
 	// Layout decisions computed from the data
 	TitleAndIndicatorOnOneLine bool
@@ -29,6 +31,10 @@ func (vm CollapsedViewModel) LineCount() int {
 	lines := 1 // divider
 	lines += vm.titleSectionLines()
 
+	if vm.SubagentSummary != "" {
+		lines += linesNeeded(lipgloss.Width(vm.SubagentSummary), vm.ContentWidth)
+	}
+
 	if vm.WdAndUsageOnOneLine {
 		lines++
 	} else {
@@ -36,6 +42,10 @@ func (vm CollapsedViewModel) LineCount() int {
 		if vm.UsageSummary != "" {
 			lines += linesNeeded(lipgloss.Width(vm.UsageSummary), vm.ContentWidth)
 		}
+	}
+
+	if vm.ParentLine != "" {
+		lines += 2 // blank spacer + parent line, rendered beneath the working directory
 	}
 
 	return lines
@@ -77,6 +87,10 @@ func RenderCollapsedView(vm CollapsedViewModel) string {
 		lines = append(lines, vm.TitleWithStar, vm.WorkingIndicator)
 	}
 
+	if vm.SubagentSummary != "" {
+		lines = append(lines, vm.SubagentSummary)
+	}
+
 	// Working directory + usage line(s)
 	if vm.WdAndUsageOnOneLine {
 		gap := vm.ContentWidth - lipgloss.Width(vm.WorkingDir) - lipgloss.Width(vm.UsageSummary)
@@ -86,6 +100,10 @@ func RenderCollapsedView(vm CollapsedViewModel) string {
 		if vm.UsageSummary != "" {
 			lines = append(lines, vm.UsageSummary)
 		}
+	}
+
+	if vm.ParentLine != "" {
+		lines = append(lines, "", vm.ParentLine)
 	}
 
 	return strings.Join(lines, "\n")

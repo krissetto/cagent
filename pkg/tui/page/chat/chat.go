@@ -1,9 +1,12 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -14,6 +17,8 @@ import (
 
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/chat"
+	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tui/commands"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
@@ -100,6 +105,10 @@ type Page interface {
 	ScrollToBottom() tea.Cmd
 	// IsWorking returns whether the agent is currently working
 	IsWorking() bool
+	// SetWorking forces the page working state. Intended for rare cases where
+	// the UI attaches to an already-live session mid-turn and needs to seed
+	// the spinner before any new runtime event arrives.
+	SetWorking(working bool) tea.Cmd
 	// IsInlineEditing returns true if a past user message is being edited inline
 	IsInlineEditing() bool
 	// QueueLength returns the number of queued messages
@@ -114,6 +123,14 @@ type Page interface {
 	GetSidebarSettings() SidebarSettings
 	// SetSidebarSettings applies sidebar display settings
 	SetSidebarSettings(settings SidebarSettings)
+	// SeedSubagentsFromLiveTree primes the sidebar's Subagents section from a
+	// runtime live-tree snapshot. Used when opening a tab onto a session whose
+	// descendants already exist before the tab subscribes to live events.
+	SeedSubagentsFromLiveTree(nodes []runtime.LiveSessionNode)
+	// ClearSidebarTransientHover drops purely hover-driven sidebar affordances
+	// (like hovered subagent rows). Used when leaving a tab so stale hover
+	// state does not survive into the next activation.
+	ClearSidebarTransientHover()
 }
 
 // queuedMessage represents a message waiting to be sent to the agent
@@ -139,9 +156,22 @@ type chatPage struct {
 	working  bool
 	leanMode bool
 
+	// fixedStripHeight is the number of rows reserved at the top of the chat
+	// pane for non-scrolling chrome (today the attached subagent relationship
+	// banner). It must be accounted for both in View() and in SetSize() so the
+	// messages viewport and the rendered frame agree about the available height.
+	// If we only subtract it during rendering, the scrollview still thinks it
+	// owns the full height and the bottom line can overflow by one row when the
+	// transcript needs scrolling.
+	fixedStripHeight int
+
 	msgCancel       context.CancelFunc
 	streamCancelled bool
 	streamDepth     int // nesting depth of active streams (incremented on StreamStarted, decremented on StreamStopped)
+	// parentIdleDepth counts how many nested ParentIdleEvent scopes are active.
+	// When >0 the root session is not actively taking a turn; it is merely
+	// waiting for subagent traffic, so the main working spinner should stay off.
+	parentIdleDepth int
 	streamStartTime time.Time
 
 	// Track whether we've received content from an assistant response
@@ -255,6 +285,61 @@ func defaultKeyMap() KeyMap {
 	}
 }
 
+// getEditorDisplayNameFromEnv returns a friendly display name for the configured editor.
+// It takes visual and editorEnv values as parameters and maps common editors to display names.
+// If neither is set, it returns the platform-specific fallback that will actually be used.
+func getEditorDisplayNameFromEnv(visual, editorEnv string) string {
+	editorCmd := cmp.Or(visual, editorEnv)
+	if editorCmd == "" {
+		if goruntime.GOOS == "windows" {
+			return "Notepad"
+		}
+		return "Vi"
+	}
+
+	parts := strings.Fields(editorCmd)
+	if len(parts) == 0 {
+		return "$EDITOR"
+	}
+
+	baseName := filepath.Base(parts[0])
+
+	editorPrefixes := []struct {
+		prefix string
+		name   string
+	}{
+		{"code", "VSCode"},
+		{"cursor", "Cursor"},
+		{"nvim", "Neovim"},
+		{"vim", "Vim"},
+		{"vi", "Vi"},
+		{"nano", "Nano"},
+		{"emacs", "Emacs"},
+		{"subl", "Sublime Text"},
+		{"sublime", "Sublime Text"},
+		{"atom", "Atom"},
+		{"gedit", "gedit"},
+		{"kate", "Kate"},
+		{"notepad++", "Notepad++"},
+		{"notepad", "Notepad"},
+		{"textmate", "TextMate"},
+		{"mate", "TextMate"},
+		{"zed", "Zed"},
+	}
+
+	for _, e := range editorPrefixes {
+		if strings.HasPrefix(baseName, e.prefix) {
+			return e.name
+		}
+	}
+
+	if baseName != "" {
+		return strings.ToUpper(baseName[:1]) + baseName[1:]
+	}
+
+	return "$EDITOR"
+}
+
 // New creates a new chat page
 func New(a *app.App, sessionState *service.SessionState, opts ...PageOption) Page {
 	p := &chatPage{
@@ -302,6 +387,12 @@ func (p *chatPage) Init() tea.Cmd {
 	// Load state from existing session (for session restore and branching)
 	if sess := p.app.Session(); sess != nil {
 		p.sidebar.LoadFromSession(sess)
+		// Seed persisted subagent descendants into the sidebar using the live tree
+		// (which now includes persisted descendants from the store). This replaces
+		// the old transcript-based restore path that was removed in Phase 3.3.
+		if nodes := p.app.LiveSessionTree(sess.ID); len(nodes) > 0 {
+			p.sidebar.SeedSubagentsFromLiveTree(nodes)
+		}
 		if len(sess.Messages) > 0 {
 			cmds = append(cmds, p.messages.LoadFromSession(sess))
 		}
@@ -376,6 +467,9 @@ func (p *chatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 
 	case msgtypes.ClearQueueMsg:
 		return p.handleClearQueue()
+
+	case msgtypes.OpenSubAgentByShortRefMsg:
+		return p.handleOpenSubAgentByShortRef(msg)
 
 	case msgtypes.ThemeChangedMsg:
 		// Theme changed - forward to all child components to invalidate caches
@@ -470,9 +564,77 @@ func (p *chatPage) renderCollapsedSidebar(sl sidebarLayout) string {
 		Render(sidebarWithDivider)
 }
 
+func (p *chatPage) renderSubsessionStrip(width int) string {
+	if p.sessionState == nil || !p.sessionState.IsSubSession() || width <= 0 {
+		return ""
+	}
+
+	childName := strings.TrimSpace(p.sessionState.CurrentAgentName())
+	if childName == "" {
+		childName = "child"
+	}
+	parentName := strings.TrimSpace(p.sessionState.ParentAgentName())
+	if parentName == "" {
+		parentName = "parent"
+	}
+
+	left := styles.AgentBadgeStyleFor(parentName).Render(parentName)
+	right := styles.AgentBadgeStyleFor(childName).Render(childName)
+	body := left + styles.MutedStyle.Render("  ↔  ") + right
+
+	centered := lipgloss.PlaceHorizontal(width, lipgloss.Center, body)
+	banner := lipgloss.NewStyle().
+		Width(width).
+		Foreground(styles.TextMuted).
+		Render(centered)
+
+	// One row of vertical margin below the banner so the transcript doesn't
+	// collide visually with the [parent] ↔ [child] title. The empty row is
+	// part of the banner's fixed chrome so every layout path measures it
+	// consistently via lipgloss.Height(strip).
+	spacer := lipgloss.NewStyle().Width(width).Render("")
+	return lipgloss.JoinVertical(lipgloss.Top, banner, spacer)
+}
+
+// subsessionStripHeight returns the number of rows the attached-subagent
+// relationship banner will occupy in the current layout. Returns 0 for owned
+// (non-sub-session) tabs so the normal chat page pays no layout cost.
+//
+// Centralising this is important: SetSize and View must agree on the value
+// or the messages viewport ends up one row taller than the rendered chat
+// column, which manifests as a visible bottom-line overflow when the
+// transcript needs scrolling.
+func (p *chatPage) subsessionStripHeight(width int) int {
+	if p.sessionState == nil || !p.sessionState.IsSubSession() || width <= 0 {
+		return 0
+	}
+	strip := p.renderSubsessionStrip(width)
+	if strip == "" {
+		return 0
+	}
+	return lipgloss.Height(strip)
+}
+
 // View renders the chat page (messages + sidebar only, no editor or resize handle)
 func (p *chatPage) View() string {
 	sl := p.computeSidebarLayout()
+
+	stripHeight := p.fixedStripHeight
+	var strip string
+	if stripHeight > 0 {
+		switch sl.mode {
+		case sidebarVertical:
+			strip = p.renderSubsessionStrip(sl.chatWidth)
+		default:
+			strip = p.renderSubsessionStrip(sl.innerWidth)
+		}
+		if strip == "" {
+			// Strip became empty (e.g. width collapsed to zero after a resize);
+			// fall back to no height rather than blindly trusting the cached
+			// value. SetSize will reconcile on the next size change.
+			stripHeight = 0
+		}
+	}
 
 	messagesView := p.messages.View()
 
@@ -480,10 +642,15 @@ func (p *chatPage) View() string {
 
 	switch sl.mode {
 	case sidebarVertical:
-		chatView := styles.ChatStyle.
-			Height(sl.chatHeight).
+		chatBodyHeight := max(1, sl.chatHeight-stripHeight)
+		chatMessages := styles.ChatStyle.
+			Height(chatBodyHeight).
 			Width(sl.chatWidth).
 			Render(messagesView)
+		chatView := chatMessages
+		if strip != "" {
+			chatView = lipgloss.JoinVertical(lipgloss.Top, strip, chatMessages)
+		}
 
 		toggleCol := p.renderSidebarHandle(sl.chatHeight)
 
@@ -496,17 +663,21 @@ func (p *chatPage) View() string {
 		bodyContent = lipgloss.JoinHorizontal(lipgloss.Left, chatView, toggleCol, sidebarView)
 
 	case sidebarCollapsed, sidebarCollapsedNarrow:
+		chatBodyHeight := max(1, sl.chatHeight-stripHeight)
+		chatMessages := styles.ChatStyle.
+			Height(chatBodyHeight).
+			Width(sl.innerWidth).
+			Render(messagesView)
+		chatView := chatMessages
+		if strip != "" {
+			chatView = lipgloss.JoinVertical(lipgloss.Top, strip, chatMessages)
+		}
 		if p.leanMode {
-			// Lean mode: no sidebar header, no fixed height
-			bodyContent = styles.ChatStyle.
-				Width(sl.innerWidth).
-				Render(messagesView)
+			// Lean mode: no sidebar header, but attached child-session tabs still
+			// benefit from the explicit strip.
+			bodyContent = chatView
 		} else {
 			sidebarRendered := p.renderCollapsedSidebar(sl)
-			chatView := styles.ChatStyle.
-				Height(sl.chatHeight).
-				Width(sl.innerWidth).
-				Render(messagesView)
 			bodyContent = lipgloss.JoinVertical(lipgloss.Top, sidebarRendered, chatView)
 		}
 	}
@@ -550,24 +721,40 @@ func (p *chatPage) SetSize(width, height int) tea.Cmd {
 	// Compute layout once and use it for all sizing
 	sl := p.computeSidebarLayout()
 
+	// The sub-session banner is fixed chrome above the transcript. Size the
+	// messages viewport to the remaining rows so its internal scroll math
+	// stays in sync with what View() actually renders. Cache the height so
+	// View() uses the exact same value.
+	var stripWidth int
+	switch sl.mode {
+	case sidebarVertical:
+		stripWidth = sl.chatWidth
+	default:
+		stripWidth = sl.innerWidth
+	}
+	p.fixedStripHeight = p.subsessionStripHeight(stripWidth)
+	messagesHeight := max(1, sl.chatHeight-p.fixedStripHeight)
+
 	switch sl.mode {
 	case sidebarVertical:
 		p.sidebar.SetMode(sidebar.ModeVertical)
 		cmds = append(cmds,
 			p.sidebar.SetSize(sl.sidebarWidth-toggleColumnWidth, sl.chatHeight),
 			p.sidebar.SetPosition(styles.AppPadding+sl.sidebarStartX, 0),
-			p.messages.SetPosition(styles.AppPadding, 0),
+			// Messages sit below the strip in vertical mode; push their y
+			// origin down so mouse/click coordinates match what the user sees.
+			p.messages.SetPosition(styles.AppPadding, p.fixedStripHeight),
 		)
 	case sidebarCollapsed, sidebarCollapsedNarrow:
 		p.sidebar.SetMode(sidebar.ModeCollapsed)
 		cmds = append(cmds,
 			p.sidebar.SetSize(sl.sidebarWidth, sl.sidebarHeight),
 			p.sidebar.SetPosition(styles.AppPadding, 0),
-			p.messages.SetPosition(styles.AppPadding, sl.sidebarHeight),
+			p.messages.SetPosition(styles.AppPadding, sl.sidebarHeight+p.fixedStripHeight),
 		)
 	}
 
-	cmds = append(cmds, p.messages.SetSize(sl.chatWidth, sl.chatHeight))
+	cmds = append(cmds, p.messages.SetSize(sl.chatWidth, messagesHeight))
 
 	return tea.Batch(cmds...)
 }
@@ -587,19 +774,39 @@ func (p *chatPage) Help() help.KeyMap {
 	return core.NewSimpleHelp(p.Bindings())
 }
 
-// cancelStream cancels the current stream and cleans up associated state
+// cancelStream cancels the current stream and cleans up associated state.
+// For attached subagent tabs (no local msgCancel), it also asks the runtime
+// to interrupt the background subagent's current turn so the user's ESC is
+// actually honored by the child loop and not just hidden in the local UI.
 func (p *chatPage) cancelStream(showCancelMessage bool) tea.Cmd {
-	if p.msgCancel == nil {
+	attached := p.sessionState != nil && p.sessionState.IsSubSession()
+	if p.msgCancel == nil && !attached {
 		return nil
 	}
 
-	p.msgCancel()
-	p.msgCancel = nil
+	var notifCmd tea.Cmd
+	if attached {
+		if err := p.app.InterruptAttachedSession(); err != nil {
+			slog.Debug("Attached subagent interrupt failed", "error", err)
+			// Surface the error as a non-blocking notification only when the user
+			// explicitly asked for feedback (ESC from the UI). Internal calls to
+			// cancelStream(false) stay quiet.
+			if showCancelMessage {
+				notifCmd = notification.WarningCmd(fmt.Sprintf("Could not interrupt subagent: %v", err))
+			}
+		}
+	}
+
+	if p.msgCancel != nil {
+		p.msgCancel()
+		p.msgCancel = nil
+	}
 	p.streamCancelled = true
 	p.streamDepth = 0
 	p.setPendingResponse(false)
 	// Send StreamCancelledMsg to all components to handle cleanup
 	return tea.Batch(
+		notifCmd,
 		core.CmdHandler(msgtypes.StreamCancelledMsg{ShowMessage: showCancelMessage}),
 		p.setWorking(false),
 	)
@@ -621,6 +828,22 @@ func (p *chatPage) handleSendMsg(msg msgtypes.SendMsg) (layout.Model, tea.Cmd) {
 	if p.commandParser.Parse(msg.Content) != nil {
 		cmd := p.processMessage(msg)
 		return p, cmd
+	}
+
+	// If parent is idle-waiting on subagents (its own turn has finished but
+	// children are still live), don't cancel/restart the stream — that
+	// would tear down the subagents. Route plain-text user input through
+	// the runtime's follow-up queue instead so the existing parent loop
+	// wakes and takes another turn with this message as fresh input.
+	//
+	// Messages carrying attachments still fall through to the normal queue
+	// path for now; follow-up attachments would require a richer runtime
+	// QueuedMessage pipeline and are out of scope for this slice.
+	if p.parentIdleDepth > 0 && !p.working {
+		if err := p.app.FollowUpWithAttachments(msg.Content, msg.Attachments); err != nil {
+			return p, notification.WarningCmd(fmt.Sprintf("Failed to queue follow-up: %v", err))
+		}
+		return p, nil
 	}
 
 	// If not working, process immediately
@@ -857,6 +1080,18 @@ func (p *chatPage) processMessage(msg msgtypes.SendMsg) tea.Cmd {
 		}
 	}
 
+	// Attached subagent tab: the child loop emits UserMessageEvent and
+	// StreamStartedEvent only after it drains the inbox and actually begins
+	// the next turn. Add a loading placeholder immediately so the user sees
+	// that their input has been accepted and a working spinner is visible
+	// from the moment of send — even if the child is still loading tools or
+	// making the first request and hasn't produced content yet.
+	// ReplaceLoadingWithUser swaps this placeholder for the real user
+	// message when UserMessageEvent arrives.
+	if loadingCmd == nil && p.sessionState != nil && p.sessionState.IsSubSession() {
+		loadingCmd = p.messages.AddLoadingMessage(msg.Content)
+	}
+
 	// Run command resolution and agent execution in a goroutine
 	// so the UI stays responsive while skill/agent commands are resolved.
 	go func() {
@@ -904,6 +1139,94 @@ func (p *chatPage) GetSidebarSettings() SidebarSettings {
 func (p *chatPage) SetSidebarSettings(settings SidebarSettings) {
 	p.sidebar.SetCollapsed(settings.Collapsed)
 	p.sidebar.SetPreferredWidth(settings.PreferredWidth)
+}
+
+// SeedSubagentsFromLiveTree primes the sidebar's Subagents section from an
+// externally-supplied live-tree snapshot. This is a no-op in lean mode (no
+// sidebar) and safe to call repeatedly.
+func (p *chatPage) SeedSubagentsFromLiveTree(nodes []runtime.LiveSessionNode) {
+	if p == nil || p.sidebar == nil {
+		return
+	}
+	p.sidebar.SeedSubagentsFromLiveTree(nodes)
+}
+
+// ClearSidebarTransientHover clears ephemeral mouse-hover UI state from the
+// sidebar while preserving all durable session data. This is used on tab
+// switches so returning to a previously hovered tab does not leave a stale
+// subagent row highlighted until the mouse moves again.
+func (p *chatPage) ClearSidebarTransientHover() {
+	if p == nil || p.sidebar == nil {
+		return
+	}
+	p.sidebar.ClearTransientHover()
+}
+
+func (p *chatPage) handleOpenSubAgentByShortRef(msg msgtypes.OpenSubAgentByShortRefMsg) (layout.Model, tea.Cmd) {
+	ref := strings.TrimSpace(msg.ShortRef)
+	if ref == "" {
+		return p, nil
+	}
+
+	rootID := p.liveTreeRootID()
+	if rootID == "" {
+		return p, notification.InfoCmd("Subagent session is no longer live.")
+	}
+
+	if fullID := resolveSubAgentShortRef(p.app.LiveSessionTree(rootID), ref); fullID != "" {
+		return p, core.CmdHandler(msgtypes.OpenSubAgentTabMsg{SessionID: fullID})
+	}
+
+	return p, notification.InfoCmd("Subagent session is no longer live.")
+}
+
+// liveTreeRootID returns the session id to use as the root when asking the
+// runtime for a live-session tree. It prefers the session state's recorded
+// root (set at tab-open time for attached descendant tabs, so nested
+// sub-sessions all resolve to the same tree), falling back to the app's
+// current session id for owned tabs.
+//
+// Returns "" when neither source is available, which signals to callers
+// that there is no tree to inspect.
+func (p *chatPage) liveTreeRootID() string {
+	if p.sessionState != nil {
+		if id := strings.TrimSpace(p.sessionState.RootSessionID()); id != "" {
+			return id
+		}
+		if p.sessionState.IsSubSession() {
+			if id := strings.TrimSpace(p.sessionState.ParentSessionID()); id != "" {
+				return id
+			}
+		}
+	}
+	if p.app != nil {
+		if sess := p.app.Session(); sess != nil {
+			return sess.ID
+		}
+	}
+	return ""
+}
+
+// resolveSubAgentShortRef finds the first live subagent node in tree whose
+// session id maps to the given short ref. Returns "" when no match exists.
+//
+// Lifted to a top-level helper so the resolution logic can be exercised in
+// tests without constructing a full chat page and live runtime.
+func resolveSubAgentShortRef(tree []runtime.LiveSessionNode, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	for _, node := range tree {
+		if node.Kind != runtime.LiveSessionSubAgent {
+			continue
+		}
+		if subagent.ShortRef(node.ID) != ref {
+			continue
+		}
+		return node.ID
+	}
+	return ""
 }
 
 // handleSidebarClickType checks what was clicked in the sidebar area.
@@ -955,6 +1278,15 @@ func (p *chatPage) routeMouseEvent(msg tea.Msg, _ int) tea.Cmd {
 // IsWorking returns whether the agent is currently working
 func (p *chatPage) IsWorking() bool {
 	return p.working
+}
+
+// SetWorking forces the chat page's working state and emits the matching
+// WorkingStateChangedMsg when the state actually changes. Callers outside the
+// page (today only the tab-open handler for attached subagent tabs) use this
+// to seed the spinner when subscribing to an already-live session whose
+// original StreamStartedEvent was emitted before the subscription opened.
+func (p *chatPage) SetWorking(working bool) tea.Cmd {
+	return p.setWorking(working)
 }
 
 // IsInlineEditing returns true if a past user message is being edited inline.

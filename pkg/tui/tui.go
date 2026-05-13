@@ -792,6 +792,12 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case messages.SwitchAgentMsg:
 		return m.handleSwitchAgent(msg.AgentName)
 
+	case messages.OpenSubAgentTabMsg:
+		return m.handleOpenSubAgentTab(msg.SessionID)
+
+	case messages.OpenParentSessionMsg:
+		return m.handleOpenParentSession(msg.SessionID)
+
 	// --- Session browser ---
 
 	case messages.OpenSessionBrowserMsg:
@@ -2462,4 +2468,148 @@ func toFullscreenView(content, windowTitle string, working, leanMode bool) tea.V
 		view.ProgressBar = tea.NewProgressBar(tea.ProgressBarIndeterminate, 0)
 	}
 	return view
+}
+
+// resolveParentAgentName returns the display name of the agent running in
+// parentSessionID, consulting the supervisor registry, cached session states,
+// the live-session tree, and finally the currently active app as fallbacks.
+func (m *appModel) resolveParentAgentName(parentSessionID string) string {
+	if strings.TrimSpace(parentSessionID) == "" {
+		return ""
+	}
+	if runner := m.supervisor.GetRunner(parentSessionID); runner != nil {
+		if runner.AgentName != "" {
+			return runner.AgentName
+		}
+		if ss := m.sessionStates[parentSessionID]; ss != nil && ss.CurrentAgentName() != "" {
+			return ss.CurrentAgentName()
+		}
+	}
+	if node, ok := m.application.LiveSessionNode(parentSessionID); ok && node.AgentName != "" {
+		return node.AgentName
+	}
+	if m.application != nil && m.application.Session() != nil && m.application.Session().ID == parentSessionID {
+		return m.sessionState.CurrentAgentName()
+	}
+	return "agent"
+}
+
+// handleOpenParentSession navigates from an attached child-session tab back to
+// its parent by funnelling through handleOpenSubAgentTab, which already
+// implements the prefer-existing-tab ordering. When the parent is no longer a
+// live node the helper surfaces a gentle info notice.
+func (m *appModel) handleOpenParentSession(sessionID string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(sessionID) == "" {
+		return m, nil
+	}
+	return m.handleOpenSubAgentTab(sessionID)
+}
+
+// handleOpenSubAgentTab registers an attached live tab for the given subagent
+// session. The sidebar single-click flow lives here so the runtime-level
+// LiveEventSource + LiveSessionNode plumbing is owned by tui.go.
+//
+// When the runtime does not expose live observability (older / remote
+// configurations without tree support), we surface a friendly warning rather
+// than crashing. When the session cannot be resolved (e.g. the child already
+// terminated), we warn for the same reason.
+func (m *appModel) handleOpenSubAgentTab(sessionID string) (tea.Model, tea.Cmd) {
+	if sessionID == "" {
+		return m, nil
+	}
+
+	if runner := m.supervisor.GetRunner(sessionID); runner != nil {
+		return m.handleSwitchTab(sessionID)
+	}
+	if existing := m.findTabByPersistedID(sessionID); existing != "" {
+		return m.handleSwitchTab(existing)
+	}
+
+	// Clear transient hover on the outgoing page (mirrors handleSwitchTab).
+	m.clearTransientUIForLeavingCurrentPage()
+
+	node, ok := m.application.LiveSessionNode(sessionID)
+	if !ok {
+		return m, notification.InfoCmd("Subagent session is no longer live.")
+	}
+	sess, ok := m.application.LiveSession(sessionID)
+	if !ok || sess == nil {
+		return m, notification.InfoCmd("This runtime cannot open live child sessions as full chat tabs.")
+	}
+	if src := m.application.LiveEventSource(); src == nil {
+		return m, notification.InfoCmd("This runtime does not expose live events; cannot open a full chat tab.")
+	}
+
+	attachedCtx, attachedCancel := context.WithCancel(context.Background())
+	attachedApp := app.NewAttached(
+		attachedCtx,
+		m.application.Runtime(),
+		sess,
+		node,
+		app.WithAttachedTeam(m.sessionState.AvailableAgents()),
+	)
+
+	m.editor.Blur()
+
+	// Build per-session components and run Init synchronously before the
+	// subscription starts so the transcript is already populated when the
+	// first live event arrives.
+	m.initSessionComponents(sess.ID, attachedApp, sess)
+	m.sessionState.SetCurrentAgentName(node.AgentName)
+	m.sessionState.SetParentSessionID(node.ParentID)
+	if root := cmp.Or(node.RootSessionID, node.ID); root != "" {
+		m.sessionState.SetRootSessionID(root)
+	}
+	if parentName := m.resolveParentAgentName(node.ParentID); parentName != "" {
+		m.sessionState.SetParentAgentName(parentName)
+	}
+	// Seed subagent rows from the current live-tree snapshot so children that
+	// started before this tab subscribed are not invisible.
+	m.chatPage.SeedSubagentsFromLiveTree(m.application.LiveSessionTree(sess.ID))
+	m.applySidebarCollapsed(sess.ID)
+	pageInitCmd := m.chatPage.Init()
+	editorInitCmd := m.editor.Init()
+
+	m.supervisor.AddSession(context.Background(), attachedApp, sess, sess.WorkingDir, attachedCancel)
+	m.supervisor.SwitchTo(sess.ID)
+
+	m.reapplyKeyboardEnhancements()
+	m.persistActiveTab(m.persistedSessionID(sess.ID))
+
+	m.editor.SetWorking(m.chatPage.IsWorking())
+	m.workingSpinner.Stop()
+	m.workingSpinner = spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
+
+	cmds := []tea.Cmd{pageInitCmd, editorInitCmd, m.editor.Focus(), m.resizeAll()}
+	// The sidebar click routed focus to the messages panel for card highlighting;
+	// the freshly-opened attached tab should start editor-focused so the user
+	// can type immediately.
+	m.focusEditorForNewTab()
+	if node.Status == "running" || node.Status == "starting" {
+		if cmd := m.chatPage.SetWorking(true); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if m.chatPage.IsWorking() {
+		cmds = append(cmds, m.workingSpinner.Init())
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// clearTransientUIForLeavingCurrentPage clears transient hover state on the
+// current chat page when leaving the tab. Sidebar hover is mouse-derived and
+// must not survive a tab switch.
+func (m *appModel) clearTransientUIForLeavingCurrentPage() {
+	if m.chatPage != nil {
+		m.chatPage.ClearSidebarTransientHover()
+	}
+}
+
+// focusEditorForNewTab focuses the editor panel after opening a new/attached tab.
+func (m *appModel) focusEditorForNewTab() {
+	m.focusedPanel = PanelEditor
+	if m.chatPage != nil {
+		m.chatPage.BlurMessages()
+	}
+	m.statusBar.InvalidateCache()
 }

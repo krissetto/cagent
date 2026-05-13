@@ -48,8 +48,15 @@ func extractResult(msg *types.Message) string {
 		return "no matches"
 	}
 
-	return fmt.Sprintf("%s in %s",
-		toolcommon.Pluralize(meta.MatchCount, "match", "matches"),
-		toolcommon.Pluralize(meta.FileCount, "file", "files"),
-	)
+	matchWord := "match"
+	if meta.MatchCount != 1 {
+		matchWord = "matches"
+	}
+
+	fileWord := "file"
+	if meta.FileCount != 1 {
+		fileWord = "files"
+	}
+
+	return fmt.Sprintf("%d %s in %d %s", meta.MatchCount, matchWord, meta.FileCount, fileWord)
 }

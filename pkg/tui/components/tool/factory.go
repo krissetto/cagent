@@ -6,13 +6,13 @@
 package tool
 
 import (
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tools/builtin/fetch"
 	"github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
 	handofftool "github.com/docker/docker-agent/pkg/tools/builtin/handoff"
 	shelltool "github.com/docker/docker-agent/pkg/tools/builtin/shell"
 	"github.com/docker/docker-agent/pkg/tools/builtin/todo"
 	transfertasktool "github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
-	userpromptool "github.com/docker/docker-agent/pkg/tools/builtin/userprompt"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/api"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/defaulttool"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/directorytree"
@@ -23,9 +23,9 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/components/tool/readmultiplefiles"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/searchfilescontent"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/shell"
+	subagenttool "github.com/docker/docker-agent/pkg/tui/components/tool/subagent"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/todotool"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/transfertask"
-	"github.com/docker/docker-agent/pkg/tui/components/tool/userprompt"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/writefile"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
 	"github.com/docker/docker-agent/pkg/tui/service"
@@ -48,13 +48,19 @@ var builders = map[string]builder{
 	filesystem.ToolNameDirectoryTree:      directorytree.New,
 	filesystem.ToolNameSearchFilesContent: searchfilescontent.New,
 	shelltool.ToolNameShell:               shell.New,
-	userpromptool.ToolNameUserPrompt:      userprompt.New,
 	fetch.ToolNameFetch:                   api.New,
 	"category:api":                        api.New,
 	todo.ToolNameCreateTodo:               todotool.New,
 	todo.ToolNameCreateTodos:              todotool.New,
 	todo.ToolNameUpdateTodos:              todotool.New,
 	todo.ToolNameListTodos:                todotool.New,
+	subagent.ToolNameStart:                subagenttool.New,
+	subagent.ToolNameSend:                 subagenttool.New,
+	subagent.ToolNameInspect:              subagenttool.New,
+	subagent.ToolNameList:                 subagenttool.New,
+	subagent.ToolNameFinalize:             subagenttool.New,
+	subagent.ToolNameClose:                subagenttool.New,
+	subagent.ToolNameStop:                 subagenttool.New,
 }
 
 // New returns the appropriate tool view for the given message.

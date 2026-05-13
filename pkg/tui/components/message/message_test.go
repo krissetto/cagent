@@ -1,21 +1,16 @@
 package message
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tui/service"
+	"github.com/docker/docker-agent/pkg/tui/styles"
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
-
-var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;]*m")
-
-func stripANSI(s string) string {
-	return ansiEscape.ReplaceAllString(s, "")
-}
 
 func TestErrorMessageWrapping(t *testing.T) {
 	t.Parallel()
@@ -25,7 +20,7 @@ func TestErrorMessageWrapping(t *testing.T) {
 		"It contains enough text to exceed typical terminal widths and demonstrate the wrapping behavior."
 
 	msg := types.Error(longError)
-	mv := New(msg, nil)
+	mv := New(msg, nil, (*service.SessionState)(nil))
 
 	// Set a narrow width to force wrapping
 	width := 50
@@ -50,12 +45,33 @@ func TestErrorMessageWrapping(t *testing.T) {
 	}
 }
 
+func TestAssistantMessageDoesNotRenderSenderPill(t *testing.T) {
+	t.Parallel()
+
+	// Agent badges are keyed off a cached palette; make sure our sender
+	// name maps to a real style so we can spot-check its output.
+	styles.SetAgentOrder([]string{"root", "planner"})
+
+	msg := types.Agent(types.MessageTypeAssistant, "planner", "Hello there.")
+	mv := New(msg, nil, (*service.SessionState)(nil))
+	mv.SetSize(80, 0)
+
+	plain := stripANSI(mv.View())
+
+	// Even when the assistant message carries a sender, the chat transcript
+	// must no longer show the per-message agent pill. Attribution lives in
+	// the sidebar's "currently selected agent" indicator and spinner.
+	assert.NotContains(t, plain, "planner",
+		"assistant message must not render a [sender] pill in the chat")
+	assert.Contains(t, plain, "Hello there.")
+}
+
 func TestErrorMessageWithShortContent(t *testing.T) {
 	t.Parallel()
 
 	shortError := "Short error"
 	msg := types.Error(shortError)
-	mv := New(msg, nil)
+	mv := New(msg, nil, (*service.SessionState)(nil))
 
 	width := 80
 	mv.SetSize(width, 0)
@@ -75,7 +91,7 @@ func TestErrorMessagePreservesContent(t *testing.T) {
 
 	errorContent := "Error: Failed to connect to database\nConnection timeout after 30 seconds"
 	msg := types.Error(errorContent)
-	mv := New(msg, nil)
+	mv := New(msg, nil, (*service.SessionState)(nil))
 
 	width := 80
 	mv.SetSize(width, 0)
@@ -204,7 +220,7 @@ func TestWelcomeMessagePreservesLineBreaks(t *testing.T) {
 	// Simulate YAML multiline content with | syntax
 	welcomeContent := "Welcome!\n   indented line\nregular line"
 	msg := types.Welcome(welcomeContent)
-	mv := New(msg, nil)
+	mv := New(msg, nil, (*service.SessionState)(nil))
 
 	width := 80
 	mv.SetSize(width, 0)
@@ -219,4 +235,70 @@ func TestWelcomeMessagePreservesLineBreaks(t *testing.T) {
 	// Verify indentation is preserved in the output
 	plainRendered := stripANSI(rendered)
 	assert.Contains(t, plainRendered, "indented")
+}
+
+func TestSubAgentMessage_TurnCompletedRendersCompactFinishedRow(t *testing.T) {
+	t.Parallel()
+
+	msg := types.SubAgent(types.SubAgentInfo{Kind: types.SubAgentEventTurnCompleted, AgentName: "planner", ShortID: "87120"})
+	mv := New(msg, nil, (*service.SessionState)(nil))
+	mv.SetSize(80, 0)
+
+	plain := stripANSI(mv.View())
+	assert.Contains(t, plain, "<",
+		"turn-finished cards should use the stable single-cell '<' glyph so they render consistently in all terminals/fonts")
+	assert.NotContains(t, plain, "✉",
+		"turn-finished cards should not use the envelope glyph because its width is font/terminal dependent")
+	assert.NotContains(t, plain, "←",
+		"turn-finished cards should not use the legacy left-arrow marker")
+	assert.NotContains(t, plain, "✓",
+		"turn-finished cards should not reuse the completed-tool checkmark; this row is a notification, not a tool call")
+	assert.Contains(t, plain, "planner")
+	assert.Contains(t, plain, "(87120)")
+	assert.Contains(t, plain, "turn finished")
+}
+
+func TestSubAgentMessage_TerminalCardsStayCompact(t *testing.T) {
+	t.Parallel()
+
+	t.Run("closed renders a single-line finalize row", func(t *testing.T) {
+		t.Parallel()
+		msg := types.SubAgent(types.SubAgentInfo{Kind: types.SubAgentEventClosed, AgentName: "planner", ShortID: "87120"})
+		mv := New(msg, nil, (*service.SessionState)(nil))
+		mv.SetSize(80, 0)
+
+		plain := stripANSI(mv.View())
+		assert.Contains(t, plain, "◇")
+		assert.Contains(t, plain, "planner")
+		assert.Contains(t, plain, "(87120)")
+		assert.Contains(t, plain, "finalized")
+	})
+
+	t.Run("stopped renders a single-line stop row", func(t *testing.T) {
+		t.Parallel()
+		msg := types.SubAgent(types.SubAgentInfo{Kind: types.SubAgentEventStopped, AgentName: "planner", ShortID: "87120"})
+		mv := New(msg, nil, (*service.SessionState)(nil))
+		mv.SetSize(80, 0)
+
+		plain := stripANSI(mv.View())
+		assert.Contains(t, plain, "■")
+		assert.Contains(t, plain, "planner")
+		assert.Contains(t, plain, "(87120)")
+		assert.Contains(t, plain, "stopped")
+	})
+
+	t.Run("failed keeps a second line for the error detail", func(t *testing.T) {
+		t.Parallel()
+		msg := types.SubAgent(types.SubAgentInfo{Kind: types.SubAgentEventFailed, AgentName: "planner", ShortID: "87120", Detail: "oops boom"})
+		mv := New(msg, nil, (*service.SessionState)(nil))
+		mv.SetSize(80, 0)
+
+		plain := stripANSI(mv.View())
+		assert.Contains(t, plain, "!")
+		assert.Contains(t, plain, "planner")
+		assert.Contains(t, plain, "(87120)")
+		assert.Contains(t, plain, "failed")
+		assert.Contains(t, plain, "oops boom",
+			"failed cards remain the one place where a second line is worth paying for")
+	})
 }

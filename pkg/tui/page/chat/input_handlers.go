@@ -10,6 +10,7 @@ import (
 	"github.com/atotto/clipboard"
 
 	"github.com/docker/docker-agent/pkg/app"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
@@ -47,8 +48,13 @@ func (p *chatPage) handleKeyPress(msg tea.KeyPressMsg) (layout.Model, tea.Cmd) {
 			cmd := p.messages.CancelInlineEdit()
 			return p, cmd
 		}
-		// Otherwise cancel the stream (only if something is running)
-		if p.working || p.msgCancel != nil {
+		// Otherwise cancel the stream (only if something is running). For
+		// attached subagent tabs we don't own the runtime loop, so presence of
+		// msgCancel alone doesn't tell us whether there is work to interrupt —
+		// the working indicator (driven by StreamStarted events from the live
+		// subscription) is the source of truth.
+		attached := p.sessionState != nil && p.sessionState.IsSubSession()
+		if p.working || p.msgCancel != nil || attached {
 			cmd := p.cancelStream(true)
 			return p, cmd
 		}
@@ -148,12 +154,33 @@ func (p *chatPage) handleMouseClick(msg tea.MouseClickMsg) (layout.Model, tea.Cm
 			return p, copyWorkingDirToClipboard(p.sidebar.WorkingDirectory())
 		}
 
+	case TargetSidebarParent:
+		if msg.Button == tea.MouseLeft {
+			if hit.ParentSessionID != "" {
+				return p, core.CmdHandler(msgtypes.OpenParentSessionMsg{SessionID: hit.ParentSessionID})
+			}
+			return p, nil
+		}
+
 	case TargetSidebarAgent:
 		if msg.Button == tea.MouseLeft {
 			if hit.AgentName != "" {
 				return p, core.CmdHandler(msgtypes.SwitchAgentMsg{AgentName: hit.AgentName})
 			}
 			return p, nil
+		}
+
+	case TargetSidebarSubagent:
+		if msg.Button == tea.MouseLeft {
+			// Single click on a subagent row: focus the latest matching
+			// transcript card for quick visual feedback AND emit an
+			// OpenSubAgentTabMsg so the parent TUI registers an attached
+			// live tab for that subagent's session.
+			shortID := subagent.ShortRef(hit.SubagentID)
+			focusCardCmd := p.messages.FocusSubAgentCard(shortID)
+			focusPanelCmd := core.CmdHandler(msgtypes.RequestFocusMsg{Target: msgtypes.PanelMessages})
+			openTabCmd := core.CmdHandler(msgtypes.OpenSubAgentTabMsg{SessionID: hit.SubagentID})
+			return p, tea.Batch(focusCardCmd, focusPanelCmd, openTabCmd)
 		}
 
 	case TargetMessages:

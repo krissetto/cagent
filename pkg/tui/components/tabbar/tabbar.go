@@ -407,16 +407,12 @@ func (t *TabBar) View() string {
 	needsScroll := totalWidth > availWidth
 
 	if !needsScroll {
-		// Reset persistent scroll position once everything fits, so the next
-		// time the bar overflows again the user starts from the leftmost
-		// tab. The mutation lives here, rather than in SetTabs/SetWidth,
-		// because only the rendering pass knows the actual tab widths.
-		t.scrollOffset = 0 //rubocop:disable Lint/TUIViewPurity // intentional reset; see comment above
+		t.scrollOffset = 0 //rubocop:disable Lint/TUIViewPurity // render-time scroll reset when all tabs fit
 	} else if t.activeIdx != t.lastEnsuredIdx {
 		// Only auto-scroll when the active tab changes (e.g. tab switch),
 		// not on every render — otherwise manual scroll via arrows is undone.
 		t.ensureActiveVisible(allTabs, availWidth)
-		t.lastEnsuredIdx = t.activeIdx //rubocop:disable Lint/TUIViewPurity // memo to avoid re-running ensureActiveVisible on every render
+		t.lastEnsuredIdx = t.activeIdx //rubocop:disable Lint/TUIViewPurity // render-time scroll guard updated here intentionally
 	}
 
 	// Compute "+" and arrow colors dynamically from the terminal background.

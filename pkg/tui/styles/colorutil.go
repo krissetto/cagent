@@ -156,6 +156,79 @@ func bestForegroundHex(bgHex string, candidates ...string) string {
 	return best
 }
 
+// --- Brightening ---
+
+// BrightenColor returns a visually-lighter variant of c by lifting its HSL
+// lightness toward 1.0 by amount (clamped to [0, 1]). Hue is preserved by
+// construction. Saturation is mildly boosted when the input is dark so that a
+// saturated dark color does not fade toward pure gray as it brightens.
+//
+// This is a pure, deterministic function: the same input always produces the
+// same output. It is intended as the single source of truth for hover /
+// emphasis highlighting so the TUI can reliably produce a brighter variant of
+// any theme color without hard-coding per-theme overrides.
+//
+// Edge cases:
+//   - amount <= 0 returns c unchanged.
+//   - amount >= 1 lifts all the way to white-with-preserved-hue (L=1).
+//   - Pure grayscale inputs (S==0) brighten along the gray ramp.
+//
+// BrightenColor reads c through the color.Color interface (via RGBA), so it
+// accepts any lipgloss / image-color value. The returned value is a
+// lipgloss.Color so callers can plug it straight into Foreground / Background.
+func BrightenColor(c color.Color, amount float64) color.Color {
+	if c == nil {
+		return nil
+	}
+	if amount <= 0 {
+		return c
+	}
+	if amount > 1 {
+		amount = 1
+	}
+	r, g, b := ColorToRGB(c)
+	nr, ng, nb := brightenRGB(r, g, b, amount)
+	return RGBToColor(nr, ng, nb)
+}
+
+// BrightenHex is the hex-string counterpart of BrightenColor. It keeps the hex
+// format stable (lowercase six-digit #rrggbb) so snapshot comparisons stay
+// predictable. Inputs that don't parse as #rgb / #rrggbb are returned verbatim
+// so callers can safely pipe through non-color literals without exploding.
+func BrightenHex(hex string, amount float64) string {
+	if amount <= 0 {
+		return hex
+	}
+	if amount > 1 {
+		amount = 1
+	}
+	r, g, b, ok := parseHexRGB(hex)
+	if !ok {
+		return hex
+	}
+	nr, ng, nb := brightenRGB(r, g, b, amount)
+	return RGBToHex(nr, ng, nb)
+}
+
+// brightenRGB lifts the given sRGB color toward white by amount in HSL space.
+// Kept internal so BrightenColor and BrightenHex share one implementation.
+func brightenRGB(r, g, b, amount float64) (nr, ng, nb float64) {
+	h, s, l := rgbToHSL(r, g, b)
+	// Lift lightness toward 1 by the requested fraction.
+	newL := l + (1-l)*amount
+	newS := s
+	// Dark colors lose visual identity as they approach white. Nudge
+	// saturation up a little when the input is already saturated but dark,
+	// so "dark red on hover" reads as a brighter red rather than pink-gray.
+	if s > 0 && l < 0.5 {
+		newS = s + (1-s)*amount*0.25
+		if newS > 1 {
+			newS = 1
+		}
+	}
+	return hslToRGB(h, newS, newL)
+}
+
 // --- Dynamic contrast helpers ---
 
 const (

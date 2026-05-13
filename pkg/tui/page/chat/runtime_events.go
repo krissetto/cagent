@@ -8,7 +8,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sound"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
@@ -22,11 +24,34 @@ import (
 // Runtime Event Handling
 //
 // This file maps runtime events to UI updates, following the Elm Architecture
-// pattern of explicit event-to-update mappings. Events are organized by category:
+// pattern of explicit event-to-update mappings.
 //
-// Stream Lifecycle:
-//   - StreamStartedEvent  → Start spinners, set pending response
-//   - StreamStoppedEvent  → Stop spinners, process queue, maybe exit
+// # Subagent tree refresh model (single source of truth)
+//
+// The sidebar's subagent tree is sourced exclusively from
+// [runtime.SessionTreeProvider.LiveSessionTree]. There is exactly one event
+// that asks the chat page to re-read it: [runtime.LiveSessionTreeChangedEvent].
+// Every other subagent-related event (SubAgentStarted, SubAgentSent,
+// SubAgentUpdate) is treated as immediate-parent UI feedback only — they
+// never re-seed the sidebar tree. This keeps the data flow simple:
+//
+//   - tree topology  → LiveSessionTreeChangedEvent → refreshSubagentTree
+//   - row state      → SubAgent* events            → direct sidebar update
+//   - turn lifecycle → transcript cards            → messages component
+//
+// Together with the runtime's manager hooks (which fan tree-change
+// notifications to every ancestor session bus), this guarantees correct
+// updates at any nesting depth without any redundant refresh paths.
+//
+// Events are organized by category:
+//
+// Stream Lifecycle (session-lifetime):
+//   - StreamStartedEvent  → Mark stream depth, sidebar tab lifetime
+//   - StreamStoppedEvent  → Final cleanup, process queue, maybe exit
+//
+// Turn Lifecycle (per model turn):
+//   - TurnStartedEvent  → Start spinners, set pending response
+//   - TurnEndedEvent    → Stop spinner for the current turn
 //
 // Content Events:
 //   - AgentChoiceEvent         → Append text to message
@@ -76,15 +101,59 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 	case *runtime.StreamStoppedEvent:
 		return true, p.handleStreamStopped(msg)
 
+	case *runtime.TurnStartedEvent:
+		return true, p.handleTurnStarted(msg)
+
+	case *runtime.TurnEndedEvent:
+		return true, p.handleTurnEnded(msg)
+
+	case *runtime.ParentIdleEvent:
+		return true, p.handleParentIdle(msg)
+
+	case *runtime.ParentResumeEvent:
+		return true, p.handleParentResume(msg)
+
 	// ===== Content Events =====
 	case *runtime.UserMessageEvent:
-		return true, p.messages.ReplaceLoadingWithUser(msg.Message, msg.SessionPosition)
+		// Subagent envelope reminders are represented in the TUI as dedicated
+		// MessageTypeSubAgent cards driven by SubAgentUpdateEvent below.
+		// Suppress the raw implicit user-message form so we don't render both.
+		if msg.Kind == session.MessageKindSubagentEnvelope {
+			return true, nil
+		}
+		replaceCmd := p.messages.ReplaceLoadingWithUser(msg.Message, msg.SessionPosition)
+		// Attached subagent tabs: a UserMessageEvent on the child's bus means
+		// the child loop just accepted a new turn (parent delegation,
+		// subagent_send, or a user-typed send from this tab). Prime the
+		// working indicator now instead of waiting for StreamStartedEvent,
+		// which can be delayed by slow tool loading.
+		if p.sessionState != nil && p.sessionState.IsSubSession() {
+			return true, tea.Batch(p.setWorking(true), replaceCmd)
+		}
+		return true, replaceCmd
 
 	case *runtime.AgentChoiceEvent:
 		return true, p.handleAgentChoice(msg)
 
 	case *runtime.AgentChoiceReasoningEvent:
 		return true, p.handleAgentChoiceReasoning(msg)
+
+	case *runtime.SubAgentStartedEvent:
+		return true, p.handleSubAgentStarted(msg)
+
+	case *runtime.SubAgentSentEvent:
+		return true, p.handleSubAgentSent(msg)
+
+	case *runtime.SubAgentUpdateEvent:
+		return true, p.handleSubAgentUpdate(msg)
+
+	case *runtime.LiveSessionTreeChangedEvent:
+		// Tree topology changed somewhere in this session's subtree (typically a
+		// nested grandchild was created or transitioned). Refresh the sidebar's
+		// live-tree snapshot so the new descendants show up immediately, without
+		// adding any transcript noise.
+		p.refreshSubagentTree()
+		return true, nil
 
 	case *runtime.ShellOutputEvent:
 		return true, p.messages.AddShellOutputMessage(msg.Output)
@@ -114,6 +183,11 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	case *runtime.TeamInfoEvent:
 		p.sidebar.SetTeamInfo(msg.AvailableAgents)
+		// Invalidate the messages render cache so that agent-colored pills
+		// (subagent delegations, handoffs, etc.) pick up the freshly populated
+		// palette. On session reload the first View() happens before this
+		// event arrives, so stale fallback-color renders get cached.
+		p.messages.InvalidateRenderCache()
 		return true, nil
 
 	case *runtime.AgentSwitchingEvent:
@@ -194,13 +268,47 @@ func (p *chatPage) handleTokenUsage(msg *runtime.TokenUsageEvent) {
 
 func (p *chatPage) handleStreamStarted(msg *runtime.StreamStartedEvent) tea.Cmd {
 	slog.Debug("handleStreamStarted called", "agent", msg.AgentName, "session_id", msg.SessionID)
+	// Stream lifecycle is session-scoped: track nesting depth and stream
+	// start time so the cancel/sound logic in handleStreamStopped works,
+	// but leave per-turn working/pending transitions to TurnStarted/TurnEnded.
 	p.streamCancelled = false
 	p.streamDepth++
+	p.parentIdleDepth = 0
 	p.streamStartTime = time.Now()
+	return p.forwardToSidebar(msg)
+}
+
+// handleTurnStarted owns the per-turn UI transitions: it lights the working
+// spinner for every turn. The pending-response indicator is only shown before
+// the first assistant content in this stream lifetime; later turns after tool
+// calls are already covered by the bottom-right working spinner, and re-showing
+// the pending placeholder there is visually noisy.
+// StreamStarted no longer drives these because it now fires once per session
+// lifetime rather than once per turn (see runtime TurnStartedEvent).
+func (p *chatPage) handleTurnStarted(msg *runtime.TurnStartedEvent) tea.Cmd {
+	slog.Debug("handleTurnStarted called", "agent", msg.AgentName, "session_id", msg.SessionID)
+	// Starting a new turn ends any prior parent-idle scope on this stream.
+	p.parentIdleDepth = 0
 	spinnerCmd := p.setWorking(true)
-	pendingCmd := p.setPendingResponse(true)
+	var pendingCmd tea.Cmd
+	if !p.hasReceivedAssistantContent {
+		pendingCmd = p.setPendingResponse(true)
+	}
 	sidebarCmd := p.forwardToSidebar(msg)
 	return tea.Batch(pendingCmd, spinnerCmd, sidebarCmd)
+}
+
+// handleTurnEnded clears the working indicator for the current turn. It
+// intentionally does *not* process the queued-message follow-up or trigger
+// the exit-after-first-response path: those are session-lifetime concerns
+// that StreamStoppedEvent still owns. Clearing pending-response here is
+// safe — it's a no-op once any chunk has arrived.
+func (p *chatPage) handleTurnEnded(msg *runtime.TurnEndedEvent) tea.Cmd {
+	slog.Debug("handleTurnEnded called", "agent", msg.AgentName, "session_id", msg.SessionID)
+	spinnerCmd := p.setWorking(false)
+	pendingCmd := p.setPendingResponse(false)
+	sidebarCmd := p.forwardToSidebar(msg)
+	return tea.Batch(spinnerCmd, pendingCmd, sidebarCmd)
 }
 
 func (p *chatPage) handleAgentChoice(msg *runtime.AgentChoiceEvent) tea.Cmd {
@@ -220,6 +328,121 @@ func (p *chatPage) handleAgentChoiceReasoning(msg *runtime.AgentChoiceReasoningE
 	}
 	p.setPendingResponse(false)
 	return p.messages.AppendReasoning(msg.AgentName, msg.Content)
+}
+
+func (p *chatPage) handleSubAgentStarted(msg *runtime.SubAgentStartedEvent) tea.Cmd {
+	// The delegation tool-call line already fully conveys this action as
+	// `[parent] → [child] · <id>`. Rendering a second transcript card here
+	// duplicates the same information and was explicitly called out as noise.
+	//
+	// Tree re-seeding is driven exclusively by LiveSessionTreeChangedEvent;
+	// the direct SubAgentStartedEvent is still forwarded so the immediate
+	// parent's sidebar can update its local state cheaply.
+	return p.forwardToSidebar(msg)
+}
+
+func (p *chatPage) handleSubAgentSent(msg *runtime.SubAgentSentEvent) tea.Cmd {
+	// Same rationale as handleSubAgentStarted: the `subagent_send` tool-call
+	// line already shows `[parent] → <id>`, so an extra transcript card adds
+	// no new information.
+	//
+	// Tree re-seeding is driven exclusively by LiveSessionTreeChangedEvent;
+	// the direct SubAgentSentEvent is still forwarded so the immediate
+	// parent's sidebar can flip the child back to "working" immediately.
+	return p.forwardToSidebar(msg)
+}
+
+func (p *chatPage) handleSubAgentUpdate(msg *runtime.SubAgentUpdateEvent) tea.Cmd {
+	// Status-only updates (e.g. from MarkWaitingSilently after ESC in an
+	// attached child tab) must refresh the sidebar row but must not add a
+	// transcript card — there is no completed turn to report.
+	if msg.Envelope.Kind == subagent.UpdateKindStatusOnly {
+		return p.forwardToSidebar(msg)
+	}
+
+	kind := types.SubAgentEventTurnCompleted
+	if msg.Envelope.Kind != "" {
+		switch msg.Envelope.Kind {
+		case "closed":
+			kind = types.SubAgentEventClosed
+		case "stopped":
+			kind = types.SubAgentEventStopped
+		case "failed":
+			kind = types.SubAgentEventFailed
+		default:
+			kind = types.SubAgentEventTurnCompleted
+		}
+	}
+
+	// Build the chat card. Turn-completed cards intentionally carry no
+	// preview detail — the row only announces "turn finished" so the parent's
+	// transcript stays terse and any concrete content is reserved for an
+	// explicit subagent_inspect call. Failures still surface their error
+	// detail because that text is actionable.
+	detail := ""
+	if kind == types.SubAgentEventFailed {
+		if msg.Envelope.Error != "" {
+			detail = msg.Envelope.Error
+		} else {
+			detail = msg.Envelope.Preview
+		}
+	}
+
+	info := types.SubAgentInfo{
+		Kind:      kind,
+		AgentName: msg.Envelope.AgentName,
+		ShortID:   subagent.ShortRef(msg.Envelope.SubAgentID),
+		Detail:    detail,
+		Truncated: kind == types.SubAgentEventFailed && msg.Envelope.Truncated,
+	}
+	return tea.Batch(
+		p.forwardToSidebar(msg),
+		p.messages.AddSubAgentMessage(info),
+		p.messages.ScrollToBottom(),
+	)
+}
+
+// refreshSubagentTree re-seeds the sidebar's subagent section from the
+// runtime's current live tree. This picks up nested descendants (grandchildren
+// etc.) that are not directly visible through the root session's event stream.
+// It is intentionally idempotent and cheap when the tree hasn't changed.
+func (p *chatPage) refreshSubagentTree() {
+	if p.app == nil {
+		return
+	}
+	rootID := p.liveTreeRootID()
+	if rootID == "" {
+		return
+	}
+	nodes := p.app.LiveSessionTree(rootID)
+	if len(nodes) > 0 {
+		p.sidebar.SeedSubagentsFromLiveTree(nodes)
+	}
+}
+
+func (p *chatPage) handleParentIdle(msg *runtime.ParentIdleEvent) tea.Cmd {
+	p.parentIdleDepth++
+	return tea.Batch(
+		p.setWorking(false),
+		// Forward to the sidebar so it can mirror the "no active parent
+		// work" state — specifically, stop spinning the parent agent row
+		// in the Agents list. Subagent rows keep spinning on their own.
+		p.forwardToSidebar(msg),
+	)
+}
+
+func (p *chatPage) handleParentResume(msg *runtime.ParentResumeEvent) tea.Cmd {
+	if p.parentIdleDepth > 0 {
+		p.parentIdleDepth--
+	}
+	sidebarCmd := p.forwardToSidebar(msg)
+	// Only resume the main spinner if the stream is still active. If the
+	// outer stream has already ended, StreamStoppedEvent will own the final
+	// working-state cleanup.
+	if p.streamDepth > 0 {
+		return tea.Batch(sidebarCmd, p.setWorking(true))
+	}
+	return sidebarCmd
 }
 
 func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd {
@@ -258,6 +481,7 @@ func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd 
 	}
 	p.msgCancel = nil
 	p.streamCancelled = false
+	p.parentIdleDepth = 0
 	spinnerCmd := p.setWorking(false)
 	p.setPendingResponse(false)
 	queueCmd := p.processNextQueuedMessage()

@@ -2,7 +2,6 @@ package messages
 
 import (
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -12,13 +11,14 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tools"
-	"github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
+	transfertask "github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
 	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/message"
 	"github.com/docker/docker-agent/pkg/tui/components/reasoningblock"
@@ -56,11 +56,20 @@ type Model interface {
 	AppendToLastMessage(agentName, content string) tea.Cmd
 	AppendReasoning(agentName, content string) tea.Cmd
 	AddShellOutputMessage(content string) tea.Cmd
+	AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd
+	FocusSubAgentCard(shortID string) tea.Cmd
 	LoadFromSession(sess *session.Session) tea.Cmd
+	ToggleSelectedExpandableTool() tea.Cmd
 
 	RemoveSpinner()
 	ScrollToBottom() tea.Cmd
 	AdjustBottomSlack(delta int)
+
+	// InvalidateRenderCache drops every cached rendered message so the next
+	// View() recomputes them. Needed when something the rendering depends on
+	// changes outside the component's normal update path — e.g. the per-agent
+	// color palette repopulating after a TeamInfoEvent on session reload.
+	InvalidateRenderCache()
 
 	// IsScrollbarDragging returns true when the scrollbar thumb is being dragged.
 	IsScrollbarDragging() bool
@@ -80,9 +89,8 @@ type Model interface {
 
 // renderedItem represents a cached rendered message with position information
 type renderedItem struct {
-	view   string   // Cached rendered content
-	lines  []string // Pre-split lines (avoids re-splitting on every rebuild)
-	height int      // Height in lines
+	view   string // Cached rendered content
+	height int    // Height in lines
 }
 
 // blockIDCounter generates unique IDs for reasoning blocks.
@@ -94,6 +102,8 @@ func nextBlockID() string {
 }
 
 // model implements Model
+type subagentRefProvider interface{ SubAgentShortRef() string }
+
 type model struct {
 	messages []*types.Message
 	views    []layout.Model
@@ -101,15 +111,13 @@ type model struct {
 	height   int
 
 	// Height tracking system fields
-	scrollOffset      int                    // Current scroll position in lines
-	bottomSlack       int                    // Extra blank lines added after content shrinks
-	slackAnimationSub animation.Subscription // Subscription to animation ticks while slack > 0
-	renderedLines     []string               // Cached rendered content as lines (avoids split/join per frame)
-	renderedItems     map[int]renderedItem   // Cache of rendered items with positions
-	urlSpans          *urlSpanCache          // Cached URL spans per rendered line
-	lineOffsets       []int                  // Prefix-sum: lineOffsets[i] = starting global line of view i
-	totalHeight       int                    // Total height of all content in lines
-	renderDirty       bool                   // True when rendered content needs rebuild
+	scrollOffset  int                  // Current scroll position in lines
+	bottomSlack   int                  // Extra blank lines added after content shrinks
+	renderedLines []string             // Cached rendered content as lines (avoids split/join per frame)
+	renderedItems map[int]renderedItem // Cache of rendered items with positions
+	urlSpans      *urlSpanCache        // Cached URL spans per rendered line
+	totalHeight   int                  // Total height of all content in lines
+	renderDirty   bool                 // True when rendered content needs rebuild
 
 	selection selectionState
 
@@ -240,6 +248,9 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case reasoningblock.BlockMsg:
+		return m.forwardToReasoningBlock(msg.GetBlockID(), msg)
+
 	case animation.TickMsg:
 		// Invalidate render cache if there's animated content that needs redrawing.
 		// This ensures fades, spinners, etc. actually update visually on each tick.
@@ -272,15 +283,6 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		}
 	}
 
-	// On animation ticks, decay leftover bottom slack and keep the slack
-	// subscription in sync so empty lines don't persist after thinking text
-	// fades out. Must run after children update so reasoning blocks have
-	// applied their fade state, and before tui.go's HasActive() check so the
-	// subscription is registered when the next tick is scheduled.
-	if _, ok := msg.(animation.TickMsg); ok {
-		cmds = append(cmds, m.handleAnimationTick())
-	}
-
 	return m, tea.Batch(cmds...)
 }
 
@@ -300,9 +302,23 @@ func (m *model) handleMouseClick(msg tea.MouseClickMsg) (layout.Model, tea.Cmd) 
 		if block, ok := m.views[msgIdx].(*reasoningblock.Model); ok {
 			if block.IsToggleLine(localLine) {
 				block.Toggle()
-				m.bottomSlack = 0
+				m.bottomSlack = 0 //rubocop:disable Lint/TUIViewPurity // render-time scroll slack reconciliation
 				m.invalidateItem(msgIdx)
 				return m, nil
+			}
+		}
+		if expandable, ok := m.views[msgIdx].(interface{ ToggleExpanded() bool }); ok {
+			// Subagent inspect rows are also attach targets. Mouse click should open
+			// the subagent session, not consume the click to expand the inline preview.
+			// Keyboard selection/enter still toggles expansion through the existing
+			// selected-message path, so no functionality is lost.
+			if _, isSubagentTool := m.views[msgIdx].(subagentRefProvider); !isSubagentTool {
+				if expandable.ToggleExpanded() {
+					m.bottomSlack = 0
+					m.invalidateItem(msgIdx)
+					m.renderDirty = true
+					return m, nil
+				}
 			}
 		}
 
@@ -344,26 +360,24 @@ func (m *model) handleMouseClick(msg tea.MouseClickMsg) (layout.Model, tea.Cmd) 
 func (m *model) globalLineToMessageLine(globalLine int) (msgIdx, localLine int) {
 	m.ensureAllItemsRendered()
 
-	if len(m.lineOffsets) == 0 || globalLine < 0 || globalLine >= m.totalHeight {
-		return -1, -1
+	currentLine := 0
+	for i, view := range m.views {
+		item := m.renderItem(i, view)
+		if item.height == 0 {
+			continue
+		}
+
+		endLine := currentLine + item.height
+		if globalLine >= currentLine && globalLine < endLine {
+			return i, globalLine - currentLine
+		}
+
+		currentLine = endLine
+		if m.needsSeparator(i) {
+			currentLine++ // Account for separator line
+		}
 	}
 
-	// Binary search: find the last view whose offset <= globalLine
-	i := sort.Search(len(m.lineOffsets), func(i int) bool {
-		return m.lineOffsets[i] > globalLine
-	}) - 1
-
-	if i < 0 || i >= len(m.views) {
-		return -1, -1
-	}
-
-	item := m.renderItem(i, m.views[i])
-	local := globalLine - m.lineOffsets[i]
-	if local < item.height {
-		return i, local
-	}
-
-	// globalLine falls in a separator gap between messages
 	return -1, -1
 }
 
@@ -416,11 +430,18 @@ func (m *model) handleMouseRelease(msg tea.MouseReleaseMsg) (layout.Model, tea.C
 			line, col := m.mouseToLineCol(msg.X, msg.Y)
 			m.selection.update(line, col)
 
-			// If the mouse didn't move, this was a plain click — open URL if any
+			// If the mouse didn't move, this was a plain click — resolve any
+			// click target. URLs take precedence; subagent tool pills are next
+			// so clicking a compact subagent tool row opens its live tab.
 			if line == m.selection.startLine && col == m.selection.startCol {
 				m.selection.clear()
 				if url := m.urlAt(line, col); url != "" {
 					return m, core.CmdHandler(messages.OpenURLMsg{URL: url})
+				}
+				if msgIdx, _ := m.globalLineToMessageLine(line); msgIdx >= 0 {
+					if ref := m.subAgentShortRefAt(msgIdx); ref != "" {
+						return m, core.CmdHandler(messages.OpenSubAgentByShortRefMsg{ShortRef: ref})
+					}
 				}
 				return m, nil
 			}
@@ -487,6 +508,31 @@ func (m *model) handleKeyPress(msg tea.KeyPressMsg) (layout.Model, tea.Cmd) {
 			m.scrollDown()
 		}
 		return m, nil
+	case "enter":
+		if m.focused && m.selectedMessageIndex >= 0 && m.selectedMessageIndex < len(m.views) {
+			// Subagent rows (tool calls and lifecycle cards) are attach targets.
+			// Enter should open the subagent session, mirroring the mouse-click
+			// behavior so keyboard and mouse semantics match exactly.
+			if ref := m.subAgentShortRefAt(m.selectedMessageIndex); ref != "" {
+				return m, core.CmdHandler(messages.OpenSubAgentByShortRefMsg{ShortRef: ref})
+			}
+			if block, ok := m.views[m.selectedMessageIndex].(*reasoningblock.Model); ok {
+				block.Toggle()
+				m.bottomSlack = 0
+				m.invalidateItem(m.selectedMessageIndex)
+				m.renderDirty = true
+				return m, nil
+			}
+			if expandable, ok := m.views[m.selectedMessageIndex].(interface{ ToggleExpanded() bool }); ok {
+				if expandable.ToggleExpanded() {
+					m.bottomSlack = 0
+					m.invalidateItem(m.selectedMessageIndex)
+					m.renderDirty = true
+					return m, nil
+				}
+			}
+		}
+		return m, nil
 	case "c":
 		if m.focused && m.selectedMessageIndex >= 0 {
 			cmd := m.copySelectedMessageToClipboard()
@@ -513,10 +559,10 @@ func (m *model) handleKeyPress(msg tea.KeyPressMsg) (layout.Model, tea.Cmd) {
 	case "pgdown":
 		m.scrollPageDown()
 		return m, nil
-	case "home", "g":
+	case "home":
 		m.scrollToTop()
 		return m, nil
-	case "end", "G":
+	case "end":
 		m.scrollToBottom()
 		return m, nil
 	}
@@ -528,16 +574,34 @@ func (m *model) View() string {
 		return ""
 	}
 
-	m.updateScrollState()
-	// Release the slack subscription once it's no longer needed. Starting it
-	// is only done from Update via handleAnimationTick, where the returned
-	// tea.Cmd can be propagated to actually schedule the next tick.
-	if m.bottomSlack == 0 {
-		m.slackAnimationSub.Stop()
-	}
+	prevTotalHeight := m.totalHeight
+	prevScrollableHeight := m.totalHeight + m.bottomSlack
+	m.ensureAllItemsRendered()
 
 	if m.totalHeight == 0 {
 		return ""
+	}
+
+	if m.userHasScrolled {
+		m.bottomSlack = 0 //rubocop:disable Lint/TUIViewPurity // render-time scroll reconciliation
+	} else {
+		delta := m.totalHeight - prevTotalHeight
+		if delta < 0 {
+			m.bottomSlack += -delta
+		} else if delta > 0 && m.bottomSlack > 0 {
+			consume := min(delta, m.bottomSlack)
+			m.bottomSlack -= consume
+		}
+	}
+
+	scrollableHeight := m.totalHeight + m.bottomSlack
+	maxScrollOffset := max(0, scrollableHeight-m.height)
+
+	// Auto-scroll when content grows beyond any slack.
+	if !m.userHasScrolled && scrollableHeight > prevScrollableHeight {
+		m.scrollOffset = maxScrollOffset //rubocop:disable Lint/TUIViewPurity // render-time auto-scroll reconciliation
+	} else {
+		m.scrollOffset = max(0, min(m.scrollOffset, maxScrollOffset)) //rubocop:disable Lint/TUIViewPurity // render-time scroll clamp
 	}
 
 	// Use cached lines directly - O(1) instead of O(totalHeight) split
@@ -574,63 +638,6 @@ func (m *model) View() string {
 	m.scrollview.SetContent(m.renderedLines, m.totalScrollableHeight())
 	m.scrollview.SetScrollOffset(m.scrollOffset)
 	return m.scrollview.ViewWithLines(visibleLines)
-}
-
-// updateScrollState recomputes rendered content, bottom slack and scroll
-// offset from the current state of the message list. Called both from View()
-// and from Update() on animation ticks so that the slack subscription is
-// registered before tui.go schedules the next tick.
-func (m *model) updateScrollState() {
-	prevTotalHeight := m.totalHeight
-	prevScrollableHeight := m.totalHeight + m.bottomSlack
-	m.ensureAllItemsRendered()
-
-	if m.userHasScrolled {
-		m.bottomSlack = 0
-	} else {
-		delta := m.totalHeight - prevTotalHeight
-		switch {
-		case delta < 0:
-			// Cap so the viewport is never mostly empty after a large
-			// shrinkage (e.g., several tool calls fading out at once).
-			m.bottomSlack = min(m.bottomSlack-delta, m.maxBottomSlack())
-		case delta > 0 && m.bottomSlack > 0:
-			m.bottomSlack = max(0, m.bottomSlack-delta)
-		}
-	}
-
-	scrollableHeight := m.totalHeight + m.bottomSlack
-	maxScrollOffset := max(0, scrollableHeight-m.height)
-
-	// Auto-scroll when content grows beyond any slack.
-	if !m.userHasScrolled && scrollableHeight > prevScrollableHeight {
-		m.scrollOffset = maxScrollOffset
-	} else {
-		m.scrollOffset = max(0, min(m.scrollOffset, maxScrollOffset))
-	}
-}
-
-// maxBottomSlack returns the maximum blank lines added after content shrinks.
-// Small enough that the viewport never feels empty, large enough to absorb a
-// typical tool fade-out (~2 lines) without a visible jump.
-func (m *model) maxBottomSlack() int {
-	return max(1, min(5, m.height/3))
-}
-
-// handleAnimationTick refreshes scroll state, decays any leftover slack by
-// one line, and keeps the slack subscription alive while slack > 0 so
-// further ticks fire even after fade animations finish. Returns the command
-// to schedule the next tick when the subscription transitions to active.
-func (m *model) handleAnimationTick() tea.Cmd {
-	m.updateScrollState()
-	if !m.userHasScrolled && m.bottomSlack > 0 {
-		m.bottomSlack--
-	}
-	if m.bottomSlack > 0 {
-		return m.slackAnimationSub.Start()
-	}
-	m.slackAnimationSub.Stop()
-	return nil
 }
 
 // SetSize sets the dimensions of the component
@@ -672,23 +679,18 @@ func (m *model) Focus() tea.Cmd {
 		// Fall back to last selectable if no assistant messages
 		m.selectedMessageIndex = m.findLastSelectableMessage()
 	}
-	// Only invalidate the newly selected message
-	if m.selectedMessageIndex >= 0 {
-		m.invalidateItem(m.selectedMessageIndex)
-	}
+	// Invalidate render cache so selection highlight is shown
+	m.invalidateAllItems()
 	m.renderDirty = true
 	return nil
 }
 
 // Blur removes focus from the component
 func (m *model) Blur() tea.Cmd {
-	oldIndex := m.selectedMessageIndex
 	m.focused = false
 	m.selectedMessageIndex = -1
-	// Only invalidate the previously selected message
-	if oldIndex >= 0 {
-		m.invalidateItem(oldIndex)
-	}
+	// Invalidate render cache so selection highlight is cleared
+	m.invalidateAllItems()
 	m.renderDirty = true
 	return nil
 }
@@ -709,13 +711,7 @@ func (m *model) FocusAt(x, y int) tea.Cmd {
 		}
 	}
 
-	// Only invalidate the old and new selected messages
-	if oldIndex >= 0 {
-		m.invalidateItem(oldIndex)
-	}
-	if m.selectedMessageIndex >= 0 && m.selectedMessageIndex != oldIndex {
-		m.invalidateItem(m.selectedMessageIndex)
-	}
+	m.invalidateAllItems()
 	m.renderDirty = true
 
 	if m.messageTypeChanged(oldIndex, m.selectedMessageIndex) {
@@ -734,8 +730,19 @@ func (m *model) Bindings() []key.Binding {
 	bindings := []key.Binding{
 		key.NewBinding(key.WithKeys("up"), key.WithHelp("↑", "select prev")),
 		key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "select next")),
-		key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy message")),
 	}
+
+	// Enter does double duty: when a subagent reference (tool row or lifecycle
+	// card) is selected, it attaches to the subagent session. Otherwise it
+	// expands/collapses reasoning blocks or other expandable rows.
+	enterHelp := "expand"
+	if ref := m.subAgentShortRefAt(m.selectedMessageIndex); ref != "" {
+		enterHelp = "open subagent"
+	}
+	bindings = append(bindings,
+		key.NewBinding(key.WithKeys("enter"), key.WithHelp("Enter", enterHelp)),
+		key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy message")),
+	)
 
 	// Only show edit binding when a user message with session position is selected
 	if m.selectedMessageIndex >= 0 && m.selectedMessageIndex < len(m.messages) {
@@ -853,7 +860,7 @@ func (m *model) isSelectableMessage(index int) bool {
 	}
 	msg := m.messages[index]
 	switch msg.Type {
-	case types.MessageTypeAssistant, types.MessageTypeAssistantReasoningBlock:
+	case types.MessageTypeAssistant, types.MessageTypeAssistantReasoningBlock, types.MessageTypeSubAgent:
 		return true
 	case types.MessageTypeUser:
 		// User messages are selectable only if they have a session position (editable)
@@ -875,8 +882,10 @@ func (m *model) findLastSelectableMessage() int {
 // findLastAssistantMessage finds the last assistant or reasoning block message.
 // Used for initial focus selection to start on assistant content.
 func (m *model) findLastAssistantMessage() int {
-	for i := range slices.Backward(m.messages) {
-		msg := m.messages[i]
+	for i, msg := range slices.Backward(m.messages) {
+		if msg == nil {
+			continue
+		}
 		if msg.Type == types.MessageTypeAssistant || msg.Type == types.MessageTypeAssistantReasoningBlock {
 			return i
 		}
@@ -909,11 +918,7 @@ func (m *model) selectPreviousMessage() tea.Cmd {
 	if prevIndex := m.findPreviousSelectableMessage(m.selectedMessageIndex); prevIndex >= 0 {
 		oldIndex := m.selectedMessageIndex
 		m.selectedMessageIndex = prevIndex
-		if oldIndex >= 0 {
-			m.invalidateItem(oldIndex)
-		}
-		m.invalidateItem(prevIndex)
-		m.renderDirty = true
+		m.invalidateAllItems()
 		m.scrollToSelectedMessage()
 		if m.messageTypeChanged(oldIndex, prevIndex) {
 			return core.CmdHandler(messages.InvalidateStatusBarMsg{})
@@ -929,11 +934,7 @@ func (m *model) selectNextMessage() tea.Cmd {
 	if nextIndex := m.findNextSelectableMessage(m.selectedMessageIndex); nextIndex >= 0 {
 		oldIndex := m.selectedMessageIndex
 		m.selectedMessageIndex = nextIndex
-		if oldIndex >= 0 {
-			m.invalidateItem(oldIndex)
-		}
-		m.invalidateItem(nextIndex)
-		m.renderDirty = true
+		m.invalidateAllItems()
 		m.scrollToSelectedMessage()
 		if m.messageTypeChanged(oldIndex, nextIndex) {
 			return core.CmdHandler(messages.InvalidateStatusBarMsg{})
@@ -957,14 +958,20 @@ func (m *model) scrollToSelectedMessage() {
 		return
 	}
 
-	// Ensure all items are rendered so lineOffsets and totalHeight are accurate
+	// Ensure all items are rendered so totalHeight is accurate
 	m.ensureAllItemsRendered()
 
-	if m.selectedMessageIndex >= len(m.lineOffsets) {
-		return
+	// Calculate the line range for the selected message
+	startLine := 0
+	for i := range m.selectedMessageIndex {
+		if i < len(m.views) {
+			item := m.renderItem(i, m.views[i])
+			startLine += item.height
+			if m.needsSeparator(i) {
+				startLine++
+			}
+		}
 	}
-
-	startLine := m.lineOffsets[m.selectedMessageIndex]
 
 	var selectedHeight int
 	if m.selectedMessageIndex < len(m.views) {
@@ -1011,11 +1018,8 @@ func (m *model) renderItem(index int, view layout.Model) renderedItem {
 	// If this message is being inline edited, render the textarea instead
 	if index == m.inlineEditMsgIndex {
 		rendered := m.renderInlineEditTextarea()
-		var lines []string
-		if rendered != "" {
-			lines = strings.Split(strings.TrimSuffix(rendered, "\n"), "\n")
-		}
-		return renderedItem{view: rendered, lines: lines, height: len(lines)}
+		height := lipgloss.Height(rendered)
+		return renderedItem{view: rendered, height: height}
 	}
 
 	isSelected := m.focused && index == m.selectedMessageIndex
@@ -1037,12 +1041,12 @@ func (m *model) renderItem(index int, view layout.Model) renderedItem {
 	}
 
 	rendered := view.View()
-	var lines []string
-	if rendered != "" {
-		lines = strings.Split(strings.TrimSuffix(rendered, "\n"), "\n")
+	height := lipgloss.Height(rendered)
+	if rendered == "" {
+		height = 0
 	}
 
-	item := renderedItem{view: rendered, lines: lines, height: len(lines)}
+	item := renderedItem{view: rendered, height: height}
 
 	if shouldCache {
 		m.renderedItems[index] = item
@@ -1098,15 +1102,17 @@ func (m *model) needsSeparator(index int) bool {
 	if index >= len(m.messages)-1 {
 		return false
 	}
-	currentIsToolCall := m.messages[index].Type == types.MessageTypeToolCall
-	nextIsToolCall := m.messages[index+1].Type == types.MessageTypeToolCall
+	current := m.messages[index]
+	next := m.messages[index+1]
+	currentIsToolLike := current.Type == types.MessageTypeToolCall || current.Type == types.MessageTypeSubAgent
+	nextIsToolLike := next.Type == types.MessageTypeToolCall || next.Type == types.MessageTypeSubAgent
 
-	// Always add a separator before transfer_task, even between consecutive tool calls
-	if nextIsToolCall && m.messages[index+1].ToolCall.Function.Name == transfertask.ToolNameTransferTask {
+	// Always add a separator before transfer_task, even between consecutive tool-like rows.
+	if next.Type == types.MessageTypeToolCall && next.ToolCall.Function.Name == transfertask.ToolNameTransferTask {
 		return true
 	}
 
-	return !currentIsToolCall || !nextIsToolCall
+	return !currentIsToolLike || !nextIsToolLike
 }
 
 func (m *model) ensureAllItemsRendered() {
@@ -1122,16 +1128,16 @@ func (m *model) ensureAllItemsRendered() {
 	}
 
 	var allLines []string
-	offsets := make([]int, len(m.views))
 
 	for i, view := range m.views {
-		offsets[i] = len(allLines)
 		item := m.renderItem(i, view)
-		if len(item.lines) == 0 {
+		if item.view == "" {
 			continue
 		}
 
-		allLines = append(allLines, item.lines...)
+		viewContent := strings.TrimSuffix(item.view, "\n")
+		lines := strings.Split(viewContent, "\n")
+		allLines = append(allLines, lines...)
 
 		if m.needsSeparator(i) {
 			allLines = append(allLines, "")
@@ -1140,9 +1146,10 @@ func (m *model) ensureAllItemsRendered() {
 
 	// Store lines directly - avoid join/split on every View() call
 	m.renderedLines = allLines
-	m.lineOffsets = offsets
 	m.totalHeight = len(allLines)
-	m.urlSpans.clear()
+	if m.urlSpans != nil {
+		m.urlSpans.clear()
+	}
 	m.renderDirty = false
 }
 
@@ -1153,13 +1160,37 @@ func (m *model) invalidateItem(index int) {
 	m.renderDirty = true
 }
 
+// InvalidateRenderCache drops every cached rendered message and forces the
+// next View() to recompute them. Used when a global rendering input changed
+// (theme, agent color palette, etc.) without going through this component's
+// own Update path.
+func (m *model) InvalidateRenderCache() {
+	m.invalidateAllItems()
+}
+
 func (m *model) invalidateAllItems() {
 	m.renderedItems = make(map[int]renderedItem)
 	m.renderedLines = nil
-	m.lineOffsets = nil
 	m.totalHeight = 0
-	m.urlSpans.clear()
+	if m.urlSpans != nil {
+		m.urlSpans.clear()
+	}
 	m.renderDirty = true
+}
+
+// forwardToReasoningBlock finds the reasoning block with the given ID and forwards the message to it.
+func (m *model) forwardToReasoningBlock(blockID string, msg tea.Msg) (layout.Model, tea.Cmd) {
+	for i, tuiMsg := range m.messages {
+		if tuiMsg.Type == types.MessageTypeAssistantReasoningBlock {
+			if block, ok := m.views[i].(*reasoningblock.Model); ok && block.ID() == blockID {
+				updatedView, cmd := m.views[i].Update(msg)
+				m.views[i] = updatedView
+				m.invalidateItem(i)
+				return m, cmd
+			}
+		}
+	}
+	return m, nil
 }
 
 // Message management methods
@@ -1172,11 +1203,11 @@ func (m *model) AddLoadingMessage(description string) tea.Cmd {
 }
 
 func (m *model) ReplaceLoadingWithUser(content string, sessionPos int) tea.Cmd {
-	for i := range slices.Backward(m.messages) {
-		if m.messages[i].Type == types.MessageTypeLoading {
-			m.messages = slices.Delete(m.messages, i, i+1)
+	for i, msg := range slices.Backward(m.messages) {
+		if msg.Type == types.MessageTypeLoading {
+			m.messages = append(m.messages[:i], m.messages[i+1:]...)
 			if i < len(m.views) {
-				m.views = slices.Delete(m.views, i, i+1)
+				m.views = append(m.views[:i], m.views[i+1:]...)
 			}
 			m.invalidateAllItems()
 			break
@@ -1197,6 +1228,50 @@ func (m *model) AddErrorMessage(content string) tea.Cmd {
 
 func (m *model) AddShellOutputMessage(content string) tea.Cmd {
 	return m.addMessage(types.ShellOutput(content))
+}
+
+func (m *model) AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd {
+	return m.addMessage(types.SubAgent(info))
+}
+
+// FocusSubAgentCard focuses and scrolls to the most recent subagent card with
+// the given short id. Returns nil if no matching card exists.
+func (m *model) FocusSubAgentCard(shortID string) tea.Cmd {
+	if shortID == "" {
+		return nil
+	}
+	for i, msg := range slices.Backward(m.messages) {
+		if msg == nil || msg.Type != types.MessageTypeSubAgent || msg.SubAgent == nil {
+			continue
+		}
+		if msg.SubAgent.ShortID != shortID {
+			continue
+		}
+		oldIndex := m.selectedMessageIndex
+		m.focused = true
+		m.selectedMessageIndex = i
+		m.invalidateAllItems()
+		m.scrollToSelectedMessage()
+		if m.messageTypeChanged(oldIndex, i) {
+			return core.CmdHandler(messages.InvalidateStatusBarMsg{})
+		}
+		return nil
+	}
+	return nil
+}
+
+func (m *model) ToggleSelectedExpandableTool() tea.Cmd {
+	if m.selectedMessageIndex < 0 || m.selectedMessageIndex >= len(m.views) {
+		return nil
+	}
+	if expandable, ok := m.views[m.selectedMessageIndex].(interface{ ToggleExpanded() bool }); ok {
+		if expandable.ToggleExpanded() {
+			m.bottomSlack = 0
+			m.invalidateItem(m.selectedMessageIndex)
+			m.renderDirty = true
+		}
+	}
+	return nil
 }
 
 func (m *model) AddAssistantMessage() tea.Cmd {
@@ -1329,6 +1404,15 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 
 		switch smsg.Message.Role {
 		case chat.MessageRoleUser:
+			// Special internal user-role messages (e.g. subagent envelope
+			// reminders) are surfaced through dedicated UI paths. Skip them
+			// here so they don't show up as plain user-typed input. The
+			// substring fallback covers legacy sessions persisted before
+			// session.MessageKind was introduced.
+			if smsg.Kind == session.MessageKindSubagentEnvelope ||
+				strings.Contains(smsg.Message.Content, "<subagent_update>") {
+				continue
+			}
 			msg := types.User(smsg.Message.Content)
 			msgPos := pos
 			msg.SessionPosition = &msgPos
@@ -1407,24 +1491,24 @@ func (m *model) AddOrUpdateToolCall(agentName string, toolCall tools.ToolCall, t
 	}
 
 	// Then try to update existing standalone tool by ID
-	for i := range slices.Backward(m.messages) {
-		msg := m.messages[i]
-		if msg.Type == types.MessageTypeToolCall && msg.ToolCall.ID == toolCall.ID {
-			msg.ToolStatus = status
-			if status == types.ToolStatusRunning && msg.StartedAt == nil {
-				now := time.Now()
-				msg.StartedAt = &now
-			}
-			if toolCall.Function.Arguments != "" {
-				if status == types.ToolStatusPending {
-					msg.ToolCall.Function.Arguments += toolCall.Function.Arguments
-				} else {
-					msg.ToolCall.Function.Arguments = toolCall.Function.Arguments
-				}
-			}
-			m.invalidateItem(i)
-			return nil
+	for i, msg := range slices.Backward(m.messages) {
+		if msg.Type != types.MessageTypeToolCall || msg.ToolCall.ID != toolCall.ID {
+			continue
 		}
+		msg.ToolStatus = status
+		if status == types.ToolStatusRunning && msg.StartedAt == nil {
+			now := time.Now()
+			msg.StartedAt = &now
+		}
+		if toolCall.Function.Arguments != "" {
+			if status == types.ToolStatusPending {
+				msg.ToolCall.Function.Arguments += toolCall.Function.Arguments
+			} else {
+				msg.ToolCall.Function.Arguments = toolCall.Function.Arguments
+			}
+		}
+		m.invalidateItem(i)
+		return nil
 	}
 
 	m.removeSpinner()
@@ -1462,18 +1546,18 @@ func (m *model) AddToolResult(msg *runtime.ToolCallResponseEvent, status types.T
 	}
 
 	// Then check standalone tool call messages
-	for i := range slices.Backward(m.messages) {
-		toolMessage := m.messages[i]
-		if toolMessage.Type == types.MessageTypeToolCall && toolMessage.ToolCall.ID == msg.ToolCallID {
-			toolMessage.Content = strings.ReplaceAll(msg.Response, "\t", "    ")
-			toolMessage.ToolStatus = status
-			toolMessage.ToolResult = msg.Result
-			m.invalidateItem(i)
-
-			view := m.createToolCallView(toolMessage)
-			m.views[i] = view
-			return view.Init()
+	for i, toolMessage := range slices.Backward(m.messages) {
+		if toolMessage.Type != types.MessageTypeToolCall || toolMessage.ToolCall.ID != msg.ToolCallID {
+			continue
 		}
+		toolMessage.Content = strings.ReplaceAll(msg.Response, "\t", "    ")
+		toolMessage.ToolStatus = status
+		toolMessage.ToolResult = msg.Result
+		m.invalidateItem(i)
+
+		view := m.createToolCallView(toolMessage)
+		m.views[i] = view
+		return view.Init()
 	}
 	return nil
 }
@@ -1589,7 +1673,7 @@ func (m *model) AdjustBottomSlack(delta int) {
 	if delta == 0 {
 		return
 	}
-	m.bottomSlack = max(0, min(m.bottomSlack+delta, m.maxBottomSlack()))
+	m.bottomSlack = max(0, m.bottomSlack+delta)
 }
 
 // contentWidth returns the width available for content.
@@ -1610,7 +1694,7 @@ func (m *model) createToolCallView(msg *types.Message) layout.Model {
 }
 
 func (m *model) createMessageView(msg *types.Message) layout.Model {
-	view := message.New(msg, m.sessionState.PreviousMessage())
+	view := message.New(msg, m.sessionState.PreviousMessage(), m.sessionState)
 	view.SetSize(m.contentWidth(), 0)
 	return view
 }
@@ -1709,11 +1793,12 @@ func (m *model) isEditLabelClick(msgIdx, localLine, col int) (bool, *types.Messa
 	}
 
 	item := m.renderItem(msgIdx, m.views[msgIdx])
-	if localLine < 0 || localLine >= len(item.lines) {
+	lines := strings.Split(item.view, "\n")
+	if localLine < 0 || localLine >= len(lines) {
 		return false, nil
 	}
 
-	plainLine := ansi.Strip(item.lines[localLine])
+	plainLine := ansi.Strip(lines[localLine])
 	before, _, ok := strings.Cut(plainLine, types.UserMessageEditLabel)
 	if !ok {
 		return false, nil
@@ -1746,11 +1831,12 @@ func (m *model) isCopyLabelClick(msgIdx, localLine, col int) bool {
 	}
 
 	item := m.renderItem(msgIdx, m.views[msgIdx])
-	if localLine < 0 || localLine >= len(item.lines) {
+	lines := strings.Split(item.view, "\n")
+	if localLine < 0 || localLine >= len(lines) {
 		return false
 	}
 
-	plainLine := ansi.Strip(item.lines[localLine])
+	plainLine := ansi.Strip(lines[localLine])
 	before, _, ok := strings.Cut(plainLine, types.AssistantMessageCopyLabel)
 	if !ok {
 		return false
@@ -1771,6 +1857,33 @@ func (m *model) copyMessageToClipboard(msgIdx int) tea.Cmd {
 		return nil
 	}
 	return copyTextToClipboard(content)
+}
+
+func (m *model) subAgentRefProviderAt(msgIdx int) subagentRefProvider {
+	if msgIdx < 0 || msgIdx >= len(m.messages) || msgIdx >= len(m.views) {
+		return nil
+	}
+	msg := m.messages[msgIdx]
+	if msg == nil {
+		return nil
+	}
+	switch msg.Type {
+	case types.MessageTypeToolCall, types.MessageTypeSubAgent:
+	default:
+		return nil
+	}
+	provider, ok := m.views[msgIdx].(subagentRefProvider)
+	if !ok {
+		return nil
+	}
+	return provider
+}
+
+func (m *model) subAgentShortRefAt(msgIdx int) string {
+	if provider := m.subAgentRefProviderAt(msgIdx); provider != nil {
+		return strings.TrimSpace(provider.SubAgentShortRef())
+	}
+	return ""
 }
 
 func (m *model) mouseToLineCol(x, y int) (line, col int) {

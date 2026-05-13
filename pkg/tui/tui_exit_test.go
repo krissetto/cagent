@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/audio/transcribe"
+	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/tui/components/completion"
 	"github.com/docker/docker-agent/pkg/tui/components/editor"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
@@ -25,26 +27,31 @@ import (
 )
 
 // mockChatPage implements chat.Page for testing.
-type mockChatPage struct{}
+type mockChatPage struct {
+	clearedSidebarTransientHover bool
+}
 
-func (m *mockChatPage) Init() tea.Cmd                            { return nil }
-func (m *mockChatPage) Update(tea.Msg) (layout.Model, tea.Cmd)   { return m, nil }
-func (m *mockChatPage) View() string                             { return "" }
-func (m *mockChatPage) SetSize(int, int) tea.Cmd                 { return nil }
-func (m *mockChatPage) CompactSession(string) tea.Cmd            { return nil }
-func (m *mockChatPage) SetSessionStarred(bool)                   {}
-func (m *mockChatPage) SetTitleRegenerating(bool) tea.Cmd        { return nil }
-func (m *mockChatPage) ScrollToBottom() tea.Cmd                  { return nil }
-func (m *mockChatPage) IsWorking() bool                          { return false }
-func (m *mockChatPage) IsInlineEditing() bool                    { return false }
-func (m *mockChatPage) QueueLength() int                         { return 0 }
-func (m *mockChatPage) FocusMessages() tea.Cmd                   { return nil }
-func (m *mockChatPage) FocusMessageAt(int, int) tea.Cmd          { return nil }
-func (m *mockChatPage) BlurMessages()                            {}
-func (m *mockChatPage) GetSidebarSettings() chat.SidebarSettings { return chat.SidebarSettings{} }
-func (m *mockChatPage) SetSidebarSettings(chat.SidebarSettings)  {}
-func (m *mockChatPage) Bindings() []key.Binding                  { return nil }
-func (m *mockChatPage) Help() help.KeyMap                        { return nil }
+func (m *mockChatPage) Init() tea.Cmd                                       { return nil }
+func (m *mockChatPage) Update(tea.Msg) (layout.Model, tea.Cmd)              { return m, nil }
+func (m *mockChatPage) View() string                                        { return "" }
+func (m *mockChatPage) SetSize(int, int) tea.Cmd                            { return nil }
+func (m *mockChatPage) CompactSession(string) tea.Cmd                       { return nil }
+func (m *mockChatPage) SetSessionStarred(bool)                              {}
+func (m *mockChatPage) SetTitleRegenerating(bool) tea.Cmd                   { return nil }
+func (m *mockChatPage) ScrollToBottom() tea.Cmd                             { return nil }
+func (m *mockChatPage) IsWorking() bool                                     { return false }
+func (m *mockChatPage) SetWorking(bool) tea.Cmd                             { return nil }
+func (m *mockChatPage) IsInlineEditing() bool                               { return false }
+func (m *mockChatPage) QueueLength() int                                    { return 0 }
+func (m *mockChatPage) FocusMessages() tea.Cmd                              { return nil }
+func (m *mockChatPage) FocusMessageAt(int, int) tea.Cmd                     { return nil }
+func (m *mockChatPage) BlurMessages()                                       {}
+func (m *mockChatPage) GetSidebarSettings() chat.SidebarSettings            { return chat.SidebarSettings{} }
+func (m *mockChatPage) SetSidebarSettings(chat.SidebarSettings)             {}
+func (m *mockChatPage) Bindings() []key.Binding                             { return nil }
+func (m *mockChatPage) Help() help.KeyMap                                   { return nil }
+func (m *mockChatPage) SeedSubagentsFromLiveTree([]runtime.LiveSessionNode) {}
+func (m *mockChatPage) ClearSidebarTransientHover()                         { m.clearedSidebarTransientHover = true }
 
 // mockEditor implements editor.Editor for testing.
 type mockEditor struct {
@@ -139,7 +146,7 @@ func newTestModel() (*appModel, *mockEditor) {
 		stashedDialogs:          map[string]stashedDialog{},
 		chatPage:                page,
 		editor:                  ed,
-		transcriber:             &fakeTranscriber{},
+		transcriber:             transcribe.New(""),
 		notification:            notification.New(),
 		dialogMgr:               dialog.New(),
 		completions:             completion.New(),
@@ -147,43 +154,71 @@ func newTestModel() (*appModel, *mockEditor) {
 	return m, ed
 }
 
-// neutralizeExitFunc replaces the package-level exitFunc with a no-op for
-// the duration of the test so that the safety-net goroutine spawned by
-// cleanupAll doesn't call os.Exit. It also shrinks shutdownTimeout so the
-// safety-net goroutine fires quickly, and waits for it to fire (or for a
-// short timeout) before restoring the originals so that subsequent tests
-// don't race against a pending background goroutine.
-//
-// Tests that call this helper must NOT use t.Parallel(): exitFunc and
-// shutdownTimeout are package-level variables, and concurrent mutation
-// from sibling tests would race with the cleanup that restores them.
+// neutralizeExitFunc replaces the package-level exitFunc with a no-op for the
+// duration of the test so that the safety-net goroutine spawned by cleanupAll
+// doesn't call os.Exit.
 func neutralizeExitFunc(t *testing.T) {
 	t.Helper()
+	orig := exitFunc
+	exitFunc = func(int) {}
+	t.Cleanup(func() { exitFunc = orig })
+}
 
-	origExitFunc := exitFunc
-	origTimeout := shutdownTimeout
+func TestOpenSubAgentTabMsg_Routing(t *testing.T) {
+	// Regression guard: before the fix, cases messages.OpenSubAgentTabMsg and
+	// messages.OpenParentSessionMsg were absent from the Update switch, so the
+	// message was silently dropped and clicking a sidebar subagent row never
+	// opened the attached tab.
+	t.Parallel()
 
-	fired := make(chan struct{})
-	var once sync.Once
-	exitFunc = func(int) {
-		once.Do(func() { close(fired) })
-	}
-	shutdownTimeout = 10 * time.Millisecond
+	m, _ := newTestModel()
 
-	t.Cleanup(func() {
-		// Wait for any pending safety-net goroutine to observe our no-op
-		// exitFunc, but with a deadline so tests that never trigger
-		// cleanupAll don't block.
-		select {
-		case <-fired:
-		case <-time.After(200 * time.Millisecond):
-		}
-		exitFunc = origExitFunc
-		shutdownTimeout = origTimeout
-	})
+	// Empty SessionID must return cleanly (early-exit guard inside the handler)
+	// without panicking, which is only possible if the case is present and the
+	// handler is called.
+	update, cmd := m.Update(messages.OpenSubAgentTabMsg{SessionID: ""})
+	require.NotNil(t, update, "Update must return a model")
+	require.Nil(t, cmd, "empty SessionID must return nil cmd")
+
+	// Same guard for OpenParentSessionMsg.
+	update2, cmd2 := m.Update(messages.OpenParentSessionMsg{SessionID: ""})
+	require.NotNil(t, update2)
+	require.Nil(t, cmd2)
+}
+
+func TestFocusEditorForNewTab_PrefersEditorOverMessages(t *testing.T) {
+	t.Parallel()
+
+	m, _ := newTestModel()
+	m.focusedPanel = PanelContent // simulate sidebar-click flow having focused messages first
+
+	m.focusEditorForNewTab()
+
+	assert.Equal(t, PanelEditor, m.focusedPanel,
+		"opening a new attached sub-session tab should leave focus on the editor by default")
+}
+
+func TestClearTransientUIForLeavingCurrentPage_ClearsSidebarHover(t *testing.T) {
+	t.Parallel()
+
+	// This is the choke-point that both handleSwitchTab and handleOpenSubAgentTab
+	// call when the active page is about to lose focus. It must always drop the
+	// outgoing page's mouse-driven UI affordances (notably the sidebar's hovered
+	// subagent row), otherwise returning to a previously-active parent tab keeps
+	// the previously hovered subagent highlighted until a fresh mouse-motion
+	// event happens to overwrite it.
+	m, _ := newTestModel()
+	page := m.chatPage.(*mockChatPage)
+	require.False(t, page.clearedSidebarTransientHover)
+
+	m.clearTransientUIForLeavingCurrentPage()
+
+	assert.True(t, page.clearedSidebarTransientHover,
+		"leaving the active page must always clear sidebar hover state")
 }
 
 func TestExitSessionMsg_ExitsImmediately(t *testing.T) {
+	t.Parallel()
 	neutralizeExitFunc(t)
 
 	m, ed := newTestModel()
@@ -197,6 +232,7 @@ func TestExitSessionMsg_ExitsImmediately(t *testing.T) {
 }
 
 func TestExitConfirmedMsg_ExitsImmediately(t *testing.T) {
+	t.Parallel()
 	neutralizeExitFunc(t)
 
 	m, ed := newTestModel()

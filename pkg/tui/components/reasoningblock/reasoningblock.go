@@ -65,6 +65,21 @@ func fadeStyleForProgress(progress float64) lipgloss.Style {
 // Tests can override this for deterministic behavior.
 var nowFunc = time.Now
 
+// BlockMsg is implemented by messages that target a specific reasoning block.
+type BlockMsg interface {
+	GetBlockID() string
+}
+
+// blockMsgBase is embedded in messages that target a specific reasoning block.
+type blockMsgBase struct {
+	BlockID string
+}
+
+func (m blockMsgBase) GetBlockID() string { return m.BlockID }
+
+// ToggleMsg is sent when the block should toggle expanded/collapsed state.
+type ToggleMsg struct{ blockMsgBase }
+
 // toolEntry holds a tool call message and its view.
 type toolEntry struct {
 	msg                   *types.Message

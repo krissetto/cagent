@@ -135,14 +135,17 @@ func TestSidebar_TitleRegenerating(t *testing.T) {
 	assert.False(t, m.needsSpinner(), "should not need spinner initially")
 
 	// Start regenerating
-	cmd := sb.SetTitleRegenerating(true)
+	sb.SetTitleRegenerating(true)
 	assert.True(t, m.titleRegenerating, "should be regenerating after SetTitleRegenerating(true)")
 	assert.True(t, m.needsSpinner(), "should need spinner when regenerating")
-	// The returned command starts the spinner animation
-	assert.NotNil(t, cmd, "should return a command to start the spinner")
+	// The sidebar should enter regenerating state and require a spinner. The
+	// returned command is best-effort: under package-wide parallel tests another
+	// component may already have an active global animation tick, in which case
+	// starting this subscription is still correct but returns nil.
+	assert.True(t, m.spinnerActive, "spinner subscription should be marked active")
 
 	// Stop regenerating
-	cmd = sb.SetTitleRegenerating(false)
+	cmd := sb.SetTitleRegenerating(false)
 	assert.False(t, m.titleRegenerating, "should not be regenerating after SetTitleRegenerating(false)")
 	assert.False(t, m.needsSpinner(), "should not need spinner after stopping regeneration")
 	assert.Nil(t, cmd, "should return nil command when stopping")

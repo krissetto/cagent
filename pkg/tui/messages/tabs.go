@@ -32,12 +32,29 @@ type ReorderTabMsg struct {
 }
 
 // TabInfo contains display information for a session tab.
+//
+// SessionID is the supervisor-level identifier for the tab. For owned tabs
+// it matches the runtime session ID; for attached tabs it matches the
+// underlying live session ID the tab is viewing.
+//
+// Kind, ParentSessionID, RootSessionID and AgentName are populated for
+// attached tabs and empty for owned ones. They are carried here so the
+// tab bar and related UI can render parent/child hints without reaching
+// back into the supervisor.
 type TabInfo struct {
-	SessionID      string // Unique session identifier
+	SessionID      string // Unique session/tab identifier (see doc comment).
 	Title          string // Display title
 	IsActive       bool   // Whether this is the currently active tab
 	IsRunning      bool   // Whether the session is currently streaming
 	NeedsAttention bool   // Whether the tab needs user attention (e.g., tool confirmation)
+
+	// Kind distinguishes owned tabs (backed by an *app.App) from attached
+	// tabs (live viewers over a LiveEventSource). Empty string means owned
+	// for backward compatibility.
+	Kind            string
+	ParentSessionID string
+	RootSessionID   string
+	AgentName       string
 }
 
 // TabsUpdatedMsg is sent when the tab list has changed.

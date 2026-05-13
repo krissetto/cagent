@@ -4,6 +4,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/docker/docker-agent/pkg/runtime"
 )
 
 func newTestSupervisor(ids []string, activeID string) *Supervisor {
@@ -81,6 +84,36 @@ func TestCloseSession_NonExistent(t *testing.T) {
 
 	assert.Equal(t, "A", next)
 	assert.Equal(t, []string{"A", "B"}, s.order)
+}
+
+func TestHandleRuntimeEvent_TurnEventsDoNotAffectIsRunning(t *testing.T) {
+	// Verify TurnStarted/TurnEnded are deliberately no-ops for supervisor's
+	// IsRunning flag — only StreamStarted/Stopped own session-lifetime tab state.
+	//
+	// Use a raw Supervisor with unopened programReady gate so that the
+	// subscribe goroutine from AddSession blocks before hitting nil app.
+	// We exercise handleRuntimeEvent directly instead.
+	s := New(nil)
+	s.runners["owned-1"] = &SessionRunner{ID: "owned-1", SessionID: "owned-1", Kind: SessionKindOwned}
+	s.order = append(s.order, "owned-1")
+	s.activeID = "owned-1"
+
+	// Simulate stream start.
+	s.handleRuntimeEvent("owned-1", runtime.StreamStarted("owned-1", "root"))
+	runner := s.GetRunner("owned-1")
+	require.NotNil(t, runner)
+	assert.True(t, runner.IsRunning, "IsRunning should be true after StreamStarted")
+
+	// TurnStarted/TurnEnded must not change IsRunning.
+	s.handleRuntimeEvent("owned-1", runtime.TurnStarted("owned-1", "root"))
+	assert.True(t, runner.IsRunning, "IsRunning must stay true after TurnStarted")
+
+	s.handleRuntimeEvent("owned-1", runtime.TurnEnded("owned-1", "root"))
+	assert.True(t, runner.IsRunning, "IsRunning must stay true after TurnEnded between turns")
+
+	// Stream end still clears IsRunning.
+	s.handleRuntimeEvent("owned-1", runtime.StreamStopped("owned-1", "root", ""))
+	assert.False(t, runner.IsRunning, "IsRunning must be false after StreamStopped")
 }
 
 func TestCloseSession_TwoTabs_CloseSecond(t *testing.T) {
