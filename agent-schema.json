@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/docker/docker-agent/blob/main/agent-schema.json",
   "title": "Docker Agent Configuration",
-  "description": "Configuration schema for Docker Agent v8",
+  "description": "Configuration schema for Docker Agent v9",
   "type": "object",
   "properties": {
     "version": {
@@ -17,7 +17,8 @@
         "5",
         "6",
         "7",
-        "8"
+        "8",
+        "9"
       ],
       "examples": [
         "0",
@@ -28,7 +29,8 @@
         "5",
         "6",
         "7",
-        "8"
+        "8",
+        "9"
       ]
     },
     "providers": {
@@ -413,6 +415,35 @@
           "description": "List of sub-agents. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:agentcatalog/review-pr'). External agents without an explicit name are named after their last path segment.",
           "items": {
             "type": "string"
+          }
+        },
+        "subagents": {
+          "type": "array",
+          "description": "Schema v9: runtime-managed child agents that this agent can start dynamically via the subagent_start tool. Lives next to `sub_agents:` (which keeps driving the legacy transfer_task flow); both fields may co-exist. Each entry is either a string (agent name or external reference) or an object {agent, description}. Local references must match a name from the top-level `agents:` section; external references follow the same OCI image / URL / 'name:reference' rules as `sub_agents:`.",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Shorthand: agent name reference or external reference."
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "agent": {
+                    "type": "string",
+                    "description": "Agent name reference or external reference (OCI image / URL / 'name:reference')."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Optional hint shown to the parent model about when to start this subagent."
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "additionalProperties": false
+              }
+            ]
           }
         },
         "handoffs": {

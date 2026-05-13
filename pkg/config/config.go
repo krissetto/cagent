@@ -159,6 +159,19 @@ func validateConfig(cfg *latest.Config) error {
 			}
 		}
 
+		for _, subagent := range agent.Subagents {
+			subagentRef := subagent.Agent
+			if _, exists := allNames[subagentRef]; !exists && !IsExternalReference(subagentRef) {
+				return fmt.Errorf("agent '%s' references non-existent runtime subagent '%s'", agent.Name, subagentRef)
+			}
+			if IsExternalReference(subagentRef) {
+				name, _ := ParseExternalAgentRef(subagentRef)
+				if allNames[name] {
+					return fmt.Errorf("agent '%s': external runtime subagent '%s' resolves to name '%s' which conflicts with a locally-defined agent", agent.Name, subagentRef, name)
+				}
+			}
+		}
+
 		for _, handoffRef := range agent.Handoffs {
 			if _, exists := allNames[handoffRef]; !exists && !IsExternalReference(handoffRef) {
 				return fmt.Errorf("agent '%s' references non-existent handoff agent '%s'", agent.Name, handoffRef)

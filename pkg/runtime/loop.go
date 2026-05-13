@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -20,6 +21,7 @@ import (
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/runtime/toolexec"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tools"
 	bgagent "github.com/docker/docker-agent/pkg/tools/builtin/agent"
 	"github.com/docker/docker-agent/pkg/tools/builtin/handoff"
@@ -31,7 +33,8 @@ import (
 )
 
 // registerDefaultTools wires up the built-in tool handlers (delegation,
-// background agents, model switching) into the runtime's tool dispatch map.
+// background agents, model switching, subagents) into the runtime's tool
+// dispatch map.
 func (r *LocalRuntime) registerDefaultTools() {
 	r.toolMap[transfertask.ToolNameTransferTask] = r.handleTaskTransfer
 	r.toolMap[handoff.ToolNameHandoff] = r.handleHandoff
@@ -44,6 +47,32 @@ func (r *LocalRuntime) registerDefaultTools() {
 			return fn(ctx, sess, tc)
 		}
 	})
+
+	// Register runtime-managed subagent tool handlers.
+	if r.subagents != nil {
+		r.toolMap[subagent.ToolNameStart] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, events EventSink) (*tools.ToolCallResult, error) {
+			return r.handleSubagentStart(ctx, sess, tc, events)
+		}
+		r.toolMap[subagent.ToolNameSend] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, events EventSink) (*tools.ToolCallResult, error) {
+			return r.handleSubagentSend(ctx, sess, tc, events)
+		}
+		r.toolMap[subagent.ToolNameList] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, events EventSink) (*tools.ToolCallResult, error) {
+			return r.handleSubagentList(ctx, sess, tc, events)
+		}
+		r.toolMap[subagent.ToolNameInspect] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, events EventSink) (*tools.ToolCallResult, error) {
+			return r.handleSubagentInspect(ctx, sess, tc, events)
+		}
+		r.toolMap[subagent.ToolNameFinalize] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, events EventSink) (*tools.ToolCallResult, error) {
+			return r.handleSubagentFinalize(ctx, sess, tc, events)
+		}
+		// Deprecated alias for finalize.
+		r.toolMap[subagent.ToolNameClose] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, events EventSink) (*tools.ToolCallResult, error) {
+			return r.handleSubagentFinalize(ctx, sess, tc, events)
+		}
+		r.toolMap[subagent.ToolNameStop] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, events EventSink) (*tools.ToolCallResult, error) {
+			return r.handleSubagentStop(ctx, sess, tc, events)
+		}
+	}
 }
 
 // appendSteerAndEmit adds a steer message to the session and emits the corresponding event.
@@ -72,8 +101,8 @@ func (r *LocalRuntime) appendSteerAndEmit(sess *session.Session, sm QueuedMessag
 //
 // Returns (true, messageCountBefore) if any messages were drained and emitted;
 // (false, 0) otherwise.
-func (r *LocalRuntime) drainAndEmitSteered(ctx context.Context, sess *session.Session, events EventSink) (bool, int) {
-	steered := r.steerQueue.Drain(ctx)
+func (r *LocalRuntime) drainAndEmitSteered(ctx context.Context, state *sessionState, sess *session.Session, events EventSink) (bool, int) {
+	steered := state.steerQueue.Drain(ctx)
 	if len(steered) == 0 {
 		return false, 0
 	}
@@ -140,11 +169,11 @@ func (r *LocalRuntime) emitHookDrivenShutdown(
 // the StreamStoppedEvent so external consumers (boards, dashboards) can
 // distinguish between successful completion, crashes, and user-initiated
 // stops without reverse-engineering reconnect failures.
-func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.Session, reason string, prevElicitationCh, events chan Event) {
+func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, state *sessionState, sess *session.Session, reason string, prevElicitationCh, events chan Event) {
 	// Swap back the parent's elicitation channel before closing this
 	// stream's channel. This prevents a send-on-closed-channel panic
 	// and restores elicitation for the parent session.
-	r.elicitation.swap(prevElicitationCh)
+	state.elicitation.swap(prevElicitationCh)
 
 	defer close(events)
 
@@ -162,6 +191,13 @@ func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.S
 	r.executeOnUserInputHooks(ctx, sess.ID, "stream stopped")
 
 	r.telemetry.RecordSessionEnd(ctx)
+
+	// Ensure the recorder has durably drained this session before the
+	// producer channel is closed, so callers that finish draining RunStream
+	// can immediately observe consistent store state.
+	if r.recorder != nil {
+		r.recorder.FlushSession(sess.ID)
+	}
 }
 
 // RunStream starts the agent's interaction loop and returns a channel of events.
@@ -171,16 +207,53 @@ func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.S
 // or the iteration limit is reached.
 func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-chan Event {
 	slog.DebugContext(ctx, "Starting runtime stream", "agent", r.CurrentAgentName(), "session_id", sess.ID)
+	r.ensureSessionPersisted(ctx, sess)
 	events := make(chan Event, defaultEventChannelCapacity)
 
-	go r.runStreamLoop(ctx, sess, events)
+	go r.runStreamLoop(ctx, r.rootSessionState(), sess, events)
 	return r.observe(ctx, sess, events)
+}
+
+// ensureSessionPersisted creates the session row in the configured store if
+// it does not already exist. The legacy PersistenceObserver.OnRunStart used
+// to perform this work; with the SessionRecorder swap the recorder only
+// writes messages and assumes the session row is present. Sub-sessions
+// (ParentID set) are intentionally skipped: they are either embedded into
+// the parent (transfer_task / skill) or persisted separately by the
+// subagent manager (handleSubagentStart calls AddSession explicitly).
+//
+// InMemorySessionStore shares the session pointer with the runtime, so
+// store.AddMessage would double-write messages into the same slice. We
+// skip AddSession for in-memory stores to avoid that.
+func (r *LocalRuntime) ensureSessionPersisted(ctx context.Context, sess *session.Session) {
+	if r.sessionStore == nil || sess == nil || sess.ID == "" {
+		return
+	}
+	if sess.ParentID != "" {
+		return
+	}
+	// In-memory stores hold the same pointer the runtime operates on;
+	// persisting via store.AddSession would cause the recorder's
+	// store.AddMessage calls to double-write into the live Messages
+	// slice. Skip persistence for in-memory stores — the runtime already
+	// owns the canonical Session and GetSession returns it directly.
+	if _, ok := r.sessionStore.(*session.InMemorySessionStore); ok {
+		return
+	}
+	if _, err := r.sessionStore.GetSession(ctx, sess.ID); err == nil {
+		return // already persisted
+	}
+	if err := r.sessionStore.AddSession(ctx, sess); err != nil {
+		slog.DebugContext(ctx, "RunStream: failed to add session row", "session_id", sess.ID, "error", err)
+	}
 }
 
 // runStreamLoop is the body of RunStream. Pulled out of the anonymous
 // goroutine so it has a real name in stack traces and is easier to navigate
-// in editors.
-func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session, events chan Event) {
+// in editors. The state argument carries the per-session coordination
+// state (steer/follow-up queues, resume channel, elicitation bridge); for
+// the root session it is a view over the LocalRuntime's own fields.
+func (r *LocalRuntime) runStreamLoop(ctx context.Context, state *sessionState, sess *session.Session, events chan Event) {
 	sink := &channelSink{ch: events}
 
 	// Seed the cagent session ID at the run-loop boundary so any
@@ -189,6 +262,19 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 	// pkg/httpclient/userAgentTransport, gated on `X-Cagent-Forward`.
 	ctx = httpclient.ContextWithSessionID(ctx, sess.ID)
 	r.telemetry.RecordSessionStart(ctx, r.CurrentAgentName(), sess.ID)
+
+	// Register this session in the live registry for the duration of the
+	// loop so live-attach observers can find it. The agent name is the
+	// session's pinned agent when set (subagent / background agent), else
+	// the runtime's current agent.
+	if r.liveSessions != nil {
+		agentName := sess.AgentName
+		if agentName == "" {
+			agentName = r.CurrentAgentName()
+		}
+		r.liveSessions.register(sess.ID, agentName, sess.ParentID)
+		defer r.liveSessions.unregister(sess.ID)
+	}
 
 	ctx, sessionSpan := r.startSpan(ctx, "runtime.session", trace.WithAttributes(
 		attribute.String("agent", r.CurrentAgentName()),
@@ -200,7 +286,7 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 	// previous one so it can be restored on teardown. This allows nested
 	// RunStream calls to temporarily own elicitation without losing the
 	// parent's channel.
-	prevElicitationCh := r.elicitation.swap(events)
+	prevElicitationCh := state.elicitation.swap(events)
 
 	a := r.resolveSessionAgent(sess)
 
@@ -218,7 +304,7 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 	sink.Emit(TeamInfo(r.agentDetailsFromTeam(), a.Name()))
 
 	r.emitAgentWarnings(a, sink)
-	r.configureToolsetHandlers(a, sink)
+	r.configureToolsetHandlers(state, a, sink)
 
 	agentTools, err := r.getTools(ctx, a, sessionSpan, sink, true)
 	if err != nil {
@@ -261,7 +347,7 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 	// It is updated by each turn via runTurn (passed by pointer).
 	var streamReason string
 	defer func() {
-		r.finalizeEventChannel(ctx, sess, streamReason, prevElicitationCh, events)
+		r.finalizeEventChannel(ctx, state, sess, streamReason, prevElicitationCh, events)
 	}()
 
 	// Response cache lookup. On a hit, replay the stored answer and
@@ -303,7 +389,7 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 		}
 
 		r.emitAgentWarnings(a, sink)
-		r.configureToolsetHandlers(a, sink)
+		r.configureToolsetHandlers(state, a, sink)
 
 		agentTools, err := r.getTools(ctx, a, sessionSpan, sink, true)
 		if err != nil {
@@ -318,7 +404,7 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 		sink.Emit(ToolsetInfo(len(agentTools), false, a.Name()))
 
 		// Check iteration limit
-		newMax, decision := r.enforceMaxIterations(ctx, sess, a, ls.iteration, ls.maxIterations, sink)
+		newMax, decision := r.enforceMaxIterations(ctx, state, sess, a, ls.iteration, ls.maxIterations, sink)
 		if decision == iterationStop {
 			return
 		}
@@ -374,7 +460,7 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 
 		// Drain steer messages queued while idle or before the first model call
 		// (covers idle-window and first-turn-miss races).
-		if drained, messageCountBeforeSteer := r.drainAndEmitSteered(ctx, sess, sink); drained {
+		if drained, messageCountBeforeSteer := r.drainAndEmitSteered(ctx, state, sess, sink); drained {
 			r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeSteer, sink)
 		}
 
@@ -387,21 +473,32 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 		// AFTER the closure body has assigned both, so callers see the same
 		// reason the runtime took. ctrl drives the outer for-loop's
 		// continue-or-exit decision.
-		ctrl := r.runTurn(ctx, sess, a, m, model, modelID, contextLimit, sessionSpan, agentTools, ls, sink)
+		ctrl, park := r.runTurn(ctx, state, sess, a, m, model, modelID, contextLimit, sessionSpan, agentTools, ls, sink)
 		streamReason = ls.exitReason
 		switch ctrl {
 		case turnContinue:
 			continue
 		case turnExit:
 			return
+		case turnPark:
+			// Deferred turn_end already fired inside runTurn before we
+			// got here; only NOW do we block on subagent / steer / etc.
+			if state.wakePolicy == nil {
+				return
+			}
+			if state.wakePolicy.wakeNext(ctx, r, state, sess, park.responseContent, park.messageCountBeforeTools, contextLimit, sink) {
+				continue
+			}
+			return
 		}
 	}
 }
 
 // turnControl is what [LocalRuntime.runTurn] reports back to the outer
-// run-stream loop: continue to the next iteration, or exit the loop
-// entirely. break and return are equivalent here because the loop is
-// the last statement in runStreamLoop, so we collapse them into one.
+// run-stream loop: continue to the next iteration, exit the loop entirely,
+// or park (block waiting for subagent/steer wakeup). break and return are
+// equivalent here because the loop is the last statement in runStreamLoop,
+// so we collapse them into one.
 type turnControl int
 
 const (
@@ -412,6 +509,11 @@ const (
 	// deferred cleanup run (normal stop, error, hook-blocked,
 	// loop-detected, ctx cancelled).
 	turnExit
+	// turnPark — the turn ended cleanly but a wakePolicy is set and
+	// wants the loop to park. The outer loop calls wakePolicy.wakeNext
+	// AFTER runTurn returns so that the deferred turn_end hooks fire
+	// before any blocking parking work begins.
+	turnPark
 )
 
 // loopState bundles the mutable per-RunStream state that persists across
@@ -432,6 +534,14 @@ type loopState struct {
 	exitReason          string
 }
 
+// turnParkInfo carries the minimal per-turn data that wakePolicy.wakeNext
+// needs when the outer loop dispatches a parking wake-up after runTurn
+// returns turnPark.
+type turnParkInfo struct {
+	responseContent         string
+	messageCountBeforeTools int
+}
+
 // runTurn performs one iteration of the run-stream loop, from
 // turn_start onwards. Wrapping the body in its own function exists for
 // one reason: a deferred call can fire turn_end on every exit path — a
@@ -448,6 +558,7 @@ type loopState struct {
 // shared loopState pointer.
 func (r *LocalRuntime) runTurn(
 	ctx context.Context,
+	state *sessionState,
 	sess *session.Session,
 	a *agent.Agent,
 	m *modelsdev.Model,
@@ -458,8 +569,15 @@ func (r *LocalRuntime) runTurn(
 	agentTools []tools.Tool,
 	ls *loopState,
 	events EventSink,
-) turnControl {
-	streamCtx, streamSpan := r.startSpan(ctx, "runtime.stream", trace.WithAttributes(
+) (ctrl turnControl, park turnParkInfo) {
+	turnCtx := ctx
+	turnCancel := func() {}
+	if state.wakePolicy != nil {
+		turnCtx, turnCancel = state.wakePolicy.turnCtx(ctx)
+	}
+	defer turnCancel()
+
+	streamCtx, streamSpan := r.startSpan(turnCtx, "runtime.stream", trace.WithAttributes(
 		attribute.String("agent", a.Name()),
 		attribute.String("session.id", sess.ID),
 	))
@@ -526,7 +644,7 @@ func (r *LocalRuntime) runTurn(
 		r.emitHookDrivenShutdown(ctx, a, sess, msg, events)
 		endStreamSpan()
 		endReason = turnEndReasonHookBlocked
-		return turnExit
+		return turnExit, park
 	}
 	if rewritten != nil {
 		messages = rewritten
@@ -545,13 +663,26 @@ func (r *LocalRuntime) runTurn(
 	// Try primary model with fallback chain if configured
 	res, usedModel, err := r.fallback.execute(streamCtx, a, model, messages, agentTools, sess, m, events)
 	if err != nil {
+		// Distinguish a child per-turn interrupt (state.isChild and the
+		// outer ctx is still alive) from a fatal session cancel. On a
+		// per-turn interrupt the child loop should park and keep waiting
+		// for new parent messages instead of terminating.
+		if state.isChild && errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			endStreamSpan()
+			endReason = turnEndReasonCanceled
+			state.interruptedTurn = true
+			return turnPark, turnParkInfo{
+				responseContent:         "",
+				messageCountBeforeTools: len(sess.GetAllMessages()),
+			}
+		}
 		outcome := r.handleStreamError(ctx, sess, a, err, contextLimit, &ls.overflowCompactions, streamSpan, events)
 		endStreamSpan()
 		endReason = turnEndReasonError
 		if outcome == streamErrorRetry {
-			return turnContinue
+			return turnContinue, park
 		}
-		return turnExit
+		return turnExit, park
 	}
 
 	// A successful model call resets the overflow compaction counter.
@@ -585,7 +716,19 @@ func (r *LocalRuntime) runTurn(
 	// measure how much content was added by tool results.
 	messageCountBeforeTools := len(sess.GetAllMessages())
 
-	stopRun, stopMsg := r.processToolCalls(ctx, sess, res.Calls, agentTools, events)
+	stopRun, stopMsg := r.processToolCalls(ctx, state, sess, res.Calls, agentTools, events)
+
+	// Subagent envelope drain at the post-tool-calls safe point.
+	// - root: drain envelopes from manager.DrainParentInbox into the parent transcript.
+	// - child: drainMidTurn on the wake policy (drains steer inbox).
+	if state.wakePolicy != nil {
+		if state.wakePolicy.drainMidTurn(sess, events) {
+			r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
+		}
+	}
+	if r.drainParentEnvelopesMidTurn(sess, state, events) {
+		r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
+	}
 
 	// Re-probe toolsets after tool calls: an install/setup tool call may
 	// have made a previously-unavailable LSP or MCP connectable. reprobe()
@@ -619,7 +762,7 @@ func (r *LocalRuntime) runTurn(
 		r.notifyError(ctx, a, sess.ID, errMsg)
 		ls.loopDetector.Reset()
 		endReason = turnEndReasonLoopDetected
-		return turnExit
+		return turnExit, park
 	}
 
 	// post_tool_use hook signalled run termination via a deny
@@ -632,28 +775,40 @@ func (r *LocalRuntime) runTurn(
 			"agent", a.Name(), "session_id", sess.ID, "reason", stopMsg)
 		r.emitHookDrivenShutdown(ctx, a, sess, stopMsg, events)
 		endReason = turnEndReasonHookBlocked
-		return turnExit
+		return turnExit, park
 	}
 
 	// Record per-toolset model override for the next LLM turn.
 	ls.toolModelOverride = toolexec.ResolveModelOverride(res.Calls, agentTools)
 
 	// Drain steer messages that arrived during tool calls.
-	if drained, _ := r.drainAndEmitSteered(ctx, sess, events); drained {
+	if drained, _ := r.drainAndEmitSteered(ctx, state, sess, events); drained {
 		r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
 		endReason = turnEndReasonSteered
-		return turnContinue
+		return turnContinue, park
 	}
 
 	if res.Stopped {
 		slog.DebugContext(ctx, "Conversation stopped", "agent", a.Name())
+
+		// Delegate post-stop behaviour to the wake policy when one is set.
+		// Return turnPark so the outer loop calls wakePolicy.wakeNext
+		// AFTER this function returns — that way the deferred turn_end
+		// hooks fire before any blocking parking work.
+		if state.wakePolicy != nil {
+			endReason = turnEndReasonNormal
+			return turnPark, turnParkInfo{
+				responseContent:         res.Content,
+				messageCountBeforeTools: messageCountBeforeTools,
+			}
+		}
 		r.executeStopHooks(ctx, sess, a, res.Content, events)
 
 		// Re-check steer queue: closes the race between the mid-loop drain and this stop.
-		if drained, _ := r.drainAndEmitSteered(ctx, sess, events); drained {
+		if drained, _ := r.drainAndEmitSteered(ctx, state, sess, events); drained {
 			r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
 			endReason = turnEndReasonSteered
-			return turnContinue
+			return turnContinue, park
 		}
 
 		// --- FOLLOW-UP: end-of-turn injection ---
@@ -662,22 +817,22 @@ func (r *LocalRuntime) runTurn(
 		// a new turn — the model sees them as fresh input, not a
 		// mid-stream interruption. Each follow-up gets a full
 		// undivided agent turn.
-		if followUp, ok := r.followUpQueue.Dequeue(ctx); ok {
+		if followUp, ok := state.followUpQueue.Dequeue(ctx); ok {
 			userMsg := session.UserMessage(followUp.Content, followUp.MultiContent...)
 			sess.AddMessage(userMsg)
 			events.Emit(UserMessage(followUp.Content, sess.ID, followUp.MultiContent, len(sess.Messages)-1))
 			r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
 			endReason = turnEndReasonContinue
-			return turnContinue // re-enter the loop for a new turn
+			return turnContinue, park // re-enter the loop for a new turn
 		}
 
 		endReason = turnEndReasonNormal
-		return turnExit
+		return turnExit, park
 	}
 
 	r.compactIfNeeded(ctx, sess, a, m, contextLimit, messageCountBeforeTools, events)
 	endReason = turnEndReasonContinue
-	return turnContinue
+	return turnContinue, park
 }
 
 // Run executes the agent loop synchronously and returns the final session
@@ -827,10 +982,16 @@ func (r *LocalRuntime) getTools(ctx context.Context, a *agent.Agent, sessionSpan
 }
 
 // configureToolsetHandlers sets up elicitation and OAuth handlers for all toolsets of an agent.
-func (r *LocalRuntime) configureToolsetHandlers(a *agent.Agent, events EventSink) {
+// For child sessions (state.isChild), MCP elicitation is auto-declined because there
+// is no interactive user to answer schema-driven prompts.
+func (r *LocalRuntime) configureToolsetHandlers(state *sessionState, a *agent.Agent, events EventSink) {
+	elicitHandler := r.elicitationHandler
+	if state.isChild {
+		elicitHandler = autoDeclineElicitationHandler
+	}
 	for _, toolset := range a.ToolSets() {
 		tools.ConfigureHandlers(toolset,
-			r.elicitationHandler,
+			elicitHandler,
 			func() { events.Emit(Authorization(tools.ElicitationActionAccept, a.Name())) },
 			r.managedOAuth,
 		)

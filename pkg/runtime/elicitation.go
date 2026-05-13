@@ -108,6 +108,15 @@ func (r *LocalRuntime) ResumeElicitation(ctx context.Context, action tools.Elici
 	}
 }
 
+// autoDeclineElicitationHandler is the elicitation handler used by child
+// (subagent) sessions. There is no interactive user to answer MCP elicitation
+// prompts in a child loop, so any inbound request is auto-declined so the
+// MCP server can return its no-data fallback path instead of blocking the
+// child loop indefinitely.
+func autoDeclineElicitationHandler(_ context.Context, _ *mcp.ElicitParams) (tools.ElicitationResult, error) {
+	return tools.ElicitationResult{Action: tools.ElicitationActionDecline}, nil
+}
+
 // elicitationHandler is the MCP-toolset-side hook that turns an inbound
 // elicitation request from a server into an ElicitationRequest event on the
 // active stream's events channel and waits for the embedder's response on

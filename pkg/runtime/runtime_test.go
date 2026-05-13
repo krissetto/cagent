@@ -890,7 +890,7 @@ func TestProcessToolCalls_UnknownTool_ReturnsErrorResponse(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, nil, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, nil, NewChannelSink(events))
 	close(events)
 	for range events {
 	}
@@ -1479,7 +1479,7 @@ func TestPermissions_DenyBlocksToolExecution(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 	close(events)
 
 	// The tool should be denied, look for a ToolCallResponseEvent with error
@@ -1535,7 +1535,7 @@ func TestPermissions_AllowAutoApprovesTool(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 	close(events)
 
 	// The tool should have been executed due to allow pattern
@@ -1576,7 +1576,7 @@ func TestPermissions_DenyTakesPriorityOverAllow(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 	close(events)
 
 	// The tool should be denied despite wildcard allow
@@ -1624,7 +1624,7 @@ func TestSessionPermissions_DenyBlocksToolExecution(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 	close(events)
 
 	var toolResponse *ToolCallResponseEvent
@@ -1677,7 +1677,7 @@ func TestSessionPermissions_AllowAutoApprovesTool(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 	close(events)
 
 	require.True(t, executed, "expected tool to be auto-approved by session permissions")
@@ -1723,7 +1723,7 @@ func TestSessionPermissions_TakePriorityOverTeamPermissions(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 	close(events)
 
 	// Session deny should take priority over team allow
@@ -1773,7 +1773,7 @@ func TestToolRejectionWithReason(t *testing.T) {
 
 	// Run in goroutine since it will block waiting for confirmation
 	go func() {
-		rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+		rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 		close(events)
 	}()
 
@@ -1829,7 +1829,7 @@ func TestToolRejectionWithoutReason(t *testing.T) {
 
 	// Run in goroutine since it will block waiting for confirmation
 	go func() {
-		rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+		rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 		close(events)
 	}()
 
@@ -1962,7 +1962,7 @@ func TestYoloMode_OverridesPermissionsDeny(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 	close(events)
 
 	// With --yolo, the tool should execute despite deny permission
@@ -2008,7 +2008,7 @@ func TestYoloMode_OverridesForceAsk(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 	close(events)
 
 	// With --yolo, the tool should execute without asking
@@ -2053,7 +2053,7 @@ func TestYoloMode_OverridesSessionDeny(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 	close(events)
 
 	// With --yolo, the tool should execute despite session deny
@@ -2352,7 +2352,7 @@ func TestProcessToolCalls_UsesPinnedAgent(t *testing.T) {
 	}}
 
 	events := make(chan Event, 32)
-	rt.processToolCalls(t.Context(), sess, calls, []tools.Tool{workerTool}, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, []tools.Tool{workerTool}, NewChannelSink(events))
 	close(events)
 
 	assert.True(t, executed, "worker_tool handler should have been called")
@@ -3202,7 +3202,7 @@ func TestDrainAndEmitSteered_MultipleMessages(t *testing.T) {
 	sess := session.New()
 	events := make(chan Event, 16)
 
-	drained, _ := rt.drainAndEmitSteered(t.Context(), sess, NewChannelSink(events))
+	drained, _ := rt.drainAndEmitSteered(t.Context(), rt.rootSessionState(), sess, NewChannelSink(events))
 	close(events)
 
 	assert.True(t, drained, "should report messages were drained")
@@ -3266,7 +3266,7 @@ func TestDrainAndEmitSteered_MultiContent(t *testing.T) {
 	sess := session.New()
 	events := make(chan Event, 16)
 
-	drained, _ := rt.drainAndEmitSteered(t.Context(), sess, NewChannelSink(events))
+	drained, _ := rt.drainAndEmitSteered(t.Context(), rt.rootSessionState(), sess, NewChannelSink(events))
 	close(events)
 
 	assert.True(t, drained)
@@ -3336,7 +3336,7 @@ func TestPostToolHookReceivesToolResult(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 
 	require.NotNil(t, got)
 	assert.Equal(t, hooks.EventPostToolUse, got.HookEventName)
@@ -3388,7 +3388,7 @@ func TestPostToolHookEmitsLifecycleEvents(t *testing.T) {
 	}}
 
 	events := make(chan Event, 10)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 
 	var started *HookStartedEvent
 	var finished *HookFinishedEvent

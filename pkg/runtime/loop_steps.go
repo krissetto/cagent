@@ -47,6 +47,7 @@ const (
 // without standing up a full model + toolset pipeline.
 func (r *LocalRuntime) enforceMaxIterations(
 	ctx context.Context,
+	state *sessionState,
 	sess *session.Session,
 	a *agent.Agent,
 	iteration int,
@@ -91,7 +92,7 @@ func (r *LocalRuntime) enforceMaxIterations(
 
 	// Wait for user decision (resume / reject)
 	select {
-	case req := <-r.resumeChan:
+	case req := <-state.resumeChan:
 		if req.Type == ResumeTypeApprove {
 			slog.DebugContext(ctx, "User chose to continue after max iterations", "agent", a.Name())
 			newMax := iteration + 10

@@ -804,3 +804,49 @@ func TestCompactionInput(t *testing.T) {
 		assert.Equal(t, "hello", sess.Messages[0].Message.Message.Content)
 	})
 }
+
+func TestSubagentEnvelopeMessage(t *testing.T) {
+	t.Parallel()
+
+	msg := SubagentEnvelopeMessage("subagent says hi")
+	require.NotNil(t, msg)
+	assert.Equal(t, "subagent says hi", msg.Message.Content)
+	assert.True(t, msg.Implicit, "SubagentEnvelopeMessage must be marked Implicit")
+	assert.Equal(t, MessageKindSubagentEnvelope, msg.Kind,
+		"SubagentEnvelopeMessage must set Kind to MessageKindSubagentEnvelope")
+	assert.Equal(t, chat.MessageRoleUser, msg.Message.Role,
+		"SubagentEnvelopeMessage must produce a user-role message")
+}
+
+func TestAppendMessage_ReturnsCorrectIndex(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+
+	// First message → index 0.
+	idx0 := s.AppendMessage(UserMessage("first"))
+	assert.Equal(t, 0, idx0)
+	assert.Len(t, s.Messages, 1)
+
+	// Second message → index 1.
+	idx1 := s.AppendMessage(UserMessage("second"))
+	assert.Equal(t, 1, idx1)
+	assert.Len(t, s.Messages, 2)
+}
+
+func TestAppendMessage_ParityWithAddMessage(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+
+	// Pre-populate with AddMessage, then use AppendMessage and verify
+	// the returned index matches the slice length after AddMessage.
+	s.AddMessage(UserMessage("via-add-1"))
+	s.AddMessage(UserMessage("via-add-2"))
+
+	idx := s.AppendMessage(UserMessage("via-append"))
+	assert.Equal(t, 2, idx, "AppendMessage must return the index of the just-appended item")
+
+	require.Len(t, s.Messages, 3)
+	assert.Equal(t, "via-append", s.Messages[idx].Message.Message.Content)
+}

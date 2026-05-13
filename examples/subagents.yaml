@@ -1,0 +1,40 @@
+# Schema v9 introduces a new top-level `subagents:` field on agents that
+# drives the upcoming runtime-managed subagent feature. It lives next to
+# `sub_agents:` (which keeps powering the legacy `transfer_task` flow) so
+# existing configurations keep working unchanged.
+#
+# Each entry under `subagents:` accepts either:
+#   - a string shorthand (an agent name from this config, or an external
+#     OCI / URL reference, e.g. "agentcatalog/pirate")
+#   - the full object form `{ agent: <ref>, description: <hint> }` when
+#     you want to give the parent model a custom hint for when to start
+#     this subagent
+#
+# This example wires a coordinator that can start two child agents at
+# runtime. Future PRs will land the runtime side that consumes this
+# field; today this file exercises the parse + validate path.
+
+agents:
+  coordinator:
+    model: openai/gpt-4o
+    description: "Coordinator that delegates to runtime-managed subagents"
+    instruction: |
+      You are a coordinator. Plan the work, then delegate specialist tasks
+      to your subagents instead of doing everything yourself.
+    subagents:
+      - researcher
+      - agent: writer
+        description: "Drafts the final document from research notes"
+
+  researcher:
+    model: openai/gpt-4o
+    description: "Web research helper"
+    instruction: |
+      You are a research helper. When a task arrives, gather the relevant
+      facts and summarise them in a short bullet list.
+
+  writer:
+    model: openai/gpt-4o
+    description: "Long-form writer"
+    instruction: |
+      You are a writer. Turn supplied research notes into polished prose.

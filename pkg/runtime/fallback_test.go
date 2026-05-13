@@ -115,6 +115,7 @@ func TestFallbackOrder(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "Fallback Test"
@@ -146,6 +147,7 @@ func TestFallbackNoRetryOnNonRetryableError(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "Non-Retryable Test"
@@ -184,6 +186,7 @@ func TestFallbackRetriesWithBackoff(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "Retry Test"
@@ -224,6 +227,7 @@ func TestPrimaryRetriesWithBackoff(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "Primary Retry Test"
@@ -261,6 +265,7 @@ func TestNoFallbackWhenPrimarySucceeds(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "Primary Success Test"
@@ -303,6 +308,7 @@ func TestFallback429SkipsToNextModel(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "429 Skip Test"
@@ -326,6 +332,7 @@ func TestFallbackCooldownState(t *testing.T) {
 		))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		agentName := "test-agent"
 
@@ -403,6 +410,7 @@ func TestFallback429WithFallbacksSkipsToNextModel(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "429 With Fallback Skip Test"
@@ -442,6 +450,7 @@ func TestFallback429WithoutFallbacksRetriesSameModel(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}), WithRetryOnRateLimit())
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "429 No Fallback Retry Test"
@@ -474,6 +483,7 @@ func TestFallback429WithoutFallbacksExhaustsRetries(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}), WithRetryOnRateLimit())
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "429 No Fallback Exhaust Test"
@@ -511,6 +521,7 @@ func TestFallback500RetryableWithBackoff(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "500 Retry Test"
@@ -548,6 +559,7 @@ func TestRateLimitGate_DisabledNoFallbacks_FailsImmediately(t *testing.T) {
 		// Note: WithRetryOnRateLimit() is NOT passed — default off
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "429 Gate Disabled Test"
@@ -587,6 +599,7 @@ func TestRateLimitGate_EnabledNoFallbacks_RetriesSameModel(t *testing.T) {
 		tm := team.New(team.WithAgents(root))
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}), WithRetryOnRateLimit())
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "429 Gate Enabled No Fallbacks Test"
@@ -627,6 +640,7 @@ func TestRateLimitGate_EnabledWithFallbacks_SkipsToFallback(t *testing.T) {
 		// opt-in is enabled, but fallbacks are present → should still skip to fallback
 		rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}), WithRetryOnRateLimit())
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = rt.Close() })
 
 		sess := session.New(session.WithUserMessage("test"))
 		sess.Title = "429 Gate Enabled With Fallbacks Test"

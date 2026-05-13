@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/docker/docker-agent/pkg/chat"
@@ -269,4 +270,53 @@ type SessionStatusResponse struct {
 	InputTokens  int64  `json:"input_tokens"`
 	OutputTokens int64  `json:"output_tokens"`
 	NumMessages  int    `json:"num_messages"`
+}
+
+// ---------------------------------------------------------------------------
+// Live-session observability DTOs (PR 5)
+// ---------------------------------------------------------------------------
+
+// LiveSessionNode represents a node in the currently-live agent/subagent tree.
+// The tree is encoded recursively via the Children field.
+type LiveSessionNode struct {
+	ID           string            `json:"id"`
+	ParentID     string            `json:"parent_id,omitempty"`
+	AgentName    string            `json:"agent_name"`
+	Status       string            `json:"status"`
+	Title        string            `json:"title,omitempty"`
+	Depth        int               `json:"depth,omitempty"`
+	LastPreview  string            `json:"last_preview,omitempty"`
+	CreatedAt    time.Time         `json:"created_at,omitzero"`
+	LastUpdateAt time.Time         `json:"last_update_at,omitzero"`
+	Children     []LiveSessionNode `json:"children,omitempty"`
+}
+
+// LiveSessionTreeResponse describes the current live tree for a root session.
+// Nodes is a flat-plus-recursive slice; the first element is always the root.
+type LiveSessionTreeResponse struct {
+	Nodes []LiveSessionNode `json:"nodes"`
+}
+
+// LiveSessionResponse describes a single live session (root or descendant).
+type LiveSessionResponse struct {
+	ID        string `json:"id"`
+	AgentName string `json:"agent_name"`
+	Status    string `json:"status"`
+}
+
+// LiveSessionSnapshotResponse is returned by GET /live-sessions/:id/snapshot.
+// Events contains the full event history of the session as raw JSON objects so
+// a remote client can reconstruct the transcript without a separate /session
+// lookup. Each element is a verbatim event JSON blob (same wire format the SSE
+// stream emits).
+type LiveSessionSnapshotResponse struct {
+	SessionID string            `json:"session_id"`
+	Events    []json.RawMessage `json:"events"`
+}
+
+// LiveSessionControlResponse is returned by control endpoints:
+// steer, followup, close, interrupt, stop.
+type LiveSessionControlResponse struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
 }

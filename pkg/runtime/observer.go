@@ -44,10 +44,14 @@ type EventObserver interface {
 // Observers are invoked in registration order, synchronously, on every
 // event the runtime produces. Multiple calls are additive.
 //
-// The runtime auto-registers a [PersistenceObserver] for the configured
-// session store; users do not need to wire persistence themselves.
-// Custom observers (telemetry, audit, metrics, A2A forward) compose
-// alongside that one.
+// Persistence is handled exclusively by the [SessionRecorder], which is
+// registered automatically via [EventBus.AddGlobalObserver] during
+// [NewLocalRuntime]. Custom observers (telemetry, audit, metrics, A2A
+// forward) compose alongside the recorder via this hook.
+//
+// Deprecated: [PersistenceObserver] is no longer auto-registered and its
+// OnEvent is a no-op. Do not pass a PersistenceObserver to this function;
+// the recorder already writes all session data.
 func WithEventObserver(o EventObserver) Opt {
 	return func(r *LocalRuntime) {
 		if o == nil {
@@ -71,10 +75,19 @@ func (r *LocalRuntime) observe(ctx context.Context, sess *session.Session, inner
 	go func() {
 		defer close(out)
 		for event := range inner {
+			if r.eventBus != nil {
+				r.eventBus.Publish(sess.ID, event)
+			}
 			for _, obs := range r.observers {
 				obs.OnEvent(ctx, sess, event)
 			}
 			out <- event
+		}
+		if r.recorder != nil {
+			r.recorder.FlushSession(sess.ID)
+		}
+		if r.eventBus != nil {
+			r.eventBus.CloseTopic(sess.ID)
 		}
 	}()
 	return out

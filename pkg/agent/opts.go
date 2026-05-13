@@ -92,6 +92,18 @@ func WithSubAgents(subAgents ...*Agent) Opt {
 	}
 }
 
+// WithRuntimeSubagents configures runtime-managed subagents declared via the
+// v9 `subagents:` config key. These are distinct from legacy transfer_task
+// delegation targets configured via `sub_agents:`.
+func WithRuntimeSubagents(subAgents ...*Agent) Opt {
+	return func(a *Agent) {
+		a.runtimeSubagents = subAgents
+		for _, subAgent := range subAgents {
+			subAgent.parents = append(subAgent.parents, a)
+		}
+	}
+}
+
 func WithHandoffs(handoffs ...*Agent) Opt {
 	return func(a *Agent) {
 		a.handoffs = handoffs

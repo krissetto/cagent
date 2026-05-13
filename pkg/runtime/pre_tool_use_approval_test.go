@@ -139,7 +139,7 @@ func runJudgedToolCall(t *testing.T, rt *LocalRuntime, sess *session.Session, ag
 		Function: tools.FunctionCall{Name: "the_tool", Arguments: "{}"},
 	}}
 	events := make(chan Event, 16)
-	rt.processToolCalls(t.Context(), sess, calls, agentTools, NewChannelSink(events))
+	rt.processToolCalls(t.Context(), rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 	close(events)
 	return collectClosedEvents(events)
 }
@@ -199,7 +199,7 @@ func TestPreToolUseHook_AskEscalatesToUser(t *testing.T) {
 	events := make(chan Event, 16)
 	done := make(chan struct{})
 	go func() {
-		rt.processToolCalls(ctx, sess, calls, agentTools, NewChannelSink(events))
+		rt.processToolCalls(ctx, rt.rootSessionState(), sess, calls, agentTools, NewChannelSink(events))
 		close(done)
 	}()
 

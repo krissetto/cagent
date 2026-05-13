@@ -120,6 +120,7 @@ func TestSchemaMatchesGoTypes(t *testing.T) {
 
 	inlines := []inlineEntry{
 		{reflect.TypeFor[latest.StructuredOutput](), []string{"AgentConfig", "structured_output"}, "StructuredOutput (AgentConfig.structured_output)"},
+		{reflect.TypeFor[latest.SubagentSpec](), []string{"AgentConfig", "subagents", "*"}, "SubagentSpec (AgentConfig.subagents[])"},
 		{reflect.TypeFor[latest.RAGConfig](), []string{"RAGConfig"}, "RAGConfig"},
 		{reflect.TypeFor[latest.RAGToolConfig](), []string{"RAGConfig", "tool"}, "RAGToolConfig (RAGConfig.tool)"},
 		{reflect.TypeFor[latest.RAGResultsConfig](), []string{"RAGConfig", "results"}, "RAGResultsConfig (RAGConfig.results)"},
@@ -179,6 +180,7 @@ type jsonSchema struct {
 	Definitions          map[string]jsonSchema `json:"definitions,omitempty"`
 	Ref                  string                `json:"$ref,omitempty"`
 	Items                *jsonSchema           `json:"items,omitempty"`
+	OneOf                []jsonSchema          `json:"oneOf,omitempty"`
 	AdditionalProperties any                   `json:"additionalProperties,omitempty"`
 }
 
@@ -256,6 +258,21 @@ func navigateSchema(t *testing.T, root jsonSchema, path []string) jsonSchema {
 			require.NotNil(t, cur.Items, "expected items schema at %v", path)
 			cur = *cur.Items
 			cur = cur.resolveRef(root)
+			// Support inline array items declared as oneOf with an object branch.
+			// Used by latest.SubagentSpec, whose schema accepts either a string
+			// shorthand or the full {agent, description} object form.
+			if len(cur.OneOf) > 0 {
+				foundObject := false
+				for _, option := range cur.OneOf {
+					option = option.resolveRef(root)
+					if len(option.Properties) > 0 {
+						cur = option
+						foundObject = true
+						break
+					}
+				}
+				require.True(t, foundObject, "expected object branch in oneOf at %v", path)
+			}
 			continue
 		}
 		prop, ok := cur.Properties[segment]

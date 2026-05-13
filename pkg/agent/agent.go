@@ -29,6 +29,7 @@ type Agent struct {
 	fallbackCooldown        time.Duration                       // Duration to stick with fallback after non-retryable error
 	modelOverrides          atomic.Pointer[[]provider.Provider] // Optional model override(s) set at runtime (supports alloy)
 	subAgents               []*Agent
+	runtimeSubagents        []*Agent
 	handoffs                []*Agent
 	parents                 []*Agent
 	addDate                 bool
@@ -125,9 +126,15 @@ func (a *Agent) WelcomeMessage() string {
 	return a.welcomeMessage
 }
 
-// SubAgents returns the list of sub-agents
+// SubAgents returns the list of legacy delegation sub-agents (transfer_task).
 func (a *Agent) SubAgents() []*Agent {
 	return a.subAgents
+}
+
+// RuntimeSubagents returns the list of runtime-managed subagents (v9 subagents: key).
+// These are distinct from the legacy sub_agents / transfer_task list.
+func (a *Agent) RuntimeSubagents() []*Agent {
+	return a.runtimeSubagents
 }
 
 // Handoffs returns the list of handoff agents
@@ -135,14 +142,19 @@ func (a *Agent) Handoffs() []*Agent {
 	return a.handoffs
 }
 
+// HasSubAgents checks if the agent has legacy delegation sub-agents
+func (a *Agent) HasSubAgents() bool {
+	return len(a.subAgents) > 0
+}
+
+// HasRuntimeSubagents reports whether the agent has runtime-managed subagents.
+func (a *Agent) HasRuntimeSubagents() bool {
+	return len(a.runtimeSubagents) > 0
+}
+
 // Parents returns the list of parent agent names
 func (a *Agent) Parents() []*Agent {
 	return a.parents
-}
-
-// HasSubAgents checks if the agent has sub-agents
-func (a *Agent) HasSubAgents() bool {
-	return len(a.subAgents) > 0
 }
 
 // Model returns the model to use for this agent.

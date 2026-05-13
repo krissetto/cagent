@@ -23,6 +23,7 @@ import (
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/permissions"
 	"github.com/docker/docker-agent/pkg/skills"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/deferred"
@@ -259,6 +260,22 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		if len(handoffs) > 0 {
 			agent.WithHandoffs(handoffs...)(a)
 		}
+
+		// Resolve v9 runtime-managed subagents (Subagents field) so the
+		// agent model can call subagent_start / subagent_send / etc.
+		subagentRefs := make([]string, 0, len(agentConfig.Subagents))
+		for _, spec := range agentConfig.Subagents {
+			subagentRefs = append(subagentRefs, spec.Agent)
+		}
+		if len(subagentRefs) > 0 {
+			runtimeSubAgents, err := resolveAgentRefs(ctx, subagentRefs, agentsByName, externalAgents, &agents, runConfig, &loadOpts)
+			if err != nil {
+				return nil, fmt.Errorf("agent '%s': resolving subagents: %w", agentConfig.Name, err)
+			}
+			if len(runtimeSubAgents) > 0 {
+				agent.WithRuntimeSubagents(runtimeSubAgents...)(a)
+			}
+		}
 	}
 
 	// Create permissions checker from config
@@ -476,6 +493,22 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 	}
 	if len(a.Handoffs) > 0 {
 		toolSets = append(toolSets, handoff.NewHandoffTool())
+	}
+
+	// Runtime-managed subagents (v9 schema). When the agent has any
+	// `subagents:` entries, expose the runtime-native subagent toolset
+	// so the model can call subagent_start / subagent_send / etc.
+	// Build the spec list from the config so the toolset can expose
+	// an enum-constrained `agent` parameter and a human-readable listing
+	// of valid names — preventing the model from hallucinating agent names
+	// that don't exist in the team.
+	if len(a.Subagents) > 0 {
+		specs := make([]subagent.ToolSetAgentSpec, len(a.Subagents))
+		for i, s := range a.Subagents {
+			name, _ := config.ParseExternalAgentRef(s.Agent)
+			specs[i] = subagent.ToolSetAgentSpec{Name: name, Description: s.Description}
+		}
+		toolSets = append(toolSets, subagent.NewToolSet(specs))
 	}
 
 	// Wrap all tools in a single Code Mode toolset.

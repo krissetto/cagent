@@ -1,0 +1,12 @@
+version: "9"
+agents:
+  root:
+    model: openai/gpt-4o
+    description: "Legacy coordinator that delegates via transfer_task"
+    instruction: "Hand the task off to a sub-agent via transfer_task."
+    sub_agents:
+      - helper
+  helper:
+    model: openai/gpt-4o
+    description: "Sub-agent reachable via transfer_task"
+    instruction: "Handle the delegated task."

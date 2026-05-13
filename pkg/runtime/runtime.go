@@ -24,6 +24,7 @@ import (
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sessiontitle"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
 	agenttool "github.com/docker/docker-agent/pkg/tools/builtin/agent"
@@ -213,9 +214,9 @@ type LocalRuntime struct {
 
 	// observers receive every event the runtime produces, in
 	// registration order. Built up via [WithEventObserver] during
-	// construction; read-only afterwards. Always contains at least one
-	// entry: the auto-registered [PersistenceObserver] for the
-	// configured session store. See [EventObserver] for the contract.
+	// construction; read-only afterwards. Persistence is handled
+	// separately by the [SessionRecorder] via [EventBus]; these
+	// observers are for additional sinks (telemetry, audit, etc.).
 	observers []EventObserver
 
 	// fallback owns the model-fallback chain (primary + configured
@@ -236,6 +237,12 @@ type LocalRuntime struct {
 	onToolsChanged func(Event)
 
 	bgAgents *agenttool.Handler
+
+	subagents      *subagent.Manager
+	subagentRunner subagent.Runner
+	eventBus       *EventBus
+	recorder       *SessionRecorder
+	liveSessions   *liveSessionRegistry
 
 	// now is the runtime's clock. Defaults to time.Now and can be replaced
 	// in tests via WithClock to make timestamps and cooldown windows
@@ -332,6 +339,16 @@ func WithModelStore(store ModelStore) Opt {
 func WithSessionStore(store session.Store) Opt {
 	return func(r *LocalRuntime) {
 		r.sessionStore = store
+	}
+}
+
+// WithSubagentRunner overrides the runner used by the runtime-managed
+// subagent manager. When unset, LocalRuntime uses itself via StartChildLoop.
+func WithSubagentRunner(runner subagent.Runner) Opt {
+	return func(r *LocalRuntime) {
+		if runner != nil {
+			r.subagentRunner = runner
+		}
 	}
 }
 
@@ -443,11 +460,11 @@ func WithHooksRegistry(reg *hooks.Registry) Opt {
 
 // New creates a runtime ready to drive an agent loop. It is a thin
 // alias for [NewLocalRuntime] returning the [Runtime] interface, kept
-// for source compatibility with callers written before persistence
-// became an [EventObserver]. Persistence is auto-registered against
-// the configured (or default in-memory) session store; pass
-// [WithSessionStore] to override and [WithEventObserver] to layer
-// additional observers (telemetry, audit, ...).
+// for source compatibility. Persistence is auto-wired via
+// [SessionRecorder] against the configured (or default in-memory)
+// session store; pass [WithSessionStore] to override and
+// [WithEventObserver] to layer additional observers (telemetry,
+// audit, ...).
 func New(agents *team.Team, opts ...Opt) (Runtime, error) {
 	return NewLocalRuntime(agents, opts...)
 }
@@ -475,6 +492,8 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 		now:                    time.Now,
 		telemetry:              defaultTelemetry{},
 		maxOverflowCompactions: defaultMaxOverflowCompactions,
+		eventBus:               NewEventBus(),
+		liveSessions:           newLiveSessionRegistry(),
 	}
 	r.bgAgents = agenttool.NewHandler(r)
 
@@ -523,6 +542,8 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 		return nil, fmt.Errorf("register %q builtin: %w", BuiltinCacheResponse, err)
 	}
 
+	r.initSubagentManager()
+
 	// Build the cooldown manager and wire the fallback executor's
 	// runtime-bound dependencies after opts so they pick up the final
 	// clock and telemetry sink ([WithClock] / [WithTelemetry]).
@@ -563,17 +584,35 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 	// the team are finalized. Read-only afterwards.
 	r.buildHooksExecutors()
 
-	// Auto-register the stock persistence observer against the
-	// (possibly user-supplied) session store. It runs first in the
-	// observer chain so any user-supplied observers see the same view
-	// of the session that future RunStream calls and store reads will.
-	if obs := newPersistenceObserver(r.sessionStore); obs != nil {
-		r.observers = append([]EventObserver{obs}, r.observers...)
+	// Wire the SessionRecorder as the exclusive persistence writer.
+	// It observes every session via the EventBus global observer hook, so
+	// there is exactly one writer per event stream. The legacy
+	// PersistenceObserver is no longer auto-registered; it is kept as a
+	// deprecated no-op for source compatibility with external callers.
+	if r.sessionStore != nil {
+		r.recorder = NewSessionRecorder(r.sessionStore)
+		r.eventBus.AddGlobalObserver(r.recorder.Handle)
 	}
 
 	slog.Debug("Creating new runtime", "agent", r.agents.Name(), "available_agents", agents.Size())
 
 	return r, nil
+}
+
+func (r *LocalRuntime) initSubagentManager() {
+	if r.subagentRunner == nil {
+		r.subagentRunner = r
+	}
+	r.subagents = subagent.NewManager(r.subagentRunner,
+		subagent.WithMaxDepth(subagent.DefaultMaxDepth),
+		subagent.WithMaxDescendants(subagent.DefaultMaxDescendants),
+	)
+	r.subagents.AddEnvelopePublishedListener(func(env subagent.Envelope) {
+		r.publishTreeChangeFromChild(env.SubAgentID, env.ParentSessionID)
+	})
+	r.subagents.AddChildRegisteredListener(func(h *subagent.Handle) {
+		r.publishTreeChangeFromChild(h.ID(), h.ParentSessionID())
+	})
 }
 
 func (r *LocalRuntime) CurrentAgentName() string {
@@ -918,6 +957,19 @@ func (r *LocalRuntime) SessionStore() session.Store {
 // Close releases resources held by the runtime, including the session store.
 func (r *LocalRuntime) Close() error {
 	r.bgAgents.StopAll()
+	if r.subagents != nil {
+		// Bound subagent shutdown so a hung child loop cannot block the
+		// runtime's Close path indefinitely. Lingering loops are logged.
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := r.subagents.StopAll(stopCtx); err != nil {
+			slog.WarnContext(stopCtx, "Failed to stop subagents during runtime close", "error", err)
+		}
+		cancel()
+		r.subagents.Shutdown()
+	}
+	if r.recorder != nil {
+		r.recorder.Close()
+	}
 	if r.sessionStore != nil {
 		return r.sessionStore.Close()
 	}

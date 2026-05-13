@@ -368,6 +368,93 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(d.String())
 }
 
+// SubagentSpec describes a single runtime-managed child agent that an agent
+// is allowed to start dynamically via the subagent_start tool. It is the
+// schema-v9 replacement for the legacy `sub_agents:` (transfer_task) flow,
+// and intentionally lives next to `sub_agents:` rather than replacing it,
+// so existing configs keep working unchanged.
+//
+// In YAML, a SubagentSpec accepts either:
+//
+//   - the string shorthand: an agent name reference (a name from the
+//     top-level `agents:` section), e.g.
+//
+//     subagents:
+//
+//   - researcher
+//
+//   - writer
+//
+//   - the full object form, when extra metadata is needed:
+//
+//     subagents:
+//
+//   - agent: researcher
+//     description: "web research helper"
+//
+// External / OCI references (e.g. `agentcatalog/pirate`) are represented
+// the same way as in `sub_agents:` — by putting the reference in the
+// `agent` field. Resolution is left to the runtime; this type only
+// captures the configured shape.
+type SubagentSpec struct {
+	// Agent identifies the child agent. It is either the name of an
+	// agent defined in the top-level `agents:` section of the same
+	// config, or an external reference (OCI image / URL / named
+	// external reference like `reviewer:agentcatalog/review-pr`).
+	Agent string `json:"agent" yaml:"agent"`
+	// Description is an optional hint shown to the parent model about
+	// when to start this subagent. When empty, the runtime falls back
+	// to the child agent's own description.
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+}
+
+// UnmarshalYAML accepts both the string shorthand (an agent name) and the
+// full {agent, description} object form.
+func (s *SubagentSpec) UnmarshalYAML(unmarshal func(any) error) error {
+	var str string
+	if err := unmarshal(&str); err == nil && str != "" {
+		s.Agent = str
+		s.Description = ""
+		return nil
+	}
+	type alias SubagentSpec
+	var tmp alias
+	if err := unmarshal(&tmp); err != nil {
+		return err
+	}
+	*s = SubagentSpec(tmp)
+	return nil
+}
+
+// MarshalYAML emits the string shorthand when only Agent is set, and the
+// full object form otherwise. This keeps round-trips compact for the most
+// common case while preserving the description field when present.
+func (s SubagentSpec) MarshalYAML() (any, error) {
+	if s.Description == "" {
+		return s.Agent, nil
+	}
+	return map[string]any{"agent": s.Agent, "description": s.Description}, nil
+}
+
+// UnmarshalJSON mirrors UnmarshalYAML so that JSON transport (e.g.
+// types.CloneThroughJSON during version upgrades and the HTTP API) accepts
+// both the string shorthand and the full object form.
+func (s *SubagentSpec) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil && str != "" {
+		s.Agent = str
+		s.Description = ""
+		return nil
+	}
+	type alias SubagentSpec
+	var tmp alias
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	*s = SubagentSpec(tmp)
+	return nil
+}
+
 // AgentConfig represents a single agent configuration
 type AgentConfig struct {
 	Name           string
@@ -378,7 +465,13 @@ type AgentConfig struct {
 	Toolsets       []Toolset       `json:"toolsets,omitempty"`
 	Instruction    string          `json:"instruction,omitempty"`
 	SubAgents      []string        `json:"sub_agents,omitempty"`
-	Handoffs       []string        `json:"handoffs,omitempty"`
+	// Subagents lists runtime-managed child agents that this agent can
+	// spin up dynamically via the subagent_start tool. It is independent
+	// from the legacy SubAgents (which auto-injects the transfer_task
+	// tool); both fields may co-exist on the same agent during the
+	// transition period — they target different multi-agent flows.
+	Subagents []SubagentSpec `json:"subagents,omitempty"`
+	Handoffs  []string       `json:"handoffs,omitempty"`
 
 	AddDate            bool `json:"add_date,omitempty"`
 	AddEnvironmentInfo bool `json:"add_environment_info,omitempty"`

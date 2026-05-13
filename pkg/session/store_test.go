@@ -1031,3 +1031,87 @@ func TestResolveSessionID_InMemory(t *testing.T) {
 		assert.Equal(t, "some-uuid", id)
 	})
 }
+
+func TestAddMessageAt_Idempotent_InMemory(t *testing.T) {
+	store := NewInMemorySessionStore()
+	session := &Session{ID: "positional-in-memory", CreatedAt: time.Now()}
+	require.NoError(t, store.UpdateSession(t.Context(), session))
+
+	posStore, ok := store.(*InMemorySessionStore)
+	require.True(t, ok)
+
+	id1, err := posStore.AddMessageAt(t.Context(), session.ID, 0, UserMessage("hello"))
+	require.NoError(t, err)
+	require.NotZero(t, id1)
+
+	id2, err := posStore.AddMessageAt(t.Context(), session.ID, 0, UserMessage("hello again"))
+	require.NoError(t, err)
+	assert.Zero(t, id2, "duplicate insert at same position should be ignored")
+
+	got, err := store.GetSession(t.Context(), session.ID)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 1)
+	assert.Equal(t, "hello", got.Messages[0].Message.Message.Content)
+}
+
+func TestAddMessageAt_Idempotent_SQLite(t *testing.T) {
+	store := openMemoryStore(t)
+	session := &Session{ID: "positional-sqlite", CreatedAt: time.Now()}
+	require.NoError(t, store.UpdateSession(t.Context(), session))
+
+	id1, err := store.AddMessageAt(t.Context(), session.ID, 0, UserMessage("hello"))
+	require.NoError(t, err)
+	require.NotZero(t, id1)
+
+	id2, err := store.AddMessageAt(t.Context(), session.ID, 0, UserMessage("hello again"))
+	require.NoError(t, err)
+	assert.Zero(t, id2, "duplicate insert at same position should be ignored by INSERT OR IGNORE")
+
+	got, err := store.GetSession(t.Context(), session.ID)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 1)
+	assert.Equal(t, "hello", got.Messages[0].Message.Message.Content)
+}
+
+func TestGetChildSessions_InMemory(t *testing.T) {
+	store := NewInMemorySessionStore()
+	parent := &Session{ID: "parent", CreatedAt: time.Now()}
+	require.NoError(t, store.UpdateSession(t.Context(), parent))
+
+	child1 := &Session{ID: "child-1", ParentID: parent.ID, CreatedAt: time.Now().Add(1 * time.Second)}
+	child2 := &Session{ID: "child-2", ParentID: parent.ID, CreatedAt: time.Now().Add(2 * time.Second)}
+	other := &Session{ID: "other", ParentID: "someone-else", CreatedAt: time.Now().Add(3 * time.Second)}
+	require.NoError(t, store.UpdateSession(t.Context(), child1))
+	require.NoError(t, store.UpdateSession(t.Context(), child2))
+	require.NoError(t, store.UpdateSession(t.Context(), other))
+
+	childStore, ok := store.(ChildSessionStore)
+	require.True(t, ok)
+
+	children, err := childStore.GetChildSessions(t.Context(), parent.ID)
+	require.NoError(t, err)
+	require.Len(t, children, 2)
+	assert.Equal(t, "child-1", children[0].ID)
+	assert.Equal(t, "child-2", children[1].ID)
+}
+
+func TestGetChildSessions_SQLite(t *testing.T) {
+	store := openMemoryStore(t)
+	parent := &Session{ID: "parent", CreatedAt: time.Now()}
+	require.NoError(t, store.UpdateSession(t.Context(), parent))
+
+	child1 := &Session{ID: "child-1", ParentID: parent.ID, CreatedAt: time.Now().Add(1 * time.Second)}
+	child2 := &Session{ID: "child-2", ParentID: parent.ID, CreatedAt: time.Now().Add(2 * time.Second)}
+	other := &Session{ID: "other", ParentID: "someone-else", CreatedAt: time.Now().Add(3 * time.Second)}
+	require.NoError(t, store.UpdateSession(t.Context(), child1))
+	require.NoError(t, store.UpdateSession(t.Context(), child2))
+	require.NoError(t, store.UpdateSession(t.Context(), other))
+
+	children, err := store.GetChildSessions(t.Context(), parent.ID)
+	require.NoError(t, err)
+	require.Len(t, children, 2)
+	assert.Equal(t, "child-1", children[0].ID)
+	assert.Equal(t, "child-2", children[1].ID)
+	assert.Equal(t, parent.ID, children[0].ParentID)
+	assert.Equal(t, parent.ID, children[1].ParentID)
+}

@@ -86,6 +86,17 @@ func (s *Server) registerRoutes() {
 	group.POST("/sessions/batch/delete", s.batchDeleteSessions)
 	group.POST("/sessions/batch/export", s.batchExportSessions)
 
+	group.GET("/sessions/:id/tree", s.getLiveSessionTree)
+	group.GET("/live-sessions/:id", s.getLiveSession)
+	group.GET("/live-sessions/:id/snapshot", s.getLiveSessionSnapshot)
+	group.GET("/live-sessions/:id/attach", s.attachLiveSession)
+	group.POST("/live-sessions/:id/steer", s.steerLiveSession)
+	group.POST("/live-sessions/:id/followup", s.followUpLiveSession)
+	group.POST("/live-sessions/:id/close", s.closeLiveSession)
+	group.POST("/live-sessions/:id/interrupt", s.interruptLiveSession)
+	group.POST("/live-sessions/:id/stop", s.stopLiveSession)
+
+	// Agent tool count
 	group.GET("/agents/:id/:agent_name/tools/count", s.getAgentToolCount)
 
 	group.GET("/ping", func(c echo.Context) error {

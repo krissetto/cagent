@@ -199,6 +199,15 @@ type PermissionsConfig struct {
 	Deny []string `json:"deny,omitempty"`
 }
 
+// MessageKind classifies special message subtypes while preserving the
+// historic zero-value behavior for ordinary messages.
+type MessageKind int
+
+const (
+	MessageKindMessage MessageKind = iota
+	MessageKindSubagentEnvelope
+)
+
 // Message is a message from an agent
 type Message struct {
 	// ID is the database ID of the message (used for persistence tracking)
@@ -209,12 +218,23 @@ type Message struct {
 	// like when an agent transfers a task to another agent - new session is created with a default user message, but this shouldn't be shown to the user.
 	// Such messages should be marked as true
 	Implicit bool `json:"implicit,omitempty"`
+	// Kind classifies additive message subtypes. The zero value preserves the
+	// previous behavior for ordinary messages.
+	Kind MessageKind `json:"kind,omitempty"`
 }
 
 func ImplicitUserMessage(content string) *Message {
 	msg := UserMessage(content)
 	msg.Implicit = true
 	return msg
+}
+
+// SubagentEnvelopeMessage creates an implicit user message tagged as a
+// subagent envelope. Use this instead of manually stamping Implicit and Kind.
+func SubagentEnvelopeMessage(content string) *Message {
+	m := ImplicitUserMessage(content)
+	m.Kind = MessageKindSubagentEnvelope
+	return m
 }
 
 func UserMessage(content string, multiContent ...chat.MessagePart) *Message {
@@ -394,6 +414,15 @@ func cloneChatMessage(m chat.Message) chat.Message {
 
 // Session helper methods
 
+// GetTitle returns the session's title under the read lock so concurrent
+// background updates (e.g. subagent title generation) cannot race with
+// readers like the TUI sidebar.
+func (s *Session) GetTitle() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Title
+}
+
 // AddMessage adds a message to the session
 func (s *Session) AddMessage(msg *Message) {
 	s.mu.Lock()
@@ -429,6 +458,17 @@ func (s *Session) ApplyCompaction(inputTokens, outputTokens int64, item Item) {
 	s.OutputTokens = outputTokens
 	s.Messages = append(s.Messages, item)
 	s.mu.Unlock()
+}
+
+// AppendMessage appends msg to the session and returns its 0-based index in
+// Messages. It is equivalent to AddMessage but also returns the position so
+// callers (e.g. the recorder) can supply it to positional store writes.
+// The existing AddMessage signature is unchanged; this is a separate helper.
+func (s *Session) AppendMessage(msg *Message) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Messages = append(s.Messages, NewMessageItem(msg))
+	return len(s.Messages) - 1
 }
 
 // AddSubSession adds a sub-session to the session

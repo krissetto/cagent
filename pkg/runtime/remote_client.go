@@ -107,4 +107,34 @@ type RemoteClient interface {
 	SetSessionStarred(ctx context.Context, sessionID string, starred bool) error
 }
 
+// LiveSessionClient is an optional extension implemented by remote clients that
+// support the PR5 live-session endpoints (tree, snapshot, attach, control).
+//
+// This is intentionally separate from RemoteClient so legacy or alternate
+// remote-client implementations are not broken when they do not implement the
+// live-session surface. RemoteRuntime type-asserts r.client to this interface
+// and degrades gracefully when the assertion fails.
+type LiveSessionClient interface {
+	// GetLiveSessionTree returns the nested node tree rooted at rootSessionID.
+	GetLiveSessionTree(ctx context.Context, rootSessionID string) (api.LiveSessionTreeResponse, error)
+	// GetLiveSession returns metadata for a single live session node.
+	GetLiveSession(ctx context.Context, sessionID string) (api.LiveSessionResponse, error)
+	// GetLiveSessionSnapshot returns the full event history for a live session.
+	GetLiveSessionSnapshot(ctx context.Context, sessionID string) (api.LiveSessionSnapshotResponse, error)
+	// AttachLiveSession opens an SSE event stream and returns (events, cancel, err).
+	AttachLiveSession(ctx context.Context, sessionID string) (<-chan Event, func(), error)
+	// SteerLiveSession injects a message into a live session mid-turn.
+	SteerLiveSession(ctx context.Context, sessionID, content string) error
+	// FollowUpLiveSession queues a follow-up message for a live session.
+	FollowUpLiveSession(ctx context.Context, sessionID, content string) error
+	// CloseLiveSession asks a live session to close cleanly.
+	CloseLiveSession(ctx context.Context, sessionID string) error
+	// InterruptLiveSession cancels the current turn without stopping the session.
+	InterruptLiveSession(ctx context.Context, sessionID string) error
+	// StopLiveSession forcibly stops a live session.
+	StopLiveSession(ctx context.Context, sessionID string) error
+}
+
 var _ RemoteClient = (*Client)(nil)
+
+var _ LiveSessionClient = (*Client)(nil)

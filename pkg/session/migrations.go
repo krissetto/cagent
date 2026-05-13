@@ -400,6 +400,29 @@ func getAllMigrations() []Migration {
 			Description: "Add first_kept_entry column to session_items for compaction-preserved messages",
 			UpSQL:       `ALTER TABLE session_items ADD COLUMN first_kept_entry INTEGER DEFAULT 0`,
 		},
+		{
+			ID:          22,
+			Name:        "022_session_items_unique_position",
+			Description: "Add unique index on session_items(session_id, position) for idempotent positional inserts via INSERT OR IGNORE",
+			UpSQL: `
+				-- Remove any duplicate (session_id, position) pairs that may have
+				-- accumulated before this constraint; keep the row with the smallest id
+				-- per unique pair to avoid constraint violations when the index is added.
+				DELETE FROM session_items
+				WHERE id NOT IN (
+					SELECT MIN(id) FROM session_items GROUP BY session_id, position
+				);
+				CREATE UNIQUE INDEX IF NOT EXISTS idx_session_items_unique_position
+					ON session_items(session_id, position);
+			`,
+		},
+		{
+			ID:          23,
+			Name:        "023_add_agent_name_column",
+			Description: "Add agent_name column to sessions table for persisting the pinned agent on child sessions",
+			UpSQL:       `ALTER TABLE sessions ADD COLUMN agent_name TEXT DEFAULT ''`,
+			DownSQL:     `ALTER TABLE sessions DROP COLUMN agent_name`,
+		},
 	}
 }
 

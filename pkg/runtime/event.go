@@ -8,6 +8,7 @@ import (
 	"github.com/docker/docker-agent/pkg/config/types"
 	"github.com/docker/docker-agent/pkg/hooks"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
@@ -40,11 +41,24 @@ func newAgentContext(agentName string) AgentContext {
 type UserMessageEvent struct {
 	AgentContext
 
-	Type            string             `json:"type"`
-	Message         string             `json:"message"`
-	MultiContent    []chat.MessagePart `json:"multi_content,omitempty"`
-	SessionID       string             `json:"session_id"`
-	SessionPosition int                `json:"session_position"` // Index in session.Messages, -1 if unknown
+	Type            string              `json:"type"`
+	Message         string              `json:"message"`
+	MultiContent    []chat.MessagePart  `json:"multi_content,omitempty"`
+	SessionID       string              `json:"session_id"`
+	SessionPosition int                 `json:"session_position"` // Index in session.Messages, -1 if unknown
+	Kind            session.MessageKind `json:"kind,omitempty"`
+}
+
+// TypedUserMessage is a UserMessage variant that also stamps the resulting
+// event with the supplied [session.MessageKind]. Used by callers (e.g. the
+// subagent envelope path) that want the kind preserved through the event
+// bus without mutating the returned value at the callsite.
+func TypedUserMessage(kind session.MessageKind, message, sessionID string, multiContent []chat.MessagePart, sessionPos ...int) Event {
+	ev := UserMessage(message, sessionID, multiContent, sessionPos...)
+	if u, ok := ev.(*UserMessageEvent); ok {
+		u.Kind = kind
+	}
+	return ev
 }
 
 func UserMessage(message, sessionID string, multiContent []chat.MessagePart, sessionPos ...int) Event {
@@ -727,19 +741,29 @@ func HookBlocked(toolCall tools.ToolCall, toolDefinition tools.Tool, message, ag
 type MessageAddedEvent struct {
 	AgentContext
 
-	Type      string           `json:"type"`
-	SessionID string           `json:"session_id"`
-	Message   *session.Message `json:"-"`
+	Type            string           `json:"type"`
+	SessionID       string           `json:"session_id"`
+	SessionPosition int              `json:"session_position"` // Index in session.Messages, -1 if unknown
+	Message         *session.Message `json:"-"`
 }
 
 func (e *MessageAddedEvent) GetSessionID() string { return e.SessionID }
 
-func MessageAdded(sessionID string, msg *session.Message, agentName string) Event {
+// MessageAdded creates a MessageAddedEvent. The optional sessionPos argument
+// records the index of the message in session.Messages; when omitted the
+// position is recorded as -1 (unknown). The 3-arg signature is preserved for
+// source compatibility with PR1 callers.
+func MessageAdded(sessionID string, msg *session.Message, agentName string, sessionPos ...int) Event {
+	pos := -1
+	if len(sessionPos) > 0 {
+		pos = sessionPos[0]
+	}
 	return &MessageAddedEvent{
-		Type:         "message_added",
-		SessionID:    sessionID,
-		Message:      msg,
-		AgentContext: newAgentContext(agentName),
+		Type:            "message_added",
+		SessionID:       sessionID,
+		SessionPosition: pos,
+		Message:         msg,
+		AgentContext:    newAgentContext(agentName),
 	}
 }
 
@@ -793,5 +817,163 @@ func ConnectionRestored(attempt int) Event {
 		Type:         "connection_restored",
 		Attempt:      attempt,
 		AgentContext: newAgentContext(""),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Subagent lifecycle events
+// ---------------------------------------------------------------------------
+
+// SubAgentStartedEvent is emitted when a runtime-managed subagent session is created.
+type SubAgentStartedEvent struct {
+	AgentContext
+
+	Type      string                  `json:"type"`
+	SessionID string                  `json:"session_id"`
+	SubAgent  subagent.HandleSnapshot `json:"subagent"`
+}
+
+func (e *SubAgentStartedEvent) GetSessionID() string { return e.SessionID }
+
+func SubAgentStarted(s subagent.HandleSnapshot, sessionID string) Event {
+	return &SubAgentStartedEvent{
+		Type:         "subagent_started",
+		SessionID:    sessionID,
+		SubAgent:     s,
+		AgentContext: newAgentContext(s.AgentName),
+	}
+}
+
+// SubAgentSentEvent is emitted when the parent sends a follow-up message to a subagent.
+type SubAgentSentEvent struct {
+	AgentContext
+
+	Type       string `json:"type"`
+	SessionID  string `json:"session_id"`
+	SubAgentID string `json:"subagent_id"`
+	Message    string `json:"message"`
+}
+
+func (e *SubAgentSentEvent) GetSessionID() string { return e.SessionID }
+
+func SubAgentSent(subAgentID, message, sessionID string) Event {
+	return &SubAgentSentEvent{
+		Type:       "subagent_sent",
+		SessionID:  sessionID,
+		SubAgentID: subAgentID,
+		Message:    message,
+	}
+}
+
+// SubAgentUpdateEvent is emitted when a runtime-managed subagent delivers an
+// update envelope to its parent.
+type SubAgentUpdateEvent struct {
+	AgentContext
+
+	Type      string            `json:"type"`
+	SessionID string            `json:"session_id"`
+	Envelope  subagent.Envelope `json:"envelope"`
+}
+
+func (e *SubAgentUpdateEvent) GetSessionID() string { return e.SessionID }
+
+func SubAgentUpdate(env subagent.Envelope, sessionID string) Event {
+	return &SubAgentUpdateEvent{
+		Type:         "subagent_update",
+		SessionID:    sessionID,
+		Envelope:     env,
+		AgentContext: newAgentContext(env.AgentName),
+	}
+}
+
+// ParentIdleEvent is emitted when a parent session has finished its own turn
+// and is now only waiting for subagent inbox traffic.
+type ParentIdleEvent struct {
+	AgentContext
+
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+func (e *ParentIdleEvent) GetSessionID() string { return e.SessionID }
+
+func ParentIdle(sessionID, agentName string) Event {
+	return &ParentIdleEvent{
+		Type:         "parent_idle",
+		SessionID:    sessionID,
+		AgentContext: newAgentContext(agentName),
+	}
+}
+
+// ParentResumeEvent is emitted when a parent session leaves the subagent-idle
+// state because it is about to process new child envelopes.
+type ParentResumeEvent struct {
+	AgentContext
+
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+func (e *ParentResumeEvent) GetSessionID() string { return e.SessionID }
+
+func ParentResume(sessionID, agentName string) Event {
+	return &ParentResumeEvent{
+		Type:         "parent_resume",
+		SessionID:    sessionID,
+		AgentContext: newAgentContext(agentName),
+	}
+}
+
+// LiveSessionTreeChangedEvent is emitted when the subagent tree structure changes.
+type LiveSessionTreeChangedEvent struct {
+	AgentContext
+
+	Type      string `json:"type"`
+	SessionID string `json:"session_id"`
+}
+
+func (e *LiveSessionTreeChangedEvent) GetSessionID() string { return e.SessionID }
+
+func LiveSessionTreeChanged(sessionID, agentName string) Event {
+	return &LiveSessionTreeChangedEvent{
+		Type:         "live_session_tree_changed",
+		SessionID:    sessionID,
+		AgentContext: newAgentContext(agentName),
+	}
+}
+
+// TurnStartedEvent is emitted at the start of every model turn in the engine.
+type TurnStartedEvent struct {
+	AgentContext
+
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+func (e *TurnStartedEvent) GetSessionID() string { return e.SessionID }
+
+func TurnStarted(sessionID, agentName string) Event {
+	return &TurnStartedEvent{
+		Type:         "turn_started",
+		SessionID:    sessionID,
+		AgentContext: newAgentContext(agentName),
+	}
+}
+
+// TurnEndedEvent is emitted when a single model turn completes.
+type TurnEndedEvent struct {
+	AgentContext
+
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+func (e *TurnEndedEvent) GetSessionID() string { return e.SessionID }
+
+func TurnEnded(sessionID, agentName string) Event {
+	return &TurnEndedEvent{
+		Type:         "turn_ended",
+		SessionID:    sessionID,
+		AgentContext: newAgentContext(agentName),
 	}
 }

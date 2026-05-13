@@ -695,6 +695,95 @@ func (r *RemoteRuntime) SetSessionStarred(ctx context.Context, starred bool) err
 	return r.client.SetSessionStarred(ctx, r.sessionID, starred)
 }
 
+// liveSessionClient returns the optional live-session client surface when the
+// underlying remote client implements it.
+func (r *RemoteRuntime) liveSessionClient() (LiveSessionClient, bool) {
+	c, ok := r.client.(LiveSessionClient)
+	return c, ok
+}
+
+// GetLiveSessionTree proxies the PR5 live-session tree call through the remote
+// client when supported. Older servers/clients degrade with a clear error.
+func (r *RemoteRuntime) GetLiveSessionTree(ctx context.Context, sessionID string) (api.LiveSessionTreeResponse, error) {
+	c, ok := r.liveSessionClient()
+	if !ok {
+		return api.LiveSessionTreeResponse{}, errors.New("live session tree not supported by remote client")
+	}
+	return c.GetLiveSessionTree(ctx, sessionID)
+}
+
+// GetLiveSession proxies the single-node live-session metadata lookup.
+func (r *RemoteRuntime) GetLiveSession(ctx context.Context, sessionID string) (api.LiveSessionResponse, error) {
+	c, ok := r.liveSessionClient()
+	if !ok {
+		return api.LiveSessionResponse{}, errors.New("live session lookup not supported by remote client")
+	}
+	return c.GetLiveSession(ctx, sessionID)
+}
+
+// GetLiveSessionSnapshot proxies the live-session snapshot lookup.
+func (r *RemoteRuntime) GetLiveSessionSnapshot(ctx context.Context, sessionID string) (api.LiveSessionSnapshotResponse, error) {
+	c, ok := r.liveSessionClient()
+	if !ok {
+		return api.LiveSessionSnapshotResponse{}, errors.New("live session snapshot not supported by remote client")
+	}
+	return c.GetLiveSessionSnapshot(ctx, sessionID)
+}
+
+// AttachLiveSession proxies the PR5 live-session SSE attach endpoint.
+func (r *RemoteRuntime) AttachLiveSession(ctx context.Context, sessionID string) (<-chan Event, func(), error) {
+	c, ok := r.liveSessionClient()
+	if !ok {
+		return nil, nil, errors.New("live session attach not supported by remote client")
+	}
+	return c.AttachLiveSession(ctx, sessionID)
+}
+
+// SteerLiveSession injects a single message into an arbitrary live session.
+func (r *RemoteRuntime) SteerLiveSession(ctx context.Context, sessionID, content string) error {
+	c, ok := r.liveSessionClient()
+	if !ok {
+		return errors.New("live session steering not supported by remote client")
+	}
+	return c.SteerLiveSession(ctx, sessionID, content)
+}
+
+// FollowUpLiveSession queues a single follow-up message for an arbitrary live session.
+func (r *RemoteRuntime) FollowUpLiveSession(ctx context.Context, sessionID, content string) error {
+	c, ok := r.liveSessionClient()
+	if !ok {
+		return errors.New("live session follow-up not supported by remote client")
+	}
+	return c.FollowUpLiveSession(ctx, sessionID, content)
+}
+
+// CloseLiveSession requests a clean close for an arbitrary live session.
+func (r *RemoteRuntime) CloseLiveSession(ctx context.Context, sessionID string) error {
+	c, ok := r.liveSessionClient()
+	if !ok {
+		return errors.New("live session close not supported by remote client")
+	}
+	return c.CloseLiveSession(ctx, sessionID)
+}
+
+// InterruptLiveSession cancels the current turn of an arbitrary live session.
+func (r *RemoteRuntime) InterruptLiveSession(ctx context.Context, sessionID string) error {
+	c, ok := r.liveSessionClient()
+	if !ok {
+		return errors.New("live session interrupt not supported by remote client")
+	}
+	return c.InterruptLiveSession(ctx, sessionID)
+}
+
+// StopLiveSession forcibly stops an arbitrary live session.
+func (r *RemoteRuntime) StopLiveSession(ctx context.Context, sessionID string) error {
+	c, ok := r.liveSessionClient()
+	if !ok {
+		return errors.New("live session stop not supported by remote client")
+	}
+	return c.StopLiveSession(ctx, sessionID)
+}
+
 var _ Runtime = (*RemoteRuntime)(nil)
 
 // RemoteSessionStore wraps a RemoteClient to implement the session.Store interface.

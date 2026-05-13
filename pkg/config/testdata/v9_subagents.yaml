@@ -1,0 +1,18 @@
+version: "9"
+agents:
+  root:
+    model: openai/gpt-4o
+    description: "Coordinator that delegates to runtime-managed subagents"
+    instruction: "Plan the work and delegate specialist tasks to your subagents."
+    subagents:
+      - researcher
+      - agent: writer
+        description: "Drafts the final document from research notes"
+  researcher:
+    model: openai/gpt-4o
+    description: "Web research helper"
+    instruction: "Research the topic and report findings."
+  writer:
+    model: openai/gpt-4o
+    description: "Long-form writer"
+    instruction: "Write polished prose from the supplied notes."

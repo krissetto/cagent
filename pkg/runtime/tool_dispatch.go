@@ -29,7 +29,7 @@ import (
 // (false, "") in every other path — including user cancellation, which
 // halts the *batch* but keeps the loop alive so the synthesised tool
 // error responses can be sent back to the model on the next turn.
-func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Session, calls []tools.ToolCall, agentTools []tools.Tool, events EventSink) (stopRun bool, stopMessage string) {
+func (r *LocalRuntime) processToolCalls(ctx context.Context, state *sessionState, sess *session.Session, calls []tools.ToolCall, agentTools []tools.Tool, events EventSink) (stopRun bool, stopMessage string) {
 	// Bind runtime-managed handlers (transfer_task, handoff, change_model, ...)
 	// to the current events channel: r.toolMap entries take chan Event,
 	// toolexec.ToolHandler doesn't.
@@ -43,7 +43,7 @@ func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Sessi
 	d := &toolexec.Dispatcher{
 		Tracer:      r.tracer,
 		Hooks:       &hookDispatcher{r: r, events: events},
-		Resume:      r.resumeChan,
+		Resume:      state.resumeChan,
 		AgentFor:    r.resolveSessionAgent,
 		Permissions: r.permissionCheckers,
 		Handlers:    handlers,
