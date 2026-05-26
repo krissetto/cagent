@@ -1,13 +1,13 @@
 package runtime
 
 import (
-	"context"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/session"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestPublicEventObserverPersistsPublicEventsAndSkipsMessageAdded(t *testing.T) {
@@ -41,7 +41,7 @@ func TestPublicEventObserverUsesScopedSessionIDAndRoot(t *testing.T) {
 	obs := newPublicEventObserver(store)
 	obs.OnEvent(t.Context(), root, AgentChoice("agent", child.ID, "hello"))
 
-	events, err := ReplayPublicRuntimeEvents(context.Background(), store, session.PublicRuntimeEventQuery{RootID: "root"})
+	events, err := ReplayPublicRuntimeEvents(t.Context(), store, session.PublicRuntimeEventQuery{RootID: "root"})
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	assert.Equal(t, "child", events[0].SessionID)

@@ -1,7 +1,6 @@
 package session
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 
@@ -43,7 +42,7 @@ func TestPublicRuntimeEventsSQLitePersistence(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	assert.Equal(t, appended.EventID, events[0].EventID)
-	assert.Equal(t, `{"type":"stream_started"}`, events[0].PayloadJSON)
+	assert.JSONEq(t, `{"type":"stream_started"}`, events[0].PayloadJSON)
 }
 
 func TestMigration023CreatesPublicRuntimeEventsTableAndIndexes(t *testing.T) {
@@ -66,7 +65,7 @@ func TestMigration023CreatesPublicRuntimeEventsTableAndIndexes(t *testing.T) {
 
 func exercisePublicRuntimeEventStore(t *testing.T, publicStore PublicRuntimeEventStore) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	if store, ok := publicStore.(Store); ok {
 		require.NoError(t, store.AddSession(ctx, New(WithID("root"))))
 		require.NoError(t, store.AddSubSession(ctx, "root", New(WithID("child"))))

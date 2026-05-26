@@ -1195,11 +1195,7 @@ func (s *SQLiteSessionStore) ReplayPublicRuntimeEvents(ctx context.Context, quer
 		limit = " LIMIT ?"
 		args = append(args, query.Limit)
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_id, session_id, root_id, scope, type, payload_json, created_at
-		FROM public_runtime_events
-		WHERE `+strings.Join(where, " AND ")+`
-		ORDER BY event_id ASC`+limit, args...)
+	rows, err := s.db.QueryContext(ctx, publicRuntimeEventsReplayQuery(where, limit), args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying public runtime events: %w", err)
 	}
@@ -1221,6 +1217,14 @@ func (s *SQLiteSessionStore) ReplayPublicRuntimeEvents(ctx context.Context, quer
 		return nil, fmt.Errorf("iterating public runtime events: %w", err)
 	}
 	return events, nil
+}
+
+func publicRuntimeEventsReplayQuery(where []string, limit string) string {
+	return `
+		SELECT event_id, session_id, root_id, scope, type, payload_json, created_at
+		FROM public_runtime_events
+		WHERE ` + strings.Join(where, " AND ") + `
+		ORDER BY event_id ASC` + limit
 }
 
 // AddMessage adds a message to a session at the next position.

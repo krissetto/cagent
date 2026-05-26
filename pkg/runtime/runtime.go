@@ -249,6 +249,8 @@ type LocalRuntime struct {
 
 	bgAgents *agenttool.Handler
 
+	managedSubagents *managedSubagentManager
+
 	// now is the runtime's clock. Defaults to time.Now and can be replaced
 	// in tests via WithClock to make timestamps and cooldown windows
 	// deterministic. Every time-dependent call inside the runtime (message
@@ -489,6 +491,7 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 		maxOverflowCompactions: defaultMaxOverflowCompactions,
 	}
 	r.bgAgents = agenttool.NewHandler(r)
+	r.managedSubagents = newManagedSubagentManager(r)
 
 	// stripUnsupportedModalitiesTransform captures the runtime closure to
 	// resolve the agent from Input.AgentName, so it lives here rather
@@ -946,6 +949,9 @@ func (r *LocalRuntime) SessionStore() session.Store {
 // when their process is shutting down.
 func (r *LocalRuntime) Close() error {
 	r.bgAgents.StopAll()
+	if r.managedSubagents != nil {
+		r.managedSubagents.stopAll()
+	}
 	return nil
 }
 

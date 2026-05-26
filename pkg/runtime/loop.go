@@ -39,6 +39,10 @@ func (r *LocalRuntime) registerDefaultTools() {
 	r.toolMap[modelpicker.ToolNameRevertModel] = r.handleRevertModel
 	r.toolMap[skills.ToolNameRunSkill] = r.handleRunSkill
 
+	if r.managedSubagents != nil {
+		r.managedSubagents.registerDefaultTools()
+	}
+
 	r.bgAgents.RegisterHandlers(func(name string, fn func(context.Context, *session.Session, tools.ToolCall) (*tools.ToolCallResult, error)) {
 		r.toolMap[name] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, _ EventSink) (*tools.ToolCallResult, error) {
 			return fn(ctx, sess, tc)
@@ -72,8 +76,30 @@ func (r *LocalRuntime) appendSteerAndEmit(sess *session.Session, sm QueuedMessag
 //
 // Returns (true, messageCountBefore) if any messages were drained and emitted;
 // (false, 0) otherwise.
+func (r *LocalRuntime) activeSteerQueue(ctx context.Context) MessageQueue {
+	if q, ok := ctx.Value(managedQueuesContextKey{}).(*managedSubagentQueue); ok && q != nil {
+		return q.steer
+	}
+	return r.steerQueue
+}
+
+func (r *LocalRuntime) activeFollowUpQueue(ctx context.Context) MessageQueue {
+	if q, ok := ctx.Value(managedQueuesContextKey{}).(*managedSubagentQueue); ok && q != nil {
+		return q.followUp
+	}
+	return r.followUpQueue
+}
+
 func (r *LocalRuntime) drainAndEmitSteered(ctx context.Context, sess *session.Session, events EventSink) (bool, int) {
-	steered := r.steerQueue.Drain(ctx)
+	return r.drainAndEmitSteeredFromQueue(ctx, sess, events, r.activeSteerQueue(ctx))
+}
+
+func (r *LocalRuntime) popFollowUp(ctx context.Context) (QueuedMessage, bool) {
+	return r.activeFollowUpQueue(ctx).Dequeue(ctx)
+}
+
+func (r *LocalRuntime) drainAndEmitSteeredFromQueue(ctx context.Context, sess *session.Session, events EventSink, queue MessageQueue) (bool, int) {
+	steered := queue.Drain(ctx)
 	if len(steered) == 0 {
 		return false, 0
 	}
@@ -670,7 +696,7 @@ func (r *LocalRuntime) runTurn(
 		// a new turn — the model sees them as fresh input, not a
 		// mid-stream interruption. Each follow-up gets a full
 		// undivided agent turn.
-		if followUp, ok := r.followUpQueue.Dequeue(ctx); ok {
+		if followUp, ok := r.popFollowUp(ctx); ok {
 			userMsg := session.UserMessage(followUp.Content, followUp.MultiContent...)
 			sess.AddMessage(userMsg)
 			events.Emit(UserMessage(followUp.Content, sess.ID, followUp.MultiContent, len(sess.Messages)-1))

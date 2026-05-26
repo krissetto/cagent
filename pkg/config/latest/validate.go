@@ -274,7 +274,7 @@ func (t *Toolset) validate() error {
 		if t.Ref == "" && t.RAGConfig == nil {
 			return errors.New("rag toolset requires either ref or rag_config")
 		}
-	case "background_agents":
+	case "background_agents", "runtime_subagents":
 		// no additional validation needed
 	}
 

@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin/openapi"
 	builtinrag "github.com/docker/docker-agent/pkg/tools/builtin/rag"
 	"github.com/docker/docker-agent/pkg/tools/builtin/shell"
+	builtinSubagent "github.com/docker/docker-agent/pkg/tools/builtin/subagent"
 	"github.com/docker/docker-agent/pkg/tools/builtin/tasks"
 	"github.com/docker/docker-agent/pkg/tools/builtin/think"
 	"github.com/docker/docker-agent/pkg/tools/builtin/todo"
@@ -89,6 +90,9 @@ func NewDefaultToolsetRegistry() ToolsetRegistry {
 			},
 			"background_agents": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
 				return agenttool.CreateToolSet()
+			},
+			"runtime_subagents": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
+				return builtinSubagent.CreateToolSet()
 			},
 			"rag": func(ctx context.Context, toolset latest.Toolset, parentDir string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
 				return builtinrag.CreateToolSet(ctx, toolset, parentDir, runConfig)
