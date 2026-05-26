@@ -802,6 +802,18 @@ func (s *RemoteSessionStore) AddSubSession(context.Context, string, *session.Ses
 	return fmt.Errorf("add sub session: %w", ErrUnsupported)
 }
 
+func (s *RemoteSessionStore) GetChildSessions(context.Context, string) ([]*session.Session, error) {
+	return nil, fmt.Errorf("get child sessions: %w", ErrUnsupported)
+}
+
+func (s *RemoteSessionStore) GetSessionTree(context.Context, string) ([]*session.Session, error) {
+	return nil, fmt.Errorf("get session tree: %w", ErrUnsupported)
+}
+
+func (s *RemoteSessionStore) ResolveRootID(context.Context, string) (string, error) {
+	return "", fmt.Errorf("resolve root session: %w", ErrUnsupported)
+}
+
 func (s *RemoteSessionStore) AddSummary(context.Context, string, string, int) error {
 	return fmt.Errorf("add summary: %w", ErrUnsupported)
 }

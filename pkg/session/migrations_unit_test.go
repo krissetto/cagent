@@ -169,3 +169,64 @@ func TestMigrationManager_EmptyMigrations_NoOp(t *testing.T) {
 	require.NoError(t, mgr.RunPendingMigrations(t.Context()))
 	require.NoError(t, mgr.checkForUnknownMigrations(t.Context()))
 }
+
+func TestMigration022BackfillsRuntimeSessionTopology(t *testing.T) {
+	db := openMigrationsDB(t)
+	ctx := t.Context()
+	migrations := getAllMigrations()
+	require.Len(t, migrations, 22)
+
+	// Bootstrap the original sessions table, then apply migrations 001-021.
+	_, err := db.ExecContext(ctx, `
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			messages TEXT,
+			created_at TEXT
+		)
+	`)
+	require.NoError(t, err)
+	require.NoError(t, NewMigrationManagerWithMigrations(db, migrations[:21]).RunPendingMigrations(ctx))
+
+	createdAt := "2026-01-02T03:04:05Z"
+	insertSession := func(id, parentID string) {
+		t.Helper()
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO sessions (
+				id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message,
+				max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides,
+				custom_models_used, thinking, parent_id
+			) VALUES (?, 0, 0, 0, '', 0, 1, 0, '', ?, 0, '', '{}', '[]', 1, NULLIF(?, ''))`,
+			id, createdAt, parentID)
+		require.NoError(t, err)
+	}
+	insertSession("root", "")
+	insertSession("child", "root")
+	insertSession("grandchild", "child")
+
+	require.NoError(t, NewMigrationManagerWithMigrations(db, migrations).RunPendingMigrations(ctx))
+
+	rows, err := db.QueryContext(ctx, `SELECT id, root_id, runtime_managed FROM sessions ORDER BY id`)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	got := map[string]struct {
+		rootID         string
+		runtimeManaged bool
+	}{}
+	for rows.Next() {
+		var id string
+		var values struct {
+			rootID         string
+			runtimeManaged bool
+		}
+		require.NoError(t, rows.Scan(&id, &values.rootID, &values.runtimeManaged))
+		got[id] = values
+	}
+	require.NoError(t, rows.Err())
+
+	require.Len(t, got, 3)
+	for _, id := range []string{"root", "child", "grandchild"} {
+		assert.Equal(t, "root", got[id].rootID, "root_id for %s", id)
+		assert.False(t, got[id].runtimeManaged, "runtime_managed for %s", id)
+	}
+}

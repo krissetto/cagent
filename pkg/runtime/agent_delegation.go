@@ -167,7 +167,6 @@ func newSubSession(parent *session.Session, cfg SubSessionConfig, childAgent *ag
 		session.WithToolsApproved(cfg.ToolsApproved),
 		session.WithNonInteractive(cfg.NonInteractive),
 		session.WithSendUserMessage(false),
-		session.WithParentID(parent.ID),
 		session.WithAttachedFiles(attachedFiles),
 	}
 	if cfg.PinAgent {
@@ -180,7 +179,7 @@ func newSubSession(parent *session.Session, cfg SubSessionConfig, childAgent *ag
 	if len(excludedTools) > 0 {
 		opts = append(opts, session.WithExcludedTools(excludedTools))
 	}
-	return session.New(opts...)
+	return session.NewRuntimeManagedSubSession(parent, opts...)
 }
 
 // mergeExcludedTools combines two excluded-tool lists, deduplicating entries.
