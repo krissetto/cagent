@@ -181,9 +181,10 @@ func TestObserver_NilOptIsIgnored(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// The auto-registered PersistenceObserver counts as one entry, so
-	// observers must contain exactly one element (not two).
-	assert.Len(t, r.observers, 1, "nil observer must not be appended")
+	// The auto-registered PersistenceObserver and public event observer
+	// count as stock entries, so observers must contain exactly those
+	// entries (not an extra nil observer).
+	assert.Len(t, r.observers, 2, "nil observer must not be appended")
 }
 
 // fnObserver adapts function values to the [EventObserver] interface

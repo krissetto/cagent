@@ -582,6 +582,13 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 	if obs := newPersistenceObserver(r.sessionStore); obs != nil {
 		r.observers = append([]EventObserver{obs}, r.observers...)
 	}
+	// Auto-register durable public event publishing after internal
+	// persistence. The public stream intentionally skips MessageAddedEvent;
+	// transcript persistence above remains the only consumer of that
+	// internal bookkeeping event.
+	if obs := newPublicEventObserver(r.sessionStore); obs != nil {
+		r.observers = append(r.observers, obs)
+	}
 
 	slog.Debug("Creating new runtime", "agent", r.agents.Name(), "available_agents", agents.Size())
 

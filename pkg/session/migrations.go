@@ -426,6 +426,25 @@ func getAllMigrations() []Migration {
 				CREATE INDEX IF NOT EXISTS idx_sessions_root_id ON sessions(root_id);
 			`,
 		},
+		{
+			ID:          23,
+			Name:        "023_add_public_runtime_events",
+			Description: "Add durable public runtime event stream table",
+			UpSQL: `
+				CREATE TABLE IF NOT EXISTS public_runtime_events (
+					event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+					session_id TEXT NOT NULL,
+					root_id TEXT NOT NULL,
+					scope TEXT NOT NULL,
+					type TEXT NOT NULL,
+					payload_json TEXT NOT NULL,
+					created_at TEXT NOT NULL,
+					FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+				);
+				CREATE INDEX IF NOT EXISTS idx_public_runtime_events_session_event ON public_runtime_events(session_id, event_id);
+				CREATE INDEX IF NOT EXISTS idx_public_runtime_events_root_event ON public_runtime_events(root_id, event_id);
+			`,
+		},
 	}
 }
 

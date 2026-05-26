@@ -174,7 +174,7 @@ func TestMigration022BackfillsRuntimeSessionTopology(t *testing.T) {
 	db := openMigrationsDB(t)
 	ctx := t.Context()
 	migrations := getAllMigrations()
-	require.Len(t, migrations, 22)
+	require.Len(t, migrations, 23)
 
 	// Bootstrap the original sessions table, then apply migrations 001-021.
 	_, err := db.ExecContext(ctx, `

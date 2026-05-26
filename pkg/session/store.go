@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker-agent/pkg/chat"
@@ -127,8 +128,11 @@ type Store interface {
 }
 
 type InMemorySessionStore struct {
-	sessions  *concurrent.Map[string, *Session]
-	messageID int64 // simple counter for message IDs
+	sessions       *concurrent.Map[string, *Session]
+	messageID      int64 // simple counter for message IDs
+	publicEventsMu sync.Mutex
+	publicEvents   []PublicRuntimeEvent
+	publicEventID  int64
 }
 
 func NewInMemorySessionStore() Store {
@@ -387,6 +391,48 @@ func (s *InMemorySessionStore) AddSummary(_ context.Context, sessionID, summary 
 	session.Messages = append(session.Messages, Item{Summary: summary, FirstKeptEntry: firstKeptEntry})
 	session.mu.Unlock()
 	return nil
+}
+
+// AppendPublicRuntimeEvent appends a durable public runtime event.
+func (s *InMemorySessionStore) AppendPublicRuntimeEvent(_ context.Context, event PublicRuntimeEvent) (PublicRuntimeEvent, error) {
+	if event.SessionID == "" || event.RootID == "" {
+		return PublicRuntimeEvent{}, ErrEmptyID
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now()
+	}
+	s.publicEventsMu.Lock()
+	defer s.publicEventsMu.Unlock()
+	s.publicEventID++
+	event.EventID = s.publicEventID
+	s.publicEvents = append(s.publicEvents, event)
+	return event, nil
+}
+
+// ReplayPublicRuntimeEvents replays public runtime events in event_id order.
+func (s *InMemorySessionStore) ReplayPublicRuntimeEvents(_ context.Context, query PublicRuntimeEventQuery) ([]PublicRuntimeEvent, error) {
+	if query.SessionID == "" && query.RootID == "" {
+		return nil, ErrEmptyID
+	}
+	s.publicEventsMu.Lock()
+	defer s.publicEventsMu.Unlock()
+	events := make([]PublicRuntimeEvent, 0)
+	for _, event := range s.publicEvents {
+		if query.SessionID != "" && event.SessionID != query.SessionID {
+			continue
+		}
+		if query.RootID != "" && event.RootID != query.RootID {
+			continue
+		}
+		if event.EventID <= query.AfterEventID {
+			continue
+		}
+		events = append(events, event)
+		if query.Limit > 0 && len(events) >= query.Limit {
+			break
+		}
+	}
+	return events, nil
 }
 
 // querier is an interface that abstracts *sql.DB and *sql.Tx for query operations.
@@ -1104,6 +1150,77 @@ func (s *SQLiteSessionStore) SetSessionStarred(ctx context.Context, id string, s
 // Close closes the database connection
 func (s *SQLiteSessionStore) Close() error {
 	return s.db.Close()
+}
+
+// AppendPublicRuntimeEvent appends a durable public runtime event.
+func (s *SQLiteSessionStore) AppendPublicRuntimeEvent(ctx context.Context, event PublicRuntimeEvent) (PublicRuntimeEvent, error) {
+	if event.SessionID == "" || event.RootID == "" {
+		return PublicRuntimeEvent{}, ErrEmptyID
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now()
+	}
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO public_runtime_events (session_id, root_id, scope, type, payload_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		event.SessionID, event.RootID, event.Scope, event.Type, event.PayloadJSON, event.CreatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return PublicRuntimeEvent{}, fmt.Errorf("inserting public runtime event: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return PublicRuntimeEvent{}, fmt.Errorf("getting public runtime event id: %w", err)
+	}
+	event.EventID = id
+	return event, nil
+}
+
+// ReplayPublicRuntimeEvents replays public runtime events in event_id order.
+func (s *SQLiteSessionStore) ReplayPublicRuntimeEvents(ctx context.Context, query PublicRuntimeEventQuery) ([]PublicRuntimeEvent, error) {
+	if query.SessionID == "" && query.RootID == "" {
+		return nil, ErrEmptyID
+	}
+	where := []string{"event_id > ?"}
+	args := []any{query.AfterEventID}
+	if query.SessionID != "" {
+		where = append(where, "session_id = ?")
+		args = append(args, query.SessionID)
+	}
+	if query.RootID != "" {
+		where = append(where, "root_id = ?")
+		args = append(args, query.RootID)
+	}
+	limit := ""
+	if query.Limit > 0 {
+		limit = " LIMIT ?"
+		args = append(args, query.Limit)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_id, session_id, root_id, scope, type, payload_json, created_at
+		FROM public_runtime_events
+		WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY event_id ASC`+limit, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying public runtime events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []PublicRuntimeEvent
+	for rows.Next() {
+		var event PublicRuntimeEvent
+		var createdAt string
+		if err := rows.Scan(&event.EventID, &event.SessionID, &event.RootID, &event.Scope, &event.Type, &event.PayloadJSON, &createdAt); err != nil {
+			return nil, fmt.Errorf("scanning public runtime event: %w", err)
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, createdAt); err == nil {
+			event.CreatedAt = parsed
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating public runtime events: %w", err)
+	}
+	return events, nil
 }
 
 // AddMessage adds a message to a session at the next position.
