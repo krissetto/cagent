@@ -147,8 +147,19 @@ func (m *managedSubagentManager) handleStart(ctx context.Context, parent *sessio
 		NonInteractive: true,
 	}, childAgent)
 	if m.runtime.sessionStore != nil {
-		if err := m.runtime.sessionStore.AddSession(ctx, child); err != nil {
-			return nil, err
+		if err := m.runtime.sessionStore.AddSubSession(ctx, parent.ID, child); err != nil {
+			if !errors.Is(err, session.ErrNotFound) {
+				return nil, err
+			}
+			// Some tests and embedders invoke the tool handler with an in-memory
+			// parent that has not been persisted yet. Persist the parent and then
+			// link the managed child so production paths still use AddSubSession.
+			if addErr := m.runtime.sessionStore.AddSession(ctx, parent); addErr != nil {
+				return nil, addErr
+			}
+			if addErr := m.runtime.sessionStore.AddSubSession(ctx, parent.ID, child); addErr != nil {
+				return nil, addErr
+			}
 		}
 	}
 
@@ -182,11 +193,18 @@ func (m *managedSubagentManager) handleStart(ctx context.Context, parent *sessio
 func (m *managedSubagentManager) run(ctx context.Context, ms *managedSubagent) {
 	ctx = context.WithValue(ctx, managedQueuesContextKey{}, ms.queue)
 	childEvents := m.runtime.RunStream(ctx, ms.session)
+	var errMsg string
 	for event := range childEvents {
 		ms.appendEvent(event)
+		if errorEvent, ok := event.(*ErrorEvent); ok {
+			errMsg = strings.TrimSpace(errorEvent.Error)
+		}
 	}
 
 	status := managedSubagentStatusCompleted
+	if errMsg != "" {
+		status = managedSubagentStatusFailed
+	}
 	if ctx.Err() != nil {
 		if ms.loadStatus() == managedSubagentStatusFinalizing {
 			status = managedSubagentStatusCompleted
@@ -195,7 +213,7 @@ func (m *managedSubagentManager) run(ctx context.Context, ms *managedSubagent) {
 		}
 	}
 	result := lastAssistantContent(ms.session)
-	ms.finish(status, result, "", m.runtime.now())
+	ms.finish(status, result, errMsg, m.runtime.now())
 
 	if m.runtime.sessionStore != nil {
 		_ = m.runtime.sessionStore.UpdateSession(context.WithoutCancel(ctx), ms.session)
@@ -214,6 +232,10 @@ func (m *managedSubagentManager) handleSend(ctx context.Context, sess *session.S
 	}
 	if !ms.isRunning() {
 		return tools.ResultError(fmt.Sprintf("subagent %s is not running (status: %s)", ms.id, ms.loadStatus())), nil
+	}
+	args.Message = strings.TrimSpace(args.Message)
+	if args.Message == "" {
+		return tools.ResultError("message is required"), nil
 	}
 	msg := QueuedMessage{Content: args.Message}
 	switch strings.ToLower(strings.TrimSpace(args.Mode)) {
@@ -302,7 +324,11 @@ func (m *managedSubagentManager) handleList(_ context.Context, parent *session.S
 		fmt.Fprintf(&out, "  Parent:  %s\n", ms.parentID)
 		fmt.Fprintf(&out, "  Agent:   %s\n", ms.agentName)
 		fmt.Fprintf(&out, "  Status:  %s\n", ms.loadStatus())
-		fmt.Fprintf(&out, "  Runtime: %s\n\n", m.runtime.now().Sub(ms.startTime).Round(time.Second))
+		fmt.Fprintf(&out, "  Runtime: %s\n", m.runtime.now().Sub(ms.startTime).Round(time.Second))
+		if errMsg := ms.loadError(); errMsg != "" {
+			fmt.Fprintf(&out, "  Error:   %s\n", errMsg)
+		}
+		out.WriteString("\n")
 	}
 	return tools.ResultSuccess(out.String()), nil
 }
@@ -408,6 +434,7 @@ func (m *managedSubagentManager) emitLifecycle(ctx context.Context, ms *managedS
 		Agent:        ms.agentName,
 		Status:       status,
 		Result:       result,
+		Error:        ms.loadError(),
 		OccurredAt:   m.runtime.now().Format(time.RFC3339Nano),
 		AgentContext: newAgentContext(ms.agentName),
 	}
@@ -450,7 +477,7 @@ func (ms *managedSubagent) isRunning() bool {
 
 func (ms *managedSubagent) finish(status, result, errMsg string, completedAt time.Time) {
 	ms.mu.Lock()
-	if ms.status == managedSubagentStatusStopped && status == managedSubagentStatusCompleted {
+	if ms.status == managedSubagentStatusStopped && status != managedSubagentStatusFailed {
 		status = managedSubagentStatusStopped
 	}
 	ms.status = status

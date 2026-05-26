@@ -1,0 +1,26 @@
+# This example demonstrates the runtime_subagents toolset. Runtime-managed
+# subagents run as child sessions, report progress through durable runtime
+# events, and can be inspected/listed by the parent while they are running.
+
+agents:
+  root:
+    model: anthropic/claude-sonnet-4-0
+    description: Coordinator that delegates bounded work to managed subagents
+    instruction: |
+      You coordinate specialist work. When a request has independent parts,
+      start runtime-managed subagents with `subagent_start`, continue only with
+      separate work, and use `subagent_inspect` or runtime updates to synthesize
+      their findings once they finish.
+    sub_agents: [researcher]
+    toolsets:
+      - type: runtime_subagents
+      - type: think
+
+  researcher:
+    model: openai/gpt-4o
+    description: Research specialist
+    instruction: |
+      Investigate the assigned question and return concise findings, evidence,
+      confidence, and any gaps.
+    toolsets:
+      - type: fetch

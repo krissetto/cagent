@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -24,6 +25,7 @@ type blockingTestProvider struct {
 	release  chan struct{}
 	content  string
 	toolSeen chan []tools.Tool
+	err      error
 }
 
 type queueIsolationProvider struct {
@@ -57,6 +59,9 @@ func (p *blockingTestProvider) ID() modelsdev.ID        { return modelsdev.Parse
 func (p *blockingTestProvider) BaseConfig() base.Config { return base.Config{} }
 func (p *blockingTestProvider) MaxTokens() int          { return 0 }
 func (p *blockingTestProvider) CreateChatCompletionStream(_ context.Context, _ []chat.Message, toolList []tools.Tool) (chat.MessageStream, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
 	if p.toolSeen != nil {
 		select {
 		case p.toolSeen <- toolList:
@@ -114,6 +119,9 @@ func TestManagedSubagentStartCreatesRuntimeManagedChildAndPublicEvents(t *testin
 	require.Equal(t, parent.ID, child.ParentID)
 	require.Equal(t, parent.ID, child.RootID)
 	require.True(t, child.RuntimeManaged)
+	require.Len(t, parent.Messages, 1)
+	require.NotNil(t, parent.Messages[0].SubSession)
+	require.Equal(t, child.ID, parent.Messages[0].SubSession.ID)
 	require.Equal(t, "worker", rt.managedSubagents.items[child.ID].agentName)
 
 	replay, err := ReplayPublicRuntimeEvents(t.Context(), rt.sessionStore, session.PublicRuntimeEventQuery{RootID: parent.ID, SessionID: child.ID})
@@ -132,6 +140,72 @@ func TestManagedSubagentStartCreatesRuntimeManagedChildAndPublicEvents(t *testin
 	require.True(t, hasStop)
 	require.True(t, hasLifecycleRunning)
 	require.True(t, hasLifecycleCompleted)
+}
+
+func TestManagedSubagentFailedChildRuntimeReportedAndReplayed(t *testing.T) {
+	provider := &blockingTestProvider{id: "test/worker", err: errors.New("boom from child")}
+	rt, parent := newSubagentTestRuntime(t, provider)
+	result, err := rt.managedSubagents.handleStart(t.Context(), parent, tools.ToolCall{Function: tools.FunctionCall{Arguments: `{"agent":"worker","task":"fail"}`}}, EventSinkFunc(func(Event) {}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var id string
+	require.Eventually(t, func() bool {
+		rt.managedSubagents.mu.RLock()
+		defer rt.managedSubagents.mu.RUnlock()
+		for key, ms := range rt.managedSubagents.items {
+			id = key
+			return ms.loadStatus() == managedSubagentStatusFailed && strings.Contains(ms.loadError(), "boom from child")
+		}
+		return false
+	}, time.Second, 10*time.Millisecond)
+
+	list, err := rt.managedSubagents.handleList(t.Context(), parent, tools.ToolCall{}, EventSinkFunc(func(Event) {}))
+	require.NoError(t, err)
+	require.False(t, list.IsError)
+	require.Contains(t, list.Output, "failed")
+	require.Contains(t, list.Output, "boom from child")
+
+	inspect, err := rt.managedSubagents.handleInspect(t.Context(), parent, tools.ToolCall{Function: tools.FunctionCall{Arguments: fmt.Sprintf(`{"subagent_id":%q}`, id)}}, EventSinkFunc(func(Event) {}))
+	require.NoError(t, err)
+	require.False(t, inspect.IsError)
+	require.Contains(t, inspect.Output, "Status: failed")
+	require.Contains(t, inspect.Output, "Error: model failed: boom from child")
+
+	replay, err := ReplayPublicRuntimeEvents(t.Context(), rt.sessionStore, session.PublicRuntimeEventQuery{RootID: parent.ID, SessionID: id})
+	require.NoError(t, err)
+	var hasRuntimeError, hasLifecycleFailed bool
+	for _, ev := range replay {
+		hasRuntimeError = hasRuntimeError || ev.Type == "error" && strings.Contains(ev.PayloadJSON, "boom from child")
+		hasLifecycleFailed = hasLifecycleFailed || ev.Type == "subagent_lifecycle" && containsAll(ev.PayloadJSON, "failed", "boom from child")
+	}
+	require.True(t, hasRuntimeError)
+	require.True(t, hasLifecycleFailed)
+}
+
+func TestManagedSubagentSendRejectsEmptyMessage(t *testing.T) {
+	provider := &blockingTestProvider{id: "test/worker", started: make(chan struct{}), release: make(chan struct{}), content: "done"}
+	rt, parent := newSubagentTestRuntime(t, provider)
+	_, err := rt.managedSubagents.handleStart(t.Context(), parent, tools.ToolCall{Function: tools.FunctionCall{Arguments: `{"agent":"worker","task":"wait"}`}}, EventSinkFunc(func(Event) {}))
+	require.NoError(t, err)
+	<-provider.started
+	var id string
+	rt.managedSubagents.mu.RLock()
+	for key := range rt.managedSubagents.items {
+		id = key
+	}
+	rt.managedSubagents.mu.RUnlock()
+
+	result, err := rt.managedSubagents.handleSend(
+		t.Context(),
+		parent,
+		tools.ToolCall{Function: tools.FunctionCall{Arguments: fmt.Sprintf(`{"subagent_id":%q,"message":"   \t "}`, id)}},
+		EventSinkFunc(func(Event) {}),
+	)
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	require.Contains(t, result.Output, "message is required")
+	close(provider.release)
 }
 
 func TestManagedSubagentNestedPreservesRoot(t *testing.T) {

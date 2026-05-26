@@ -1653,6 +1653,7 @@
             "openapi",
             "model_picker",
             "background_agents",
+            "runtime_subagents",
             "rag"
           ]
         },
@@ -1943,7 +1944,8 @@
                 "lsp",
                 "user_prompt",
                 "model_picker",
-                "background_agents"
+                "background_agents",
+                "runtime_subagents"
               ]
             }
           }
@@ -2032,6 +2034,13 @@
           "properties": {
             "type": {
               "const": "background_agents"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "runtime_subagents"
             }
           }
         },
