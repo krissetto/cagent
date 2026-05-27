@@ -53,9 +53,9 @@ agents:
       - Make trade-off decisions when there are conflicts between different approaches
 
       Your success is measured by how effectively you can leverage your specialized team to deliver high-quality, integrated solutions that fully meet the user's requirements.
-    sub_agents:
-      - web
-      - golang
+    subagents:
+      - agent: web
+      - agent: golang
 
   web:
     model: gpt4o

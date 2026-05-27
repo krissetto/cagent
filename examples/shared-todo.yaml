@@ -7,9 +7,9 @@ agents:
         - Transfer to the `first` agent, the task should be: create a todo
         - Transfer to the `second` agent, the task should be: what todos do you have?
 
-    sub_agents:
-      - first
-      - second
+    subagents:
+      - agent: first
+      - agent: second
 
   first:
     model: gpt

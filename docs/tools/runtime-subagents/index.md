@@ -10,7 +10,7 @@ _Start, message, inspect, and stop durable runtime-managed child sessions._
 
 ## Overview
 
-The `runtime_subagents` toolset lets an agent create sub-agents as runtime-managed child sessions. Child sessions run independently, emit durable public runtime events, and remain tied to the parent session tree. This is useful for scoped parallel work where the parent should wait for runtime updates instead of polling or duplicating the child’s work.
+`subagents` configuration lets an agent create sub-agents as runtime-managed child sessions. Child sessions run independently, emit durable public runtime events, and remain tied to the parent session tree. This is useful for scoped parallel work where the parent should wait for runtime updates instead of polling or duplicating the child’s work.
 
 Unlike the older `background_agents` toolset, runtime-managed subagents use session topology directly: `subagent_start` creates a child session linked to the parent with `AddSubSession`, and lifecycle events are replayable from the session store.
 
@@ -31,16 +31,16 @@ Unlike the older `background_agents` toolset, runtime-managed subagents use sess
 agents:
   root:
     model: anthropic/claude-sonnet-4-0
-    sub_agents: [researcher]
-    toolsets:
-      - type: runtime_subagents
+    subagents:
+      - agent: researcher
+        description: Research specialist
 
   researcher:
     model: openai/gpt-4o
     instruction: Investigate the assigned task and return concise findings.
 ```
 
-No toolset-specific options are required. The caller must list allowed child agents in `sub_agents`.
+No toolset-specific options are required. The caller lists allowed managed children in `subagents`; docker-agent enables the managed-subagent tools automatically for that agent.
 
 ## Lifecycle and replay behavior
 

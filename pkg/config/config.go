@@ -149,7 +149,11 @@ func validateConfig(cfg *latest.Config) error {
 	}
 
 	for _, agent := range cfg.Agents {
-		for _, subAgentRef := range agent.SubAgents {
+		for _, subAgent := range agent.SubAgents {
+			subAgentRef := subAgent.Agent
+			if subAgentRef == "" {
+				return fmt.Errorf("agent '%s' has a subagent entry without agent", agent.Name)
+			}
 			if _, exists := allNames[subAgentRef]; !exists && !IsExternalReference(subAgentRef) {
 				return fmt.Errorf("agent '%s' references non-existent sub-agent '%s'", agent.Name, subAgentRef)
 			}

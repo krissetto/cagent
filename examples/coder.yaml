@@ -63,8 +63,8 @@ agents:
     add_environment_info: true
     add_prompt_files:
       - AGENTS.md
-    sub_agents:
-      - librarian
+    subagents:
+      - agent: librarian
     toolsets:
       - type: filesystem
       - type: shell
@@ -86,8 +86,8 @@ agents:
     toolsets:
       - type: filesystem
       - type: user_prompt
-    sub_agents:
-      - root
+    subagents:
+      - agent: root
 
   librarian:
     model: gemini

@@ -15,9 +15,9 @@ agents:
 
       Use claude-coder for broad refactors and multi-file changes. Use
       codex-coder for focused implementation, test generation, or isolated fixes.
-    sub_agents:
-      - claude-coder
-      - codex-coder
+    subagents:
+      - agent: claude-coder
+      - agent: codex-coder
     toolsets:
       - type: think
       - type: background_agents

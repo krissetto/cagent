@@ -23,9 +23,9 @@ agents:
       - Use the "pirate" agent when users want responses in a pirate style.
 
       Delegate tasks to the most appropriate sub-agent based on the user's request.
-    sub_agents:
-      - local_helper
-      - agentcatalog/pirate
+    subagents:
+      - agent: local_helper
+      - agent: agentcatalog/pirate
 
   local_helper:
     model: model

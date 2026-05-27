@@ -64,13 +64,13 @@ agents:
       - Only include issues from agents - don't invent your own
       - Preserve file:line references from agent reports
       - Be concise but actionable
-    sub_agents:
-      - code-reviewer
-      - silent-failure-hunter
-      - code-simplifier
-      - comment-analyzer
-      - test-analyzer
-      - type-analyzer
+    subagents:
+      - agent: code-reviewer
+      - agent: silent-failure-hunter
+      - agent: code-simplifier
+      - agent: comment-analyzer
+      - agent: test-analyzer
+      - agent: type-analyzer
     toolsets:
       - type: filesystem
       - type: shell

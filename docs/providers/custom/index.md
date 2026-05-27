@@ -221,7 +221,8 @@ models:
 agents:
   root:
     model: architect
-    sub_agents: [code_reviewer]
+    subagents:
+      - agent: code_reviewer
   code_reviewer:
     model: reviewer
 ```
@@ -245,7 +246,8 @@ providers:
 agents:
   root:
     model: smart_anthropic/claude-sonnet-4-5
-    sub_agents: [helper]
+    subagents:
+      - agent: helper
   helper:
     model: fast_openai/gpt-4o-mini
 ```

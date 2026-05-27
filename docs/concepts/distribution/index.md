@@ -76,9 +76,9 @@ agents:
     model: openai/gpt-5-mini
     description: Coordinator
     instruction: Delegate tasks to the right sub-agent.
-    sub_agents:
-      - agentcatalog/pirate         # auto-named "pirate"
-      - my_reviewer:myorg/reviewer  # explicitly named "my_reviewer"
+    subagents:
+      - agent: agentcatalog/pirate         # auto-named "pirate"
+      - agent: my_reviewer:myorg/reviewer  # explicitly named "my_reviewer"
 ```
 
 External sub-agents are automatically named after their last path segment. Use the `name:reference` syntax to give them a custom name.

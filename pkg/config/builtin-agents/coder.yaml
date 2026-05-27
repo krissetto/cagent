@@ -76,9 +76,9 @@ agents:
     add_environment_info: true
     add_prompt_files:
       - AGENTS.md
-    sub_agents:
-      - librarian
-      - planner
+    subagents:
+      - agent: librarian
+      - agent: planner
     toolsets:
       - type: filesystem
       - type: shell
@@ -171,9 +171,9 @@ agents:
     add_environment_info: true
     add_prompt_files:
       - AGENTS.md
-    sub_agents:
-      - root
-      - librarian
+    subagents:
+      - agent: root
+      - agent: librarian
     toolsets:
       - type: filesystem
       - type: fetch

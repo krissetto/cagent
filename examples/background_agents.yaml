@@ -21,7 +21,9 @@ agents:
 
       Always run independent tasks concurrently — do not wait for one to
       finish before starting the next.
-    sub_agents: [web_researcher, code_analyst]
+    subagents:
+    - agent: web_researcher
+    - agent: code_analyst
     toolsets:
       - type: think
       - type: background_agents

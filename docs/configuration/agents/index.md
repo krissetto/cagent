@@ -17,7 +17,7 @@ agents:
     model: string # Required: model reference
     description: string # Required: what this agent does
     instruction: string # Required: system prompt
-    sub_agents: [list] # Optional: local or external sub-agent references
+    subagents: [list] # Optional: local or external sub-agent references
     toolsets: [list] # Optional: tool configurations (use `type: rag` for RAG sources)
     fallback: # Optional: fallback config
       models: [list]
@@ -71,7 +71,7 @@ agents:
 | `model`                     | string  | ✓        | Model reference. Either inline (`openai/gpt-5-mini`) or a named model from the `models` section.                                                                              |
 | `description`               | string  | ✓        | Brief description of the agent's purpose. Used by coordinators to decide delegation.                                                                                          |
 | `instruction`               | string  | ✓        | System prompt that defines the agent's behavior, personality, and constraints.                                                                                                |
-| `sub_agents`                | array   | ✗        | List of agent names or external OCI references this agent can delegate to. Supports local agents, registry references (e.g., `agentcatalog/pirate`), and named references (`name:reference`). Automatically enables the `transfer_task` tool. See [External Sub-Agents]({{ '/concepts/multi-agent/#external-sub-agents-from-registries' | relative_url }}). |
+| `subagents`                | array   | ✗        | List of agent names or external OCI references this agent can delegate to. Supports local agents, registry references (e.g., `agentcatalog/pirate`), and named references (`name:reference`). Automatically enables the `transfer_task` tool. See [External Sub-Agents]({{ '/concepts/multi-agent/#external-sub-agents-from-registries' | relative_url }}). |
 | `toolsets`                  | array   | ✗        | List of tool configurations. See [Tool Config]({{ '/configuration/tools/' | relative_url }}).                                                                                                        |
 | `fallback`                  | object  | ✗        | Automatic model failover configuration.                                                                                                                                       |
 | `add_date`                  | boolean | ✗        | When `true`, injects the current date into the agent's context.                                                                                                               |
@@ -292,7 +292,7 @@ Commands support two formats:
      description: "Switch to planning mode"  # Optional: shown in help text
    ```
 
-When `agent` is set without `instruction`, any text typed after the slash command (e.g., `/plan build a web app`) is forwarded as a prompt to the target agent. The target agent must be listed in the current agent's `sub_agents` array.
+When `agent` is set without `instruction`, any text typed after the slash command (e.g., `/plan build a web app`) is forwarded as a prompt to the target agent. The target agent must be listed in the current agent's `subagents` array.
 
 ```bash
 # Run commands from the CLI
@@ -324,7 +324,9 @@ agents:
       You are a technical lead. Analyze requests and delegate
       to the right specialist. Always review work before responding.
     welcome_message: "👋 I'm your tech lead. How can I help today?"
-    sub_agents: [developer, researcher]
+    subagents:
+      - agent: developer
+      - agent: researcher
     add_date: true
     add_environment_info: true
     fallback:

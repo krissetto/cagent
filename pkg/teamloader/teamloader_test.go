@@ -202,15 +202,50 @@ func TestOverrideModel(t *testing.T) {
 	}
 }
 
+func TestLoadSubagentsAddsManagedSubagentTools(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "dummy")
+
+	data := []byte(`agents:
+  root:
+    model: openai/gpt-4o
+    instruction: Coordinate work.
+    subagents:
+      - agent: reviewer
+        description: Review completed work for correctness.
+  reviewer:
+    model: openai/gpt-4o
+    instruction: Review work.
+`)
+
+	team, err := Load(t.Context(), config.NewBytesSource("subagents.yaml", data), &config.RuntimeConfig{})
+	require.NoError(t, err)
+
+	root, err := team.Agent("root")
+	require.NoError(t, err)
+	require.Len(t, root.SubAgents(), 1)
+	assert.Equal(t, "reviewer", root.SubAgents()[0].Name())
+	assert.Equal(t, "Review completed work for correctness.", root.SubAgents()[0].Description())
+
+	tools, err := root.Tools(t.Context())
+	require.NoError(t, err)
+	var toolNames []string
+	for _, tool := range tools {
+		toolNames = append(toolNames, tool.Name)
+	}
+	assert.Contains(t, toolNames, "subagent_start")
+	assert.NotContains(t, toolNames, "transfer_task")
+}
+
 func TestLoadHarnessAgentWithoutModel(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "dummy")
 
 	data := []byte(`agents:
   root:
     model: openai/gpt-4o
-    sub_agents: [coder]
+    subagents:
+      - agent: coder
+        description: External coder
   coder:
-    description: External coder
     instruction: You are a coding agent.
     harness:
       type: codex

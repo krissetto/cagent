@@ -29,7 +29,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin/handoff"
 	"github.com/docker/docker-agent/pkg/tools/builtin/lsp"
 	skillstool "github.com/docker/docker-agent/pkg/tools/builtin/skills"
-	"github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
+	builtinSubagent "github.com/docker/docker-agent/pkg/tools/builtin/subagent"
 	"github.com/docker/docker-agent/pkg/tools/codemode"
 )
 
@@ -233,6 +233,8 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			}
 		}
 
+		applySubagentDescriptions(&agentConfig, cfg)
+
 		opts = append(opts, agent.WithToolSets(agentTools...))
 
 		ag := agent.New(agentConfig.Name, expander.Expand(ctx, agentConfig.Instruction, nil), opts...)
@@ -252,7 +254,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			continue
 		}
 
-		subAgents, err := resolveAgentRefs(ctx, agentConfig.SubAgents, agentsByName, externalAgents, &agents, runConfig, &loadOpts)
+		subAgents, err := resolveAgentRefs(ctx, subagentRefs(agentConfig.SubAgents), agentsByName, externalAgents, &agents, runConfig, &loadOpts)
 		if err != nil {
 			return nil, fmt.Errorf("agent '%s': resolving sub-agents: %w", agentConfig.Name, err)
 		}
@@ -351,6 +353,27 @@ func getModelsForAgent(ctx context.Context, cfg *latest.Config, a *latest.AgentC
 	}
 
 	return models, nil
+}
+
+func applySubagentDescriptions(parent *latest.AgentConfig, cfg *latest.Config) {
+	for _, subagent := range parent.SubAgents {
+		if subagent.Description == "" {
+			continue
+		}
+		cfg.Agents.Update(subagent.Agent, func(child *latest.AgentConfig) {
+			if child.Description == "" {
+				child.Description = subagent.Description
+			}
+		})
+	}
+}
+
+func subagentRefs(subagents []latest.SubagentConfig) []string {
+	refs := make([]string, 0, len(subagents))
+	for _, subagent := range subagents {
+		refs = append(refs, subagent.Agent)
+	}
+	return refs
 }
 
 // getFallbackModelsForAgent returns fallback providers for an agent based on its fallback configuration.
@@ -480,7 +503,7 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 	}
 
 	if len(a.SubAgents) > 0 {
-		toolSets = append(toolSets, transfertask.New())
+		toolSets = append(toolSets, builtinSubagent.New())
 	}
 	if len(a.Handoffs) > 0 {
 		toolSets = append(toolSets, handoff.New())

@@ -6,8 +6,8 @@ agents:
     instruction: |
       You are a knowledgeable assistant that helps users with various tasks.
       Be helpful, accurate, and concise in your responses.
-    sub_agents:
-      - web
+    subagents:
+      - agent: web
   
   web:
     model: openai/gpt-5-mini

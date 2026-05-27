@@ -55,8 +55,8 @@ agents:
     add_environment_info: true
     add_prompt_files:
       - AGENTS.md
-    sub_agents:
-      - librarian
+    subagents:
+      - agent: librarian
     toolsets:
       - type: filesystem
       - type: shell
@@ -144,8 +144,8 @@ agents:
     toolsets:
       - type: filesystem
       - type: user_prompt
-    sub_agents:
-      - root
+    subagents:
+      - agent: root
 
   reviewer:
     model: google/gemini-3-pro-preview
@@ -156,8 +156,8 @@ agents:
       Don't be too verbose, keep your review concise and to the point.
     add_prompt_files:
       - AGENTS.md
-    sub_agents:
-      - librarian
+    subagents:
+      - agent: librarian
     toolsets:
       - type: filesystem
       - type: shell

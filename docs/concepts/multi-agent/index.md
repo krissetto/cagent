@@ -23,7 +23,7 @@ Each agent has its own model, tools, and instructions — optimized for its spec
 
 docker-agent supports two multi-agent patterns:
 
-| | **Delegation** (`sub_agents`) | **Handoffs** (`handoffs`) |
+| | **Delegation** (`subagents`) | **Handoffs** (`handoffs`) |
 |---|---|---|
 | **Topology** | Hierarchical (parent → child → parent) | Peer-to-peer graph (A → B → C → A) |
 | **Session** | Child runs in a **sub-session** | Conversation stays in the **same session** |
@@ -32,20 +32,20 @@ docker-agent supports two multi-agent patterns:
 | **Tool** | `transfer_task` | `handoff` |
 | **Best for** | Task delegation to specialists | Pipeline workflows, conversational routing |
 
-You can combine both patterns in the same configuration — an agent can have both `sub_agents` and `handoffs`.
+You can combine both patterns in the same configuration — an agent can have both `subagents` and `handoffs`.
 
 <div class="callout callout-tip" markdown="1">
 <div class="callout-title">When to use which
 </div>
-  <p><strong><code>sub_agents</code></strong> — Use when a coordinator needs to send tasks to specialists and synthesize their results.</p>
+  <p><strong><code>subagents</code></strong> — Use when a coordinator needs to send tasks to specialists and synthesize their results.</p>
   <p><strong><code>handoffs</code></strong> — Use when agents should take turns processing the same conversation (pipelines, routing).</p>
   <p><strong><code>background_agents</code></strong> — Use when multiple independent tasks can run simultaneously.</p>
 
 </div>
 
-## Delegation with `sub_agents`
+## Delegation with `subagents`
 
-Agents delegate tasks using the built-in `transfer_task` tool, which is automatically available to any agent with `sub_agents`. The parent agent sends a task to a child agent, waits for the result, and then continues.
+Agents delegate tasks using the built-in `transfer_task` tool, which is automatically available to any agent with `subagents`. The parent agent sends a task to a child agent, waits for the result, and then continues.
 
 1. **User** sends a message to the root agent
 2. **Root agent** analyzes the request and decides which sub-agent should handle it
@@ -158,7 +158,10 @@ agents:
   root:
     model: anthropic/claude-sonnet-4-5
     description: Research coordinator
-    sub_agents: [researcher, analyst, writer]
+    subagents:
+      - agent: researcher
+      - agent: analyst
+      - agent: writer
     toolsets:
       - type: think
       - type: background_agents
@@ -185,7 +188,7 @@ view_background_agent(task_id="agent_task_abc123")
 
 ## External Sub-Agents from Registries
 
-Sub-agents don't have to be defined locally — you can reference agents from OCI registries (such as the [Docker Agent Catalog](https://hub.docker.com/u/agentcatalog)) directly in your `sub_agents` list. This lets you compose teams using pre-built, shared agents without duplicating their configuration.
+Sub-agents don't have to be defined locally — you can reference agents from OCI registries (such as the [Docker Agent Catalog](https://hub.docker.com/u/agentcatalog)) directly in your `subagents` list. This lets you compose teams using pre-built, shared agents without duplicating their configuration.
 
 ```yaml
 agents:
@@ -194,9 +197,9 @@ agents:
     description: Coordinator that delegates to local and catalog sub-agents
     instruction: |
       Delegate tasks to the most appropriate sub-agent.
-    sub_agents:
-      - local_helper
-      - agentcatalog/pirate # pulled from registry automatically
+    subagents:
+      - agent: local_helper
+      - agent: agentcatalog/pirate # pulled from registry automatically
 
   local_helper:
     model: openai/gpt-5-mini
@@ -207,7 +210,7 @@ agents:
 External sub-agents are automatically named after their last path segment — for example, `agentcatalog/pirate` becomes `pirate`. You can also give them an explicit name using the `name:reference` syntax:
 
 ```yaml
-    sub_agents:
+    subagents:
       - my_pirate:agentcatalog/pirate  # available as "my_pirate"
       - reviewer:docker.io/myorg/review-agent:latest
 ```
@@ -230,7 +233,10 @@ agents:
       You are a technical lead managing a development team.
       Analyze requests and delegate to the right specialist.
       Ensure quality by reviewing results before responding.
-    sub_agents: [developer, reviewer, tester]
+    subagents:
+      - agent: developer
+      - agent: reviewer
+      - agent: tester
     toolsets:
       - type: think
 
@@ -275,7 +281,9 @@ agents:
     instruction: |
       Coordinate research tasks. Delegate web searches to
       the researcher and writing to the writer.
-    sub_agents: [researcher, writer]
+    subagents:
+      - agent: researcher
+      - agent: writer
     toolsets:
       - type: think
 
@@ -343,7 +351,7 @@ toolsets:
 - **Give minimal tools** — Only give each agent the tools it needs for its specific role
 - **Use the think tool when needed** — For models without native reasoning, give coordinators the think tool so they reason about delegation. Models with built-in thinking (e.g., via `thinking_budget`) don't need it
 - **Use the right model** — Use capable models for complex reasoning, cheap models for simple tasks
-- **Choose the right pattern** — Use `sub_agents` for hierarchical task delegation, `handoffs` for pipeline workflows and conversational routing
+- **Choose the right pattern** — Use `subagents` for hierarchical task delegation, `handoffs` for pipeline workflows and conversational routing
 
 <div class="callout callout-info" markdown="1">
 <div class="callout-title">Beyond docker-agent

@@ -78,7 +78,7 @@
     },
     "runtime": {
       "$ref": "#/definitions/RuntimeDefaults",
-      "description": "Execution-time defaults the agent author wants applied. Values act as defaults only — explicit CLI flags or user-config settings always win."
+      "description": "Execution-time defaults the agent author wants applied. Values act as defaults only \u2014 explicit CLI flags or user-config settings always win."
     }
   },
   "additionalProperties": false,
@@ -544,13 +544,6 @@
           "type": "boolean",
           "description": "Enable Code Mode for tools"
         },
-        "sub_agents": {
-          "type": "array",
-          "description": "List of sub-agents. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:agentcatalog/review-pr'). External agents without an explicit name are named after their last path segment.",
-          "items": {
-            "type": "string"
-          }
-        },
         "handoffs": {
           "type": "array",
           "description": "List of agents this agent can hand off the conversation to. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:agentcatalog/review-pr'). External agents without an explicit name are named after their last path segment.",
@@ -737,6 +730,13 @@
               ]
             }
           ]
+        },
+        "subagents": {
+          "type": "array",
+          "description": "Runtime-managed subagents this agent may start. Each entry names a local agent or external reference and may provide a description used in tool-facing subagent listings.",
+          "items": {
+            "$ref": "#/definitions/SubagentConfig"
+          }
         }
       },
       "additionalProperties": false
@@ -1410,7 +1410,7 @@
       "properties": {
         "sandbox": {
           "type": "boolean",
-          "description": "When true, run the agent inside a Docker sandbox by default — equivalent to passing --sandbox on the command line. An explicit --sandbox=false on the CLI still wins."
+          "description": "When true, run the agent inside a Docker sandbox by default \u2014 equivalent to passing --sandbox on the command line. An explicit --sandbox=false on the CLI still wins."
         },
         "network_allowlist": {
           "type": "array",
@@ -1653,7 +1653,6 @@
             "openapi",
             "model_picker",
             "background_agents",
-            "runtime_subagents",
             "rag"
           ]
         },
@@ -1944,8 +1943,7 @@
                 "lsp",
                 "user_prompt",
                 "model_picker",
-                "background_agents",
-                "runtime_subagents"
+                "background_agents"
               ]
             }
           }
@@ -2034,13 +2032,6 @@
           "properties": {
             "type": {
               "const": "background_agents"
-            }
-          }
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "runtime_subagents"
             }
           }
         },
@@ -2543,6 +2534,24 @@
       "required": [
         "clientId"
       ]
+    },
+    "SubagentConfig": {
+      "type": "object",
+      "description": "Runtime-managed subagent available to a parent agent.",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "description": "Name or external reference of the subagent."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional tool-facing description for the subagent."
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "additionalProperties": false
     }
   }
 }

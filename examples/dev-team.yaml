@@ -42,7 +42,9 @@ agents:
       Make sure to append to the file and edit what is not needed anymore. Consult this file to understand the current state of the project and the team.
       This file might include references to other files that should all be placed inside the .dev-team folder. Don't write anything but code outside of this directory.
 
-    sub_agents: [designer, awesome_engineer]
+    subagents:
+    - agent: designer
+    - agent: awesome_engineer
     toolsets:
       - type: filesystem
       - type: think

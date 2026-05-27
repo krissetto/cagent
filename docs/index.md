@@ -300,7 +300,9 @@ agents:
     model: openai/gpt-5
     description: Team coordinator
     instruction: Route tasks to the best specialist.
-    sub_agents: [coder, reviewer]
+    subagents:
+      - agent: coder
+      - agent: reviewer
 
   coder:
     model: anthropic/claude-sonnet-4-5

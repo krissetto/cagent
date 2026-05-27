@@ -110,7 +110,9 @@ agents:
   root:
     model: anthropic/claude-sonnet-4-5
     description: Main coordinator
-    sub_agents: [designer, engineer]
+    subagents:
+      - agent: designer
+      - agent: engineer
   designer:
     model: openai/gpt-5-mini
     description: UI/UX design specialist

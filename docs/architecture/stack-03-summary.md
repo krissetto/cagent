@@ -6,13 +6,13 @@ Stack 03 adds runtime-managed subagent support on top of the durable public runt
 
 Implemented pieces:
 
-- New `runtime_subagents` built-in toolset registered through team loading/config validation.
+- New runtime-managed subagent toolset registered through team loading when an agent declares `subagents`.
 - Tool surface for starting, sending to, inspecting, listing, stopping, and finalizing runtime-managed child sessions.
 - Managed child sessions are created as runtime-managed subsessions linked to the parent session tree via `AddSubSession`.
 - Child runtime events are retained for inspect/list behavior and are persisted through the public runtime event observer.
 - Durable `subagent_lifecycle` events are emitted for running/completed/failed/stopped lifecycle states.
 - Child runtime error events mark the managed subagent as `failed`; the error is exposed through `subagent_list`, `subagent_inspect`, and lifecycle replay payloads.
-- `agent-schema.json`, docs, and `examples/runtime_subagents.yaml` include the new `runtime_subagents` toolset surface.
+- `agent-schema.json`, docs, and `examples/runtime_subagents.yaml` document the `subagents` config surface.
 
 ## Validation
 
@@ -29,7 +29,7 @@ Targeted tests cover:
 
 ## Known assumptions and gaps
 
-- Runtime-managed subagents are intended for trusted agents already listed in the caller's `sub_agents` allow-list.
+- Runtime-managed subagents are intended for trusted agents already listed in the caller's `subagents` allow-list.
 - `subagent_stop` marks live status as stopped immediately and cancels the child; final stream drain avoids downgrading a later child failure to stopped.
 - Parent session topology stores a subsession reference; child transcript content remains in the child session and is surfaced through inspect/replay, not duplicated as parent chat messages.
 - The implementation uses existing runtime queues and persistence observers rather than a separate scheduler service.

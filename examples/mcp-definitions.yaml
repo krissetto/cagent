@@ -35,7 +35,9 @@ agents:
     description: Lead developer
     instruction: |
       You are the lead developer. Coordinate the team.
-    sub_agents: [frontend, backend]
+    subagents:
+    - agent: frontend
+    - agent: backend
     toolsets:
       - type: filesystem
       - type: think

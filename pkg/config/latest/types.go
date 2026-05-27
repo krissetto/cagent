@@ -412,17 +412,23 @@ type HarnessConfig struct {
 }
 
 // AgentConfig represents a single agent configuration
+// SubagentConfig declares a runtime-managed subagent available to its parent.
+type SubagentConfig struct {
+	Agent       string `json:"agent,omitempty" yaml:"agent,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+}
+
 type AgentConfig struct {
 	Name           string
-	Model          string          `json:"model,omitempty"`
-	Fallback       *FallbackConfig `json:"fallback,omitempty"`
-	Description    string          `json:"description,omitempty"`
-	WelcomeMessage string          `json:"welcome_message,omitempty"`
-	Toolsets       []Toolset       `json:"toolsets,omitempty"`
-	Instruction    string          `json:"instruction,omitempty"`
-	Harness        *HarnessConfig  `json:"harness,omitempty"`
-	SubAgents      []string        `json:"sub_agents,omitempty"`
-	Handoffs       []string        `json:"handoffs,omitempty"`
+	Model          string           `json:"model,omitempty"`
+	Fallback       *FallbackConfig  `json:"fallback,omitempty"`
+	Description    string           `json:"description,omitempty"`
+	WelcomeMessage string           `json:"welcome_message,omitempty"`
+	Toolsets       []Toolset        `json:"toolsets,omitempty"`
+	Instruction    string           `json:"instruction,omitempty"`
+	Harness        *HarnessConfig   `json:"harness,omitempty"`
+	SubAgents      []SubagentConfig `json:"subagents,omitempty" yaml:"subagents,omitempty"`
+	Handoffs       []string         `json:"handoffs,omitempty"`
 
 	AddDate            bool `json:"add_date,omitempty"`
 	AddEnvironmentInfo bool `json:"add_environment_info,omitempty"`

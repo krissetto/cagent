@@ -57,7 +57,7 @@ agent "root" {
   add_date             = true
   add_environment_info = true
   add_prompt_files     = ["AGENTS.md"]
-  sub_agents           = ["librarian"]
+  subagents            = [{ agent = "librarian" }]
 
   toolset "filesystem" {}
   toolset "shell" {}
@@ -167,7 +167,7 @@ agent "planner" {
   Use the `user_prompt` tool to ask questions to the user. Prefer Multiple Choice Questions.
   EOT
 
-  sub_agents = ["root"]
+  subagents = [{ agent = "root" }]
 
   toolset "filesystem" {}
   toolset "user_prompt" {}
@@ -184,7 +184,7 @@ agent "reviewer" {
   EOT
 
   add_prompt_files = ["AGENTS.md"]
-  sub_agents       = ["librarian"]
+  subagents        = [{ agent = "librarian" }]
 
   toolset "filesystem" {}
   toolset "shell" {}

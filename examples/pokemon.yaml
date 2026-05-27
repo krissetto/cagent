@@ -66,9 +66,9 @@ agents:
           5. Simule le combat tour par tour (3 tours max) avec des commentaires dramatiques
           6. Déclare le vainqueur avec un résumé épique !
 
-    sub_agents:
-      - trainer_red
-      - trainer_blue
+    subagents:
+      - agent: trainer_red
+      - agent: trainer_blue
 
   trainer_red:
     model: anthropic/claude-haiku-4-5

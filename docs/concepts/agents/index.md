@@ -51,7 +51,7 @@ Every docker-agent configuration has a **root agent** — the entry point that r
 | `description`          | string  | ✓        | What the agent does — used by other agents for delegation      |
 | `instruction`          | string  | ✓        | System prompt defining behavior                                |
 | `toolsets`             | array   | ✗        | List of tool configurations                                    |
-| `sub_agents`           | array   | ✗        | Names of agents this agent can delegate to                     |
+| `subagents`           | array   | ✗        | Names of agents this agent can delegate to                     |
 | `fallback`             | object  | ✗        | Fallback model configuration for resilience                    |
 | `add_date`             | boolean | ✗        | Include current date in context                                |
 | `add_environment_info` | boolean | ✗        | Include OS, working directory, git info in context             |

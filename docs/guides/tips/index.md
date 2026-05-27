@@ -274,13 +274,15 @@ agents:
 
 ### Handoffs vs Sub-Agents
 
-Understand the difference between `sub_agents` and `handoffs`:
+Understand the difference between `subagents` and `handoffs`:
 
 <div class="cards">
   <div class="card" style="cursor:default;">
-    <h3>sub_agents (transfer_task)</h3>
+    <h3>subagents (transfer_task)</h3>
     <p>Delegates task to a child in a sub-session, waits for result, then continues. Hierarchical — the parent remains in control.</p>
-    <pre style="margin-top:12px"><code class="language-yaml">sub_agents: [researcher, writer]</code></pre>
+    <pre style="margin-top:12px"><code class="language-yaml">subagents:
+      - agent: researcher
+      - agent: writer</code></pre>
   </div>
   <div class="card" style="cursor:default;">
     <h3>handoffs (peer-to-peer)</h3>
@@ -303,7 +305,10 @@ agents:
     model: anthropic/claude-sonnet-4-5
     description: Technical lead
     instruction: Delegate to specialists based on the task.
-    sub_agents: [frontend, backend, devops]
+    subagents:
+      - agent: frontend
+      - agent: backend
+      - agent: devops
 
   frontend:
     model: openai/gpt-4o

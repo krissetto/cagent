@@ -12,11 +12,11 @@ _Delegate tasks to sub-agents in multi-agent setups._
 
 The `transfer_task` tool allows an agent to delegate tasks to specialized sub-agents and receive their results. This is the core mechanism for multi-agent orchestration.
 
-**You don't need to add it manually** — it's automatically available when an agent has `sub_agents` configured.
+**You don't need to add it manually** — it's automatically available when an agent has `subagents` configured.
 
 ## Configuration
 
-The tool is enabled implicitly when `sub_agents` is set:
+The tool is enabled implicitly when `subagents` is set:
 
 ```yaml
 agents:
@@ -24,7 +24,9 @@ agents:
     model: openai/gpt-4o
     description: Coordinates work across specialists
     instruction: Analyze requests and delegate to the right specialist.
-    sub_agents: [developer, researcher]
+    subagents:
+      - agent: developer
+      - agent: researcher
 
   developer:
     model: anthropic/claude-sonnet-4-5
@@ -51,7 +53,7 @@ The `transfer_task` tool takes three parameters:
 
 | Parameter         | Type   | Required | Description                                                                                 |
 | ----------------- | ------ | -------- | ------------------------------------------------------------------------------------------- |
-| `agent`           | string | ✓        | Name of the sub-agent to delegate to. Must be listed under the caller's `sub_agents`.        |
+| `agent`           | string | ✓        | Name of the sub-agent to delegate to. Must be listed under the caller's `subagents`.        |
 | `task`            | string | ✓        | Clear, concise description of the task the sub-agent should achieve.                        |
 | `expected_output` | string | ✓        | Description of the result/format the caller expects back.                                   |
 
