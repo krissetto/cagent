@@ -239,12 +239,16 @@ type LocalRuntime struct {
 
 	fallback *fallbackExecutor
 
-	// observers receive every event the runtime produces, in
-	// registration order. Built up via [WithEventObserver] during
-	// construction; read-only afterwards. Always contains at least one
-	// entry: the auto-registered [PersistenceObserver] for the
-	// configured session store. See [EventObserver] for the contract.
+	// The runtime may attach a SessionRecorder separately as the exclusive store
+	// writer; custom observers remain source-compatible but are no longer used
+	// for built-in persistence.
 	observers []EventObserver
+
+	eventBus     *EventBus
+	recorder     *SessionRecorder
+	liveSessions *liveSessionRegistry
+	childQueues  map[string]sessionQueues
+	queuesMu     sync.Mutex
 
 	// fallback owns the model-fallback chain (primary + configured
 	// fallbacks), per-attempt retry/backoff for transient errors, and
@@ -516,6 +520,9 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 		fallback:               newFallbackExecutor(),
 		now:                    time.Now,
 		telemetry:              defaultTelemetry{},
+		eventBus:               NewEventBus(),
+		liveSessions:           newLiveSessionRegistry(),
+		childQueues:            make(map[string]sessionQueues),
 		maxOverflowCompactions: defaultMaxOverflowCompactions,
 	}
 	r.bgAgents = agenttool.NewHandler(r)
@@ -609,8 +616,11 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 	// (possibly user-supplied) session store. It runs first in the
 	// observer chain so any user-supplied observers see the same view
 	// of the session that future RunStream calls and store reads will.
-	if obs := newPersistenceObserver(r.sessionStore); obs != nil {
-		r.observers = append([]EventObserver{obs}, r.observers...)
+	if r.sessionStore != nil {
+		if _, inMemory := r.sessionStore.(*session.InMemorySessionStore); !inMemory {
+			r.recorder = NewSessionRecorder(r.sessionStore)
+			r.eventBus.AddGlobalObserver(r.recorder.Handle)
+		}
 	}
 
 	slog.Debug("Creating new runtime", "agent", r.agents.Name(), "available_agents", agents.Size())
@@ -996,6 +1006,9 @@ func (r *LocalRuntime) SessionStore() session.Store {
 // when their process is shutting down.
 func (r *LocalRuntime) Close() error {
 	r.bgAgents.StopAll()
+	if r.recorder != nil {
+		r.recorder.Close()
+	}
 	return nil
 }
 
@@ -1308,7 +1321,8 @@ func (r *LocalRuntime) Resume(_ context.Context, req ResumeRequest) {
 // running agent loop. The message will be picked up after the current batch
 // of tool calls finishes but before the loop checks whether to stop.
 func (r *LocalRuntime) Steer(msg QueuedMessage) error {
-	if !r.steerQueue.Enqueue(context.Background(), msg) {
+	queues := r.queuesFor(nil)
+	if !queues.steer.Enqueue(context.Background(), msg) {
 		return errors.New("steer queue full")
 	}
 	return nil
@@ -1318,21 +1332,24 @@ func (r *LocalRuntime) Steer(msg QueuedMessage) error {
 // finishes. Unlike Steer, follow-ups are popped one at a time and each gets
 // a full undivided agent turn.
 func (r *LocalRuntime) FollowUp(msg QueuedMessage) error {
-	if !r.followUpQueue.Enqueue(context.Background(), msg) {
+	queues := r.queuesFor(nil)
+	if !queues.followUp.Enqueue(context.Background(), msg) {
 		return errors.New("follow-up queue full")
 	}
+	r.publishQueueSnapshot("", queues.followUp)
 	return nil
 }
 
 func (r *LocalRuntime) QueueStatus() QueueStatus {
+	queues := r.queuesFor(nil)
 	status := QueueStatus{}
-	if steerQ, ok := r.steerQueue.(*inMemoryMessageQueue); ok {
-		status.SteerDepth = len(steerQ.ch)
-		status.SteerCapacity = cap(steerQ.ch)
+	if steerQ, ok := queues.steer.(*inMemoryMessageQueue); ok {
+		status.SteerDepth = len(steerQ.Snapshot())
+		status.SteerCapacity = steerQ.capacity
 	}
-	if followupQ, ok := r.followUpQueue.(*inMemoryMessageQueue); ok {
-		status.FollowupDepth = len(followupQ.ch)
-		status.FollowupCapacity = cap(followupQ.ch)
+	if followupQ, ok := queues.followUp.(*inMemoryMessageQueue); ok {
+		status.FollowupDepth = len(followupQ.Snapshot())
+		status.FollowupCapacity = followupQ.capacity
 	}
 	return status
 }

@@ -116,7 +116,7 @@ func TestObserver_SeesEveryEventBeforeCaller(t *testing.T) {
 // ordering contract: observers are invoked in the order they were
 // registered. This matters for chained pipelines where a downstream
 // observer relies on an upstream one's side effects (e.g. the stock
-// PersistenceObserver writes to the store first, then a mirror
+// SessionRecorder writes to the store first, then a mirror
 // observer reads what was just written).
 func TestObserver_MultipleObserversFireInRegistrationOrder(t *testing.T) {
 	t.Parallel()
@@ -181,9 +181,9 @@ func TestObserver_NilOptIsIgnored(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// The auto-registered PersistenceObserver counts as one entry, so
-	// observers must contain exactly one element (not two).
-	assert.Len(t, r.observers, 1, "nil observer must not be appended")
+	// Nil observers are ignored; built-in persistence is wired separately via
+	// SessionRecorder rather than the observer chain.
+	assert.Empty(t, r.observers, "nil observer must not be appended")
 }
 
 // fnObserver adapts function values to the [EventObserver] interface

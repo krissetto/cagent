@@ -40,11 +40,12 @@ func newAgentContext(agentName string) AgentContext {
 type UserMessageEvent struct {
 	AgentContext
 
-	Type            string             `json:"type"`
-	Message         string             `json:"message"`
-	MultiContent    []chat.MessagePart `json:"multi_content,omitempty"`
-	SessionID       string             `json:"session_id"`
-	SessionPosition int                `json:"session_position"` // Index in session.Messages, -1 if unknown
+	Type            string              `json:"type"`
+	Message         string              `json:"message"`
+	MultiContent    []chat.MessagePart  `json:"multi_content,omitempty"`
+	SessionID       string              `json:"session_id"`
+	SessionPosition int                 `json:"session_position"` // Index in session.Messages, -1 if unknown
+	Kind            session.MessageKind `json:"kind,omitempty"`
 }
 
 func UserMessage(message, sessionID string, multiContent []chat.MessagePart, sessionPos ...int) Event {
@@ -60,6 +61,14 @@ func UserMessage(message, sessionID string, multiContent []chat.MessagePart, ses
 		SessionPosition: pos,
 		AgentContext:    newAgentContext(""),
 	}
+}
+
+func TypedUserMessage(kind session.MessageKind, message, sessionID string, multiContent []chat.MessagePart, sessionPos ...int) Event {
+	ev := UserMessage(message, sessionID, multiContent, sessionPos...)
+	if u, ok := ev.(*UserMessageEvent); ok {
+		u.Kind = kind
+	}
+	return ev
 }
 
 func (e *UserMessageEvent) GetSessionID() string { return e.SessionID }
@@ -758,19 +767,25 @@ func HookBlocked(toolCall tools.ToolCall, toolDefinition tools.Tool, message, ag
 type MessageAddedEvent struct {
 	AgentContext
 
-	Type      string           `json:"type"`
-	SessionID string           `json:"session_id"`
-	Message   *session.Message `json:"-"`
+	Type            string           `json:"type"`
+	SessionID       string           `json:"session_id"`
+	SessionPosition int              `json:"session_position"`
+	Message         *session.Message `json:"message,omitempty"`
 }
 
 func (e *MessageAddedEvent) GetSessionID() string { return e.SessionID }
 
-func MessageAdded(sessionID string, msg *session.Message, agentName string) Event {
+func MessageAdded(sessionID string, msg *session.Message, agentName string, sessionPos ...int) Event {
+	pos := -1
+	if len(sessionPos) > 0 {
+		pos = sessionPos[0]
+	}
 	return &MessageAddedEvent{
-		Type:         "message_added",
-		SessionID:    sessionID,
-		Message:      msg,
-		AgentContext: newAgentContext(agentName),
+		Type:            "message_added",
+		SessionID:       sessionID,
+		SessionPosition: pos,
+		Message:         msg,
+		AgentContext:    newAgentContext(agentName),
 	}
 }
 
@@ -790,6 +805,26 @@ func SubSessionCompleted(parentSessionID string, subSession any, agentName strin
 		ParentSessionID: parentSessionID,
 		SubSession:      subSession,
 		AgentContext:    newAgentContext(agentName),
+	}
+}
+
+// SessionQueueEvent is emitted when a session's pending follow-up queue changes.
+type SessionQueueEvent struct {
+	Type      string   `json:"type"`
+	SessionID string   `json:"session_id"`
+	Count     int      `json:"count"`
+	Previews  []string `json:"previews,omitempty"`
+}
+
+func (e *SessionQueueEvent) GetAgentName() string { return "" }
+func (e *SessionQueueEvent) GetSessionID() string { return e.SessionID }
+
+func SessionQueue(sessionID string, count int, previews []string) Event {
+	return &SessionQueueEvent{
+		Type:      "session_queue",
+		SessionID: sessionID,
+		Count:     count,
+		Previews:  previews,
 	}
 }
 
