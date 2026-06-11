@@ -567,6 +567,20 @@
             "type": "string"
           }
         },
+        "subagents": {
+          "type": "array",
+          "description": "Runtime-managed subagent specs with optional per-agent TTL.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "agent": { "type": "string" },
+              "description": { "type": "string" },
+              "ttl": { "type": "string" }
+            }
+          }
+        },
         "handoffs": {
           "type": "array",
           "description": "List of agents this agent can hand off the conversation to. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:agentcatalog/review-pr'). External agents without an explicit name are named after their last path segment.",

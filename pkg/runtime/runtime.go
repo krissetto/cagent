@@ -247,6 +247,7 @@ type LocalRuntime struct {
 	eventBus     *EventBus
 	recorder     *SessionRecorder
 	liveSessions *liveSessionRegistry
+	subagents    *SubagentManager
 	childQueues  map[string]sessionQueues
 	queuesMu     sync.Mutex
 
@@ -607,6 +608,8 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 	// This avoids concurrent map writes when multiple goroutines call
 	// RunStream on the same runtime (e.g. background agent sessions).
 	r.registerDefaultTools()
+	r.subagents = NewSubagentManager(r)
+	r.registerSubagentTools()
 
 	// Pre-build per-agent hook executors now that workingDir, env and
 	// the team are finalized. Read-only afterwards.

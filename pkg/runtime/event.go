@@ -808,6 +808,34 @@ func SubSessionCompleted(parentSessionID string, subSession any, agentName strin
 	}
 }
 
+// ParentIdleEvent is emitted when a parent would otherwise stop but has live child work.
+type ParentIdleEvent struct {
+	Type      string   `json:"type"`
+	SessionID string   `json:"session_id"`
+	Count     int      `json:"count"`
+	IDs       []string `json:"ids"`
+}
+
+func (e *ParentIdleEvent) GetAgentName() string { return "" }
+func (e *ParentIdleEvent) GetSessionID() string { return e.SessionID }
+func ParentIdle(sessionID string, count int, ids []string) Event {
+	return &ParentIdleEvent{Type: "parent_idle", SessionID: sessionID, Count: count, IDs: ids}
+}
+
+// ParentResumeEvent is emitted when a parent resumes after waiting on child work.
+type ParentResumeEvent struct {
+	Type      string   `json:"type"`
+	SessionID string   `json:"session_id"`
+	Count     int      `json:"count"`
+	IDs       []string `json:"ids"`
+}
+
+func (e *ParentResumeEvent) GetAgentName() string { return "" }
+func (e *ParentResumeEvent) GetSessionID() string { return e.SessionID }
+func ParentResume(sessionID string, count int, ids []string) Event {
+	return &ParentResumeEvent{Type: "parent_resume", SessionID: sessionID, Count: count, IDs: ids}
+}
+
 // SessionQueueEvent is emitted when a session's pending follow-up queue changes.
 type SessionQueueEvent struct {
 	Type      string   `json:"type"`

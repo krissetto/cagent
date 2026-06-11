@@ -429,6 +429,7 @@ type AgentConfig struct {
 	Instruction    string          `json:"instruction,omitempty"`
 	Harness        *HarnessConfig  `json:"harness,omitempty"`
 	SubAgents      []string        `json:"sub_agents,omitempty"`
+	SubagentSpecs  []SubagentSpec  `json:"subagents,omitempty" yaml:"subagents,omitempty"`
 	Handoffs       []string        `json:"handoffs,omitempty"`
 
 	AddDate            bool `json:"add_date,omitempty"`
@@ -465,6 +466,13 @@ type AgentConfig struct {
 	UseSkills   []string     `json:"use_skills,omitempty"`
 	Hooks       *HooksConfig `json:"hooks,omitempty"`
 	Cache       *CacheConfig `json:"cache,omitempty"`
+}
+
+type SubagentSpec struct {
+	Name        string `json:"name,omitempty" yaml:"name,omitempty"`
+	Agent       string `json:"agent,omitempty" yaml:"agent,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	TTL         string `json:"ttl,omitempty" yaml:"ttl,omitempty"`
 }
 
 // CacheConfig configures the agent's response cache. When set and Enabled
