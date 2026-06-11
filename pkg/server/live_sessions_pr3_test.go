@@ -26,6 +26,26 @@ func (r *liveTreeRuntime) LiveSessionTree(context.Context, string) (*runtime.Liv
 	return r.tree, nil
 }
 
+func (r *liveTreeRuntime) LiveChildSession(string) (*session.Session, bool) { return nil, false }
+
+func (r *liveTreeRuntime) AttachLiveSession(context.Context, string) (<-chan runtime.Event, func(), error) {
+	return nil, nil, runtime.ErrLiveSessionUnavailable
+}
+
+func (r *liveTreeRuntime) AttachLiveSessionWithSnapshot(context.Context, string, int) ([]runtime.Event, <-chan runtime.Event, error) {
+	return nil, nil, runtime.ErrLiveSessionUnavailable
+}
+
+func (r *liveTreeRuntime) SteerSessionByID(string, runtime.QueuedMessage) error { return nil }
+
+func (r *liveTreeRuntime) FollowUpSessionByID(string, runtime.QueuedMessage) error { return nil }
+
+func (r *liveTreeRuntime) InterruptSessionByID(string) error { return nil }
+
+func (r *liveTreeRuntime) CloseSessionByID(string) error { return nil }
+
+func (r *liveTreeRuntime) StopSessionByID(string) error { return nil }
+
 func TestServerGetLiveSessionTreeEndpoint(t *testing.T) {
 	t.Parallel()
 
