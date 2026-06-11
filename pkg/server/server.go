@@ -82,6 +82,9 @@ func (s *Server) registerRoutes() {
 	group.POST("/sessions/:id/followup", s.followUpSession)
 	group.GET("/sessions/:id/events", s.sessionEvents)
 	group.GET("/sessions/:id/tree", s.getLiveSessionTree)
+	group.POST("/live-sessions/:id/close", s.closeLiveSession)
+	group.POST("/live-sessions/:id/interrupt", s.interruptLiveSession)
+	group.POST("/live-sessions/:id/stop", s.stopLiveSession)
 	group.POST("/sessions/:id/messages", s.addMessage)
 	group.PATCH("/sessions/:id/messages/:msg_id", s.updateMessage)
 	group.POST("/sessions/:id/summaries", s.addSummary)
@@ -501,8 +504,11 @@ func (s *Server) steerSession(c echo.Context) error {
 // sessionEvents streams events for a session as Server-Sent Events. The
 // stream lasts until the client disconnects or the session ends.
 func (s *Server) sessionEvents(c echo.Context) error {
-	if _, ok := s.sm.GetEventSource(c.Param("id")); !ok {
-		return echo.NewHTTPError(http.StatusNotFound, "no event source for session")
+	sessionID := c.Param("id")
+	if _, ok := s.sm.GetEventSource(sessionID); !ok {
+		if _, err := s.sm.liveEventSource(sessionID); err != nil {
+			return echo.NewHTTPError(http.StatusNotFound, "no event source for session")
+		}
 	}
 
 	c.Response().Header().Set("Content-Type", "text/event-stream")
@@ -511,7 +517,7 @@ func (s *Server) sessionEvents(c echo.Context) error {
 	c.Response().WriteHeader(http.StatusOK)
 	c.Response().Flush()
 
-	s.sm.StreamEvents(c.Request().Context(), c.Param("id"), func(event any) {
+	s.sm.StreamEvents(c.Request().Context(), sessionID, func(event any) {
 		data, err := json.Marshal(event)
 		if err != nil {
 			return

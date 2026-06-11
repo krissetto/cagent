@@ -36,6 +36,8 @@ type activeRuntimes struct {
 	streaming sync.Mutex // Held while a RunStream is in progress; serialises concurrent requests
 }
 
+const defaultLiveSessionEventBuffer = 64
+
 // SessionManager manages sessions for HTTP and Connect-RPC servers.
 type SessionManager struct {
 	runtimeSessions *concurrent.Map[string, *activeRuntimes]
@@ -118,7 +120,28 @@ func (sm *SessionManager) GetEventSource(sessionID string) (EventSource, bool) {
 func (sm *SessionManager) StreamEvents(ctx context.Context, sessionID string, send func(any)) bool {
 	src, ok := sm.eventSources.Load(sessionID)
 	if !ok {
-		return false
+		liveSrc, err := sm.liveEventSource(sessionID)
+		if err != nil {
+			return false
+		}
+		snapshot, events, err := liveSrc.AttachLiveSessionWithSnapshot(ctx, sessionID, defaultLiveSessionEventBuffer)
+		if err != nil {
+			return false
+		}
+		for _, ev := range snapshot {
+			send(ev)
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return true
+			case ev, ok := <-events:
+				if !ok {
+					return true
+				}
+				send(ev)
+			}
+		}
 	}
 
 	if rs, ok := sm.runtimeSessions.Load(sessionID); ok && rs.done != nil {
@@ -481,10 +504,10 @@ func (sm *SessionManager) ResumeSession(ctx context.Context, sessionID, confirma
 // session. The messages are picked up by the agent loop after the current tool
 // calls finish but before the next LLM call. Returns an error if the session
 // is not actively running or if the steer buffer is full.
-func (sm *SessionManager) SteerSession(_ context.Context, sessionID string, messages []api.Message) error {
+func (sm *SessionManager) SteerSession(ctx context.Context, sessionID string, messages []api.Message) error {
 	rt, exists := sm.runtimeSessions.Load(sessionID)
 	if !exists {
-		return ErrSessionNotRunning
+		return sm.SteerLiveSession(ctx, sessionID, messages)
 	}
 
 	for _, msg := range messages {
@@ -506,10 +529,10 @@ func (sm *SessionManager) SteerSession(_ context.Context, sessionID string, mess
 // If no stream is currently running (agent is idle), the messages are still
 // enqueued but will not be consumed until the next RunSession starts a new
 // stream. The returned boolean indicates whether a stream is active.
-func (sm *SessionManager) FollowUpSession(_ context.Context, sessionID string, messages []api.Message) (streaming bool, err error) {
+func (sm *SessionManager) FollowUpSession(ctx context.Context, sessionID string, messages []api.Message) (streaming bool, err error) {
 	rt, exists := sm.runtimeSessions.Load(sessionID)
 	if !exists {
-		return false, ErrSessionNotRunning
+		return sm.FollowUpLiveSession(ctx, sessionID, messages)
 	}
 
 	for _, msg := range messages {

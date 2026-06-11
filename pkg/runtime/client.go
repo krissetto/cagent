@@ -321,6 +321,21 @@ func (c *Client) FollowUpSession(ctx context.Context, sessionID string, messages
 	return c.doRequest(ctx, http.MethodPost, "/api/sessions/"+sessionID+"/followup", req, nil)
 }
 
+// CloseLiveSession asks a live session to close cleanly.
+func (c *Client) CloseLiveSession(ctx context.Context, sessionID string) error {
+	return c.doRequest(ctx, http.MethodPost, "/api/live-sessions/"+sessionID+"/close", nil, nil)
+}
+
+// InterruptLiveSession cancels the currently-running turn of a live session.
+func (c *Client) InterruptLiveSession(ctx context.Context, sessionID string) error {
+	return c.doRequest(ctx, http.MethodPost, "/api/live-sessions/"+sessionID+"/interrupt", nil, nil)
+}
+
+// StopLiveSession forcibly stops a live session.
+func (c *Client) StopLiveSession(ctx context.Context, sessionID string) error {
+	return c.doRequest(ctx, http.MethodPost, "/api/live-sessions/"+sessionID+"/stop", nil, nil)
+}
+
 // DeleteSession deletes a session by ID
 func (c *Client) DeleteSession(ctx context.Context, id string) error {
 	return c.doRequest(ctx, "DELETE", "/api/sessions/"+id, nil, nil)

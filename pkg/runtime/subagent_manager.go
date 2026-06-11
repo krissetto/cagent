@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tools"
 )
@@ -255,33 +256,65 @@ func (m *SubagentManager) runChild(ctx context.Context, h *subagentHandle) {
 		case <-h.stop:
 			return
 		case prompt := <-h.inbox:
-			if !idle.Stop() {
-				select {
-				case <-idle.C:
-				default:
-				}
+			h.runPrompt(ctx, m, prompt, idle)
+		case <-h.wake:
+			if prompt, ok := m.dequeueChildPrompt(ctx, h); ok {
+				h.runPrompt(ctx, m, prompt, idle)
 			}
-			h.mu.Lock()
-			h.state = "running"
-			h.mu.Unlock()
-			h.sess.AddMessage(session.UserMessage(prompt))
-			stream := m.r.RunStream(ctx, h.sess)
-			for ev := range stream {
-				h.appendEvent(ev)
-			}
-			// Drain any queued child inbox before notifying the parent.
-			if len(h.inbox) > 0 {
-				continue
-			}
-			m.enqueueEnvelope(h, fmt.Sprintf("Subagent %s (%s) finished. Use subagent_inspect for full output.", h.agentName, h.shortID))
-			h.mu.Lock()
-			h.state = "waiting"
-			h.mu.Unlock()
-			idle.Reset(h.ttl)
 		case <-idle.C:
 			return
 		}
 	}
+}
+
+func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prompt string, idle *time.Timer) {
+	if !idle.Stop() {
+		select {
+		case <-idle.C:
+		default:
+		}
+	}
+	h.mu.Lock()
+	h.state = "running"
+	h.mu.Unlock()
+	h.sess.AddMessage(session.UserMessage(prompt))
+	stream := m.r.RunStream(ctx, h.sess)
+	for ev := range stream {
+		h.appendEvent(ev)
+	}
+	// Drain any queued child inbox before notifying the parent.
+	if len(h.inbox) > 0 {
+		return
+	}
+	m.enqueueEnvelope(h, fmt.Sprintf("Subagent %s (%s) finished. Use subagent_inspect for full output.", h.agentName, h.shortID))
+	h.mu.Lock()
+	h.state = "waiting"
+	h.mu.Unlock()
+	idle.Reset(h.ttl)
+}
+
+func (m *SubagentManager) dequeueChildPrompt(ctx context.Context, h *subagentHandle) (string, bool) {
+	queues := m.r.queuesFor(h.sess)
+	if msg, ok := queues.steer.Dequeue(ctx); ok {
+		return queuedMessageContent(msg), true
+	}
+	if msg, ok := queues.followUp.Dequeue(ctx); ok {
+		m.r.publishQueueSnapshot(h.id, queues.followUp)
+		return queuedMessageContent(msg), true
+	}
+	return "", false
+}
+
+func queuedMessageContent(msg QueuedMessage) string {
+	if msg.Content != "" {
+		return msg.Content
+	}
+	for _, part := range msg.MultiContent {
+		if part.Type == chat.MessagePartTypeText && part.Text != "" {
+			return part.Text
+		}
+	}
+	return ""
 }
 
 func (m *SubagentManager) enqueueEnvelope(h *subagentHandle, text string) {
@@ -338,6 +371,28 @@ func (m *SubagentManager) resolve(parent *session.Session, ref string) (*subagen
 	}
 	if match == nil {
 		return nil, errors.New("subagent not found")
+	}
+	return match, nil
+}
+
+func (m *SubagentManager) ResolveSession(ref string) (*subagentHandle, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, errors.New("session id required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var match *subagentHandle
+	for _, h := range m.all {
+		if h.id == ref || strings.HasPrefix(h.id, ref) || h.shortID == ref {
+			if match != nil {
+				return nil, errors.New("ambiguous session id")
+			}
+			match = h
+		}
+	}
+	if match == nil {
+		return nil, ErrLiveSessionUnavailable
 	}
 	return match, nil
 }
@@ -433,6 +488,19 @@ type SubagentInfo struct {
 	AgentName string    `json:"agent_name"`
 	State     string    `json:"state"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+func (h *subagentHandle) stopNow() error {
+	select {
+	case <-h.stop:
+	default:
+		close(h.stop)
+	}
+	return nil
+}
+
+func (h *subagentHandle) finalize() error {
+	return h.stopNow()
 }
 
 func (h *subagentHandle) info() SubagentInfo {
