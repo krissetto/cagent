@@ -173,9 +173,18 @@ type Session struct {
 	AgentName string `json:"-"`
 
 	// ParentID indicates this is a sub-session created by task transfer.
-	// Sub-sessions are not persisted as standalone entries; they are embedded
-	// within the parent session's Messages array.
+	// Sub-sessions are persisted as standalone entries with parent_id set and
+	// referenced from their parent's Messages array.
 	ParentID string `json:"-"`
+
+	// RootID identifies the root session for this runtime tree. Root sessions
+	// have RootID equal to ID. Existing sessions without this field are treated
+	// as their own root when loaded or persisted.
+	RootID string `json:"root_id,omitempty"`
+
+	// RuntimeManaged indicates this session was created through the unified
+	// runtime-managed subagent creation path.
+	RuntimeManaged bool `json:"runtime_managed,omitempty"`
 
 	// MessageUsageHistory stores per-message usage data for remote mode.
 	// In remote mode, messages are managed server-side, so we track usage separately.
@@ -204,6 +213,15 @@ type PermissionsConfig struct {
 	Deny []string `json:"deny,omitempty"`
 }
 
+// MessageKind classifies special message subtypes while preserving the
+// historic zero-value behavior for ordinary messages.
+type MessageKind int
+
+const (
+	MessageKindMessage MessageKind = iota
+	MessageKindSubagentEnvelope
+)
+
 // Message is a message from an agent
 type Message struct {
 	// ID is the database ID of the message (used for persistence tracking)
@@ -214,11 +232,22 @@ type Message struct {
 	// like when an agent transfers a task to another agent - new session is created with a default user message, but this shouldn't be shown to the user.
 	// Such messages should be marked as true
 	Implicit bool `json:"implicit,omitempty"`
+	// Kind classifies additive message subtypes. The zero value preserves the
+	// previous behavior for ordinary messages.
+	Kind MessageKind `json:"kind,omitempty"`
 }
 
 func ImplicitUserMessage(content string) *Message {
 	msg := UserMessage(content)
 	msg.Implicit = true
+	return msg
+}
+
+// SubagentEnvelopeMessage creates an implicit user message tagged as a
+// subagent envelope. Use this instead of manually stamping Implicit and Kind.
+func SubagentEnvelopeMessage(content string) *Message {
+	msg := ImplicitUserMessage(content)
+	msg.Kind = MessageKindSubagentEnvelope
 	return msg
 }
 
@@ -759,6 +788,20 @@ func WithParentID(parentID string) Opt {
 	}
 }
 
+// WithRootID sets the root session ID for this session tree.
+func WithRootID(rootID string) Opt {
+	return func(s *Session) {
+		s.RootID = rootID
+	}
+}
+
+// WithRuntimeManaged marks this session as runtime-managed.
+func WithRuntimeManaged(runtimeManaged bool) Opt {
+	return func(s *Session) {
+		s.RuntimeManaged = runtimeManaged
+	}
+}
+
 // WithID sets the session ID. If not set, a UUID will be generated.
 func WithID(id string) Opt {
 	return func(s *Session) {
@@ -789,6 +832,32 @@ func WithAttachedFiles(paths []string) Opt {
 // IsSubSession returns true if this session is a sub-session (has a parent).
 func (s *Session) IsSubSession() bool {
 	return s.ParentID != ""
+}
+
+// EffectiveRootID returns the durable root ID for the session, defaulting to
+// the session's own ID for root sessions and pre-topology sessions.
+func (s *Session) EffectiveRootID() string {
+	if s.RootID != "" {
+		return s.RootID
+	}
+	return s.ID
+}
+
+// NewRuntimeManagedSubSession creates a runtime-managed child session. This is
+// the unified construction path for runtime-managed subagents: it links the
+// child to the parent, carries the parent's root tree, and marks the child as
+// runtime-managed.
+func NewRuntimeManagedSubSession(parent *Session, opts ...Opt) *Session {
+	if parent == nil {
+		panic("session: nil parent for runtime-managed sub-session")
+	}
+	childOpts := []Opt{
+		WithParentID(parent.ID),
+		WithRootID(parent.EffectiveRootID()),
+		WithRuntimeManaged(true),
+	}
+	childOpts = append(childOpts, opts...)
+	return New(childOpts...)
 }
 
 // MessageCount returns the number of items that contain a message.

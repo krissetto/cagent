@@ -21,6 +21,7 @@ import (
 var (
 	ErrEmptyID       = errors.New("session ID cannot be empty")
 	ErrNotFound      = errors.New("session not found")
+	ErrPositionGap   = errors.New("session item position gap")
 	ErrNewerDatabase = errors.New("session database was created by a newer version of docker-agent")
 )
 
@@ -117,6 +118,19 @@ type Store interface {
 	Close() error
 }
 
+// TreeStore is implemented by stores that can query durable session topology.
+type TreeStore interface {
+	GetChildSessions(ctx context.Context, parentSessionID string) ([]*Session, error)
+	GetSessionTree(ctx context.Context, rootID string) ([]*Session, error)
+	ResolveRootID(ctx context.Context, sessionID string) (string, error)
+}
+
+// PositionalStore is implemented by stores that support idempotent writes at a
+// caller-specified item position.
+type PositionalStore interface {
+	AddMessageAt(ctx context.Context, sessionID string, position int, msg *Message) (int64, error)
+}
+
 type InMemorySessionStore struct {
 	sessions  *concurrent.Map[string, *Session]
 	messageID int64 // simple counter for message IDs
@@ -132,6 +146,7 @@ func (s *InMemorySessionStore) AddSession(_ context.Context, session *Session) e
 	if session.ID == "" {
 		return ErrEmptyID
 	}
+	ensureTopology(session)
 	s.sessions.Store(session.ID, session)
 	return nil
 }
@@ -221,6 +236,8 @@ func (s *InMemorySessionStore) UpdateSession(_ context.Context, session *Session
 		CustomModelsUsed:    cloneStringSlice(session.CustomModelsUsed),
 		AttachedFiles:       slices.Clone(session.AttachedFiles),
 		ParentID:            session.ParentID,
+		RootID:              session.EffectiveRootID(),
+		RuntimeManaged:      session.RuntimeManaged,
 	}
 	session.mu.RUnlock()
 
@@ -270,6 +287,35 @@ func (s *InMemorySessionStore) AddMessage(_ context.Context, sessionID string, m
 	return s.messageID, nil
 }
 
+func (s *InMemorySessionStore) AddMessageAt(_ context.Context, sessionID string, position int, msg *Message) (int64, error) {
+	if sessionID == "" {
+		return 0, ErrEmptyID
+	}
+	if position < 0 {
+		return 0, errors.New("position must be non-negative")
+	}
+	session, exists := s.sessions.Load(sessionID)
+	if !exists {
+		return 0, ErrNotFound
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if position < len(session.Messages) {
+		return 0, nil // insert-or-ignore semantics
+	}
+	if position > len(session.Messages) {
+		return 0, ErrPositionGap
+	}
+
+	stored := cloneMessage(msg)
+	s.messageID++
+	stored.ID = s.messageID
+	session.Messages = append(session.Messages, NewMessageItem(stored))
+	return s.messageID, nil
+}
+
 // UpdateMessage updates an existing message by its ID.
 func (s *InMemorySessionStore) UpdateMessage(_ context.Context, messageID int64, msg *Message) error {
 	// Create a deep copy of the message to avoid mutating the caller's pointer,
@@ -308,10 +354,55 @@ func (s *InMemorySessionStore) AddSubSession(_ context.Context, parentSessionID 
 	if !exists {
 		return ErrNotFound
 	}
-	subSession.ParentID = parentSessionID
+	linkChildSession(parent, subSession)
 	s.sessions.Store(subSession.ID, subSession)
 	parent.AddSubSession(subSession)
 	return nil
+}
+
+func (s *InMemorySessionStore) GetChildSessions(_ context.Context, parentSessionID string) ([]*Session, error) {
+	if parentSessionID == "" {
+		return nil, ErrEmptyID
+	}
+	var children []*Session
+	s.sessions.Range(func(_ string, value *Session) bool {
+		if value.ParentID == parentSessionID {
+			children = append(children, value)
+		}
+		return true
+	})
+	slices.SortFunc(children, func(a, b *Session) int {
+		return a.CreatedAt.Compare(b.CreatedAt)
+	})
+	return children, nil
+}
+
+func (s *InMemorySessionStore) GetSessionTree(_ context.Context, rootID string) ([]*Session, error) {
+	if rootID == "" {
+		return nil, ErrEmptyID
+	}
+	var tree []*Session
+	s.sessions.Range(func(_ string, value *Session) bool {
+		if value.EffectiveRootID() == rootID {
+			tree = append(tree, value)
+		}
+		return true
+	})
+	slices.SortFunc(tree, func(a, b *Session) int {
+		return a.CreatedAt.Compare(b.CreatedAt)
+	})
+	return tree, nil
+}
+
+func (s *InMemorySessionStore) ResolveRootID(_ context.Context, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", ErrEmptyID
+	}
+	session, exists := s.sessions.Load(sessionID)
+	if !exists {
+		return "", ErrNotFound
+	}
+	return session.EffectiveRootID(), nil
 }
 
 // AddSummary adds a summary item to a session at the next position.
@@ -341,19 +432,34 @@ type SQLiteSessionStore struct {
 	db *sql.DB
 }
 
+// linkChildSession applies durable topology metadata to a child session based
+// on its parent. The caller remains responsible for setting RuntimeManaged when
+// the child was created through the runtime-managed subagent API; AddSubSession
+// preserves that marker for legacy/non-runtime sub-session callers.
+func linkChildSession(parent, child *Session) {
+	child.ParentID = parent.ID
+	child.RootID = parent.EffectiveRootID()
+}
+
+func ensureTopology(session *Session) {
+	if session.RootID == "" {
+		session.RootID = session.ID
+	}
+}
+
 // sessionSelectColumns is the canonical SELECT list for the sessions table.
 // The column order matches what scanSession expects; all read paths use this
 // constant so that adding a column requires updating exactly one place.
-const sessionSelectColumns = `id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message, max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides, custom_models_used, thinking, parent_id`
+const sessionSelectColumns = `id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message, max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides, custom_models_used, thinking, parent_id, root_id, runtime_managed`
 
 // sessionPersistedFields holds the encoded form of a Session's JSON-bearing
-// columns plus the SQL representation of parent_id (nil for the empty
-// string, which keeps the foreign key constraint happy).
+// columns plus SQL-ready topology values.
 type sessionPersistedFields struct {
 	PermissionsJSON         string
 	AgentModelOverridesJSON string
 	CustomModelsUsedJSON    string
 	ParentID                any // string or nil
+	RootID                  string
 }
 
 // sessionPersistedFieldsOf marshals the JSON-bearing columns of session and
@@ -393,6 +499,7 @@ func sessionPersistedFieldsOf(session *Session) (sessionPersistedFields, error) 
 	if session.ParentID != "" {
 		f.ParentID = session.ParentID
 	}
+	f.RootID = session.EffectiveRootID()
 
 	return f, nil
 }
@@ -585,12 +692,12 @@ func (s *SQLiteSessionStore) AddSession(ctx context.Context, session *Session) e
 		`INSERT INTO sessions (
 			id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message,
 			max_iterations, working_dir, created_at, permissions, agent_model_overrides,
-			custom_models_used, thinking, parent_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			custom_models_used, thinking, parent_id, root_id, runtime_managed
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.ToolsApproved, session.InputTokens, session.OutputTokens, session.Title,
 		session.Cost, session.SendUserMessage, session.MaxIterations, session.WorkingDir,
 		session.CreatedAt.Format(time.RFC3339), fields.PermissionsJSON, fields.AgentModelOverridesJSON,
-		fields.CustomModelsUsedJSON, false, fields.ParentID)
+		fields.CustomModelsUsedJSON, false, fields.ParentID, fields.RootID, session.RuntimeManaged)
 	if err != nil {
 		return err
 	}
@@ -618,6 +725,7 @@ func scanSession(scanner interface {
 		workingDir              sql.NullString
 		permissionsJSON         sql.NullString
 		parentID                sql.NullString
+		rootID                  sql.NullString
 		agentModelOverridesJSON string
 		customModelsUsedJSON    string
 		createdAtStr            string
@@ -629,6 +737,7 @@ func scanSession(scanner interface {
 		&sess.Title, &sess.Cost, &sess.SendUserMessage, &sess.MaxIterations,
 		&workingDir, &createdAtStr, &sess.Starred, &permissionsJSON,
 		&agentModelOverridesJSON, &customModelsUsedJSON, &thinking, &parentID,
+		&rootID, &sess.RuntimeManaged,
 	)
 	if err != nil {
 		return nil, err
@@ -641,6 +750,8 @@ func scanSession(scanner interface {
 
 	sess.WorkingDir = workingDir.String
 	sess.ParentID = parentID.String
+	sess.RootID = rootID.String
+	ensureTopology(&sess)
 
 	if permissionsJSON.Valid && permissionsJSON.String != "" {
 		sess.Permissions = &PermissionsConfig{}
@@ -679,6 +790,7 @@ type sessionItemRow struct {
 	agentName      sql.NullString
 	messageJSON    sql.NullString
 	implicit       bool
+	kind           int
 	subsessionID   sql.NullString
 	summaryText    sql.NullString
 	firstKeptEntry int
@@ -689,7 +801,7 @@ type sessionItemRow struct {
 // loadSession when resolving sub-sessions inside a transaction.
 func (s *SQLiteSessionStore) loadSessionItems(ctx context.Context, q querier, sessionID string) ([]Item, error) {
 	rows, err := q.QueryContext(ctx,
-		`SELECT position, item_type, agent_name, message_json, implicit, subsession_id, summary_text, COALESCE(first_kept_entry, 0)
+		`SELECT position, item_type, agent_name, message_json, implicit, COALESCE(kind, 0), subsession_id, summary_text, COALESCE(first_kept_entry, 0)
 		 FROM session_items WHERE session_id = ? ORDER BY position`, sessionID)
 	if err != nil {
 		return nil, err
@@ -701,7 +813,7 @@ func (s *SQLiteSessionStore) loadSessionItems(ctx context.Context, q querier, se
 	var rawRows []sessionItemRow
 	for rows.Next() {
 		var row sessionItemRow
-		if err := rows.Scan(&row.position, &row.itemType, &row.agentName, &row.messageJSON, &row.implicit, &row.subsessionID, &row.summaryText, &row.firstKeptEntry); err != nil {
+		if err := rows.Scan(&row.position, &row.itemType, &row.agentName, &row.messageJSON, &row.implicit, &row.kind, &row.subsessionID, &row.summaryText, &row.firstKeptEntry); err != nil {
 			return nil, err
 		}
 		rawRows = append(rawRows, row)
@@ -728,6 +840,7 @@ func (s *SQLiteSessionStore) loadSessionItems(ctx context.Context, q querier, se
 					AgentName: row.agentName.String,
 					Message:   chatMsg,
 					Implicit:  row.implicit,
+					Kind:      MessageKind(row.kind),
 				},
 			})
 
@@ -850,6 +963,77 @@ func (s *SQLiteSessionStore) GetSessionSummaries(ctx context.Context) ([]Summary
 	return summaries, nil
 }
 
+func (s *SQLiteSessionStore) getSessionsByQuery(ctx context.Context, query string, args ...any) ([]*Session, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	var sessions []*Session
+	var scanErr error
+	func() {
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			session, err := scanSession(rows)
+			if err != nil {
+				scanErr = err
+				return
+			}
+			sessions = append(sessions, session)
+		}
+		if err := rows.Err(); err != nil {
+			scanErr = err
+		}
+	}()
+	if scanErr != nil {
+		return nil, scanErr
+	}
+
+	for _, session := range sessions {
+		session.Messages, err = s.loadSessionItems(ctx, s.db, session.ID)
+		if err != nil {
+			return nil, fmt.Errorf("loading session items: %w", err)
+		}
+	}
+	return sessions, nil
+}
+
+func (s *SQLiteSessionStore) GetChildSessions(ctx context.Context, parentSessionID string) ([]*Session, error) {
+	if parentSessionID == "" {
+		return nil, ErrEmptyID
+	}
+	return s.getSessionsByQuery(ctx,
+		"SELECT "+sessionSelectColumns+" FROM sessions WHERE parent_id = ? ORDER BY created_at ASC",
+		parentSessionID)
+}
+
+func (s *SQLiteSessionStore) GetSessionTree(ctx context.Context, rootID string) ([]*Session, error) {
+	if rootID == "" {
+		return nil, ErrEmptyID
+	}
+	return s.getSessionsByQuery(ctx,
+		"SELECT "+sessionSelectColumns+" FROM sessions WHERE root_id = ? ORDER BY created_at ASC",
+		rootID)
+}
+
+func (s *SQLiteSessionStore) ResolveRootID(ctx context.Context, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", ErrEmptyID
+	}
+	var rootID sql.NullString
+	err := s.db.QueryRowContext(ctx, "SELECT root_id FROM sessions WHERE id = ?", sessionID).Scan(&rootID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if rootID.String == "" {
+		return sessionID, nil
+	}
+	return rootID.String, nil
+}
+
 // DeleteSession deletes a session by ID
 func (s *SQLiteSessionStore) DeleteSession(ctx context.Context, id string) error {
 	if id == "" {
@@ -898,9 +1082,9 @@ func (s *SQLiteSessionStore) UpdateSession(ctx context.Context, session *Session
 		`INSERT INTO sessions (
 			id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message,
 			max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides,
-			custom_models_used, thinking, parent_id
+			custom_models_used, thinking, parent_id, root_id, runtime_managed
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   title = excluded.title,
 		   tools_approved = excluded.tools_approved,
@@ -915,11 +1099,13 @@ func (s *SQLiteSessionStore) UpdateSession(ctx context.Context, session *Session
 		   agent_model_overrides = excluded.agent_model_overrides,
 		   custom_models_used = excluded.custom_models_used,
 		   thinking = excluded.thinking,
-		   parent_id = excluded.parent_id`,
+		   parent_id = excluded.parent_id,
+		   root_id = excluded.root_id,
+		   runtime_managed = excluded.runtime_managed`,
 		session.ID, session.ToolsApproved, session.InputTokens, session.OutputTokens,
 		session.Title, session.Cost, session.SendUserMessage, session.MaxIterations, session.WorkingDir,
 		session.CreatedAt.Format(time.RFC3339), session.Starred, fields.PermissionsJSON, fields.AgentModelOverridesJSON,
-		fields.CustomModelsUsedJSON, false, fields.ParentID)
+		fields.CustomModelsUsedJSON, false, fields.ParentID, fields.RootID, session.RuntimeManaged)
 	if err != nil {
 		return err
 	}
@@ -972,9 +1158,9 @@ func (s *SQLiteSessionStore) AddMessage(ctx context.Context, sessionID string, m
 
 	// Insert a new message at the next position
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO session_items (session_id, position, item_type, agent_name, message_json, implicit)
-		 VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_items WHERE session_id = ?), 'message', ?, ?, ?)`,
-		sessionID, sessionID, msg.AgentName, string(msgJSON), msg.Implicit)
+		`INSERT INTO session_items (session_id, position, item_type, agent_name, message_json, implicit, kind)
+		 VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_items WHERE session_id = ?), 'message', ?, ?, ?, ?)`,
+		sessionID, sessionID, msg.AgentName, string(msgJSON), msg.Implicit, msg.Kind)
 	if err != nil {
 		return 0, fmt.Errorf("inserting message: %w", err)
 	}
@@ -988,6 +1174,61 @@ func (s *SQLiteSessionStore) AddMessage(ctx context.Context, sessionID string, m
 	return id, nil
 }
 
+// AddMessageAt inserts a message at the requested position with INSERT OR
+// IGNORE semantics backed by the UNIQUE(session_id, position) index. If a row
+// already exists at that position, the call is a no-op and (0, nil) is
+// returned.
+func (s *SQLiteSessionStore) AddMessageAt(ctx context.Context, sessionID string, position int, msg *Message) (int64, error) {
+	if sessionID == "" {
+		return 0, ErrEmptyID
+	}
+	if position < 0 {
+		return 0, errors.New("position must be non-negative")
+	}
+
+	msgJSON, err := json.Marshal(msg.Message)
+	if err != nil {
+		return 0, fmt.Errorf("marshaling message: %w", err)
+	}
+
+	if position > 0 {
+		var prevExists int
+		err := s.db.QueryRowContext(ctx,
+			`SELECT 1 FROM session_items WHERE session_id = ? AND position = ?`,
+			sessionID, position-1).Scan(&prevExists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrPositionGap
+		}
+		if err != nil {
+			return 0, fmt.Errorf("checking previous position: %w", err)
+		}
+	}
+
+	result, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO session_items (session_id, position, item_type, agent_name, message_json, implicit, kind)
+		 VALUES (?, ?, 'message', ?, ?, ?, ?)`,
+		sessionID, position, msg.AgentName, string(msgJSON), msg.Implicit, msg.Kind)
+	if err != nil {
+		return 0, fmt.Errorf("inserting message at position: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return 0, nil
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("getting last insert id: %w", err)
+	}
+
+	slog.DebugContext(ctx, "[STORE] AddMessageAt", "session_id", sessionID, "position", position, "message_id", id, "role", msg.Message.Role, "agent", msg.AgentName)
+	return id, nil
+}
+
 // UpdateMessage updates an existing message by its ID.
 func (s *SQLiteSessionStore) UpdateMessage(ctx context.Context, messageID int64, msg *Message) error {
 	msgJSON, err := json.Marshal(msg.Message)
@@ -996,8 +1237,8 @@ func (s *SQLiteSessionStore) UpdateMessage(ctx context.Context, messageID int64,
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE session_items SET message_json = ?, implicit = ? WHERE id = ?`,
-		string(msgJSON), msg.Implicit, messageID)
+		`UPDATE session_items SET agent_name = ?, message_json = ?, implicit = ?, kind = ? WHERE id = ?`,
+		msg.AgentName, string(msgJSON), msg.Implicit, msg.Kind, messageID)
 	if err != nil {
 		return fmt.Errorf("updating message: %w", err)
 	}
@@ -1028,8 +1269,12 @@ func (s *SQLiteSessionStore) AddSubSession(ctx context.Context, parentSessionID 
 		_ = tx.Rollback()
 	}()
 
-	// 1. Set parent_id on sub-session
-	subSession.ParentID = parentSessionID
+	// 1. Set topology on sub-session
+	parentSession, err := s.loadSession(ctx, tx, parentSessionID)
+	if err != nil {
+		return fmt.Errorf("getting parent session: %w", err)
+	}
+	linkChildSession(parentSession, subSession)
 
 	// 2. Insert sub-session as a new session row
 	if err := s.addSessionTx(ctx, tx, subSession); err != nil {
@@ -1066,14 +1311,14 @@ func (s *SQLiteSessionStore) addSessionTx(ctx context.Context, tx *sql.Tx, sessi
 		`INSERT INTO sessions (
 			id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message,
 			max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides,
-			custom_models_used, thinking, parent_id
+			custom_models_used, thinking, parent_id, root_id, runtime_managed
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.ToolsApproved, session.InputTokens, session.OutputTokens,
 		session.Title, session.Cost, session.SendUserMessage, session.MaxIterations,
 		session.WorkingDir, session.CreatedAt.Format(time.RFC3339), session.Starred,
 		fields.PermissionsJSON, fields.AgentModelOverridesJSON, fields.CustomModelsUsedJSON, false,
-		fields.ParentID)
+		fields.ParentID, fields.RootID, session.RuntimeManaged)
 	return err
 }
 
@@ -1086,15 +1331,19 @@ func (s *SQLiteSessionStore) addItemTx(ctx context.Context, tx *sql.Tx, sessionI
 			return fmt.Errorf("marshaling message: %w", err)
 		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO session_items (session_id, position, item_type, agent_name, message_json, implicit)
-			 VALUES (?, ?, 'message', ?, ?, ?)`,
-			sessionID, position, item.Message.AgentName, string(msgJSON), item.Message.Implicit)
+			`INSERT INTO session_items (session_id, position, item_type, agent_name, message_json, implicit, kind)
+			 VALUES (?, ?, 'message', ?, ?, ?, ?)`,
+			sessionID, position, item.Message.AgentName, string(msgJSON), item.Message.Implicit, item.Message.Kind)
 		return err
 
 	case item.SubSession != nil:
-		// Recursively add the sub-session
+		// Recursively add the sub-session.
 		subSession := item.SubSession
-		subSession.ParentID = sessionID
+		parentSession, err := s.loadSession(ctx, tx, sessionID)
+		if err != nil {
+			return fmt.Errorf("loading parent session: %w", err)
+		}
+		linkChildSession(parentSession, subSession)
 
 		if err := s.addSessionTx(ctx, tx, subSession); err != nil {
 			return fmt.Errorf("inserting nested sub-session: %w", err)
@@ -1106,7 +1355,7 @@ func (s *SQLiteSessionStore) addItemTx(ctx context.Context, tx *sql.Tx, sessionI
 			}
 		}
 
-		_, err := tx.ExecContext(ctx,
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO session_items (session_id, position, item_type, subsession_id)
 			 VALUES (?, ?, 'subsession', ?)`,
 			sessionID, position, subSession.ID)

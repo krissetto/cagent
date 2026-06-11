@@ -400,6 +400,41 @@ func getAllMigrations() []Migration {
 			Description: "Add first_kept_entry column to session_items for compaction-preserved messages",
 			UpSQL:       `ALTER TABLE session_items ADD COLUMN first_kept_entry INTEGER DEFAULT 0`,
 		},
+		{
+			ID:          22,
+			Name:        "022_add_runtime_session_topology",
+			Description: "Add durable runtime session topology columns",
+			UpSQL: `
+				ALTER TABLE sessions ADD COLUMN root_id TEXT;
+				ALTER TABLE sessions ADD COLUMN runtime_managed BOOLEAN DEFAULT 0;
+				UPDATE sessions
+				SET root_id = COALESCE(
+					NULLIF((
+						WITH RECURSIVE ancestors(id, parent_id) AS (
+							SELECT id, parent_id FROM sessions AS start WHERE start.id = sessions.id
+							UNION ALL
+							SELECT parent.id, parent.parent_id
+							FROM sessions AS parent
+							JOIN ancestors AS child ON child.parent_id = parent.id
+						)
+						SELECT id FROM ancestors WHERE parent_id IS NULL OR parent_id = '' LIMIT 1
+					), ''),
+					id
+				);
+				CREATE INDEX IF NOT EXISTS idx_sessions_root_id ON sessions(root_id);
+			`,
+		},
+		{
+			ID:          23,
+			Name:        "023_session_items_unique_position_and_kind",
+			Description: "Add message kind and unique positions for idempotent positional inserts",
+			UpSQL: `
+				ALTER TABLE session_items ADD COLUMN kind INTEGER DEFAULT 0;
+				DROP INDEX IF EXISTS idx_session_items_session;
+				CREATE UNIQUE INDEX IF NOT EXISTS idx_session_items_session
+					ON session_items(session_id, position);
+			`,
+		},
 	}
 }
 

@@ -808,6 +808,10 @@ func (s *RemoteSessionStore) AddMessage(context.Context, string, *session.Messag
 	return 0, fmt.Errorf("add message: %w", ErrUnsupported)
 }
 
+func (s *RemoteSessionStore) AddMessageAt(context.Context, string, int, *session.Message) (int64, error) {
+	return 0, fmt.Errorf("add message at position: %w", ErrUnsupported)
+}
+
 func (s *RemoteSessionStore) UpdateMessage(context.Context, int64, *session.Message) error {
 	return fmt.Errorf("update message: %w", ErrUnsupported)
 }
@@ -818,6 +822,18 @@ func (s *RemoteSessionStore) AddSubSession(context.Context, string, *session.Ses
 
 func (s *RemoteSessionStore) AddSummary(context.Context, string, string, int) error {
 	return fmt.Errorf("add summary: %w", ErrUnsupported)
+}
+
+func (s *RemoteSessionStore) GetChildSessions(context.Context, string) ([]*session.Session, error) {
+	return nil, fmt.Errorf("get child sessions: %w", ErrUnsupported)
+}
+
+func (s *RemoteSessionStore) GetSessionTree(context.Context, string) ([]*session.Session, error) {
+	return nil, fmt.Errorf("get session tree: %w", ErrUnsupported)
+}
+
+func (s *RemoteSessionStore) ResolveRootID(context.Context, string) (string, error) {
+	return "", fmt.Errorf("resolve root id: %w", ErrUnsupported)
 }
 
 func (s *RemoteSessionStore) UpdateSessionTokens(context.Context, string, int64, int64, float64) error {
@@ -832,4 +848,8 @@ func (s *RemoteSessionStore) Close() error {
 	return nil
 }
 
-var _ session.Store = (*RemoteSessionStore)(nil)
+var (
+	_ session.Store           = (*RemoteSessionStore)(nil)
+	_ session.PositionalStore = (*RemoteSessionStore)(nil)
+	_ session.TreeStore       = (*RemoteSessionStore)(nil)
+)
