@@ -47,6 +47,13 @@ func NewSubagentManager(r *LocalRuntime) *SubagentManager {
 	return &SubagentManager{r: r, all: make(map[string]*subagentHandle)}
 }
 
+func subagentIdleAutoFinalizeTTL(a interface{ IdleAutoFinalizeTimeout() time.Duration }) time.Duration {
+	if a == nil || a.IdleAutoFinalizeTimeout() <= 0 {
+		return DefaultSubagentTTL
+	}
+	return a.IdleAutoFinalizeTimeout()
+}
+
 func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, agentName, task string) (*subagentHandle, error) {
 	if m == nil || parent == nil {
 		return nil, errors.New("subagent manager unavailable")
@@ -62,7 +69,8 @@ func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, ag
 	if m.descendants(parent.EffectiveRootID()) >= MaxSubagentDescendants {
 		return nil, fmt.Errorf("subagent descendant cap %d exceeded", MaxSubagentDescendants)
 	}
-	if _, err := m.r.team.Agent(agentName); err != nil {
+	subAgent, err := m.r.team.Agent(agentName)
+	if err != nil {
 		return nil, err
 	}
 	child := session.NewRuntimeManagedSubSession(parent,
@@ -87,7 +95,7 @@ func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, ag
 		parent:    parent,
 		sess:      child,
 		created:   m.r.now(),
-		ttl:       DefaultSubagentTTL,
+		ttl:       subagentIdleAutoFinalizeTTL(subAgent),
 		inbox:     make(chan string, 64),
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),

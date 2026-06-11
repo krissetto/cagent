@@ -95,6 +95,13 @@
     "runtime": {
       "$ref": "#/definitions/RuntimeDefaults",
       "description": "Execution-time defaults the agent author wants applied. Values act as defaults only — explicit CLI flags or user-config settings always win."
+    },
+    "subagents": {
+      "type": "object",
+      "description": "Per-runtime-managed-subagent defaults keyed by agent name.",
+      "additionalProperties": {
+        "$ref": "#/definitions/RuntimeSubagentDefaults"
+      }
     }
   },
   "additionalProperties": false,
@@ -1616,6 +1623,17 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "RuntimeSubagentDefaults": {
+      "type": "object",
+      "description": "Per-runtime-managed-subagent execution defaults.",
+      "properties": {
+        "idle_auto_finalize_timeout": {
+          "type": "string",
+          "description": "Idle auto-finalize timeout for this runtime-managed subagent (Go duration format, e.g. '5m'). 0 or omitted uses the runtime default."
         }
       },
       "additionalProperties": false

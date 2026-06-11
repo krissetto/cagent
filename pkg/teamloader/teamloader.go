@@ -183,6 +183,9 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			agent.WithCommands(expander.ExpandCommands(ctx, agentConfig.Commands)),
 			agent.WithHooks(config.MergeHooks(agentConfig.Hooks, cliHooks)),
 		}
+		if subagentDefaults, ok := cfg.Subagents[agentConfig.Name]; ok {
+			opts = append(opts, agent.WithIdleAutoFinalizeTimeout(subagentDefaults.IdleAutoFinalizeTimeout.Duration))
+		}
 
 		if agentConfig.Cache != nil && agentConfig.Cache.Enabled {
 			c, err := buildAgentCache(agentConfig.Name, agentConfig.Cache, parentDir)
