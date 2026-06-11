@@ -26,7 +26,7 @@ import (
 // Observers see every event the runtime emits, including sub-session
 // events (from delegated tasks via transfer_task) and
 // [SessionScoped]-mismatch events. Filtering is the observer's
-// responsibility; see [PersistenceObserver] for the canonical pattern.
+// responsibility; see [SessionRecorder] for the canonical pattern.
 type EventObserver interface {
 	// OnRunStart fires once when [LocalRuntime.RunStream] begins, before
 	// any event is dispatched. Use it for one-shot lifecycle work like
@@ -44,7 +44,7 @@ type EventObserver interface {
 // Observers are invoked in registration order, synchronously, on every
 // event the runtime produces. Multiple calls are additive.
 //
-// The runtime auto-registers a [PersistenceObserver] for the configured
+// The runtime auto-registers a [SessionRecorder] for the configured
 // session store; users do not need to wire persistence themselves.
 // Custom observers (telemetry, audit, metrics, A2A forward) compose
 // alongside that one.
@@ -57,13 +57,20 @@ func WithEventObserver(o EventObserver) Opt {
 	}
 }
 
-// observe wraps inner with the runtime's observer chain: each
-// observer sees [EventObserver.OnRunStart] before the first event,
-// then every event drained from inner is dispatched to each observer
-// in registration order before being forwarded to the returned
-// channel. Observers run synchronously, so a slow observer
-// back-pressures the consumer.
+// observe wraps inner with runtime fan-out: each event is first published to
+// the EventBus (where the SessionRecorder is registered as a global observer),
+// then delivered to custom observers and the caller. When the producer closes,
+// the recorder is flushed before the public channel closes so callers can
+// immediately observe durable state.
 func (r *LocalRuntime) observe(ctx context.Context, sess *session.Session, inner <-chan Event) <-chan Event {
+	r.ensureSessionPersisted(ctx, sess)
+	if r.liveSessions != nil && sess != nil {
+		agentName := sess.AgentName
+		if agentName == "" {
+			agentName = r.CurrentAgentName()
+		}
+		r.liveSessions.register(sess.ID, agentName, sess.ParentID)
+	}
 	for _, obs := range r.observers {
 		obs.OnRunStart(ctx, sess)
 	}
@@ -71,10 +78,22 @@ func (r *LocalRuntime) observe(ctx context.Context, sess *session.Session, inner
 	go func() {
 		defer close(out)
 		for event := range inner {
+			if r.eventBus != nil {
+				r.eventBus.Publish(sess.ID, event)
+			}
 			for _, obs := range r.observers {
 				obs.OnEvent(ctx, sess, event)
 			}
 			out <- event
+		}
+		if r.recorder != nil {
+			r.recorder.FlushSession(sess.ID)
+		}
+		if r.liveSessions != nil {
+			r.liveSessions.unregister(sess.ID)
+		}
+		if r.eventBus != nil {
+			r.eventBus.CloseTopic(sess.ID)
 		}
 	}()
 	return out

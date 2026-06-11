@@ -80,7 +80,8 @@ func (r *LocalRuntime) appendSteerAndEmit(sess *session.Session, sm QueuedMessag
 // Returns drained=true with messageCountBefore set when any messages
 // were drained and emitted; otherwise drained=false.
 func (r *LocalRuntime) drainAndEmitSteered(ctx context.Context, sess *session.Session, a *agent.Agent, events EventSink) steerResult {
-	steered := r.steerQueue.Drain(ctx)
+	queues := r.queuesFor(sess)
+	steered := queues.steer.Drain(ctx)
 	if len(steered) == 0 {
 		return steerResult{}
 	}
@@ -726,7 +727,8 @@ func (r *LocalRuntime) runTurn(
 		// a new turn — the model sees them as fresh input, not a
 		// mid-stream interruption. Each follow-up gets a full
 		// undivided agent turn.
-		if followUp, ok := r.followUpQueue.Dequeue(ctx); ok {
+		queues := r.queuesFor(sess)
+		if followUp, ok := queues.followUp.Dequeue(ctx); ok {
 			userMsg := session.UserMessage(followUp.Content, followUp.MultiContent...)
 			sess.AddMessage(userMsg)
 			events.Emit(UserMessage(followUp.Content, sess.ID, followUp.MultiContent, len(sess.Messages)-1))
