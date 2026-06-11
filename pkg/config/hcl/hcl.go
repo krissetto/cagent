@@ -64,7 +64,7 @@ func LooksLikeHCL(data []byte) bool {
 // topLevelHCLKeywords lists the block names that may legitimately appear at
 // the top level of a docker-agent HCL document.
 var topLevelHCLKeywords = []string{
-	"agent", "model", "provider", "mcp", "rag", "metadata", "permissions",
+	"agent", "model", "provider", "mcp", "rag", "metadata", "permissions", "subagent",
 }
 
 // ToYAML parses an HCL document and returns an equivalent YAML document
@@ -140,6 +140,7 @@ var blockRules = map[string]blockRule{
 	"rag":      {mode: modeMapByLabel, outKey: "rag"},
 	"command":  {mode: modeMapByLabel, outKey: "commands"},
 	"skill":    {mode: modeMapByLabel, outKey: "skills"},
+	"subagent": {mode: modeMapByLabel, outKey: "subagents"},
 	// `shell "name" { ... }` is used inside script toolsets as a map of
 	// scripted shell commands.
 	"shell": {mode: modeMapByLabel, outKey: "shell"},

@@ -31,11 +31,17 @@ type Config struct {
 	// or AgentConfig.UseSkills; the group is merged into the agent during config
 	// resolution (see resolveCommandDefinitions / resolveSkillDefinitions). This
 	// mirrors the top-level MCPs/RAG reference-by-name convention.
-	Commands    map[string]types.Commands `json:"commands,omitempty"`
-	Skills      map[string]SkillsConfig   `json:"skills,omitempty"`
-	Metadata    Metadata                  `json:"metadata"`
-	Permissions *PermissionsConfig        `json:"permissions,omitempty"`
-	Runtime     *RuntimeDefaults          `json:"runtime,omitempty"`
+	Commands    map[string]types.Commands          `json:"commands,omitempty"`
+	Skills      map[string]SkillsConfig            `json:"skills,omitempty"`
+	Metadata    Metadata                           `json:"metadata"`
+	Permissions *PermissionsConfig                 `json:"permissions,omitempty"`
+	Runtime     *RuntimeDefaults                   `json:"runtime,omitempty"`
+	Subagents   map[string]RuntimeSubagentDefaults `json:"subagents,omitempty" yaml:"subagents,omitempty"`
+}
+
+// RuntimeSubagentDefaults captures per-runtime-managed-subagent execution defaults.
+type RuntimeSubagentDefaults struct {
+	IdleAutoFinalizeTimeout Duration `json:"idle_auto_finalize_timeout,omitzero" yaml:"idle_auto_finalize_timeout,omitempty"`
 }
 
 // RuntimeDefaults captures execution-time defaults the agent author

@@ -81,6 +81,7 @@ func (s *Server) registerRoutes() {
 	group.POST("/sessions/:id/steer", s.steerSession)
 	group.POST("/sessions/:id/followup", s.followUpSession)
 	group.GET("/sessions/:id/events", s.sessionEvents)
+	group.GET("/sessions/:id/tree", s.getLiveSessionTree)
 	group.POST("/sessions/:id/messages", s.addMessage)
 	group.PATCH("/sessions/:id/messages/:msg_id", s.updateMessage)
 	group.POST("/sessions/:id/summaries", s.addSummary)

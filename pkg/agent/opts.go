@@ -100,6 +100,12 @@ func WithSubAgents(subAgents ...*Agent) Opt {
 	}
 }
 
+func WithIdleAutoFinalizeTimeout(timeout time.Duration) Opt {
+	return func(a *Agent) {
+		a.idleAutoFinalizeTimeout = timeout
+	}
+}
+
 func WithHandoffs(handoffs ...*Agent) Opt {
 	return func(a *Agent) {
 		a.handoffs = handoffs

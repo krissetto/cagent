@@ -830,3 +830,11 @@ func (c *Client) GetSessionQueueStatus(ctx context.Context, sessionID string) (*
 	err := c.doRequest(ctx, http.MethodGet, endpoint, nil, &resp)
 	return &resp, err
 }
+
+// GetLiveSessionTree retrieves live-session observability for a session tree.
+func (c *Client) GetLiveSessionTree(ctx context.Context, sessionID string) (*LiveSessionTree, error) {
+	var resp LiveSessionTree
+	endpoint := fmt.Sprintf("/api/sessions/%s/tree", sessionID)
+	err := c.doRequest(ctx, http.MethodGet, endpoint, nil, &resp)
+	return &resp, err
+}
