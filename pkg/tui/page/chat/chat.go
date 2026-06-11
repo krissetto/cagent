@@ -14,6 +14,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/chat"
+	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/tui/commands"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
@@ -818,6 +819,32 @@ func (p *chatPage) extractAttachmentsFromSession(position int) []msgtypes.Attach
 
 // processNextQueuedMessage pops the next message from the queue and processes it.
 // Returns nil if the queue is empty.
+func (p *chatPage) refreshLiveSessionTree() {
+	if p.app == nil || p.app.Session() == nil {
+		return
+	}
+	if tree := p.app.LiveSessionTree(p.app.Session().EffectiveRootID()); tree != nil {
+		p.sidebar.SetLiveSessionTree(tree)
+	}
+}
+
+func (p *chatPage) flushQueuedFollowUps() tea.Cmd {
+	if len(p.messageQueue) == 0 || p.app == nil {
+		return nil
+	}
+	queued := p.messageQueue
+	p.messageQueue = nil
+	p.syncQueueToSidebar()
+	return func() tea.Msg {
+		for _, msg := range queued {
+			if err := p.app.FollowUpWithAttachments(msg.content, msg.attachments); err != nil {
+				return runtime.Warning(err.Error(), "")
+			}
+		}
+		return nil
+	}
+}
+
 func (p *chatPage) processNextQueuedMessage() tea.Cmd {
 	if len(p.messageQueue) == 0 {
 		return nil

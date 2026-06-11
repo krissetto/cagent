@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -96,4 +97,23 @@ func TestQueueSection_InRenderSections(t *testing.T) {
 	outputWithQueue := strings.Join(linesWithQueue, "\n")
 	assert.Contains(t, outputWithQueue, "Queue (1)")
 	assert.Contains(t, outputWithQueue, "Pending task")
+}
+
+func TestChildQueueSectionFromSessionQueueEvent(t *testing.T) {
+	t.Parallel()
+
+	m := New(&service.SessionState{}).(*model)
+	tree := &runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{ID: "root", Children: []*runtime.LiveSessionNode{{ID: "child-session-123", AgentName: "reviewer", Depth: 1}}}}
+	m.SetLiveSessionTree(tree)
+	_, cmd := m.Update(&runtime.SessionQueueEvent{SessionID: "child-session-123", Count: 2, Previews: []string{"first", "second"}})
+	require.Nil(t, cmd)
+
+	result := m.childQueueSection(40)
+	assert.Contains(t, result, "Child Queue")
+	assert.Contains(t, result, "reviewer")
+	assert.Contains(t, result, "first")
+	assert.Contains(t, result, "second")
+
+	_, _ = m.Update(&runtime.SessionQueueEvent{SessionID: "child-session-123", Count: 0})
+	assert.Empty(t, m.childQueueSection(40))
 }

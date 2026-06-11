@@ -1,6 +1,7 @@
 package styles
 
 import (
+	"hash/fnv"
 	"image/color"
 	"sync"
 
@@ -150,4 +151,45 @@ func AgentAccentStyleFor(agentName string) lipgloss.Style {
 	}
 
 	return agentRegistry.accentStyles[idx%len(agentRegistry.accentStyles)]
+}
+
+// SubagentAccentStyleFor returns a foreground-only style for runtime-managed
+// subagent names. It is stable by name and intentionally independent from the
+// global team order so nested/local sidebar rows do not change color when the
+// parent team list changes.
+func SubagentAccentStyleFor(agentName string) lipgloss.Style {
+	agentRegistry.RLock()
+	defer agentRegistry.RUnlock()
+
+	if agentName == "" || len(agentRegistry.accentStyles) == 0 {
+		return fallbackAccentStyle
+	}
+
+	return agentRegistry.accentStyles[stableNameIndex(agentName, len(agentRegistry.accentStyles))]
+}
+
+// SubagentBadgeStyleFor returns a badge style for runtime-managed subagent
+// names using the same stable, name-derived palette index as
+// SubagentAccentStyleFor.
+func SubagentBadgeStyleFor(agentName string) lipgloss.Style {
+	agentRegistry.RLock()
+	defer agentRegistry.RUnlock()
+
+	if agentName == "" || len(agentRegistry.badgeStyles) == 0 {
+		return fallbackBadgeStyle
+	}
+
+	return agentRegistry.badgeStyles[stableNameIndex(agentName, len(agentRegistry.badgeStyles))].style
+}
+
+func stableNameIndex(name string, paletteSize int) int {
+	if paletteSize <= 0 {
+		return 0
+	}
+	if paletteSize > int(^uint32(0)) {
+		paletteSize = int(^uint32(0))
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	return int(h.Sum32() % uint32(paletteSize))
 }

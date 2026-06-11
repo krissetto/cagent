@@ -148,6 +148,20 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 		*runtime.RAGIndexingCompletedEvent:
 		return true, p.forwardToSidebar(msg)
 
+	case *runtime.ParentIdleEvent:
+		p.refreshLiveSessionTree()
+		cmds := []tea.Cmd{p.setWorking(false), p.setPendingResponse(false), p.flushQueuedFollowUps()}
+		cmds = append(cmds, p.forwardToSidebar(msg))
+		return true, tea.Batch(cmds...)
+
+	case *runtime.ParentResumeEvent:
+		p.refreshLiveSessionTree()
+		return true, p.forwardToSidebar(msg)
+
+	case *runtime.SessionQueueEvent:
+		p.refreshLiveSessionTree()
+		return true, p.forwardToSidebar(msg)
+
 	// ===== Dialog Events =====
 	case *runtime.MaxIterationsReachedEvent:
 		return true, p.handleMaxIterationsReached(msg)

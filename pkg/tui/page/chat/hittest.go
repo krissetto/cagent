@@ -18,6 +18,7 @@ const (
 	TargetSidebarTitle
 	TargetSidebarWorkingDir
 	TargetSidebarAgent
+	TargetSidebarSubagent
 	TargetSidebarContent
 	TargetMessages
 )
@@ -26,8 +27,9 @@ const (
 // This centralizes all hit-testing logic in one place, making it easier
 // to understand the clickable regions and their priorities.
 type HitTest struct {
-	page      *chatPage
-	AgentName string // populated when At() returns TargetSidebarAgent
+	page       *chatPage
+	AgentName  string // populated when At() returns TargetSidebarAgent
+	SubagentID string // populated when At() returns TargetSidebarSubagent
 }
 
 // NewHitTest creates a hit tester for the given chat page.
@@ -132,6 +134,9 @@ func (h *HitTest) sidebarClickTarget(x, y int) MouseTarget {
 	case sidebar.ClickAgent:
 		h.AgentName = agentName
 		return TargetSidebarAgent
+	case sidebar.ClickSubagent:
+		h.SubagentID = agentName
+		return TargetSidebarSubagent
 	default:
 		return TargetSidebarContent
 	}

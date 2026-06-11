@@ -41,6 +41,17 @@ type Item struct {
 func builtInSessionCommands() []Item {
 	cmds := []Item{
 		{
+			ID:           "live-subagents",
+			Label:        "Live Subagents",
+			SlashCommand: "/subagents",
+			Description:  "Show live runtime-managed subagents",
+			Category:     "Session",
+			Immediate:    true,
+			Execute: func(string) tea.Cmd {
+				return core.CmdHandler(messages.OpenLiveSessionTreeMsg{})
+			},
+		},
+		{
 			ID:           "session.clear",
 			Label:        "Clear",
 			SlashCommand: "/clear",

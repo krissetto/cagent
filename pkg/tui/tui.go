@@ -875,6 +875,12 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case messages.OpenSessionBrowserMsg:
 		return m.handleOpenSessionBrowser()
 
+	case messages.OpenLiveSessionTreeMsg:
+		return m.handleOpenLiveSessionTree()
+
+	case messages.AttachSessionMsg:
+		return m.handleAttachSession(msg.SessionID)
+
 	case messages.LoadSessionMsg:
 		return m.handleLoadSession(msg.SessionID)
 
@@ -1354,6 +1360,39 @@ func (m *appModel) openWorkingDirPicker() (tea.Model, tea.Cmd) {
 type stashedDialog struct {
 	dialog dialog.Dialog
 	event  tea.Msg
+}
+
+func (m *appModel) handleOpenLiveSessionTree() (tea.Model, tea.Cmd) {
+	if m.application == nil || m.application.Session() == nil {
+		return m, nil
+	}
+	tree := m.application.LiveSessionTree(m.application.Session().EffectiveRootID())
+	if tree == nil || tree.Root == nil || len(tree.Root.Children) == 0 {
+		return m, notification.InfoCmd("No live subagents")
+	}
+	return m, core.CmdHandler(dialog.OpenDialogMsg{Model: dialog.NewLiveSessionTreeDialog(tree)})
+}
+
+func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
+	if sessionID == "" || m.application == nil {
+		return m, nil
+	}
+	if m.supervisor.GetRunner(sessionID) != nil {
+		return m.handleSwitchTab(sessionID)
+	}
+	sess, ok := m.application.LiveSession(sessionID)
+	if !ok {
+		return m, notification.ErrorCmd("Live session not found")
+	}
+	node, _ := m.application.LiveSessionNode(sessionID)
+	attached := app.NewAttached(context.Background(), m.application.Runtime(), sess, node)
+	workingDir := sess.WorkingDir
+	if workingDir == "" && m.application.Session() != nil {
+		workingDir = m.application.Session().WorkingDir
+	}
+	m.supervisor.AddSession(context.Background(), attached, sess, workingDir, nil)
+	m.initSessionComponents(sessionID, attached, sess)
+	return m.handleSwitchTab(sessionID)
 }
 
 // handleSwitchTab switches to a different session.
