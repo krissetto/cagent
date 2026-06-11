@@ -687,6 +687,13 @@ func (r *LocalRuntime) runTurn(
 	// Record per-toolset model override for the next LLM turn.
 	ls.toolModelOverride = toolexec.ResolveModelOverride(res.Calls, agentTools)
 
+	// Drain runtime-managed subagent result envelopes before public steer.
+	if r.subagents != nil && r.subagents.DrainEnvelopes(ctx, sess, events) {
+		r.compactIfNeeded(ctx, sess, a, contextLimit, messageCountBeforeTools, events)
+		endReason = turnEndReasonSteered
+		return turnContinue
+	}
+
 	// Drain steer messages that arrived during tool calls.
 	if sr := r.drainAndEmitSteered(ctx, sess, a, events); sr.drained {
 		if sr.stop {
@@ -705,6 +712,14 @@ func (r *LocalRuntime) runTurn(
 	if res.Stopped {
 		slog.DebugContext(ctx, "Conversation stopped", "agent", a.Name())
 		r.executeStopHooks(ctx, sess, a, res.Content, events)
+
+		queues := r.queuesFor(sess)
+		if r.subagents != nil && r.subagents.WaitForSubagentWork(ctx, sess, queues, events) {
+			ls.userPromptMsgs = nil
+			r.compactIfNeeded(ctx, sess, a, contextLimit, messageCountBeforeTools, events)
+			endReason = turnEndReasonContinue
+			return turnContinue
+		}
 
 		// Re-check steer queue: closes the race between the mid-loop drain and this stop.
 		if sr := r.drainAndEmitSteered(ctx, sess, a, events); sr.drained {
@@ -727,7 +742,7 @@ func (r *LocalRuntime) runTurn(
 		// a new turn — the model sees them as fresh input, not a
 		// mid-stream interruption. Each follow-up gets a full
 		// undivided agent turn.
-		queues := r.queuesFor(sess)
+		queues = r.queuesFor(sess)
 		if followUp, ok := queues.followUp.Dequeue(ctx); ok {
 			userMsg := session.UserMessage(followUp.Content, followUp.MultiContent...)
 			sess.AddMessage(userMsg)
