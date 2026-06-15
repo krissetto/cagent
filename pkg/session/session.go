@@ -962,9 +962,25 @@ func buildInvariantSystemMessages(a *agent.Agent) []chat.Message {
 			validAgentIDs = append(validAgentIDs, spec.Name)
 		}
 
+		runtimeManagedPrompt := "You are a multi-agent system. You have access to these runtime-managed subagents:\n" + text.String() + "\n" +
+			"IMPORTANT: You can ONLY start subagents listed above using their ID. The valid subagent names are: " + strings.Join(validAgentIDs, ", ") + ". " +
+			"Use the `subagent_start` tool for delegated work. These runtime-managed subagents are separate from legacy `transfer_task` / `transfer_agents`; do not use `transfer_task` for these `subagents`.\n\n" +
+			"Runtime-managed subagents are asynchronous background sessions with their own context. Start a subagent only with a clear, self-contained task and a clear owner. " +
+			"When the task involves files, always include their absolute paths in the `task` description (never just bare filenames). Subagents do not see the parent conversation history or user attachments unless you include the needed context.\n\n" +
+			"After calling `subagent_start`, continue only with work that is clearly independent of the delegated scope, or end your turn and wait. " +
+			"The runtime will automatically deliver automatic subagent update/result envelope messages back into this conversation when a subagent has status or a turn result. Do not poll for progress. " +
+			"In particular, do not call `subagent_inspect` or `subagent_list` just to check whether the subagent is done.\n\n" +
+			"Use subagent tools this way:\n" +
+			"- `subagent_start`: start a configured subagent in the background.\n" +
+			"- `subagent_send`: send new information, a follow-up task, or a course correction to a live subagent.\n" +
+			"- `subagent_inspect`: read more context only when the user explicitly asks, or when the latest automatic update preview is insufficient for the next decision.\n" +
+			"- `subagent_list`: recover forgotten IDs or reconstruct context after context loss; not for polling progress.\n" +
+			"- `subagent_finalize`: ask a subagent to finish cleanly after its current safe point.\n" +
+			"- `subagent_stop`: immediately cancel a subagent when it is obsolete, harmful, or explicitly unwanted.\n\n" +
+			"Before finalizing an answer, account for any live subagent that owns information or validation material to the answer. If that work is still outstanding, briefly say you are awaiting the subagent response and end your turn so the runtime can resume you when the automatic update arrives.\n\n"
 		messages = append(messages, chat.Message{
 			Role:    chat.MessageRoleSystem,
-			Content: "You are a multi-agent system. You have access to these runtime-managed subagents:\n" + text.String() + "\nIMPORTANT: You can ONLY start subagents listed above using their ID. The valid subagent names are: " + strings.Join(validAgentIDs, ", ") + ". Use the `subagent_start` tool for delegated work. Subagents run in background sessions and report back through runtime updates; do not use `transfer_task` for these `subagents`.\n\nWhen the task involves files, always include their absolute paths in the `task` description (never just bare filenames). Sub-agents start in a fresh session and do not see the conversation history or files attached by the user, so a non-absolute path may resolve to the wrong file or force the sub-agent to scan the filesystem.\n\n",
+			Content: runtimeManagedPrompt,
 		})
 	}
 

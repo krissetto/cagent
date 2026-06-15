@@ -27,8 +27,13 @@ type LiveSessionNode struct {
 	Depth       int                `json:"depth"`
 	Preview     string             `json:"preview,omitempty"`
 	LastPreview string             `json:"last_preview,omitempty"`
+	RootID      string             `json:"root_id,omitempty"`
 	CreatedAt   time.Time          `json:"created_at"`
 	Live        bool               `json:"live"`
+	Status      string             `json:"status,omitempty"`
+	UpdateKind  string             `json:"update_kind,omitempty"`
+	Error       string             `json:"error,omitempty"`
+	UpdatedAt   time.Time          `json:"updated_at,omitzero"`
 	Children    []*LiveSessionNode `json:"children,omitempty"`
 }
 
@@ -61,6 +66,23 @@ func (r *LocalRuntime) LiveSessionTree(ctx context.Context, sessionID string) (*
 			continue
 		}
 		node := liveSessionNodeFromSession(sess, live[sess.ID])
+		if r.subagents != nil {
+			if h, err := r.subagents.ResolveSession(sess.ID); err == nil && h != nil {
+				h.mu.Lock()
+				node.AgentName = h.agentName
+				node.Status = h.state
+				node.LastPreview = h.latestPreview()
+				node.UpdatedAt = h.created
+				if len(h.envelopes) > 0 {
+					last := h.envelopes[len(h.envelopes)-1]
+					node.UpdateKind = last.Kind
+					node.LastPreview = last.Preview
+					node.Error = last.Error
+					node.UpdatedAt = last.At
+				}
+				h.mu.Unlock()
+			}
+		}
 		nodes[sess.ID] = node
 		if sess.ID == rootID {
 			root = node
@@ -108,9 +130,19 @@ func liveSessionNodeFromSession(sess *session.Session, live bool) *LiveSessionNo
 		Title:       sess.Title,
 		Preview:     preview,
 		LastPreview: preview,
+		RootID:      sess.EffectiveRootID(),
 		CreatedAt:   sess.CreatedAt,
 		Live:        live,
+		Status:      statusFromLive(live),
+		UpdatedAt:   sess.CreatedAt,
 	}
+}
+
+func statusFromLive(live bool) string {
+	if live {
+		return "running"
+	}
+	return "closed"
 }
 
 func liveSessionAgentName(sess *session.Session) string {
