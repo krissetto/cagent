@@ -2,7 +2,6 @@ package teamloader
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,17 +18,16 @@ agents:
     model: openai/gpt-4o-mini
     instruction: root
     subagents:
-      - reviewer
-      - name: implementer
-        agent: coder
-        description: Low-risk code edits
-        ttl: 15m
-  reviewer:
+      - director
+      - agent: implementer
+        name: implementer
+        description: The bench maker handles clear, low-risk code edits directly and proves the work with targeted checks.
+  director:
     model: openai/gpt-4o-mini
-    instruction: reviewer
-  coder:
+    instruction: director
+  implementer:
     model: openai/gpt-4o-mini
-    instruction: coder
+    instruction: implementer
 `)
 
 	teams, err := Load(t.Context(), config.NewBytesSource("agent.yaml", yaml), &config.RuntimeConfig{})
@@ -38,16 +36,15 @@ agents:
 	root, err := teams.Agent("root")
 	require.NoError(t, err)
 	assert.Len(t, root.SubAgents(), 2)
-	assert.Equal(t, []string{"reviewer", "coder"}, agentNamesForTest(root.SubAgents()))
+	assert.Equal(t, []string{"director", "implementer"}, agentNamesForTest(root.SubAgents()))
 
 	specs := root.SubAgentSpecs()
 	require.Len(t, specs, 2)
-	assert.Equal(t, "reviewer", specs[0].Name)
-	assert.Equal(t, "reviewer", specs[0].Agent)
+	assert.Equal(t, "director", specs[0].Name)
+	assert.Equal(t, "director", specs[0].Agent)
 	assert.Equal(t, "implementer", specs[1].Name)
-	assert.Equal(t, "coder", specs[1].Agent)
-	assert.Equal(t, "Low-risk code edits", specs[1].Description)
-	assert.Equal(t, 15*time.Minute, specs[1].TTL)
+	assert.Equal(t, "implementer", specs[1].Agent)
+	assert.Equal(t, "The bench maker handles clear, low-risk code edits directly and proves the work with targeted checks.", specs[1].Description)
 }
 
 func TestLoadRejectsDuplicateRuntimeSubagentNames(t *testing.T) {

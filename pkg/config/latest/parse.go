@@ -26,5 +26,10 @@ func upgradeIfNeeded(c any, _ []byte) (any, error) {
 
 	var config Config
 	types.CloneThroughJSON(old, &config)
+	for i := range config.Agents {
+		if config.Agents[i].SubagentSpecs == nil {
+			config.Agents[i].SubAgents, config.Agents[i].SubagentSpecs = splitRuntimeSubagentsFromRefs(config.Agents[i].SubAgents)
+		}
+	}
 	return config, nil
 }

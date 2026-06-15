@@ -29,7 +29,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin/handoff"
 	"github.com/docker/docker-agent/pkg/tools/builtin/lsp"
 	skillstool "github.com/docker/docker-agent/pkg/tools/builtin/skills"
-	"github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
+	"github.com/docker/docker-agent/pkg/tools/builtin/subagents"
 	"github.com/docker/docker-agent/pkg/tools/codemode"
 )
 
@@ -242,6 +242,12 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			opts = append(opts, agent.WithLoadTimeWarnings(warnings))
 		}
 
+		var subagentToolset *subagents.ToolSet
+		if len(agentConfig.SubAgents) > 0 || len(agentConfig.SubagentSpecs) > 0 {
+			subagentToolset = subagents.New(nil)
+			agentTools = append(agentTools, subagentToolset)
+		}
+
 		// Add skills toolset if skills are enabled
 		if agentConfig.Skills.Enabled() {
 			loadedSkills := skills.Load(agentConfig.Skills.Sources)
@@ -257,6 +263,9 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		opts = append(opts, agent.WithToolSets(agentTools...))
 
 		ag := agent.New(agentConfig.Name, expander.Expand(ctx, agentConfig.Instruction, nil), opts...)
+		if subagentToolset != nil {
+			subagentToolset.SetAgent(ag)
+		}
 		agents = append(agents, ag)
 		agentsByName[agentConfig.Name] = ag
 	}
@@ -276,9 +285,6 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		refs, specs, err := runtimeSubagentRefs(agentConfig.SubagentSpecs)
 		if err != nil {
 			return nil, fmt.Errorf("agent '%s': resolving subagents: %w", agentConfig.Name, err)
-		}
-		if len(refs) == 0 {
-			refs = agentConfig.SubAgents
 		}
 		subAgents, err := resolveAgentRefs(ctx, refs, agentsByName, externalAgents, &agents, runConfig, &loadOpts)
 		if err != nil {
@@ -566,9 +572,6 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 		toolSets = append(toolSets, deferredToolset)
 	}
 
-	if len(a.SubAgents) > 0 || len(a.SubagentSpecs) > 0 {
-		toolSets = append(toolSets, transfertask.New())
-	}
 	if len(a.Handoffs) > 0 {
 		toolSets = append(toolSets, handoff.New())
 	}

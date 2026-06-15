@@ -8,15 +8,16 @@ import (
 
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tools/builtin/subagents"
 )
 
 const (
-	ToolNameSubagentStart    = "subagent_start"
-	ToolNameSubagentSend     = "subagent_send"
-	ToolNameSubagentInspect  = "subagent_inspect"
-	ToolNameSubagentList     = "subagent_list"
-	ToolNameSubagentStop     = "subagent_stop"
-	ToolNameSubagentFinalize = "subagent_finalize"
+	ToolNameSubagentStart    = subagents.ToolNameSubagentStart
+	ToolNameSubagentSend     = subagents.ToolNameSubagentSend
+	ToolNameSubagentInspect  = subagents.ToolNameSubagentInspect
+	ToolNameSubagentList     = subagents.ToolNameSubagentList
+	ToolNameSubagentStop     = subagents.ToolNameSubagentStop
+	ToolNameSubagentFinalize = subagents.ToolNameSubagentFinalize
 	ToolNameSubagentClose    = "subagent_close"
 )
 
