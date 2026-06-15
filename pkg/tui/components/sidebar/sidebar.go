@@ -1472,10 +1472,7 @@ func (m *model) renderLiveSessionNode(lines *[]string, node *runtime.LiveSession
 	if agent == "" {
 		agent = "subagent"
 	}
-	label := node.Title
-	if label == "" {
-		label = agent
-	}
+	label := agent
 	status := subagentStatusLabel(node)
 	indicator := styles.MutedStyle.Render("•")
 	if subagentStatusWorking(node) {

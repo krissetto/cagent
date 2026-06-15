@@ -52,23 +52,23 @@ func TestSubagentStartAndUpdateManageSpinnerState(t *testing.T) {
 	}
 }
 
-func TestSubagentRowsUseSessionTitleWhenPresent(t *testing.T) {
+func TestSubagentRowsUseStableAgentIdentityDespiteSessionTitle(t *testing.T) {
 	m := New(&service.SessionState{}).(*model)
 	m.SetLiveSessionTree(&runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{
 		ID:       "root",
-		Children: []*runtime.LiveSessionNode{{ID: "child12345", AgentName: "greppy", Title: "Research API", Status: "waiting", Live: true, CreatedAt: time.Now()}},
+		Children: []*runtime.LiveSessionNode{{ID: "child12345", AgentName: "greppy", Title: "Generated task title", Status: "waiting", Live: true, CreatedAt: time.Now()}},
 	}})
 
 	plain := strings.Join(stripANSILines(strings.Split(m.subagentsSection(80), "\n")), "\n")
-	if !strings.Contains(plain, "Research API") {
-		t.Fatalf("expected titled child row, got %q", plain)
+	if !strings.Contains(plain, "greppy (child)") {
+		t.Fatalf("expected stable agent/id row, got %q", plain)
 	}
-	if strings.Contains(plain, "• greppy") {
-		t.Fatalf("expected child title to replace agent label, got %q", plain)
+	if strings.Contains(plain, "Generated task title") {
+		t.Fatalf("subagent row should not use generated session title, got %q", plain)
 	}
 }
 
-func TestSubagentTitleEventUpdatesLiveTreeNode(t *testing.T) {
+func TestSubagentTitleEventUpdatesTreeButRowKeepsAgentIdentity(t *testing.T) {
 	m := New(&service.SessionState{}).(*model)
 	m.SetLiveSessionTree(&runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{
 		ID:       "root",
@@ -78,9 +78,15 @@ func TestSubagentTitleEventUpdatesLiveTreeNode(t *testing.T) {
 	updated, _ := m.Update(runtime.SessionTitle("child12345", "Finished scout"))
 	m = updated.(*model)
 
+	if node := m.liveSessionTree.Root.Children[0]; node.Title != "Finished scout" {
+		t.Fatalf("expected tree title to update for attach/tab title, got %q", node.Title)
+	}
 	plain := strings.Join(stripANSILines(strings.Split(m.subagentsSection(80), "\n")), "\n")
-	if !strings.Contains(plain, "Finished scout") {
-		t.Fatalf("expected child title event to update subagent row, got %q", plain)
+	if !strings.Contains(plain, "greppy (child)") {
+		t.Fatalf("expected stable agent/id row, got %q", plain)
+	}
+	if strings.Contains(plain, "Finished scout") {
+		t.Fatalf("subagent row should not use generated session title, got %q", plain)
 	}
 }
 

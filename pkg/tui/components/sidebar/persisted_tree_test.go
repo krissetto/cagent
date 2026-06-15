@@ -25,9 +25,14 @@ func TestPersistedSessionTreeShowsReloadedChildAndGrandchildClosed(t *testing.T)
 	m.SetPersistedSessionTree(root, store)
 	plain := strings.Join(stripANSILines(strings.Split(m.subagentsSection(100), "\n")), "\n")
 
-	for _, want := range []string{"Subagents", "Persisted Child", "child", "Persisted Grandchild", "grand", "finalized"} {
+	for _, want := range []string{"Subagents", "greppy", "child", "reviewer", "grand", "finalized"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("expected %q in persisted subagent tree: %q", want, plain)
+		}
+	}
+	for _, notWant := range []string{"Persisted Child", "Persisted Grandchild"} {
+		if strings.Contains(plain, notWant) {
+			t.Fatalf("persisted subagent rows should not render generated titles: %q", plain)
 		}
 	}
 	if strings.Contains(plain, "working") || strings.Contains(plain, "running") {
