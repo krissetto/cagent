@@ -1118,19 +1118,28 @@ func trimEndOfBufferLines(view string) string {
 	return strings.Join(lines[:last], "\n")
 }
 
+func isToolLikeMessage(msg *types.Message) bool {
+	if msg == nil {
+		return false
+	}
+	return msg.Type == types.MessageTypeToolCall || msg.Type == types.MessageTypeSubAgent
+}
+
 func (m *model) needsSeparator(index int) bool {
 	if index >= len(m.messages)-1 {
 		return false
 	}
-	currentIsToolCall := m.messages[index].Type == types.MessageTypeToolCall
-	nextIsToolCall := m.messages[index+1].Type == types.MessageTypeToolCall
+	current := m.messages[index]
+	next := m.messages[index+1]
+	currentIsToolLike := isToolLikeMessage(current)
+	nextIsToolLike := isToolLikeMessage(next)
 
-	// Always add a separator before transfer_task, even between consecutive tool calls
-	if nextIsToolCall && m.messages[index+1].ToolCall.Function.Name == transfertask.ToolNameTransferTask {
+	// Always add a separator before transfer_task, even between consecutive tool-like rows.
+	if next != nil && next.Type == types.MessageTypeToolCall && next.ToolCall.Function.Name == transfertask.ToolNameTransferTask {
 		return true
 	}
 
-	return !currentIsToolCall || !nextIsToolCall
+	return !currentIsToolLike || !nextIsToolLike
 }
 
 func (m *model) ensureAllItemsRendered() {

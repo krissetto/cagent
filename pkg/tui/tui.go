@@ -1384,6 +1384,7 @@ func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, notification.ErrorCmd("Live session not found")
 	}
+	sess = m.hydrateAttachedSessionMessages(context.Background(), sess)
 	node, _ := m.application.LiveSessionNode(sessionID)
 	attached := app.NewAttached(context.Background(), m.application.Runtime(), sess, node)
 	workingDir := sess.WorkingDir
@@ -1393,6 +1394,25 @@ func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
 	m.supervisor.AddSession(context.Background(), attached, sess, workingDir, nil)
 	m.initSessionComponents(sessionID, attached, sess)
 	return m.handleSwitchTab(sessionID)
+}
+
+func (m *appModel) hydrateAttachedSessionMessages(ctx context.Context, sess *session.Session) *session.Session {
+	if sess == nil || len(sess.Messages) > 0 || m == nil || m.application == nil {
+		return sess
+	}
+	store := m.application.SessionStore()
+	if store == nil {
+		return sess
+	}
+	stored, err := store.GetSession(ctx, sess.ID)
+	if err != nil || stored == nil || len(stored.Messages) == 0 {
+		return sess
+	}
+	// Keep the live session object so attached sends continue targeting the live
+	// child queue, but hydrate its persisted transcript for the attached tab's
+	// initial chat model.
+	sess.Messages = append(sess.Messages[:0], stored.Messages...)
+	return sess
 }
 
 // handleSwitchTab switches to a different session.

@@ -147,6 +147,7 @@ type model struct {
 	childQueueAgents   map[string]string
 	liveSessionTree    *runtime.LiveSessionTree
 	subagentClickZones map[int]string
+	hoveredSubagentID  string
 	subagentSpinners   map[string]spinner.Spinner
 	streamCancelled    bool // true after ESC cancel until next StreamStartedEvent
 	collapsed          bool // true when sidebar is collapsed
@@ -674,6 +675,11 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		return m, cmd
 	case tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg, messages.WheelCoalescedMsg:
 		if m.mode == ModeVertical {
+			if motion, ok := msg.(tea.MouseMotionMsg); ok {
+				if m.updateSubagentHoverAt(motion.X, motion.Y) {
+					m.invalidateCache()
+				}
+			}
 			_, cmd := m.scrollview.Update(msg)
 			return m, cmd
 		}
@@ -876,7 +882,7 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		for id, sp := range m.subagentSpinners {
 			sp.Stop()
 			agent := liveSessionAgentName(m.liveSessionTree.Root, id)
-			m.subagentSpinners[id] = spinner.New(spinner.ModeSpinnerOnly, styles.SubagentAccentStyleFor(agent))
+			m.subagentSpinners[id] = spinner.New(spinner.ModeSpinnerOnly, styles.AgentAccentStyleFor(agent))
 			cmds = append(cmds, m.subagentSpinners[id].Init())
 		}
 
@@ -1341,35 +1347,33 @@ func (m *model) subagentsSection(contentWidth int) string {
 	}
 	var lines []string
 	for i, child := range m.liveSessionTree.Root.Children {
-		m.renderLiveSessionNode(&lines, child, i == len(m.liveSessionTree.Root.Children)-1, "", contentWidth)
+		m.renderLiveSessionNode(&lines, child, 1, i == len(m.liveSessionTree.Root.Children)-1, nil, contentWidth)
 	}
 	return m.renderTab("Subagents", strings.Join(lines, "\n"), contentWidth)
 }
 
-func (m *model) renderLiveSessionNode(lines *[]string, node *runtime.LiveSessionNode, last bool, prefix string, contentWidth int) {
+func (m *model) renderLiveSessionNode(lines *[]string, node *runtime.LiveSessionNode, depth int, last bool, ancestorsHaveMore []bool, contentWidth int) {
 	if node == nil {
 		return
 	}
-	branch := "├ "
-	nextPrefix := prefix + "│ "
-	if last {
-		branch = "└ "
-		nextPrefix = prefix + "  "
-	}
+	prefix, childAncestors := subagentTreePrefix(depth, last, ancestorsHaveMore)
 	agent := node.AgentName
 	if agent == "" {
 		agent = "subagent"
 	}
 	status := subagentStatusLabel(node)
-	leftPrefix := styles.MutedStyle.Render(prefix + branch)
 	spinnerView := ""
 	if subagentStatusWorking(node) {
 		spinnerView = m.subagentSpinnerView(node.ID, agent) + " "
 	}
-	name := styles.SubagentAccentStyleFor(agent).Render(agent)
+	nameStyle := styles.AgentAccentStyleFor(agent)
+	if m.hoveredSubagentID == node.ID {
+		nameStyle = styles.Hovered(nameStyle)
+	}
+	name := nameStyle.Render(agent)
 	id := styles.MutedStyle.Render(" (" + sidebarShortID(node.ID) + ")")
-	left := leftPrefix + spinnerView + name + id
-	plainLeftWidth := lipgloss.Width(prefix+branch) + lipgloss.Width(spinnerView) + lipgloss.Width(agent) + lipgloss.Width(" ("+sidebarShortID(node.ID)+")")
+	left := styles.MutedStyle.Render(prefix) + spinnerView + name + id
+	plainLeftWidth := lipgloss.Width(prefix) + lipgloss.Width(spinnerView) + lipgloss.Width(agent) + lipgloss.Width(" ("+sidebarShortID(node.ID)+")")
 	statusStyled := styles.MutedStyle.Render(status)
 	gap := max(1, contentWidth-plainLeftWidth-lipgloss.Width(status))
 	*lines = append(*lines, left+strings.Repeat(" ", gap)+statusStyled)
@@ -1378,11 +1382,45 @@ func (m *model) renderLiveSessionNode(lines *[]string, node *runtime.LiveSession
 		if detail == "" {
 			detail = node.LastPreview
 		}
-		*lines = append(*lines, styles.MutedStyle.Render(nextPrefix+toolcommon.TruncateText(detail, max(1, contentWidth-lipgloss.Width(nextPrefix)))))
+		detailPrefix := subagentDetailPrefix(childAncestors)
+		*lines = append(*lines, styles.MutedStyle.Render(detailPrefix+toolcommon.TruncateText(detail, max(1, contentWidth-lipgloss.Width(detailPrefix)))))
 	}
 	for i, child := range node.Children {
-		m.renderLiveSessionNode(lines, child, i == len(node.Children)-1, nextPrefix, contentWidth)
+		m.renderLiveSessionNode(lines, child, depth+1, i == len(node.Children)-1, childAncestors, contentWidth)
 	}
+}
+
+func subagentTreePrefix(depth int, isLast bool, ancestorsHaveMore []bool) (string, []bool) {
+	if depth <= 1 {
+		return "", nil
+	}
+	var b strings.Builder
+	for _, hasMore := range ancestorsHaveMore {
+		if hasMore {
+			b.WriteString("│ ")
+		} else {
+			b.WriteString("  ")
+		}
+	}
+	if isLast {
+		b.WriteString("└ ")
+	} else {
+		b.WriteString("├ ")
+	}
+	next := append(append([]bool(nil), ancestorsHaveMore...), !isLast)
+	return b.String(), next
+}
+
+func subagentDetailPrefix(ancestorsHaveMore []bool) string {
+	var b strings.Builder
+	for _, hasMore := range ancestorsHaveMore {
+		if hasMore {
+			b.WriteString("│ ")
+		} else {
+			b.WriteString("  ")
+		}
+	}
+	return b.String()
 }
 
 func (m *model) seedSubagentSpinners(root *runtime.LiveSessionNode) {
@@ -1413,7 +1451,7 @@ func (m *model) ensureSubagentSpinner(id, agent string) spinner.Spinner {
 	if sp, ok := m.subagentSpinners[id]; ok {
 		return sp
 	}
-	sp := spinner.New(spinner.ModeSpinnerOnly, styles.SubagentAccentStyleFor(agent))
+	sp := spinner.New(spinner.ModeSpinnerOnly, styles.AgentAccentStyleFor(agent))
 	m.subagentSpinners[id] = sp
 	return sp
 }
@@ -1491,7 +1529,7 @@ func subagentStatusLabel(node *runtime.LiveSessionNode) string {
 
 func (m *model) buildSubagentClickZones(start int, lines []string) {
 	m.subagentClickZones = make(map[int]string)
-	if m.liveSessionTree == nil || m.liveSessionTree.Root == nil {
+	if m.liveSessionTree == nil || m.liveSessionTree.Root == nil || len(m.liveSessionTree.Root.Children) == 0 {
 		return
 	}
 	line := start + 2 // tab header + top padding
@@ -1502,6 +1540,10 @@ func (m *model) buildSubagentClickZones(start int, lines []string) {
 		}
 		m.subagentClickZones[line] = node.ID
 		line++
+		if node.Error != "" || (node.Status == "failed" && node.LastPreview != "") {
+			m.subagentClickZones[line] = node.ID
+			line++
+		}
 		for _, child := range node.Children {
 			walk(child)
 		}
@@ -1510,6 +1552,29 @@ func (m *model) buildSubagentClickZones(start int, lines []string) {
 		walk(child)
 	}
 	_ = lines
+}
+
+func (m *model) updateSubagentHoverAt(x, y int) bool {
+	if m.mode != ModeVertical || len(m.subagentClickZones) == 0 {
+		return m.setHoveredSubagent("")
+	}
+	contentX := x - (m.xPos + m.layoutCfg.PaddingLeft)
+	if contentX < 0 || contentX >= m.contentWidth(m.cachedNeedsScrollbar) {
+		return m.setHoveredSubagent("")
+	}
+	contentY := y + m.scrollview.ScrollOffset()
+	if id, ok := m.subagentClickZones[contentY]; ok {
+		return m.setHoveredSubagent(id)
+	}
+	return m.setHoveredSubagent("")
+}
+
+func (m *model) setHoveredSubagent(id string) bool {
+	if m.hoveredSubagentID == id {
+		return false
+	}
+	m.hoveredSubagentID = id
+	return true
 }
 
 func sidebarShortID(id string) string {

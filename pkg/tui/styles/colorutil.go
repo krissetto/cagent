@@ -222,6 +222,38 @@ func EnsureContrast(fg, bg color.Color) color.Color {
 	return RGBToColor(tR, tG, tB)
 }
 
+// --- Brightening ---
+
+// BrightenColor returns a visually-lighter variant of c by lifting its HSL
+// lightness toward white by amount (clamped to [0, 1]). Hue is preserved.
+func BrightenColor(c color.Color, amount float64) color.Color {
+	if c == nil {
+		return nil
+	}
+	if amount <= 0 {
+		return c
+	}
+	if amount > 1 {
+		amount = 1
+	}
+	r, g, b := ColorToRGB(c)
+	nr, ng, nb := brightenRGB(r, g, b, amount)
+	return RGBToColor(nr, ng, nb)
+}
+
+func brightenRGB(r, g, b, amount float64) (nr, ng, nb float64) {
+	h, s, l := rgbToHSL(r, g, b)
+	newL := l + (1-l)*amount
+	newS := s
+	if s > 0 && l < 0.5 {
+		newS = s + (1-s)*amount*0.25
+		if newS > 1 {
+			newS = 1
+		}
+	}
+	return hslToRGB(h, newS, newL)
+}
+
 // --- HSL conversion ---
 
 // rgbToHSL converts normalized [0,1] sRGB to HSL.
