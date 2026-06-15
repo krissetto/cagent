@@ -156,6 +156,16 @@ func (p *chatPage) handleMouseClick(msg tea.MouseClickMsg) (layout.Model, tea.Cm
 			return p, nil
 		}
 
+	case TargetSidebarSubagent:
+		if msg.Button == tea.MouseLeft && hit.SubagentID != "" {
+			return p, core.CmdHandler(msgtypes.AttachSessionMsg{SessionID: hit.SubagentID})
+		}
+
+	case TargetSidebarParent:
+		if msg.Button == tea.MouseLeft && hit.ParentSessionID != "" {
+			return p, core.CmdHandler(msgtypes.AttachSessionMsg{SessionID: hit.ParentSessionID})
+		}
+
 	case TargetMessages:
 		if !p.messages.IsMouseOnScrollbar(msg.X, msg.Y) {
 			cmd := p.routeMouseEvent(msg, msg.Y)

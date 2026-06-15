@@ -65,6 +65,12 @@ type (
 	// OpenSessionBrowserMsg opens the session browser dialog.
 	OpenSessionBrowserMsg struct{}
 
+	// OpenLiveSessionTreeMsg opens the live runtime-managed subagent tree dialog.
+	OpenLiveSessionTreeMsg struct{}
+
+	// AttachSessionMsg opens a live runtime-managed child session in its own tab.
+	AttachSessionMsg struct{ SessionID string }
+
 	// LoadSessionMsg loads a session by ID.
 	LoadSessionMsg struct{ SessionID string }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	goruntime "runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -490,6 +491,7 @@ func (m *appModel) editorOpts() []editor.Option {
 // the given app and stores them in the per-session maps under tabID. The active
 // convenience pointers (m.chatPage, m.sessionState, m.editor) are also updated.
 func (m *appModel) initSessionComponents(tabID string, a *app.App, sess *session.Session) {
+	m.application = a
 	ss := service.NewSessionState(sess)
 	cp := chat.New(a, ss, m.chatPageOpts()...)
 	ed := editor.New(m.history, m.editorOpts()...)
@@ -498,7 +500,6 @@ func (m *appModel) initSessionComponents(tabID string, a *app.App, sess *session
 	m.sessionStates[tabID] = ss
 	m.editors[tabID] = ed
 
-	m.application = a
 	m.sessionState = ss
 	m.chatPage = cp
 	m.editor = ed
@@ -819,7 +820,12 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.forwardChat(msg)
 
 	case *runtime.SessionTitleEvent:
-		m.sessionState.SetSessionTitle(msg.Title)
+		if msg.SessionID == "" || msg.SessionID == m.application.Session().ID {
+			m.sessionState.SetSessionTitle(msg.Title)
+			if activeID := m.supervisor.ActiveID(); activeID != "" {
+				m.supervisor.SetRunnerTitle(activeID, msg.Title)
+			}
+		}
 		return m.forwardChat(msg)
 
 	// --- New session (slash command /new) ---
@@ -874,6 +880,12 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.OpenSessionBrowserMsg:
 		return m.handleOpenSessionBrowser()
+
+	case messages.OpenLiveSessionTreeMsg:
+		return m.handleOpenLiveSessionTree()
+
+	case messages.AttachSessionMsg:
+		return m.handleAttachSession(msg.SessionID)
 
 	case messages.LoadSessionMsg:
 		return m.handleLoadSession(msg.SessionID)
@@ -1087,13 +1099,76 @@ func (m *appModel) handleRoutedMsg(msg messages.RoutedMsg) (tea.Model, tea.Cmd) 
 			if agentName := event.GetAgentName(); agentName != "" {
 				sessionState.SetCurrentAgentName(agentName)
 			}
+			if titleEvent, ok := event.(*runtime.SessionTitleEvent); ok {
+				sessionState.SetSessionTitle(titleEvent.Title)
+				m.supervisor.SetRunnerTitle(msg.SessionID, titleEvent.Title)
+			}
 		}
 	}
 
 	// Update the inactive chat page (discard cmds — UI effects aren't needed for hidden pages)
 	updated, _ := chatPage.Update(msg.Inner)
 	m.chatPages[msg.SessionID] = updated.(chat.Page)
+
+	// Root aggregate events can be routed to a hidden owner tab while the user is
+	// viewing an attached/related child tab. Apply those events to the visible
+	// sidebar too so subagent tree/status/queue changes appear immediately,
+	// without duplicating chat transcript messages or adding polling.
+	if activePage, ok := m.chatPages[activeID]; ok && sidebarEventRelatesToSession(msg.Inner, activeID) {
+		if titleEvent, ok := msg.Inner.(*runtime.SessionTitleEvent); ok && titleEvent.SessionID == activeID && titleEvent.Title != "" {
+			if sessionState, ok := m.sessionStates[activeID]; ok {
+				sessionState.SetSessionTitle(titleEvent.Title)
+			}
+			m.supervisor.SetRunnerTitle(activeID, titleEvent.Title)
+		}
+		cmd := activePage.ApplySidebarRuntimeEvent(msg.Inner)
+		m.chatPages[activeID] = activePage
+		return m, cmd
+	}
 	return m, nil
+}
+
+func sidebarEventRelatesToSession(msg tea.Msg, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	switch ev := msg.(type) {
+	case *runtime.LiveSessionTreeChangedEvent:
+		return liveSessionTreeContainsSession(ev.Tree, sessionID)
+	case *runtime.SessionQueueEvent:
+		return ev.SessionID == sessionID
+	case *runtime.ParentIdleEvent:
+		return ev.SessionID == sessionID
+	case *runtime.ParentResumeEvent:
+		return ev.SessionID == sessionID
+	case *runtime.SessionTitleEvent:
+		return ev.SessionID == sessionID
+	case *runtime.SubAgentStartedEvent:
+		return ev.SessionID == sessionID || ev.SubAgent.ID == sessionID
+	case *runtime.SubAgentSentEvent:
+		return ev.SessionID == sessionID || ev.SubAgentID == sessionID
+	case *runtime.SubAgentUpdateEvent:
+		return ev.SessionID == sessionID || ev.Envelope.ParentSessionID == sessionID || ev.Envelope.SubAgentID == sessionID
+	default:
+		return false
+	}
+}
+
+func liveSessionTreeContainsSession(tree *runtime.LiveSessionTree, sessionID string) bool {
+	if tree == nil || tree.Root == nil || sessionID == "" {
+		return false
+	}
+	var walk func(*runtime.LiveSessionNode) bool
+	walk = func(node *runtime.LiveSessionNode) bool {
+		if node == nil {
+			return false
+		}
+		if node.ID == sessionID {
+			return true
+		}
+		return slices.ContainsFunc(node.Children, walk)
+	}
+	return walk(tree.Root)
 }
 
 // handleWorkingStateChanged updates the editor working indicator and resize handle spinner.
@@ -1354,6 +1429,170 @@ func (m *appModel) openWorkingDirPicker() (tea.Model, tea.Cmd) {
 type stashedDialog struct {
 	dialog dialog.Dialog
 	event  tea.Msg
+}
+
+func (m *appModel) handleOpenLiveSessionTree() (tea.Model, tea.Cmd) {
+	if m.application == nil || m.application.Session() == nil {
+		return m, nil
+	}
+	tree := m.application.LiveSessionTree(m.application.Session().EffectiveRootID())
+	if tree == nil || tree.Root == nil || len(tree.Root.Children) == 0 {
+		return m, notification.InfoCmd("No live subagents")
+	}
+	return m, core.CmdHandler(dialog.OpenDialogMsg{Model: dialog.NewLiveSessionTreeDialog(tree)})
+}
+
+func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
+	if sessionID == "" || m.application == nil {
+		return m, nil
+	}
+	if m.supervisor.GetRunner(sessionID) != nil {
+		return m.handleSwitchTab(sessionID)
+	}
+	ctx := context.Background()
+	stored, hasStored := m.storedSession(ctx, sessionID)
+	if !hasStored {
+		return m, notification.ErrorCmd("Session not found")
+	}
+
+	sess := stored.Clone()
+	if sess.ID == "" {
+		sess.ID = sessionID
+	}
+	node, nodeOK := m.application.LiveSessionNode(sessionID)
+	if !nodeOK {
+		node = liveSessionNodeFromSession(sess)
+	}
+	if sess.AgentName == "" && node.AgentName != "" {
+		sess.AgentName = node.AgentName
+	}
+	if sess.Title == "" && node.Title != "" {
+		sess.Title = node.Title
+	}
+	if sess.WorkingDir == "" && m.application.Session() != nil {
+		sess.WorkingDir = m.application.Session().WorkingDir
+	}
+	// A subagent tab is just the child session opened directly. The session's
+	// AgentName pins RunStream to the right agent, so no live subagent handle or
+	// read-only attached wrapper is needed after a TUI restart.
+	sess.NonInteractive = false
+
+	childApp := app.New(ctx, m.application.Runtime(), sess)
+	childApp.HydrateSessionStartupInfo(ctx, sess.AgentName)
+	workingDir := sess.WorkingDir
+	if workingDir == "" && m.application.Session() != nil {
+		workingDir = m.application.Session().WorkingDir
+	}
+	m.supervisor.AddSession(ctx, childApp, sess, workingDir, nil)
+	if sess.Title != "" {
+		m.supervisor.SetRunnerTitle(sessionID, sess.Title)
+	}
+	return m.handleSwitchTab(sessionID)
+}
+
+func (m *appModel) storedSession(ctx context.Context, sessionID string) (*session.Session, bool) {
+	if m == nil || m.application == nil || sessionID == "" {
+		return nil, false
+	}
+	store := m.application.SessionStore()
+	if store == nil {
+		return nil, false
+	}
+
+	direct, directOK := sessionFromStore(ctx, store, sessionID)
+	if sessionHasAttachHistory(direct) {
+		return direct, true
+	}
+	if found := findSubSessionByID(m.application.Session(), sessionID); sessionHasAttachHistory(found) {
+		return mergeAttachSessionMetadata(direct, found), true
+	}
+
+	if treeStore, ok := store.(session.TreeStore); ok {
+		if rootID, err := treeStore.ResolveRootID(ctx, sessionID); err == nil && rootID != "" && rootID != sessionID {
+			if root, ok := sessionFromStore(ctx, store, rootID); ok {
+				if found := findSubSessionByID(root, sessionID); sessionHasAttachHistory(found) {
+					return mergeAttachSessionMetadata(direct, found), true
+				}
+			}
+		}
+	}
+
+	if directOK {
+		return direct, true
+	}
+	return nil, false
+}
+
+func sessionFromStore(ctx context.Context, store session.Store, sessionID string) (*session.Session, bool) {
+	if store == nil || sessionID == "" {
+		return nil, false
+	}
+	sess, err := store.GetSession(ctx, sessionID)
+	return sess, err == nil && sess != nil
+}
+
+func sessionHasAttachHistory(sess *session.Session) bool {
+	return sess != nil && len(sess.GetAllMessages()) > 0
+}
+
+func findSubSessionByID(sess *session.Session, sessionID string) *session.Session {
+	if sess == nil || sessionID == "" {
+		return nil
+	}
+	if sess.ID == sessionID {
+		return sess
+	}
+	for _, item := range sess.Messages {
+		if item.SubSession == nil {
+			continue
+		}
+		if found := findSubSessionByID(item.SubSession, sessionID); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func mergeAttachSessionMetadata(preferredMeta, historySess *session.Session) *session.Session {
+	if historySess == nil || preferredMeta == nil {
+		return historySess
+	}
+	merged := historySess.Clone()
+	if merged.ID == "" {
+		merged.ID = preferredMeta.ID
+	}
+	if merged.Title == "" {
+		merged.Title = preferredMeta.Title
+	}
+	if merged.WorkingDir == "" {
+		merged.WorkingDir = preferredMeta.WorkingDir
+	}
+	if merged.ParentID == "" {
+		merged.ParentID = preferredMeta.ParentID
+	}
+	if merged.RootID == "" {
+		merged.RootID = preferredMeta.RootID
+	}
+	if !merged.RuntimeManaged {
+		merged.RuntimeManaged = preferredMeta.RuntimeManaged
+	}
+	return merged
+}
+
+func liveSessionNodeFromSession(sess *session.Session) runtime.LiveSessionNode {
+	if sess == nil {
+		return runtime.LiveSessionNode{Status: "waiting"}
+	}
+	return runtime.LiveSessionNode{
+		ID:        sess.ID,
+		ParentID:  sess.ParentID,
+		RootID:    sess.EffectiveRootID(),
+		AgentName: sess.AgentName,
+		Title:     sess.Title,
+		Status:    "waiting",
+		Live:      false,
+		CreatedAt: sess.CreatedAt,
+	}
 }
 
 // handleSwitchTab switches to a different session.

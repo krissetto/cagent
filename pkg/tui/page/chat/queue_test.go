@@ -545,3 +545,41 @@ func TestReadOnly_RejectsBypassQueueCommands(t *testing.T) {
 	assert.False(t, p.working, "read-only must not start processing a BypassQueue message")
 	assert.Nil(t, p.msgCancel, "read-only must not start a stream for a BypassQueue message")
 }
+
+type followUpRecordingRuntime struct {
+	queueTestRuntime
+
+	calls []runtime.QueuedMessage
+}
+
+func (r *followUpRecordingRuntime) FollowUp(msg runtime.QueuedMessage) error {
+	r.calls = append(r.calls, msg)
+	return nil
+}
+
+func TestParentIdleFlushesQueuedMessagesToFollowUp(t *testing.T) {
+	t.Parallel()
+
+	rt := &followUpRecordingRuntime{}
+	sess := session.New()
+	p := New(app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
+	p.working = true
+	_, _ = p.handleSendMsg(messages.SendMsg{Content: "queued follow-up"})
+	require.Len(t, p.messageQueue, 1)
+
+	handled, cmd := p.handleRuntimeEvent(&runtime.ParentIdleEvent{SessionID: sess.ID, Count: 1, IDs: []string{"child"}})
+	require.True(t, handled)
+	require.NotNil(t, cmd)
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, child := range batch {
+			if child != nil {
+				_ = child()
+			}
+		}
+	}
+
+	require.Empty(t, p.messageQueue)
+	require.Len(t, rt.calls, 1)
+	assert.Equal(t, "queued follow-up", rt.calls[0].Content)
+	assert.False(t, p.working)
+}

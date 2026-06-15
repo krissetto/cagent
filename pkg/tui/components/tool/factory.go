@@ -6,6 +6,7 @@
 package tool
 
 import (
+	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/tools/builtin/fetch"
 	"github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
 	handofftool "github.com/docker/docker-agent/pkg/tools/builtin/handoff"
@@ -23,6 +24,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/components/tool/readmultiplefiles"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/searchfilescontent"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/shell"
+	"github.com/docker/docker-agent/pkg/tui/components/tool/subagent"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/todotool"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/transfertask"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/userprompt"
@@ -55,6 +57,13 @@ var builders = map[string]builder{
 	todo.ToolNameCreateTodos:              todotool.New,
 	todo.ToolNameUpdateTodos:              todotool.New,
 	todo.ToolNameListTodos:                todotool.New,
+	runtime.ToolNameSubagentStart:         subagent.New,
+	runtime.ToolNameSubagentSend:          subagent.New,
+	runtime.ToolNameSubagentInspect:       subagent.New,
+	runtime.ToolNameSubagentList:          subagent.New,
+	runtime.ToolNameSubagentStop:          subagent.New,
+	runtime.ToolNameSubagentFinalize:      subagent.New,
+	runtime.ToolNameSubagentClose:         subagent.New,
 }
 
 // New returns the appropriate tool view for the given message.

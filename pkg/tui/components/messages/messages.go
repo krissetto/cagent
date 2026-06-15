@@ -64,7 +64,16 @@ type Model interface {
 	AppendToLastMessage(agentName, content string) tea.Cmd
 	AppendReasoning(agentName, content string) tea.Cmd
 	AddShellOutputMessage(content string) tea.Cmd
+	AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd
 	LoadFromSession(sess *session.Session) tea.Cmd
+	// HydratedThroughPosition returns the highest session position loaded into
+	// the viewport by LoadFromSession, or -1 if none. Live-attach event
+	// hydration uses this as a watermark: position-bearing events at or below
+	// it are already on screen (loaded from the durable store) and must be
+	// skipped to avoid duplicate transcript, while higher positions and
+	// in-flight streaming deltas render normally so nothing is lost.
+	HydratedThroughPosition() int
+	MergeAssistantFinal(agentName, content string, sessionPos int) bool
 
 	RemoveSpinner()
 	ScrollToBottom() tea.Cmd
@@ -150,6 +159,12 @@ type model struct {
 	// Hover state for showing copy button on assistant messages
 	hoveredMessageIndex int // Index of message under mouse (-1 = none)
 
+	// hydratedThroughPos is the highest session position loaded by
+	// LoadFromSession (-1 if none). Used as the live-attach hydration
+	// watermark so already-loaded transcript isn't re-rendered from the
+	// runtime event snapshot.
+	hydratedThroughPos int
+
 	// Hovered URL for underline-on-hover effect (nil = no URL hovered)
 	hoveredURL *hoveredURL
 }
@@ -180,6 +195,7 @@ func newModel(width, height int, sessionState *service.SessionState) *model {
 		selectedMessageIndex: -1,
 		inlineEditMsgIndex:   -1,
 		hoveredMessageIndex:  -1,
+		hydratedThroughPos:   -1,
 		renderDirty:          true,
 	}
 }
@@ -1117,19 +1133,28 @@ func trimEndOfBufferLines(view string) string {
 	return strings.Join(lines[:last], "\n")
 }
 
+func isToolLikeMessage(msg *types.Message) bool {
+	if msg == nil {
+		return false
+	}
+	return msg.Type == types.MessageTypeToolCall || msg.Type == types.MessageTypeSubAgent
+}
+
 func (m *model) needsSeparator(index int) bool {
 	if index >= len(m.messages)-1 {
 		return false
 	}
-	currentIsToolCall := m.messages[index].Type == types.MessageTypeToolCall
-	nextIsToolCall := m.messages[index+1].Type == types.MessageTypeToolCall
+	current := m.messages[index]
+	next := m.messages[index+1]
+	currentIsToolLike := isToolLikeMessage(current)
+	nextIsToolLike := isToolLikeMessage(next)
 
-	// Always add a separator before transfer_task, even between consecutive tool calls
-	if nextIsToolCall && m.messages[index+1].ToolCall.Function.Name == transfertask.ToolNameTransferTask {
+	// Always add a separator before transfer_task, even between consecutive tool-like rows.
+	if next != nil && next.Type == types.MessageTypeToolCall && next.ToolCall.Function.Name == transfertask.ToolNameTransferTask {
 		return true
 	}
 
-	return !currentIsToolCall || !nextIsToolCall
+	return !currentIsToolLike || !nextIsToolLike
 }
 
 func (m *model) ensureAllItemsRendered() {
@@ -1237,6 +1262,16 @@ func (m *model) AddShellOutputMessage(content string) tea.Cmd {
 	return m.addMessage(types.ShellOutput(content))
 }
 
+func (m *model) AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd {
+	// Drop any pending-response spinner first. Otherwise the spinner (added on
+	// StreamStarted) is left stranded above the appended subagent line, and
+	// removeSpinner — which only removes a trailing spinner — can never clean it
+	// up, leaving a static non-spinning pending row between messages after a
+	// delegation.
+	m.removeSpinner()
+	return m.addMessage(types.SubAgent(info))
+}
+
 func (m *model) AddAssistantMessage() tea.Cmd {
 	return m.addMessage(types.Spinner())
 }
@@ -1286,6 +1321,49 @@ func (m *model) addMessage(msg *types.Message) tea.Cmd {
 	}
 
 	return tea.Batch(cmds...)
+}
+
+func (m *model) MergeAssistantFinal(agentName, content string, sessionPos int) bool {
+	if content == "" {
+		return false
+	}
+	iter := slices.Backward(m.messages)
+	for i, msg := range iter {
+		if msg == nil || msg.Type != types.MessageTypeAssistant {
+			continue
+		}
+		if agentName != "" && msg.Sender != agentName {
+			continue
+		}
+		if msg.SessionPosition != nil && sessionPos >= 0 {
+			if *msg.SessionPosition != sessionPos {
+				continue
+			}
+		} else if sessionPos >= 0 || msg.SessionPosition != nil {
+			continue
+		}
+
+		if msg.Content == content {
+			return true
+		}
+		if strings.HasPrefix(content, msg.Content) {
+			msg.Content = content
+			if sessionPos >= 0 {
+				pos := sessionPos
+				msg.SessionPosition = &pos
+			}
+			m.views[i] = m.createMessageView(msg)
+			return true
+		}
+		if strings.HasPrefix(msg.Content, content) {
+			if sessionPos >= 0 && msg.SessionPosition == nil {
+				pos := sessionPos
+				msg.SessionPosition = &pos
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
@@ -1342,6 +1420,7 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 	m.selectedMessageIndex = -1
 	m.hoveredMessageIndex = -1
 	m.hoveredURL = nil
+	m.hydratedThroughPos = -1
 
 	var cmds []tea.Cmd
 
@@ -1362,7 +1441,20 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 			continue
 		}
 
+		// Track the highest loaded session position as the live-attach
+		// hydration watermark. Every persisted item we render here has a
+		// position; events replayed from the runtime snapshot at or below
+		// this position are already on screen and must be skipped.
+		if pos > m.hydratedThroughPos {
+			m.hydratedThroughPos = pos
+		}
+
 		smsg := item.Message
+		if smsg.Kind == session.MessageKindSubagentEnvelope || looksLikeRawSubagentEnvelope(smsg.Message.Content) {
+			msg := subAgentMessageFromSessionText(smsg.Message.Content)
+			appendSessionMessage(msg, m.createMessageView(msg))
+			continue
+		}
 		if smsg.Implicit {
 			continue
 		}
@@ -1394,6 +1486,11 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 			// Step 2: Handle assistant content - this breaks the reasoning block chain
 			if hasContent {
 				msg := types.Agent(types.MessageTypeAssistant, smsg.AgentName, smsg.Message.Content)
+				// Record the session position so a later finalizing
+				// MessageAddedEvent for this same turn merges in place by
+				// position instead of appending a duplicate.
+				msgPos := pos
+				msg.SessionPosition = &msgPos
 				appendSessionMessage(msg, m.createMessageView(msg))
 			}
 
@@ -1440,6 +1537,38 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 
 	cmds = append(cmds, m.ScrollToBottom())
 	return tea.Batch(cmds...)
+}
+
+// HydratedThroughPosition returns the highest session position loaded into the
+// viewport by LoadFromSession, or -1 if no positioned messages were loaded.
+func (m *model) HydratedThroughPosition() int {
+	return m.hydratedThroughPos
+}
+
+func subAgentMessageFromSessionText(content string) *types.Message {
+	info := types.SubAgentInfo{Kind: types.SubAgentEventTurnCompleted, Detail: strings.TrimSpace(content)}
+	switch {
+	case strings.Contains(info.Detail, " finalized"):
+		info.Kind = types.SubAgentEventClosed
+	case strings.Contains(info.Detail, " stopped"):
+		info.Kind = types.SubAgentEventStopped
+	case strings.Contains(info.Detail, " failed"):
+		info.Kind = types.SubAgentEventFailed
+	}
+	if end := strings.Index(info.Detail, "]"); strings.HasPrefix(info.Detail, "[") && end > 1 {
+		info.AgentName = strings.TrimSpace(info.Detail[1:end])
+		if rest := strings.TrimSpace(info.Detail[end+1:]); strings.HasPrefix(rest, "(") {
+			if closeIdx := strings.Index(rest, ")"); closeIdx > 1 {
+				info.ShortID = strings.TrimSpace(rest[1:closeIdx])
+			}
+		}
+	}
+	return types.SubAgent(info)
+}
+
+func looksLikeRawSubagentEnvelope(content string) bool {
+	content = strings.TrimSpace(content)
+	return strings.HasPrefix(content, "<subagent_update") || strings.HasPrefix(content, "<subagent_result") || strings.HasPrefix(content, "<subagent_envelope")
 }
 
 func (m *model) AddOrUpdateToolCall(agentName string, toolCall tools.ToolCall, toolDef tools.Tool, status types.ToolStatus) tea.Cmd {
@@ -1578,6 +1707,17 @@ func (m *model) AppendToLastMessage(agentName, content string) tea.Cmd {
 		lastMsg.Content += content
 		m.views[lastIdx].(message.Model).SetMessage(lastMsg)
 		m.invalidateItem(lastIdx)
+		return nil
+	}
+
+	// Don't create an empty assistant message. An empty MessageTypeAssistant
+	// renders as a (non-spinning) placeholder spinner, and if subsequent rows
+	// (e.g. tool calls or subagent lifecycle lines) are appended after it, it is
+	// stranded mid-transcript forever — removeSpinner only drops a trailing
+	// MessageTypeSpinner, not an empty assistant. Empty agent_choice deltas
+	// carry no content to show, so there is nothing to render yet; the real
+	// content (or a tool/subagent row) will create the appropriate message.
+	if content == "" {
 		return nil
 	}
 

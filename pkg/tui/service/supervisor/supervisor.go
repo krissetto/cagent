@@ -170,6 +170,14 @@ func (s *Supervisor) handleRuntimeEvent(sessionID string, msg tea.Msg) {
 		runner.NeedsAttn = false
 		s.notifyTabsUpdated()
 
+	case *runtime.ParentIdleEvent:
+		// A parent parked on subagent work is idle from the tab bar's point of
+		// view: the active chat page and sidebar clear their own root working
+		// spinner on this event, so inactive tabs must not keep showing the
+		// running indicator until the eventual StreamStoppedEvent.
+		runner.IsRunning = false
+		s.notifyTabsUpdated()
+
 	case *runtime.SessionTitleEvent:
 		runner.Title = ev.Title
 		s.notifyTabsUpdated()

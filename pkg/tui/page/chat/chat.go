@@ -14,6 +14,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/chat"
+	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/tui/commands"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
@@ -110,6 +111,9 @@ type Page interface {
 	FocusMessageAt(x, y int) tea.Cmd
 	// BlurMessages removes focus from the messages panel
 	BlurMessages()
+	// ApplySidebarRuntimeEvent applies runtime events that affect the sidebar
+	// aggregate without adding chat transcript messages.
+	ApplySidebarRuntimeEvent(msg tea.Msg) tea.Cmd
 	// GetSidebarSettings returns the current sidebar display settings
 	GetSidebarSettings() SidebarSettings
 	// SetSidebarSettings applies sidebar display settings
@@ -315,11 +319,27 @@ func (p *chatPage) Init() tea.Cmd {
 		p.messages.Init(),
 	)
 
-	// Load state from existing session (for session restore and branching)
+	// Load state from the durable session store. This is the single source of
+	// transcript truth for every tab, including attached live/history-only
+	// subagent sessions. Live attaches additionally subscribe to the runtime
+	// event stream, but that stream's snapshot has transcript events stripped
+	// (see app.attachSessionEventStream) so the same content is never rendered
+	// twice; only the live tail of brand-new turns is appended.
 	if sess := p.app.Session(); sess != nil {
 		p.sidebar.LoadFromSession(sess)
+		if store := p.app.SessionStore(); store != nil {
+			p.sidebar.SetPersistedSessionTree(sess, store)
+		}
 		if len(sess.Messages) > 0 {
 			cmds = append(cmds, p.messages.LoadFromSession(sess))
+		}
+	}
+
+	if p.app != nil && p.app.Session() != nil {
+		if tree, ok := p.app.Runtime().(runtime.LiveSessionRuntime); ok {
+			if liveTree, err := tree.LiveSessionTree(context.Background(), p.app.Session().ID); err == nil && liveTree != nil {
+				p.sidebar.SetLiveSessionTree(liveTree)
+			}
 		}
 	}
 
@@ -818,6 +838,35 @@ func (p *chatPage) extractAttachmentsFromSession(position int) []msgtypes.Attach
 
 // processNextQueuedMessage pops the next message from the queue and processes it.
 // Returns nil if the queue is empty.
+func (p *chatPage) refreshLiveSessionTree() {
+	if p.app == nil || p.app.Session() == nil {
+		return
+	}
+	if store := p.app.SessionStore(); store != nil {
+		p.sidebar.SetPersistedSessionTree(p.app.Session(), store)
+	}
+	if tree := p.app.LiveSessionTree(p.app.Session().EffectiveRootID()); tree != nil {
+		p.sidebar.SetLiveSessionTree(tree)
+	}
+}
+
+func (p *chatPage) flushQueuedFollowUps() tea.Cmd {
+	if len(p.messageQueue) == 0 || p.app == nil {
+		return nil
+	}
+	queued := p.messageQueue
+	p.messageQueue = nil
+	p.syncQueueToSidebar()
+	return func() tea.Msg {
+		for _, msg := range queued {
+			if err := p.app.FollowUpWithAttachments(msg.content, msg.attachments); err != nil {
+				return runtime.Warning(err.Error(), "")
+			}
+		}
+		return nil
+	}
+}
+
 func (p *chatPage) processNextQueuedMessage() tea.Cmd {
 	if len(p.messageQueue) == 0 {
 		return nil

@@ -25,22 +25,32 @@ import (
 )
 
 // mockChatPage implements chat.Page for testing.
-type mockChatPage struct{}
+type mockChatPage struct {
+	updates       []tea.Msg
+	sidebarEvents []tea.Msg
+}
 
-func (m *mockChatPage) Init() tea.Cmd                            { return nil }
-func (m *mockChatPage) Update(tea.Msg) (layout.Model, tea.Cmd)   { return m, nil }
-func (m *mockChatPage) View() string                             { return "" }
-func (m *mockChatPage) SetSize(int, int) tea.Cmd                 { return nil }
-func (m *mockChatPage) CompactSession(string) tea.Cmd            { return nil }
-func (m *mockChatPage) SetSessionStarred(bool)                   {}
-func (m *mockChatPage) SetTitleRegenerating(bool) tea.Cmd        { return nil }
-func (m *mockChatPage) ScrollToBottom() tea.Cmd                  { return nil }
-func (m *mockChatPage) IsWorking() bool                          { return false }
-func (m *mockChatPage) IsInlineEditing() bool                    { return false }
-func (m *mockChatPage) QueueLength() int                         { return 0 }
-func (m *mockChatPage) FocusMessages() tea.Cmd                   { return nil }
-func (m *mockChatPage) FocusMessageAt(int, int) tea.Cmd          { return nil }
-func (m *mockChatPage) BlurMessages()                            {}
+func (m *mockChatPage) Init() tea.Cmd { return nil }
+func (m *mockChatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
+	m.updates = append(m.updates, msg)
+	return m, nil
+}
+func (m *mockChatPage) View() string                      { return "" }
+func (m *mockChatPage) SetSize(int, int) tea.Cmd          { return nil }
+func (m *mockChatPage) CompactSession(string) tea.Cmd     { return nil }
+func (m *mockChatPage) SetSessionStarred(bool)            {}
+func (m *mockChatPage) SetTitleRegenerating(bool) tea.Cmd { return nil }
+func (m *mockChatPage) ScrollToBottom() tea.Cmd           { return nil }
+func (m *mockChatPage) IsWorking() bool                   { return false }
+func (m *mockChatPage) IsInlineEditing() bool             { return false }
+func (m *mockChatPage) QueueLength() int                  { return 0 }
+func (m *mockChatPage) FocusMessages() tea.Cmd            { return nil }
+func (m *mockChatPage) FocusMessageAt(int, int) tea.Cmd   { return nil }
+func (m *mockChatPage) BlurMessages()                     {}
+func (m *mockChatPage) ApplySidebarRuntimeEvent(msg tea.Msg) tea.Cmd {
+	m.sidebarEvents = append(m.sidebarEvents, msg)
+	return nil
+}
 func (m *mockChatPage) GetSidebarSettings() chat.SidebarSettings { return chat.SidebarSettings{} }
 func (m *mockChatPage) SetSidebarSettings(chat.SidebarSettings)  {}
 func (m *mockChatPage) Bindings() []key.Binding                  { return nil }

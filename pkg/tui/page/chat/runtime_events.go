@@ -3,13 +3,17 @@ package chat
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	chatmsg "github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sound"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
 	"github.com/docker/docker-agent/pkg/tui/core"
@@ -79,10 +83,33 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	// ===== Content Events =====
 	case *runtime.UserMessageEvent:
+		if p.alreadyHydratedPosition(msg.SessionPosition) {
+			return true, nil
+		}
+		if msg.Kind == session.MessageKindSubagentEnvelope || looksLikeRawSubagentEnvelope(msg.Message) {
+			return true, p.messages.AddSubAgentMessage(subAgentInfoFromText(msg.Message))
+		}
 		return true, p.messages.ReplaceLoadingWithUser(msg.Message, msg.SessionPosition)
+
+	case *runtime.SubAgentStartedEvent:
+		return true, p.forwardToSidebar(msg)
+
+	case *runtime.SubAgentSentEvent:
+		return true, p.forwardToSidebar(msg)
+
+	case *runtime.SubAgentUpdateEvent:
+		msgCmd := p.messages.AddSubAgentMessage(subAgentInfoFromEnvelope(msg.Envelope))
+		return true, tea.Batch(msgCmd, p.forwardToSidebar(msg))
+
+	case *runtime.LiveSessionTreeChangedEvent:
+		p.sidebar.SetLiveSessionTree(msg.Tree)
+		return true, nil
 
 	case *runtime.AgentChoiceEvent:
 		return true, p.handleAgentChoice(msg)
+
+	case *runtime.MessageAddedEvent:
+		return true, p.handleMessageAdded(msg)
 
 	case *runtime.AgentChoiceReasoningEvent:
 		return true, p.handleAgentChoiceReasoning(msg)
@@ -118,7 +145,13 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	case *runtime.TeamInfoEvent:
 		p.sidebar.SetTeamInfo(msg.AvailableAgents)
-		return true, nil
+		// Restored transcript rows may have rendered before TeamInfo arrived,
+		// which means agent-name colors were cached with the fallback palette.
+		// TeamInfo updates the global team color registry in the parent TUI; make
+		// the transcript rebuild with those resolved per-agent colors.
+		model, cmd := p.messages.Update(msgtypes.ThemeChangedMsg{})
+		p.messages = model.(messages.Model)
+		return true, cmd
 
 	case *runtime.AgentSwitchingEvent:
 		p.sidebar.SetAgentSwitching(msg.Switching)
@@ -146,6 +179,28 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 	case *runtime.RAGIndexingStartedEvent,
 		*runtime.RAGIndexingProgressEvent,
 		*runtime.RAGIndexingCompletedEvent:
+		return true, p.forwardToSidebar(msg)
+
+	case *runtime.ParentIdleEvent:
+		// The parent has parked waiting on live child work: its own stream is
+		// idle. Clear working and reset the depth counter so a later
+		// StreamStarted/Stopped pair can't leave the counter out of sync with
+		// the working flag (which manifested as a spinner stuck between
+		// messages after a delegation).
+		if p.ownsSessionStream(msg.SessionID) {
+			p.streamDepth = 0
+		}
+		p.refreshLiveSessionTree()
+		cmds := []tea.Cmd{p.setWorking(false), p.setPendingResponse(false), p.flushQueuedFollowUps()}
+		cmds = append(cmds, p.forwardToSidebar(msg))
+		return true, tea.Batch(cmds...)
+
+	case *runtime.ParentResumeEvent:
+		p.refreshLiveSessionTree()
+		return true, p.forwardToSidebar(msg)
+
+	case *runtime.SessionQueueEvent:
+		p.refreshLiveSessionTree()
 		return true, p.forwardToSidebar(msg)
 
 	// ===== Dialog Events =====
@@ -198,6 +253,13 @@ func (p *chatPage) handleTokenUsage(msg *runtime.TokenUsageEvent) {
 
 func (p *chatPage) handleStreamStarted(msg *runtime.StreamStartedEvent) tea.Cmd {
 	slog.Debug("handleStreamStarted called", "agent", msg.AgentName, "session_id", msg.SessionID)
+	// Working state is owned by this page's own session. A start for another
+	// session (e.g. a child whose events reached this page) must not drive the
+	// parent's working spinner, otherwise an unmatched child start leaves the
+	// parent spinning forever between messages.
+	if !p.ownsSessionStream(msg.SessionID) {
+		return p.forwardToSidebar(msg)
+	}
 	p.streamCancelled = false
 	p.streamDepth++
 	p.streamStartTime = time.Now()
@@ -205,6 +267,44 @@ func (p *chatPage) handleStreamStarted(msg *runtime.StreamStartedEvent) tea.Cmd 
 	pendingCmd := p.setPendingResponse(true)
 	sidebarCmd := p.forwardToSidebar(msg)
 	return tea.Batch(pendingCmd, spinnerCmd, sidebarCmd)
+}
+
+// ownsSessionStream reports whether a stream lifecycle event belongs to this
+// page's own session and should drive its working/spinner state. Events with
+// an empty session id come from the main loop and are treated as owned;
+// events scoped to a different session (a descendant) are not.
+func (p *chatPage) ownsSessionStream(sessionID string) bool {
+	if sessionID == "" {
+		return true
+	}
+	if p.app == nil || p.app.Session() == nil {
+		return true
+	}
+	return sessionID == p.app.Session().ID
+}
+
+// setWorkingIfStreaming sets the working state to true only while this page's
+// own stream is active (streamDepth > 0). Tool events can be delivered after
+// the turn's StreamStopped due to event throttling/ordering; using this guard
+// for them prevents a late tool event from re-lighting a spinner that no
+// subsequent StreamStopped will clear. Passing working=false always applies.
+func (p *chatPage) setWorkingIfStreaming(working bool) tea.Cmd {
+	if working && p.streamDepth == 0 {
+		return nil
+	}
+	return p.setWorking(working)
+}
+
+func (p *chatPage) alreadyHydratedPosition(sessionPos int) bool {
+	if !p.app.IsAttachedLive() {
+		return false
+	}
+	// Store history is the single transcript source for an attached session
+	// (loaded once in chat.Init -> LoadFromSession). Any positioned event at or
+	// below the hydration watermark is already on screen. Higher positions and
+	// position-less in-flight streaming deltas (sessionPos < 0) are genuinely
+	// new and render normally — nothing is lost.
+	return sessionPos >= 0 && sessionPos <= p.messages.HydratedThroughPosition()
 }
 
 func (p *chatPage) handleAgentChoice(msg *runtime.AgentChoiceEvent) tea.Cmd {
@@ -216,6 +316,53 @@ func (p *chatPage) handleAgentChoice(msg *runtime.AgentChoiceEvent) tea.Cmd {
 	// Clear pending response indicator - first chunk has arrived
 	p.setPendingResponse(false)
 	return p.messages.AppendToLastMessage(msg.AgentName, msg.Content)
+}
+
+func (p *chatPage) handleMessageAdded(msg *runtime.MessageAddedEvent) tea.Cmd {
+	if msg == nil || msg.Message == nil {
+		return nil
+	}
+	m := msg.Message.Message
+	agentName := msg.AgentName
+	if agentName == "" {
+		agentName = msg.Message.AgentName
+	}
+	switch m.Role {
+	case chatmsg.MessageRoleUser:
+		// A user message already loaded from store history (positioned at or
+		// below the hydration watermark on a live attach) is already on screen.
+		if p.alreadyHydratedPosition(msg.SessionPosition) {
+			return nil
+		}
+		return p.messages.ReplaceLoadingWithUser(m.Content, msg.SessionPosition)
+	case chatmsg.MessageRoleAssistant:
+		// A tool-call-only assistant turn (e.g. the model just calling
+		// subagent_start) is persisted with empty text content; the tool calls
+		// render via their own ToolCall events. There is no text to show, so
+		// don't create an empty assistant row — it would render as a blank
+		// placeholder and, once later rows are appended, be stranded
+		// mid-transcript (removeSpinner only drops a trailing MessageTypeSpinner).
+		if strings.TrimSpace(m.Content) == "" {
+			return nil
+		}
+		// Assistant turns stream in via AgentChoiceEvent deltas; the
+		// MessageAddedEvent is the persisted finalization of that same turn.
+		// Merge it into the matching streamed message by position. This is
+		// idempotent: identical content already on screen is a no-op, while a
+		// fuller final replaces a partial. We do not gate this on the
+		// hydration watermark so a finalized version can still correct a
+		// partial that was loaded from store history. Only when there is no
+		// matching message to finalize do we append.
+		if p.messages.MergeAssistantFinal(agentName, m.Content, msg.SessionPosition) {
+			return nil
+		}
+		if p.alreadyHydratedPosition(msg.SessionPosition) {
+			return nil
+		}
+		return p.messages.AppendToLastMessage(agentName, m.Content)
+	default:
+		return nil
+	}
 }
 
 func (p *chatPage) handleAgentChoiceReasoning(msg *runtime.AgentChoiceReasoningEvent) tea.Cmd {
@@ -235,16 +382,24 @@ func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd 
 		"has_content", p.hasReceivedAssistantContent,
 		"stream_depth", p.streamDepth)
 
+	// Stops for descendant sessions don't affect this page's own working
+	// state; just refresh the sidebar. This prevents cross-session stop
+	// events from driving the parent counter negative or clearing the
+	// parent spinner mid-turn.
+	if !p.ownsSessionStream(msg.SessionID) {
+		return p.forwardToSidebar(msg)
+	}
+
 	if p.streamDepth > 0 {
 		p.streamDepth--
 	}
 
 	sidebarCmd := p.forwardToSidebar(msg)
 
-	// Sub-agent stream stopped — the parent is still running, so only
-	// forward to the sidebar and keep the working/cancel state intact.
-	// Without this guard, pressing Esc after a sub-agent completes but
-	// while the parent continues would have no effect.
+	// Nested same-session stream stopped while an outer one is still active —
+	// keep the working/cancel state intact and just refresh the sidebar.
+	// streamDepth is only ever incremented by an owned StreamStarted, so a
+	// remaining depth here means a genuine nested same-session stream.
 	if p.streamDepth > 0 {
 		return tea.Batch(p.messages.ScrollToBottom(), sidebarCmd)
 	}
@@ -302,7 +457,11 @@ func (p *chatPage) handleToolCallConfirmation(msg *runtime.ToolCallConfirmationE
 
 func (p *chatPage) handleToolCall(msg *runtime.ToolCallEvent) tea.Cmd {
 	p.setPendingResponse(false)
-	spinnerCmd := p.setWorking(true)
+	// Only assert the working spinner while this page's stream is actually
+	// running. A tool event that arrives after the turn's StreamStopped (e.g.
+	// the trailing subagent_start tool response after a delegation) must not
+	// re-light a spinner that nothing will clear.
+	spinnerCmd := p.setWorkingIfStreaming(true)
 	sidebarCmd := p.forwardToSidebar(msg)
 	toolCmd := p.messages.AddOrUpdateToolCall(msg.AgentName, msg.ToolCall, msg.ToolDefinition, types.ToolStatusRunning)
 	return tea.Batch(toolCmd, p.messages.ScrollToBottom(), spinnerCmd, sidebarCmd)
@@ -313,7 +472,10 @@ func (p *chatPage) handleToolCallOutput(msg *runtime.ToolCallOutputEvent) tea.Cm
 }
 
 func (p *chatPage) handleToolCallResponse(msg *runtime.ToolCallResponseEvent) tea.Cmd {
-	spinnerCmd := p.setWorking(true)
+	// As with handleToolCall, don't re-light the spinner for a tool response
+	// that lands after the turn already stopped (the common case for the
+	// trailing subagent_start response that leaves the parent spinner stuck).
+	spinnerCmd := p.setWorkingIfStreaming(true)
 	sidebarCmd := p.forwardToSidebar(msg)
 
 	status := types.ToolStatusCompleted
@@ -377,6 +539,112 @@ func (p *chatPage) handleElicitationRequest(msg *runtime.ElicitationRequestEvent
 		})
 		return tea.Batch(spinnerCmd, dialogCmd)
 	}
+}
+
+func looksLikeRawSubagentEnvelope(content string) bool {
+	content = strings.TrimSpace(content)
+	return strings.HasPrefix(content, "<subagent_update") || strings.HasPrefix(content, "<subagent_result") || strings.HasPrefix(content, "<subagent_envelope")
+}
+
+func subAgentInfoFromEnvelope(env runtime.SubagentEnvelope) types.SubAgentInfo {
+	kind := subAgentEventKindFromString(env.Kind)
+	detail := env.Preview
+	if env.Error != "" {
+		if detail != "" {
+			detail += " "
+		}
+		detail += env.Error
+	}
+	return types.SubAgentInfo{Kind: kind, AgentName: env.AgentName, ShortID: sidebarShortID(env.SubAgentID), Detail: detail, Truncated: env.Truncated}
+}
+
+func subAgentInfoFromText(text string) types.SubAgentInfo {
+	info := types.SubAgentInfo{Kind: types.SubAgentEventTurnCompleted, Detail: strings.TrimSpace(text)}
+	content := info.Detail
+	if content == "" {
+		return info
+	}
+
+	if strings.HasPrefix(content, "<") {
+		if attr := parseSubagentEnvelopeAttrs(content); attr != nil {
+			info.AgentName = attr["agent_name"]
+			info.ShortID = sidebarShortID(firstNonEmpty(attr["subagent_id"], attr["id"]))
+			if kind := firstNonEmpty(attr["kind"], attr["status"]); kind != "" {
+				info.Kind = subAgentEventKindFromString(kind)
+			}
+			info.Detail = strings.TrimSpace(firstNonEmpty(attr["preview"], attr["message"], attr["error"], content))
+			return info
+		}
+	}
+
+	switch {
+	case strings.Contains(content, " finalized"):
+		info.Kind = types.SubAgentEventClosed
+	case strings.Contains(content, " stopped"):
+		info.Kind = types.SubAgentEventStopped
+	case strings.Contains(content, " failed"):
+		info.Kind = types.SubAgentEventFailed
+	}
+
+	if end := strings.Index(content, "]"); strings.HasPrefix(content, "[") && end > 1 {
+		info.AgentName = strings.TrimSpace(content[1:end])
+		if rest := strings.TrimSpace(content[end+1:]); strings.HasPrefix(rest, "(") {
+			if closeIdx := strings.Index(rest, ")"); closeIdx > 1 {
+				info.ShortID = strings.TrimSpace(rest[1:closeIdx])
+			}
+		}
+	}
+	return info
+}
+
+func subAgentEventKindFromString(kind string) types.SubAgentEventKind {
+	switch strings.TrimSpace(kind) {
+	case "closed":
+		return types.SubAgentEventClosed
+	case "stopped":
+		return types.SubAgentEventStopped
+	case "failed":
+		return types.SubAgentEventFailed
+	default:
+		return types.SubAgentEventTurnCompleted
+	}
+}
+
+func parseSubagentEnvelopeAttrs(content string) map[string]string {
+	end := strings.Index(content, ">")
+	if end == -1 {
+		return nil
+	}
+	fields := strings.Fields(strings.Trim(content[1:end], "/ "))
+	if len(fields) == 0 {
+		return nil
+	}
+	attrs := make(map[string]string)
+	for _, field := range fields[1:] {
+		key, val, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		attrs[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(val), "\"'")
+	}
+	return attrs
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func sidebarShortID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) <= 5 {
+		return id
+	}
+	return id[:5]
 }
 
 // isSuccessfulStop returns true when the stream reason indicates a
