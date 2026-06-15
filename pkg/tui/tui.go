@@ -1380,12 +1380,15 @@ func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
 	if m.supervisor.GetRunner(sessionID) != nil {
 		return m.handleSwitchTab(sessionID)
 	}
+	node, nodeOK := m.application.LiveSessionNode(sessionID)
 	sess, ok := m.application.LiveSession(sessionID)
 	if !ok {
-		return m, notification.ErrorCmd("Live session not found")
+		if !nodeOK {
+			return m, notification.ErrorCmd("Live session not found")
+		}
+		sess = session.New(session.WithID(sessionID))
 	}
 	sess = m.hydrateAttachedSessionMessages(context.Background(), sess)
-	node, _ := m.application.LiveSessionNode(sessionID)
 	attached := app.NewAttached(context.Background(), m.application.Runtime(), sess, node)
 	workingDir := sess.WorkingDir
 	if workingDir == "" && m.application.Session() != nil {
@@ -1405,16 +1408,21 @@ func (m *appModel) hydrateAttachedSessionMessages(ctx context.Context, sess *ses
 		return sess
 	}
 	stored, err := store.GetSession(ctx, sess.ID)
-	if err != nil || stored == nil || len(stored.Messages) == 0 || len(stored.Messages) <= len(sess.Messages) {
+	if err != nil || stored == nil || len(stored.Messages) == 0 {
 		return sess
 	}
-	// Keep the live session object so attached sends continue targeting the live
-	// child queue, but hydrate its persisted transcript for the attached tab's
-	// initial chat model. Prefer the persisted transcript when it is more
-	// complete than the live pointer/snapshot; the live attach stream will append
-	// subsequent updates after the tab opens.
-	sess.Messages = append(sess.Messages[:0], stored.Messages...)
-	return sess
+
+	// Attach history is durable-store first. The live child session pointer is
+	// only a live-control/routing handle and may have an empty or partial message
+	// slice. Seed the attached tab from the stored child transcript whenever it
+	// exists; NewAttached still uses this session ID to route sends to the live
+	// child queue and to subscribe to the live event tail.
+	hydrated := stored.Clone()
+	hydrated.ID = sess.ID
+	if hydrated.WorkingDir == "" {
+		hydrated.WorkingDir = sess.WorkingDir
+	}
+	return hydrated
 }
 
 // handleSwitchTab switches to a different session.
