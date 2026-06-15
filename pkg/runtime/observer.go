@@ -91,7 +91,7 @@ func (r *LocalRuntime) observe(ctx context.Context, sess *session.Session, inner
 		}
 		// Runtime-managed child sessions are parked by the subagent manager between
 		// turns. Keep their live registry entry and event topic open until the manager
-		// reaches an explicit terminal lifecycle path (stop/finalize/TTL/root close),
+		// reaches an explicit terminal lifecycle path (stop/finalize/root close),
 		// otherwise post-turn attach and parent-to-child follow-ups lose the session.
 		if !sess.RuntimeManaged {
 			if r.liveSessions != nil {

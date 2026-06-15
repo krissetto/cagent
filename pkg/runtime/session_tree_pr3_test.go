@@ -70,15 +70,6 @@ func TestLiveSessionTreeIncludesDepth3MetadataAndLiveState(t *testing.T) {
 	assert.Equal(t, "third child response", gotChild3.LastPreview)
 }
 
-func TestSubagentIdleAutoFinalizeTTLUsesPerAgentFallback(t *testing.T) {
-	reviewer := agent.New("reviewer", "review work", agent.WithIdleAutoFinalizeTimeout(42*time.Millisecond))
-	assert.Equal(t, 42*time.Millisecond, subagentIdleAutoFinalizeTTL(reviewer, 0))
-
-	plain := agent.New("plain", "plain work")
-	assert.Equal(t, DefaultSubagentTTL, subagentIdleAutoFinalizeTTL(plain, 0))
-	assert.Equal(t, 15*time.Minute, subagentIdleAutoFinalizeTTL(plain, 15*time.Minute))
-}
-
 func mustAddRuntimeManagedChild(t *testing.T, ctx context.Context, store session.Store, parent *session.Session, id, agentName, response string) *session.Session {
 	t.Helper()
 	child := session.NewRuntimeManagedSubSession(parent, session.WithID(id), session.WithAgentName(agentName))

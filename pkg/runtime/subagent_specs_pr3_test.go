@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,7 +11,7 @@ import (
 	"github.com/docker/docker-agent/pkg/team"
 )
 
-func TestSubagentStartUsesConfiguredSpecAliasAndTTL(t *testing.T) {
+func TestSubagentStartUsesConfiguredSpecAlias(t *testing.T) {
 	root := agent.New("root", "root", agent.WithModel(&mockProvider{id: "test/root"}))
 	coder := agent.New("coder", "coder", agent.WithModel(&mockProvider{id: "test/coder"}))
 	agent.WithSubAgents(coder)(root)
@@ -20,7 +19,6 @@ func TestSubagentStartUsesConfiguredSpecAliasAndTTL(t *testing.T) {
 		Name:        "implementer",
 		Agent:       "coder",
 		Description: "Low-risk code edits",
-		TTL:         15 * time.Minute,
 	})(root)
 
 	rt, err := NewLocalRuntime(team.New(team.WithAgents(root, coder)), WithModelStore(mockModelStore{}))
@@ -33,5 +31,4 @@ func TestSubagentStartUsesConfiguredSpecAliasAndTTL(t *testing.T) {
 
 	assert.Equal(t, "implementer", h.agentName)
 	assert.Equal(t, "coder", h.sess.AgentName)
-	assert.Equal(t, 15*time.Minute, h.ttl)
 }

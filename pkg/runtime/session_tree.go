@@ -142,7 +142,7 @@ func statusFromLive(live bool) string {
 	if live {
 		return "running"
 	}
-	return "closed"
+	return "waiting"
 }
 
 func liveSessionAgentName(sess *session.Session) string {

@@ -1,9 +1,5 @@
 package agent
 
-import (
-	"time"
-)
-
 // SubAgentSpec describes a runtime-managed child agent that a parent agent may
 // start with the subagent_* tool family.
 type SubAgentSpec struct {
@@ -14,7 +10,4 @@ type SubAgentSpec struct {
 	// Description is shown to the model in the runtime-managed subagent tools
 	// instructions.
 	Description string
-	// TTL optionally overrides the child agent's idle auto-finalize timeout when
-	// this spec is selected.
-	TTL time.Duration
 }

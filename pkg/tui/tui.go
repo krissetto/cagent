@@ -1484,7 +1484,9 @@ func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
 	}
 	if !liveAttach {
 		node.Live = false
-		node.Status = "closed"
+		if strings.TrimSpace(node.Status) == "" || strings.EqualFold(strings.TrimSpace(node.Status), "running") || strings.EqualFold(strings.TrimSpace(node.Status), "live") {
+			node.Status = "waiting"
+		}
 		sess.NonInteractive = true
 	}
 	attached := app.NewAttached(ctx, m.application.Runtime(), sess, node)
@@ -1594,7 +1596,7 @@ func mergeAttachSessionMetadata(preferredMeta, historySess *session.Session) *se
 
 func liveSessionNodeFromSession(sess *session.Session) runtime.LiveSessionNode {
 	if sess == nil {
-		return runtime.LiveSessionNode{Status: "closed"}
+		return runtime.LiveSessionNode{Status: "waiting"}
 	}
 	return runtime.LiveSessionNode{
 		ID:        sess.ID,
@@ -1602,7 +1604,7 @@ func liveSessionNodeFromSession(sess *session.Session) runtime.LiveSessionNode {
 		RootID:    sess.EffectiveRootID(),
 		AgentName: sess.AgentName,
 		Title:     sess.Title,
-		Status:    "closed",
+		Status:    "waiting",
 		Live:      false,
 		CreatedAt: sess.CreatedAt,
 	}

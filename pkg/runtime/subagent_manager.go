@@ -19,7 +19,6 @@ import (
 const (
 	MaxSubagentDepth       = 8
 	MaxSubagentDescendants = 64
-	DefaultSubagentTTL     = 10 * time.Minute
 )
 
 type SubagentManager struct {
@@ -35,7 +34,6 @@ type subagentHandle struct {
 	parent    *session.Session
 	sess      *session.Session
 	created   time.Time
-	ttl       time.Duration
 	inbox     chan string
 	stop      chan struct{}
 	done      chan struct{}
@@ -48,16 +46,6 @@ type subagentHandle struct {
 
 func NewSubagentManager(r *LocalRuntime) *SubagentManager {
 	return &SubagentManager{r: r, all: make(map[string]*subagentHandle)}
-}
-
-func subagentIdleAutoFinalizeTTL(a interface{ IdleAutoFinalizeTimeout() time.Duration }, override time.Duration) time.Duration {
-	if override > 0 {
-		return override
-	}
-	if a == nil || a.IdleAutoFinalizeTimeout() <= 0 {
-		return DefaultSubagentTTL
-	}
-	return a.IdleAutoFinalizeTimeout()
 }
 
 func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, agentName, task string) (*subagentHandle, error) {
@@ -113,7 +101,6 @@ func (m *SubagentManager) start(ctx context.Context, parent *session.Session, ag
 		parent:    parent,
 		sess:      child,
 		created:   m.r.now(),
-		ttl:       subagentIdleAutoFinalizeTTL(subAgent, selectedSpec.TTL),
 		inbox:     make(chan string, 64),
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
@@ -294,12 +281,11 @@ func (m *SubagentManager) WaitForSubagentWork(ctx context.Context, parent *sessi
 }
 
 func (m *SubagentManager) runChild(ctx context.Context, h *subagentHandle) {
-	terminalState := "stopped"
 	defer close(h.done)
 	defer func() {
 		h.mu.Lock()
 		if h.state != "closed" && h.state != "failed" {
-			h.state = terminalState
+			h.state = "stopped"
 		}
 		h.mu.Unlock()
 		h.signal()
@@ -311,8 +297,6 @@ func (m *SubagentManager) runChild(ctx context.Context, h *subagentHandle) {
 		}
 		m.publishLiveSessionTreeChanged(context.Background(), h.id)
 	}()
-	idle := time.NewTimer(h.ttl)
-	defer idle.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -320,25 +304,16 @@ func (m *SubagentManager) runChild(ctx context.Context, h *subagentHandle) {
 		case <-h.stop:
 			return
 		case prompt := <-h.inbox:
-			h.runPrompt(ctx, m, prompt, idle)
+			h.runPrompt(ctx, m, prompt)
 		case <-h.wake:
 			if prompt, ok := m.dequeueChildPrompt(ctx, h); ok {
-				h.runPrompt(ctx, m, prompt, idle)
+				h.runPrompt(ctx, m, prompt)
 			}
-		case <-idle.C:
-			terminalState = "closed"
-			return
 		}
 	}
 }
 
-func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prompt string, idle *time.Timer) {
-	if !idle.Stop() {
-		select {
-		case <-idle.C:
-		default:
-		}
-	}
+func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prompt string) {
 	m.maybeGenerateChildTitle(ctx, h, prompt)
 	h.mu.Lock()
 	h.state = "running"
@@ -360,7 +335,6 @@ func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prom
 	h.state = "waiting"
 	h.mu.Unlock()
 	m.publishLiveSessionTreeChanged(ctx, h.id)
-	idle.Reset(h.ttl)
 }
 
 func (m *SubagentManager) dequeueChildPrompt(ctx context.Context, h *subagentHandle) (string, bool) {

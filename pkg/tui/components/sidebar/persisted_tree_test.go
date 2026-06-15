@@ -9,7 +9,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
-func TestPersistedSessionTreeShowsReloadedChildAndGrandchildClosed(t *testing.T) {
+func TestPersistedSessionTreeShowsReloadedChildAndGrandchildIdle(t *testing.T) {
 	ctx := t.Context()
 	store := session.NewInMemorySessionStore()
 	root := session.New(session.WithID("root"), session.WithTitle("Root"))
@@ -25,7 +25,7 @@ func TestPersistedSessionTreeShowsReloadedChildAndGrandchildClosed(t *testing.T)
 	m.SetPersistedSessionTree(root, store)
 	plain := strings.Join(stripANSILines(strings.Split(m.subagentsSection(100), "\n")), "\n")
 
-	for _, want := range []string{"Subagents", "greppy", "child", "reviewer", "grand", "finalized"} {
+	for _, want := range []string{"Subagents", "greppy", "child", "reviewer", "grand", "idle"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("expected %q in persisted subagent tree: %q", want, plain)
 		}
@@ -35,8 +35,8 @@ func TestPersistedSessionTreeShowsReloadedChildAndGrandchildClosed(t *testing.T)
 			t.Fatalf("persisted subagent rows should not render generated titles: %q", plain)
 		}
 	}
-	if strings.Contains(plain, "working") || strings.Contains(plain, "running") {
-		t.Fatalf("persisted non-live children must not render as running: %q", plain)
+	if strings.Contains(plain, "working") || strings.Contains(plain, "running") || strings.Contains(plain, "finalized") {
+		t.Fatalf("persisted non-live children must render as idle, not running/finalized: %q", plain)
 	}
 }
 

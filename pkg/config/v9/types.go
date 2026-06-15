@@ -414,10 +414,9 @@ type HarnessConfig struct {
 // AgentConfig represents a single agent configuration
 
 type SubagentSpec struct {
-	Name        string   `json:"name,omitempty" yaml:"name,omitempty"`
-	Agent       string   `json:"agent,omitempty" yaml:"agent,omitempty"`
-	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
-	TTL         Duration `json:"ttl,omitzero" yaml:"ttl,omitempty"`
+	Name        string `json:"name,omitempty" yaml:"name,omitempty"`
+	Agent       string `json:"agent,omitempty" yaml:"agent,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 }
 
 func (s *SubagentSpec) UnmarshalYAML(unmarshal func(any) error) error {

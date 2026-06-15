@@ -424,7 +424,7 @@ func persistedLiveSessionNode(sess *session.Session, isRoot bool) *runtime.LiveS
 		RootID:    sess.EffectiveRootID(),
 		AgentName: sess.AgentName,
 		Title:     sess.Title,
-		Status:    "closed",
+		Status:    "waiting",
 		Live:      false,
 		CreatedAt: sess.CreatedAt,
 	}

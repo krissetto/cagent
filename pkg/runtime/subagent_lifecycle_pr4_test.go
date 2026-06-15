@@ -21,11 +21,11 @@ import (
 )
 
 func TestSubagentSessionTitleGeneratedForChildAndPublished(t *testing.T) {
-	rt, root, _ := newSubagentLifecycleRuntime(t, 2*time.Second)
+	rt, root, _ := newSubagentLifecycleRuntime(t)
 
 	h, err := rt.subagents.Start(t.Context(), root, "worker", "first prompt")
 	require.NoError(t, err)
-	requireSubagentState(t, h, "waiting")
+	requireSubagentWaiting(t, h)
 	requireSubagentTitle(t, rt, h.id, "Child title")
 
 	snapshot := rt.eventBus.StreamingSnapshot(h.id)
@@ -47,11 +47,11 @@ func TestSubagentSessionTitleGeneratedForChildAndPublished(t *testing.T) {
 }
 
 func TestSubagentLifecycleRemainsWaitingLiveAfterFirstTurn(t *testing.T) {
-	rt, root, childModel := newSubagentLifecycleRuntime(t, 2*time.Second)
+	rt, root, childModel := newSubagentLifecycleRuntime(t)
 
 	h, err := rt.subagents.Start(t.Context(), root, "worker", "first prompt")
 	require.NoError(t, err)
-	requireSubagentState(t, h, "waiting")
+	requireSubagentWaiting(t, h)
 
 	assertSubagentDoneOpen(t, h)
 	assert.True(t, h.live(), "handle should remain live while waiting")
@@ -84,15 +84,15 @@ func TestSubagentLifecycleRemainsWaitingLiveAfterFirstTurn(t *testing.T) {
 }
 
 func TestSubagentSendAfterFirstTurnDispatchesAnotherTurn(t *testing.T) {
-	rt, root, childModel := newSubagentLifecycleRuntime(t, 2*time.Second)
+	rt, root, childModel := newSubagentLifecycleRuntime(t)
 
 	h, err := rt.subagents.Start(t.Context(), root, "worker", "first prompt")
 	require.NoError(t, err)
-	requireSubagentState(t, h, "waiting")
+	requireSubagentWaiting(t, h)
 	assertSubagentDoneOpen(t, h)
 
 	require.NoError(t, rt.subagents.Send(root, h.shortID, "second prompt"))
-	requireSubagentState(t, h, "waiting")
+	requireSubagentWaiting(t, h)
 	assertSubagentDoneOpen(t, h)
 	assert.Equal(t, []string{"first prompt", "second prompt"}, childModel.prompts())
 
@@ -107,32 +107,21 @@ func TestSubagentSendAfterFirstTurnDispatchesAnotherTurn(t *testing.T) {
 }
 
 func TestSubagentDoneClosesOnlyOnExplicitTerminal(t *testing.T) {
-	rt, root, _ := newSubagentLifecycleRuntime(t, time.Hour)
+	rt, root, _ := newSubagentLifecycleRuntime(t)
 	h, err := rt.subagents.Start(t.Context(), root, "worker", "first prompt")
 	require.NoError(t, err)
-	requireSubagentState(t, h, "waiting")
+	requireSubagentWaiting(t, h)
 	assertSubagentDoneOpen(t, h)
 
 	require.NoError(t, rt.subagents.Finalize(root, h.id))
 	requireSubagentDoneClosed(t, h)
 }
 
-func TestSubagentDoneClosesOnTTL(t *testing.T) {
-	rt, root, _ := newSubagentLifecycleRuntime(t, 25*time.Millisecond)
-	h, err := rt.subagents.Start(t.Context(), root, "worker", "first prompt")
-	require.NoError(t, err)
-	requireSubagentState(t, h, "waiting")
-	assertSubagentDoneOpen(t, h)
-
-	requireSubagentDoneClosed(t, h)
-	requireSubagentState(t, h, "closed")
-}
-
-func newSubagentLifecycleRuntime(t *testing.T, ttl time.Duration) (*LocalRuntime, *session.Session, *recordingSubagentProvider) {
+func newSubagentLifecycleRuntime(t *testing.T) (*LocalRuntime, *session.Session, *recordingSubagentProvider) {
 	t.Helper()
 	childModel := &recordingSubagentProvider{}
 	titleModel := &staticTitleProvider{title: "Child title"}
-	worker := agent.New("worker", "worker", agent.WithModel(childModel), agent.WithTitleModel(titleModel), agent.WithIdleAutoFinalizeTimeout(ttl))
+	worker := agent.New("worker", "worker", agent.WithModel(childModel), agent.WithTitleModel(titleModel))
 	rootAgent := agent.New(
 		"root",
 		"root",
@@ -150,12 +139,12 @@ func newSubagentLifecycleRuntime(t *testing.T, ttl time.Duration) (*LocalRuntime
 	return rt, root, childModel
 }
 
-func requireSubagentState(t *testing.T, h *subagentHandle, want string) {
+func requireSubagentWaiting(t *testing.T, h *subagentHandle) {
 	t.Helper()
 	require.Eventually(t, func() bool {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		return h.state == want
+		return h.state == "waiting"
 	}, time.Second, 5*time.Millisecond)
 }
 

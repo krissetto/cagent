@@ -106,12 +106,6 @@ func WithSubAgentSpecs(specs ...SubAgentSpec) Opt {
 	}
 }
 
-func WithIdleAutoFinalizeTimeout(timeout time.Duration) Opt {
-	return func(a *Agent) {
-		a.idleAutoFinalizeTimeout = timeout
-	}
-}
-
 func WithTransferAgents(transferAgents ...*Agent) Opt {
 	return func(a *Agent) {
 		a.transferAgents = transferAgents
