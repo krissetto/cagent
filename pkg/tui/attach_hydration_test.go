@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/app"
@@ -192,6 +194,52 @@ func (r *attachHydrationRuntime) SteerSessionByID(id string, msg runtime.QueuedM
 func (r *attachHydrationRuntime) InterruptSessionByID(string) error { return nil }
 func (r *attachHydrationRuntime) CloseSessionByID(string) error     { return nil }
 func (r *attachHydrationRuntime) StopSessionByID(string) error      { return nil }
+
+func TestHandleAttachSessionReloadedPersistedChildViewRendersHistoryBody(t *testing.T) {
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	root := session.New(session.WithID("root"))
+	root.WorkingDir = t.TempDir()
+	reloadedRoot := root.Clone()
+	reloadedRoot.AddSubSession(session.NewRuntimeManagedSubSession(reloadedRoot, session.WithID("child")))
+	reloadedRoot.Messages[0].SubSession.AgentName = "greppy"
+	reloadedRoot.Messages[0].SubSession.Title = "Child title"
+	reloadedRoot.Messages[0].SubSession.AddMessage(session.UserMessage("persisted child prompt after reload"))
+	reloadedRoot.Messages[0].SubSession.AddMessage(session.NewAgentMessage("greppy", &chat.Message{
+		Role:    chat.MessageRoleAssistant,
+		Content: "persisted child answer after reload",
+	}))
+	require.NoError(t, store.UpdateSession(ctx, reloadedRoot))
+
+	rt := &attachHydrationRuntime{store: store}
+	rootApp := app.New(ctx, rt, reloadedRoot)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+	resize := tea.WindowSizeMsg{Width: 220, Height: 40}
+	model, cmd := m.Update(resize)
+	m = model.(*appModel)
+	if cmd != nil {
+		_ = cmd()
+	}
+	model, cmd = m.handleAttachSession("child")
+	m = model.(*appModel)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			model, updateCmd := m.Update(msg)
+			m = model.(*appModel)
+			if updateCmd != nil {
+				_ = updateCmd()
+			}
+		}
+	}
+	model, cmd = m.Update(resize)
+	m = model.(*appModel)
+	if cmd != nil {
+		_ = cmd()
+	}
+	view := ansi.Strip(m.View().Content)
+	require.Contains(t, view, "persisted child prompt after reload")
+	require.Contains(t, view, "persisted child answer after reload")
+}
 
 func TestHandleAttachSessionHydratesEmptyLiveChildFromStoreAndKeepsChildQueue(t *testing.T) {
 	ctx := t.Context()

@@ -491,6 +491,7 @@ func (m *appModel) editorOpts() []editor.Option {
 // the given app and stores them in the per-session maps under tabID. The active
 // convenience pointers (m.chatPage, m.sessionState, m.editor) are also updated.
 func (m *appModel) initSessionComponents(tabID string, a *app.App, sess *session.Session) {
+	m.application = a
 	ss := service.NewSessionState(sess)
 	cp := chat.New(a, ss, m.chatPageOpts()...)
 	ed := editor.New(m.history, m.editorOpts()...)
@@ -499,7 +500,6 @@ func (m *appModel) initSessionComponents(tabID string, a *app.App, sess *session
 	m.sessionStates[tabID] = ss
 	m.editors[tabID] = ed
 
-	m.application = a
 	m.sessionState = ss
 	m.chatPage = cp
 	m.editor = ed
@@ -1498,7 +1498,6 @@ func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
 		workingDir = m.application.Session().WorkingDir
 	}
 	m.supervisor.AddSession(ctx, attached, sess, workingDir, nil)
-	m.initSessionComponents(sessionID, attached, sess)
 	if sess.Title != "" {
 		m.supervisor.SetRunnerTitle(sessionID, sess.Title)
 	}
