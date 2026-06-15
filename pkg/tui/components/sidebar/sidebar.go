@@ -1346,8 +1346,9 @@ func (m *model) subagentsSection(contentWidth int) string {
 		return ""
 	}
 	var lines []string
-	for i, child := range m.liveSessionTree.Root.Children {
-		m.renderLiveSessionNode(&lines, child, 1, i == len(m.liveSessionTree.Root.Children)-1, nil, contentWidth)
+	children := sortedSubagentChildren(m.liveSessionTree.Root)
+	for i, child := range children {
+		m.renderLiveSessionNode(&lines, child, 1, i == len(children)-1, nil, contentWidth)
 	}
 	return m.renderTab("Subagents", strings.Join(lines, "\n"), contentWidth)
 }
@@ -1356,7 +1357,7 @@ func (m *model) renderLiveSessionNode(lines *[]string, node *runtime.LiveSession
 	if node == nil {
 		return
 	}
-	prefix, childAncestors := subagentTreePrefix(last, ancestorsHaveMore)
+	prefix, childAncestors := subagentTreePrefix(depth, last, ancestorsHaveMore)
 	agent := node.AgentName
 	if agent == "" {
 		agent = "subagent"
@@ -1391,12 +1392,41 @@ func (m *model) renderLiveSessionNode(lines *[]string, node *runtime.LiveSession
 		detailPrefix := subagentDetailPrefix(childAncestors)
 		*lines = append(*lines, styles.MutedStyle.Render(detailPrefix+"  "+toolcommon.TruncateText(detail, max(1, contentWidth-lipgloss.Width(detailPrefix)-2))))
 	}
-	for i, child := range node.Children {
-		m.renderLiveSessionNode(lines, child, depth+1, i == len(node.Children)-1, childAncestors, contentWidth)
+	children := sortedSubagentChildren(node)
+	for i, child := range children {
+		m.renderLiveSessionNode(lines, child, depth+1, i == len(children)-1, childAncestors, contentWidth)
 	}
 }
 
-func subagentTreePrefix(isLast bool, ancestorsHaveMore []bool) (string, []bool) {
+func sortedSubagentChildren(node *runtime.LiveSessionNode) []*runtime.LiveSessionNode {
+	if node == nil || len(node.Children) == 0 {
+		return nil
+	}
+	children := append([]*runtime.LiveSessionNode(nil), node.Children...)
+	slices.SortStableFunc(children, func(a, b *runtime.LiveSessionNode) int {
+		switch {
+		case a == nil && b == nil:
+			return 0
+		case a == nil:
+			return 1
+		case b == nil:
+			return -1
+		case a.CreatedAt.After(b.CreatedAt):
+			return -1
+		case b.CreatedAt.After(a.CreatedAt):
+			return 1
+		default:
+			return strings.Compare(a.ID, b.ID)
+		}
+	})
+	return children
+}
+
+func subagentTreePrefix(depth int, isLast bool, ancestorsHaveMore []bool) (string, []bool) {
+	next := append(append([]bool(nil), ancestorsHaveMore...), !isLast)
+	if depth <= 1 {
+		return "", next
+	}
 	var b strings.Builder
 	for _, hasMore := range ancestorsHaveMore {
 		if hasMore {
@@ -1410,7 +1440,6 @@ func subagentTreePrefix(isLast bool, ancestorsHaveMore []bool) (string, []bool) 
 	} else {
 		b.WriteString("├ ")
 	}
-	next := append(append([]bool(nil), ancestorsHaveMore...), !isLast)
 	return b.String(), next
 }
 
@@ -1454,7 +1483,7 @@ func (m *model) seedSubagentSpinners(root *runtime.LiveSessionNode) {
 		if node.ID != root.ID && subagentStatusWorking(node) {
 			m.ensureSubagentSpinner(node.ID, node.AgentName)
 		}
-		for _, child := range node.Children {
+		for _, child := range sortedSubagentChildren(node) {
 			walk(child)
 		}
 	}
@@ -1564,11 +1593,11 @@ func (m *model) buildSubagentClickZones(start int, lines []string) {
 			m.subagentClickZones[line] = node.ID
 			line++
 		}
-		for _, child := range node.Children {
+		for _, child := range sortedSubagentChildren(node) {
 			walk(child)
 		}
 	}
-	for _, child := range m.liveSessionTree.Root.Children {
+	for _, child := range sortedSubagentChildren(m.liveSessionTree.Root) {
 		walk(child)
 	}
 	_ = lines

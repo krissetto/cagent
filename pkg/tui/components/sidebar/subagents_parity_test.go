@@ -28,7 +28,7 @@ func TestSubagentRowsUseAgentAccentStyle(t *testing.T) {
 	require.NotEqual(t, styles.SubagentAccentStyleFor("greppy").GetForeground(), styles.AgentAccentStyleFor("greppy").GetForeground())
 }
 
-func TestSubagentTreeDirectChildrenUseConnectorWithoutHiddenRootStem(t *testing.T) {
+func TestSubagentTreeDirectChildrenUseRootListRowsAndNestedConnectors(t *testing.T) {
 	t.Parallel()
 
 	m := New(&service.SessionState{}).(*model)
@@ -44,9 +44,15 @@ func TestSubagentTreeDirectChildrenUseConnectorWithoutHiddenRootStem(t *testing.
 	directorALine := findLineContaining(t, plainLines, "director-a")
 	workerLine := findLineContaining(t, plainLines, "worker-a")
 	directorBLine := findLineContaining(t, plainLines, "director-b")
-	require.Contains(t, directorALine, "├")
-	require.Contains(t, directorBLine, "└")
-	require.Contains(t, workerLine, "└")
+	require.NotContains(t, directorALine, "├")
+	require.NotContains(t, directorALine, "└")
+	require.NotContains(t, directorALine, "│")
+	require.NotContains(t, directorBLine, "├")
+	require.NotContains(t, directorBLine, "└")
+	require.NotContains(t, directorBLine, "│")
+	require.Contains(t, directorALine, "• director-a")
+	require.Contains(t, directorBLine, "• director-b")
+	require.Contains(t, workerLine, "│ └ • worker-a")
 	require.NotContains(t, workerLine, "│ │", "nested row should not carry duplicate/stray guide stems")
 }
 
