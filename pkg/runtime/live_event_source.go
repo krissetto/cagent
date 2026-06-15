@@ -58,6 +58,9 @@ func (r *LocalRuntime) AttachLiveSessionWithSnapshot(ctx context.Context, sessio
 	if queueEvent := r.sessionQueueSnapshotEvent(sessionID); queueEvent != nil {
 		snapshot = append(snapshot, queueEvent)
 	}
+	if tree, err := r.LiveSessionTree(ctx, sessionID); err == nil && tree != nil {
+		snapshot = append(snapshot, LiveSessionTreeChanged(sessionID, tree))
+	}
 	return snapshot, sub.Events(), nil
 }
 

@@ -63,7 +63,7 @@ func TestSubagentEnvelopePersistedBeforeHandoffAndNotPublicQueue(t *testing.T) {
 	r := &LocalRuntime{sessionStore: store, steerQueue: rejectingQueue{}, followUpQueue: rejectingQueue{}}
 	m := NewSubagentManager(r)
 	child := session.NewRuntimeManagedSubSession(root, session.WithID("child"))
-	h := &subagentHandle{id: child.ID, shortID: "child", parent: root, sess: child, envelopes: []string{"done"}, done: make(chan struct{})}
+	h := &subagentHandle{id: child.ID, shortID: "child", parent: root, sess: child, envelopes: []SubagentEnvelope{{SubAgentID: child.ID, AgentName: "implementer", Kind: "turn_completed", Status: "waiting", Preview: "done"}}, done: make(chan struct{})}
 	m.all[h.id] = h
 	var events []Event
 	drained := m.DrainEnvelopes(t.Context(), root, EventSinkFunc(func(ev Event) { events = append(events, ev) }))

@@ -856,6 +856,67 @@ func SessionQueue(sessionID string, count int, previews []string) Event {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Subagent lifecycle events
+// ---------------------------------------------------------------------------
+
+type SubAgentStartedEvent struct {
+	AgentContext
+
+	Type      string       `json:"type"`
+	SessionID string       `json:"session_id"`
+	SubAgent  SubagentInfo `json:"subagent"`
+}
+
+func (e *SubAgentStartedEvent) GetSessionID() string { return e.SessionID }
+
+func SubAgentStarted(s SubagentInfo, sessionID string) Event {
+	return &SubAgentStartedEvent{Type: "subagent_started", SessionID: sessionID, SubAgent: s, AgentContext: newAgentContext(s.AgentName)}
+}
+
+type SubAgentSentEvent struct {
+	AgentContext
+
+	Type       string `json:"type"`
+	SessionID  string `json:"session_id"`
+	SubAgentID string `json:"subagent_id"`
+	Message    string `json:"message"`
+}
+
+func (e *SubAgentSentEvent) GetSessionID() string { return e.SessionID }
+
+func SubAgentSent(subAgentID, message, sessionID string) Event {
+	return &SubAgentSentEvent{Type: "subagent_sent", SessionID: sessionID, SubAgentID: subAgentID, Message: message}
+}
+
+type SubAgentUpdateEvent struct {
+	AgentContext
+
+	Type      string           `json:"type"`
+	SessionID string           `json:"session_id"`
+	Envelope  SubagentEnvelope `json:"envelope"`
+}
+
+func (e *SubAgentUpdateEvent) GetSessionID() string { return e.SessionID }
+
+func SubAgentUpdate(env SubagentEnvelope, sessionID string) Event {
+	return &SubAgentUpdateEvent{Type: "subagent_update", SessionID: sessionID, Envelope: env, AgentContext: newAgentContext(env.AgentName)}
+}
+
+type LiveSessionTreeChangedEvent struct {
+	AgentContext
+
+	Type      string           `json:"type"`
+	SessionID string           `json:"session_id"`
+	Tree      *LiveSessionTree `json:"tree,omitempty"`
+}
+
+func (e *LiveSessionTreeChangedEvent) GetSessionID() string { return e.SessionID }
+
+func LiveSessionTreeChanged(sessionID string, tree *LiveSessionTree) Event {
+	return &LiveSessionTreeChangedEvent{Type: "live_session_tree_changed", SessionID: sessionID, Tree: tree}
+}
+
 // ConnectionLostEvent is emitted when the connection to the remote server is lost
 type ConnectionLostEvent struct {
 	AgentContext

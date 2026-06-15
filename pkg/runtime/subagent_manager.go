@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +42,7 @@ type subagentHandle struct {
 	mu        sync.Mutex
 	state     string
 	last      []Event
-	envelopes []string
+	envelopes []SubagentEnvelope
 }
 
 func NewSubagentManager(r *LocalRuntime) *SubagentManager {
@@ -113,6 +114,8 @@ func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, ag
 	m.mu.Lock()
 	m.all[h.id] = h
 	m.mu.Unlock()
+	m.publishToParent(parent.ID, SubAgentStarted(h.info(), parent.ID))
+	m.publishLiveSessionTreeChanged(ctx, child.ID)
 	h.inbox <- task
 	go m.runChild(ctx, h)
 	return h, nil
@@ -128,6 +131,11 @@ func (m *SubagentManager) Send(parent *session.Session, ref, msg string) error {
 	}
 	select {
 	case h.inbox <- msg:
+		h.mu.Lock()
+		h.state = "running"
+		h.mu.Unlock()
+		m.publishToParent(parent.ID, SubAgentSent(h.id, msg, parent.ID))
+		m.publishLiveSessionTreeChanged(context.Background(), h.id)
 		h.signal()
 		return nil
 	case <-h.done:
@@ -143,13 +151,32 @@ func (m *SubagentManager) Stop(parent *session.Session, ref string) error {
 	select {
 	case <-h.stop:
 	default:
+		h.mu.Lock()
+		h.state = "stopped"
+		h.mu.Unlock()
 		close(h.stop)
+		m.publishToParent(parent.ID, SubAgentUpdate(h.envelope("stopped", "stopped", ""), parent.ID))
+		m.publishLiveSessionTreeChanged(context.Background(), h.id)
 	}
 	return nil
 }
 
 func (m *SubagentManager) Finalize(parent *session.Session, ref string) error {
-	return m.Stop(parent, ref)
+	h, err := m.resolve(parent, ref)
+	if err != nil {
+		return err
+	}
+	select {
+	case <-h.stop:
+	default:
+		h.mu.Lock()
+		h.state = "closed"
+		h.mu.Unlock()
+		close(h.stop)
+		m.publishToParent(parent.ID, SubAgentUpdate(h.envelope("closed", "closed", ""), parent.ID))
+		m.publishLiveSessionTreeChanged(context.Background(), h.id)
+	}
+	return nil
 }
 
 func (m *SubagentManager) List(parent *session.Session) []SubagentInfo {
@@ -201,10 +228,11 @@ func (m *SubagentManager) DrainEnvelopes(ctx context.Context, parent *session.Se
 	var drained bool
 	for _, h := range m.children(parent) {
 		h.mu.Lock()
-		envs := append([]string(nil), h.envelopes...)
+		envs := append([]SubagentEnvelope(nil), h.envelopes...)
 		h.envelopes = nil
 		h.mu.Unlock()
-		for _, text := range envs {
+		for _, env := range envs {
+			text := env.parentText()
 			msg := session.SubagentEnvelopeMessage(text)
 			pos := len(parent.Messages)
 			if m.r.sessionStore != nil {
@@ -253,7 +281,15 @@ func (m *SubagentManager) WaitForSubagentWork(ctx context.Context, parent *sessi
 
 func (m *SubagentManager) runChild(ctx context.Context, h *subagentHandle) {
 	defer close(h.done)
-	defer func() { h.mu.Lock(); h.state = "stopped"; h.mu.Unlock(); h.signal() }()
+	defer func() {
+		h.mu.Lock()
+		if h.state != "closed" && h.state != "failed" {
+			h.state = "stopped"
+		}
+		h.mu.Unlock()
+		h.signal()
+		m.publishLiveSessionTreeChanged(context.Background(), h.id)
+	}()
 	idle := time.NewTimer(h.ttl)
 	defer idle.Stop()
 	for {
@@ -284,6 +320,8 @@ func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prom
 	h.mu.Lock()
 	h.state = "running"
 	h.mu.Unlock()
+	m.publishToParent(h.parent.ID, SubAgentUpdate(h.envelope("status_only", "running", ""), h.parent.ID))
+	m.publishLiveSessionTreeChanged(ctx, h.id)
 	h.sess.AddMessage(session.UserMessage(prompt))
 	stream := m.r.RunStream(ctx, h.sess)
 	for ev := range stream {
@@ -293,10 +331,12 @@ func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prom
 	if len(h.inbox) > 0 {
 		return
 	}
-	m.enqueueEnvelope(h, fmt.Sprintf("Subagent %s (%s) finished. Use subagent_inspect for full output.", h.agentName, h.shortID))
+	preview := h.latestPreview()
+	m.enqueueEnvelope(h, h.envelope("turn_completed", "waiting", preview))
 	h.mu.Lock()
 	h.state = "waiting"
 	h.mu.Unlock()
+	m.publishLiveSessionTreeChanged(ctx, h.id)
 	idle.Reset(h.ttl)
 }
 
@@ -324,10 +364,11 @@ func queuedMessageContent(msg QueuedMessage) string {
 	return ""
 }
 
-func (m *SubagentManager) enqueueEnvelope(h *subagentHandle, text string) {
+func (m *SubagentManager) enqueueEnvelope(h *subagentHandle, env SubagentEnvelope) {
 	h.mu.Lock()
-	h.envelopes = append(h.envelopes, text)
+	h.envelopes = append(h.envelopes, env)
 	h.mu.Unlock()
+	m.publishToParent(h.parent.ID, SubAgentUpdate(env, h.parent.ID))
 	h.signal()
 }
 
@@ -497,6 +538,18 @@ type SubagentInfo struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type SubagentEnvelope struct {
+	SubAgentID      string    `json:"subagent_id"`
+	ParentSessionID string    `json:"parent_session_id"`
+	AgentName       string    `json:"agent_name"`
+	Kind            string    `json:"kind"`
+	Status          string    `json:"status"`
+	Preview         string    `json:"preview,omitempty"`
+	Truncated       bool      `json:"truncated,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	At              time.Time `json:"at"`
+}
+
 func (h *subagentHandle) stopNow() error {
 	select {
 	case <-h.stop:
@@ -514,6 +567,91 @@ func (h *subagentHandle) info() SubagentInfo {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return SubagentInfo{ID: h.id, ShortID: h.shortID, AgentName: h.agentName, State: h.state, CreatedAt: h.created}
+}
+
+func (h *subagentHandle) envelope(kind, status, preview string) SubagentEnvelope {
+	if preview == "" {
+		preview = h.latestPreview()
+	}
+	if status == "" {
+		h.mu.Lock()
+		status = h.state
+		h.mu.Unlock()
+	}
+	return SubagentEnvelope{
+		SubAgentID:      h.id,
+		ParentSessionID: h.parent.ID,
+		AgentName:       h.agentName,
+		Kind:            kind,
+		Status:          status,
+		Preview:         preview,
+		Truncated:       len([]rune(preview)) >= 320,
+		At:              time.Now(),
+	}
+}
+
+func (h *subagentHandle) latestPreview() string {
+	for _, item := range slices.Backward(h.sess.OwnMessages()) {
+		msg := item.Message
+		if msg.Role == chat.MessageRoleSystem || msg.Role == chat.MessageRoleUser {
+			continue
+		}
+		if text := strings.TrimSpace(messageTextPreview(msg)); text != "" {
+			return truncateRunes(text, 320)
+		}
+	}
+	return ""
+}
+
+func (e SubagentEnvelope) parentText() string {
+	ref := fmt.Sprintf("[%s] (%s)", e.AgentName, shortID(e.SubAgentID))
+	switch e.Kind {
+	case "turn_completed":
+		if e.Preview != "" {
+			return fmt.Sprintf("%s turn finished. Preview: %s", ref, e.Preview)
+		}
+		return ref + " turn finished."
+	case "closed":
+		return ref + " finalized."
+	case "stopped":
+		return ref + " stopped."
+	case "failed":
+		if e.Error != "" {
+			return fmt.Sprintf("%s failed: %s", ref, e.Error)
+		}
+		return ref + " failed."
+	default:
+		return ref + " status: " + e.Status + "."
+	}
+}
+
+func (m *SubagentManager) publishToParent(parentID string, ev Event) {
+	if m == nil || m.r == nil || m.r.eventBus == nil || parentID == "" || ev == nil {
+		return
+	}
+	m.r.eventBus.Publish(parentID, ev)
+}
+
+func (m *SubagentManager) publishLiveSessionTreeChanged(ctx context.Context, sessionID string) {
+	if m == nil || m.r == nil || m.r.eventBus == nil || sessionID == "" {
+		return
+	}
+	tree, err := m.r.LiveSessionTree(ctx, sessionID)
+	if err != nil || tree == nil || tree.Root == nil {
+		return
+	}
+	ev := LiveSessionTreeChanged(sessionID, tree)
+	publishTreeChangedRecursive(m.r.eventBus, tree.Root, ev)
+}
+
+func publishTreeChangedRecursive(bus *EventBus, node *LiveSessionNode, ev Event) {
+	if bus == nil || node == nil || ev == nil {
+		return
+	}
+	bus.Publish(node.ID, ev)
+	for _, child := range node.Children {
+		publishTreeChangedRecursive(bus, child, ev)
+	}
 }
 
 func shortID(id string) string {
