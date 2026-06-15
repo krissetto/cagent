@@ -1710,6 +1710,17 @@ func (m *model) AppendToLastMessage(agentName, content string) tea.Cmd {
 		return nil
 	}
 
+	// Don't create an empty assistant message. An empty MessageTypeAssistant
+	// renders as a (non-spinning) placeholder spinner, and if subsequent rows
+	// (e.g. tool calls or subagent lifecycle lines) are appended after it, it is
+	// stranded mid-transcript forever — removeSpinner only drops a trailing
+	// MessageTypeSpinner, not an empty assistant. Empty agent_choice deltas
+	// carry no content to show, so there is nothing to render yet; the real
+	// content (or a tool/subagent row) will create the appropriate message.
+	if content == "" {
+		return nil
+	}
+
 	return m.addMessage(types.Agent(types.MessageTypeAssistant, agentName, content))
 }
 

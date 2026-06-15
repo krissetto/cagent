@@ -331,6 +331,15 @@ func (p *chatPage) handleMessageAdded(msg *runtime.MessageAddedEvent) tea.Cmd {
 		}
 		return p.messages.ReplaceLoadingWithUser(m.Content, msg.SessionPosition)
 	case chatmsg.MessageRoleAssistant:
+		// A tool-call-only assistant turn (e.g. the model just calling
+		// subagent_start) is persisted with empty text content; the tool calls
+		// render via their own ToolCall events. There is no text to show, so
+		// don't create an empty assistant row — it would render as a blank
+		// placeholder and, once later rows are appended, be stranded
+		// mid-transcript (removeSpinner only drops a trailing MessageTypeSpinner).
+		if strings.TrimSpace(m.Content) == "" {
+			return nil
+		}
 		// Assistant turns stream in via AgentChoiceEvent deltas; the
 		// MessageAddedEvent is the persisted finalization of that same turn.
 		// Merge it into the matching streamed message by position. This is

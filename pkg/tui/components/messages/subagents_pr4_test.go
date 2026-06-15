@@ -127,3 +127,35 @@ func TestSubAgentMessageRemovesPendingSpinner(t *testing.T) {
 	}
 	require.Equal(t, types.MessageTypeSubAgent, m.messages[len(m.messages)-1].Type)
 }
+
+// TestEmptyAssistantMessageNotStrandedByLaterRows reproduces the real
+// stranded-spinner cause: a tool-call-only assistant turn is persisted with
+// empty text content. The TUI must not create an empty MessageTypeAssistant
+// row for it (it renders as a blank placeholder, and removeSpinner only drops
+// a trailing MessageTypeSpinner, so once later rows are appended it is
+// stranded mid-transcript forever).
+func TestEmptyAssistantMessageNotStrandedByLaterRows(t *testing.T) {
+	t.Parallel()
+
+	m := NewScrollableView(80, 24, &service.SessionState{}).(*model)
+	m.SetSize(80, 24)
+
+	// Empty assistant content (tool-call-only turn) must not create a row.
+	_ = m.AppendToLastMessage("root", "")
+	for _, msg := range m.messages {
+		require.NotEqual(t, types.MessageTypeAssistant, msg.Type, "empty assistant content must not create a row")
+	}
+
+	// Append a couple of subagent lifecycle rows after it.
+	_ = m.AddSubAgentMessage(types.SubAgentInfo{Kind: types.SubAgentEventStarted, AgentName: "director", ShortID: "e546b"})
+	_ = m.AddSubAgentMessage(types.SubAgentInfo{Kind: types.SubAgentEventTurnCompleted, AgentName: "director", ShortID: "e546b"})
+
+	// No stranded spinner-driven row (MessageTypeSpinner or empty assistant)
+	// may exist anywhere but the very last position.
+	for i, msg := range m.messages {
+		strandedSpinnerDriven := (msg.Type == types.MessageTypeSpinner ||
+			(msg.Type == types.MessageTypeAssistant && msg.Content == "")) &&
+			i != len(m.messages)-1
+		require.False(t, strandedSpinnerDriven, "no stranded spinner-driven row allowed (index %d type %v)", i, msg.Type)
+	}
+}
