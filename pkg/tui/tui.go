@@ -1536,7 +1536,7 @@ func sessionFromStore(ctx context.Context, store session.Store, sessionID string
 }
 
 func sessionHasAttachHistory(sess *session.Session) bool {
-	return sess != nil && len(sess.Messages) > 0
+	return sess != nil && len(sess.GetAllMessages()) > 0
 }
 
 func findSubSessionByID(sess *session.Session, sessionID string) *session.Session {

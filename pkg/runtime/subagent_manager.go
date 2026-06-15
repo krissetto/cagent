@@ -60,6 +60,14 @@ func subagentIdleAutoFinalizeTTL(a interface{ IdleAutoFinalizeTimeout() time.Dur
 }
 
 func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, agentName, task string) (*subagentHandle, error) {
+	return m.start(ctx, parent, agentName, task, nil)
+}
+
+func (m *SubagentManager) StartWithSink(ctx context.Context, parent *session.Session, agentName, task string, events EventSink) (*subagentHandle, error) {
+	return m.start(ctx, parent, agentName, task, events)
+}
+
+func (m *SubagentManager) start(ctx context.Context, parent *session.Session, agentName, task string, events EventSink) (*subagentHandle, error) {
 	if m == nil || parent == nil {
 		return nil, errors.New("subagent manager unavailable")
 	}
@@ -114,8 +122,13 @@ func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, ag
 	m.mu.Lock()
 	m.all[h.id] = h
 	m.mu.Unlock()
+	if m.r.liveSessions != nil {
+		m.r.liveSessions.register(child.ID, childAgentName, parent.ID)
+	}
 	m.publishToParent(parent.ID, SubAgentStarted(h.info(), parent.ID))
+	m.emitToSink(events, SubAgentStarted(h.info(), parent.ID))
 	m.publishLiveSessionTreeChanged(ctx, child.ID)
+	m.emitLiveSessionTreeChanged(ctx, events, child.ID)
 	h.inbox <- task
 	go m.runChild(ctx, h)
 	return h, nil
@@ -625,11 +638,37 @@ func (e SubagentEnvelope) parentText() string {
 	}
 }
 
+func (m *SubagentManager) emitToSink(events EventSink, ev Event) {
+	if events == nil || ev == nil {
+		return
+	}
+	events.Emit(ev)
+}
+
 func (m *SubagentManager) publishToParent(parentID string, ev Event) {
 	if m == nil || m.r == nil || m.r.eventBus == nil || parentID == "" || ev == nil {
 		return
 	}
 	m.r.eventBus.Publish(parentID, ev)
+}
+
+func (m *SubagentManager) emitLiveSessionTreeChanged(ctx context.Context, events EventSink, sessionID string) {
+	if events == nil || m == nil || m.r == nil {
+		return
+	}
+	tree, err := m.r.LiveSessionTree(ctx, sessionID)
+	if err == nil && tree != nil {
+		events.Emit(LiveSessionTreeChanged(sessionID, tree))
+		return
+	}
+	if m.r.liveSessions == nil {
+		return
+	}
+	if info, ok := m.r.liveSessions.get(sessionID); ok && info.ParentID != "" {
+		if tree, err := m.r.LiveSessionTree(ctx, info.ParentID); err == nil && tree != nil {
+			events.Emit(LiveSessionTreeChanged(info.ParentID, tree))
+		}
+	}
 }
 
 func (m *SubagentManager) publishLiveSessionTreeChanged(ctx context.Context, sessionID string) {

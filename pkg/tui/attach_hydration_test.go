@@ -337,6 +337,42 @@ func TestHandleAttachSessionOpensNonLiveStoredChildHistoryOnlyReadOnlyWithTitle(
 	require.Contains(t, view, "stored historical prompt")
 }
 
+func TestHandleAttachSessionUsesStoreItemsHistoryAfterCompletedChild(t *testing.T) {
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	root := session.New(session.WithID("root"))
+	require.NoError(t, store.AddSession(ctx, root))
+	storedChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithTitle("Stored Child Title"))
+	require.NoError(t, store.UpdateSession(ctx, storedChild))
+	_, err := store.AddMessage(ctx, "child", session.UserMessage("stored item prompt"))
+	require.NoError(t, err)
+	_, err = store.AddMessage(ctx, "child", &session.Message{AgentName: "greppy", Message: chat.Message{Role: chat.MessageRoleAssistant, Content: "stored item reply"}})
+	require.NoError(t, err)
+
+	rt := &attachHydrationRuntime{store: store, rootTitle: "Root Title"}
+	rootApp := app.New(ctx, rt, root)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+
+	model, cmd := m.handleAttachSession("child")
+	require.NotNil(t, cmd)
+	m = model.(*appModel)
+	require.Equal(t, "child", m.application.Session().ID)
+	require.True(t, m.application.IsReadOnly())
+	require.Len(t, m.application.Session().GetAllMessages(), 2)
+	require.Contains(t, m.application.Session().GetAllMessages()[0].Message.Content, "stored item prompt")
+	require.Contains(t, m.application.Session().GetAllMessages()[1].Message.Content, "stored item reply")
+	require.Equal(t, 0, rt.attachCalls)
+
+	if initCmd := m.chatPage.Init(); initCmd != nil {
+		_ = initCmd()
+	}
+	m.chatPage.SetSize(100, 24)
+	view := m.chatPage.View()
+	require.Contains(t, view, "stored item prompt")
+	require.Contains(t, view, "stored item reply")
+	require.ErrorContains(t, m.application.FollowUpWithAttachments("nope", nil), "follow-up")
+}
+
 func TestHandleAttachSessionMissingStoreAndMissingLiveErrorsGracefully(t *testing.T) {
 	ctx := t.Context()
 	root := session.New(session.WithID("root"))

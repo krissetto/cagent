@@ -39,13 +39,13 @@ type subagentInspectArgs struct {
 
 func (r *LocalRuntime) registerSubagentTools() {
 	for _, name := range []string{ToolNameSubagentStart, ToolNameSubagentSend, ToolNameSubagentInspect, ToolNameSubagentList, ToolNameSubagentStop, ToolNameSubagentFinalize, ToolNameSubagentClose} {
-		r.toolMap[name] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, _ EventSink) (*tools.ToolCallResult, error) {
-			return r.handleSubagentTool(ctx, sess, tc.Function.Name, tc)
+		r.toolMap[name] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, events EventSink) (*tools.ToolCallResult, error) {
+			return r.handleSubagentTool(ctx, sess, tc.Function.Name, tc, events)
 		}
 	}
 }
 
-func (r *LocalRuntime) handleSubagentTool(ctx context.Context, sess *session.Session, name string, tc tools.ToolCall) (*tools.ToolCallResult, error) {
+func (r *LocalRuntime) handleSubagentTool(ctx context.Context, sess *session.Session, name string, tc tools.ToolCall, events ...EventSink) (*tools.ToolCallResult, error) {
 	if r.subagents == nil {
 		return tools.ResultError("subagent manager unavailable"), nil
 	}
@@ -55,7 +55,11 @@ func (r *LocalRuntime) handleSubagentTool(ctx context.Context, sess *session.Ses
 		if err := decodeToolArgs(tc, &args); err != nil {
 			return nil, err
 		}
-		h, err := r.subagents.Start(ctx, sess, args.Agent, args.Task)
+		var sink EventSink
+		if len(events) > 0 {
+			sink = events[0]
+		}
+		h, err := r.subagents.StartWithSink(ctx, sess, args.Agent, args.Task, sink)
 		if err != nil {
 			return tools.ResultError(err.Error()), nil
 		}
