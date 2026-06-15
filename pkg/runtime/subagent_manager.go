@@ -12,6 +12,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/sessiontitle"
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
@@ -338,6 +339,7 @@ func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prom
 		default:
 		}
 	}
+	m.maybeGenerateChildTitle(ctx, h, prompt)
 	h.mu.Lock()
 	h.state = "running"
 	h.mu.Unlock()
@@ -391,6 +393,50 @@ func (m *SubagentManager) enqueueEnvelope(h *subagentHandle, env SubagentEnvelop
 	h.mu.Unlock()
 	m.publishToParent(h.parent.ID, SubAgentUpdate(env, h.parent.ID))
 	h.signal()
+}
+
+func (m *SubagentManager) maybeGenerateChildTitle(ctx context.Context, h *subagentHandle, prompt string) {
+	if m == nil || m.r == nil || h == nil || h.sess == nil || h.sess.Title != "" {
+		return
+	}
+	gen := m.r.titleGeneratorForSession(h.sess)
+	if gen == nil {
+		return
+	}
+
+	m.r.titleGenMu.Lock()
+	if m.r.titleGen == nil {
+		m.r.titleGen = make(map[string]bool)
+	}
+	if m.r.titleGen[h.id] {
+		m.r.titleGenMu.Unlock()
+		return
+	}
+	m.r.titleGen[h.id] = true
+	m.r.titleGenMu.Unlock()
+
+	go m.generateChildTitle(ctx, h, gen, []string{prompt})
+}
+
+func (m *SubagentManager) generateChildTitle(ctx context.Context, h *subagentHandle, gen *sessiontitle.Generator, userMessages []string) {
+	defer func() {
+		m.r.titleGenMu.Lock()
+		delete(m.r.titleGen, h.id)
+		m.r.titleGenMu.Unlock()
+	}()
+
+	title, err := gen.Generate(ctx, h.id, userMessages)
+	if err != nil || title == "" {
+		return
+	}
+	if err := m.r.UpdateSessionTitle(ctx, h.sess, title); err != nil {
+		return
+	}
+	ev := SessionTitle(h.id, title)
+	if m.r.eventBus != nil {
+		m.r.eventBus.Publish(h.id, ev)
+	}
+	m.publishLiveSessionTreeChanged(ctx, h.id)
 }
 
 func (h *subagentHandle) appendEvent(ev Event) {

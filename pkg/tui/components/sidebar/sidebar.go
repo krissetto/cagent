@@ -57,6 +57,7 @@ type Model interface {
 	SetSessionStarred(starred bool)
 	SetQueuedMessages(messages ...string)
 	SetLiveSessionTree(tree *runtime.LiveSessionTree)
+	SetPersistedSessionTree(root *session.Session, store session.Store)
 	GetSize() (width, height int)
 	LoadFromSession(sess *session.Session)
 	// ResetStreamTracking clears the active-stream stack so a new top-level run
@@ -350,6 +351,87 @@ func (m *model) SetLiveSessionTree(tree *runtime.LiveSessionTree) {
 		}
 	}
 	m.invalidateCache()
+}
+
+func (m *model) updateLiveSessionTitle(sessionID, title string) {
+	if sessionID == "" || title == "" || m.liveSessionTree == nil || m.liveSessionTree.Root == nil {
+		return
+	}
+	updateLiveSessionNodeTitle(m.liveSessionTree.Root, sessionID, title)
+}
+
+func updateLiveSessionNodeTitle(node *runtime.LiveSessionNode, sessionID, title string) bool {
+	if node == nil {
+		return false
+	}
+	if node.ID == sessionID {
+		node.Title = title
+		return true
+	}
+	for _, child := range node.Children {
+		if updateLiveSessionNodeTitle(child, sessionID, title) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *model) SetPersistedSessionTree(root *session.Session, store session.Store) {
+	if tree := persistedLiveSessionTree(context.Background(), root, store); tree != nil {
+		m.SetLiveSessionTree(tree)
+	}
+}
+
+func persistedLiveSessionTree(ctx context.Context, root *session.Session, store session.Store) *runtime.LiveSessionTree {
+	if root == nil || store == nil {
+		return nil
+	}
+	treeStore, ok := store.(interface {
+		GetChildSessions(ctx context.Context, parentID string) ([]*session.Session, error)
+	})
+	if !ok {
+		return nil
+	}
+	rootNode := persistedLiveSessionNode(root, root.ID == root.EffectiveRootID())
+	seen := map[string]bool{root.ID: true}
+	var build func(*runtime.LiveSessionNode)
+	build = func(node *runtime.LiveSessionNode) {
+		children, err := treeStore.GetChildSessions(ctx, node.ID)
+		if err != nil {
+			return
+		}
+		for _, child := range children {
+			if child == nil || child.ID == "" || seen[child.ID] || !child.RuntimeManaged {
+				continue
+			}
+			seen[child.ID] = true
+			childNode := persistedLiveSessionNode(child, false)
+			build(childNode)
+			node.Children = append(node.Children, childNode)
+		}
+	}
+	build(rootNode)
+	if len(rootNode.Children) == 0 {
+		return nil
+	}
+	return &runtime.LiveSessionTree{Root: rootNode}
+}
+
+func persistedLiveSessionNode(sess *session.Session, isRoot bool) *runtime.LiveSessionNode {
+	node := &runtime.LiveSessionNode{
+		ID:        sess.ID,
+		ParentID:  sess.ParentID,
+		RootID:    sess.EffectiveRootID(),
+		AgentName: sess.AgentName,
+		Title:     sess.Title,
+		Status:    "closed",
+		Live:      false,
+		CreatedAt: sess.CreatedAt,
+	}
+	if node.Title == "" && isRoot {
+		node.Title = "root"
+	}
+	return node
 }
 
 func (m *model) setChildQueue(event *runtime.SessionQueueEvent) {
@@ -775,6 +857,7 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		if msg.Title != "" {
 			m.sessionTitle = msg.Title
 			m.titleGenerated = true
+			m.updateLiveSessionTitle(msg.SessionID, msg.Title)
 		}
 		m.invalidateCache()
 		return m, nil
@@ -1389,6 +1472,10 @@ func (m *model) renderLiveSessionNode(lines *[]string, node *runtime.LiveSession
 	if agent == "" {
 		agent = "subagent"
 	}
+	label := node.Title
+	if label == "" {
+		label = agent
+	}
 	status := subagentStatusLabel(node)
 	indicator := styles.MutedStyle.Render("•")
 	if subagentStatusWorking(node) {
@@ -1398,10 +1485,10 @@ func (m *model) renderLiveSessionNode(lines *[]string, node *runtime.LiveSession
 	if m.hoveredSubagentID == node.ID {
 		nameStyle = styles.Hovered(nameStyle)
 	}
-	name := nameStyle.Render(agent)
+	name := nameStyle.Render(label)
 	id := styles.MutedStyle.Render(" (" + sidebarShortID(node.ID) + ")")
 	left := styles.MutedStyle.Render(prefix) + indicator + " " + name + id
-	plainLeftWidth := lipgloss.Width(prefix) + 2 + lipgloss.Width(agent) + lipgloss.Width(" ("+sidebarShortID(node.ID)+")")
+	plainLeftWidth := lipgloss.Width(prefix) + 2 + lipgloss.Width(label) + lipgloss.Width(" ("+sidebarShortID(node.ID)+")")
 	right := status
 	if m.hoveredSubagentID == node.ID {
 		if rel := relativeCreatedAt(node.CreatedAt); rel != "" {

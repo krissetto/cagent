@@ -79,4 +79,10 @@ func TestRoutedRootSubagentStatusAndTitleEventsUpdateActiveChildSidebarImmediate
 	if got := len(childPage.sidebarEvents); got != 2 {
 		t.Fatalf("expected active child sidebar to receive status and title immediately, got %d", got)
 	}
+	if got := m.sessionStates["child"].SessionTitle(); got != "Finished scout" {
+		t.Fatalf("expected active child session title updated from routed child title, got %q", got)
+	}
+	if runner := m.supervisor.GetRunner("child"); runner == nil || runner.Title != "Finished scout" {
+		t.Fatalf("expected active child runner title updated from routed child title, got %#v", runner)
+	}
 }

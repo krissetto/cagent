@@ -52,6 +52,38 @@ func TestSubagentStartAndUpdateManageSpinnerState(t *testing.T) {
 	}
 }
 
+func TestSubagentRowsUseSessionTitleWhenPresent(t *testing.T) {
+	m := New(&service.SessionState{}).(*model)
+	m.SetLiveSessionTree(&runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{
+		ID:       "root",
+		Children: []*runtime.LiveSessionNode{{ID: "child12345", AgentName: "greppy", Title: "Research API", Status: "waiting", Live: true, CreatedAt: time.Now()}},
+	}})
+
+	plain := strings.Join(stripANSILines(strings.Split(m.subagentsSection(80), "\n")), "\n")
+	if !strings.Contains(plain, "Research API") {
+		t.Fatalf("expected titled child row, got %q", plain)
+	}
+	if strings.Contains(plain, "• greppy") {
+		t.Fatalf("expected child title to replace agent label, got %q", plain)
+	}
+}
+
+func TestSubagentTitleEventUpdatesLiveTreeNode(t *testing.T) {
+	m := New(&service.SessionState{}).(*model)
+	m.SetLiveSessionTree(&runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{
+		ID:       "root",
+		Children: []*runtime.LiveSessionNode{{ID: "child12345", AgentName: "greppy", Status: "waiting", Live: true, CreatedAt: time.Now()}},
+	}})
+
+	updated, _ := m.Update(runtime.SessionTitle("child12345", "Finished scout"))
+	m = updated.(*model)
+
+	plain := strings.Join(stripANSILines(strings.Split(m.subagentsSection(80), "\n")), "\n")
+	if !strings.Contains(plain, "Finished scout") {
+		t.Fatalf("expected child title event to update subagent row, got %q", plain)
+	}
+}
+
 func TestSubagentRowsUseStableStatusPrefix(t *testing.T) {
 	m := New(&service.SessionState{}).(*model)
 	created := time.Now().Add(-2 * time.Minute)

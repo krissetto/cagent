@@ -20,6 +20,32 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
+func TestSubagentSessionTitleGeneratedForChildAndPublished(t *testing.T) {
+	rt, root, _ := newSubagentLifecycleRuntime(t, 2*time.Second)
+
+	h, err := rt.subagents.Start(t.Context(), root, "worker", "first prompt")
+	require.NoError(t, err)
+	requireSubagentState(t, h, "waiting")
+	requireSubagentTitle(t, rt, h.id, "Child title")
+
+	snapshot := rt.eventBus.StreamingSnapshot(h.id)
+	assertEventHasTitle(t, snapshot, h.id, "Child title")
+
+	stored, err := rt.sessionStore.GetSession(t.Context(), h.id)
+	require.NoError(t, err)
+	assert.Equal(t, "Child title", stored.Title)
+
+	tree, err := rt.LiveSessionTree(t.Context(), root.ID)
+	require.NoError(t, err)
+	require.NotNil(t, tree.Root)
+	require.Len(t, tree.Root.Children, 1)
+	assert.Equal(t, h.id, tree.Root.Children[0].ID)
+	assert.Equal(t, "Child title", tree.Root.Children[0].Title)
+
+	require.NoError(t, rt.subagents.Finalize(root, h.id))
+	requireSubagentDoneClosed(t, h)
+}
+
 func TestSubagentLifecycleRemainsWaitingLiveAfterFirstTurn(t *testing.T) {
 	rt, root, childModel := newSubagentLifecycleRuntime(t, 2*time.Second)
 
@@ -105,7 +131,8 @@ func TestSubagentDoneClosesOnTTL(t *testing.T) {
 func newSubagentLifecycleRuntime(t *testing.T, ttl time.Duration) (*LocalRuntime, *session.Session, *recordingSubagentProvider) {
 	t.Helper()
 	childModel := &recordingSubagentProvider{}
-	worker := agent.New("worker", "worker", agent.WithModel(childModel), agent.WithIdleAutoFinalizeTimeout(ttl))
+	titleModel := &staticTitleProvider{title: "Child title"}
+	worker := agent.New("worker", "worker", agent.WithModel(childModel), agent.WithTitleModel(titleModel), agent.WithIdleAutoFinalizeTimeout(ttl))
 	rootAgent := agent.New(
 		"root",
 		"root",
@@ -129,6 +156,14 @@ func requireSubagentState(t *testing.T, h *subagentHandle, want string) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		return h.state == want
+	}, time.Second, 5*time.Millisecond)
+}
+
+func requireSubagentTitle(t *testing.T, rt *LocalRuntime, sessionID, want string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		stored, err := rt.sessionStore.GetSession(t.Context(), sessionID)
+		return err == nil && stored.Title == want
 	}, time.Second, 5*time.Millisecond)
 }
 
@@ -167,6 +202,17 @@ func assertSnapshotHasMessage(t *testing.T, snapshot []Event, sessionID, content
 	t.Fatalf("snapshot missing message %q for session %s; got %#v", content, sessionID, snapshot)
 }
 
+func assertEventHasTitle(t *testing.T, events []Event, sessionID, title string) {
+	t.Helper()
+	for _, ev := range events {
+		titleEv, ok := ev.(*SessionTitleEvent)
+		if ok && titleEv.SessionID == sessionID && titleEv.Title == title {
+			return
+		}
+	}
+	t.Fatalf("events missing title %q for session %s; got %#v", title, sessionID, events)
+}
+
 type recordingSubagentProvider struct {
 	mu      sync.Mutex
 	inputs  []string
@@ -186,6 +232,28 @@ func (p *recordingSubagentProvider) CreateChatCompletionStream(_ context.Context
 	return &recordingLifecycleStream{responses: responses}, nil
 }
 
+func (p *recordingSubagentProvider) BaseConfig() base.Config { return base.Config{} }
+
+func (p *recordingSubagentProvider) MaxTokens() int { return 0 }
+
+type staticTitleProvider struct{ title string }
+
+func (p *staticTitleProvider) ID() modelsdev.ID { return modelsdev.ParseIDOrZero("test/title") }
+
+func (p *staticTitleProvider) CreateChatCompletionStream(context.Context, []chat.Message, []tools.Tool) (chat.MessageStream, error) {
+	return &recordingLifecycleStream{responses: lifecycleResponses(p.title)}, nil
+}
+
+func (p *staticTitleProvider) BaseConfig() base.Config { return base.Config{} }
+
+func (p *staticTitleProvider) MaxTokens() int { return 0 }
+
+func (p *recordingSubagentProvider) prompts() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.inputs...)
+}
+
 func lifecycleResponses(content string) []chat.MessageStreamResponse {
 	return []chat.MessageStreamResponse{
 		{
@@ -203,16 +271,6 @@ func lifecycleResponses(content string) []chat.MessageStreamResponse {
 			Usage: &chat.Usage{InputTokens: 1, OutputTokens: 1},
 		},
 	}
-}
-
-func (p *recordingSubagentProvider) BaseConfig() base.Config { return base.Config{} }
-
-func (p *recordingSubagentProvider) MaxTokens() int { return 0 }
-
-func (p *recordingSubagentProvider) prompts() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return append([]string(nil), p.inputs...)
 }
 
 type recordingLifecycleStream struct {

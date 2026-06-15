@@ -1115,6 +1115,12 @@ func (m *appModel) handleRoutedMsg(msg messages.RoutedMsg) (tea.Model, tea.Cmd) 
 	// sidebar too so subagent tree/status/queue changes appear immediately,
 	// without duplicating chat transcript messages or adding polling.
 	if activePage, ok := m.chatPages[activeID]; ok && sidebarEventRelatesToSession(msg.Inner, activeID) {
+		if titleEvent, ok := msg.Inner.(*runtime.SessionTitleEvent); ok && titleEvent.SessionID == activeID && titleEvent.Title != "" {
+			if sessionState, ok := m.sessionStates[activeID]; ok {
+				sessionState.SetSessionTitle(titleEvent.Title)
+			}
+			m.supervisor.SetRunnerTitle(activeID, titleEvent.Title)
+		}
 		cmd := activePage.ApplySidebarRuntimeEvent(msg.Inner)
 		m.chatPages[activeID] = activePage
 		return m, cmd
@@ -1473,6 +1479,9 @@ func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
 	if !liveAttach && !hasStored && liveOK {
 		return m, notification.ErrorCmd("Session not found")
 	}
+	if !nodeOK {
+		node = liveSessionNodeFromSession(sess)
+	}
 	if !liveAttach {
 		node.Live = false
 		node.Status = "closed"
@@ -1581,6 +1590,22 @@ func mergeAttachSessionMetadata(preferredMeta, historySess *session.Session) *se
 		merged.RuntimeManaged = preferredMeta.RuntimeManaged
 	}
 	return merged
+}
+
+func liveSessionNodeFromSession(sess *session.Session) runtime.LiveSessionNode {
+	if sess == nil {
+		return runtime.LiveSessionNode{Status: "closed"}
+	}
+	return runtime.LiveSessionNode{
+		ID:        sess.ID,
+		ParentID:  sess.ParentID,
+		RootID:    sess.EffectiveRootID(),
+		AgentName: sess.AgentName,
+		Title:     sess.Title,
+		Status:    "closed",
+		Live:      false,
+		CreatedAt: sess.CreatedAt,
+	}
 }
 
 func isClosedAttachedSessionStatus(status string) bool {

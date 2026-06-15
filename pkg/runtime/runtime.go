@@ -239,6 +239,13 @@ type LocalRuntime struct {
 
 	fallback *fallbackExecutor
 
+	// Session titles are generated outside the primary run loop. Root TUI
+	// sessions handle that in pkg/app and the server does it in SessionManager;
+	// runtime-managed child sessions run directly through SubagentManager, so
+	// the local runtime owns their title-generation trigger.
+	titleGenMu sync.Mutex
+	titleGen   map[string]bool
+
 	// The runtime may attach a SessionRecorder separately as the exclusive store
 	// writer; custom observers remain source-compatible but are no longer used
 	// for built-in persistence.
@@ -891,20 +898,26 @@ func (r *LocalRuntime) ExecuteMCPPrompt(ctx context.Context, promptName string, 
 	return "", fmt.Errorf("MCP prompt '%s' not found in any active toolset", promptName)
 }
 
-// TitleGenerator returns a title generator for automatic session title generation.
-func (r *LocalRuntime) TitleGenerator() *sessiontitle.Generator {
-	a := r.CurrentAgent()
+func (r *LocalRuntime) titleGeneratorForSession(sess *session.Session) *sessiontitle.Generator {
+	var a *agent.Agent
+	if sess != nil {
+		a = r.resolveSessionAgent(sess)
+	} else {
+		a = r.CurrentAgent()
+	}
 	if a == nil {
 		return nil
 	}
-	// Title-gen setup happens before any session ctx exists; the resulting
-	// generator carries its own ctx when actually invoked. context.TODO is
-	// the right marker here.
 	models := a.TitleModels(context.TODO())
 	if len(models) == 0 {
 		return nil
 	}
 	return sessiontitle.New(models[0], models[1:]...)
+}
+
+// TitleGenerator returns a title generator for automatic session title generation.
+func (r *LocalRuntime) TitleGenerator() *sessiontitle.Generator {
+	return r.titleGeneratorForSession(nil)
 }
 
 // getAgentModelID returns the model ID for an agent. The zero ID is
