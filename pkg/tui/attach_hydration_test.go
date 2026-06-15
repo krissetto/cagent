@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/app"
+	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/effort"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
@@ -110,6 +111,7 @@ type attachHydrationRuntime struct {
 	store    session.Store
 	live     *session.Session
 	followID string
+	steerID  string
 }
 
 func (r *attachHydrationRuntime) SessionStore() session.Store { return r.store }
@@ -150,7 +152,8 @@ func (r *attachHydrationRuntime) FollowUpSessionByID(id string, msg runtime.Queu
 	return nil
 }
 
-func (r *attachHydrationRuntime) SteerSessionByID(string, runtime.QueuedMessage) error {
+func (r *attachHydrationRuntime) SteerSessionByID(id string, msg runtime.QueuedMessage) error {
+	r.steerID = id
 	return nil
 }
 
@@ -164,6 +167,7 @@ func TestHandleAttachSessionHydratesEmptyLiveChildFromStoreAndKeepsChildQueue(t 
 	root := session.New(session.WithID("root"))
 	require.NoError(t, store.UpdateSession(ctx, root))
 	liveChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"))
+	liveChild.AddMessage(session.UserMessage("live snapshot placeholder"))
 	storedChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"))
 	storedChild.AddMessage(session.UserMessage("delegated prompt"))
 	require.NoError(t, store.AddSubSession(ctx, "root", storedChild))
@@ -178,6 +182,39 @@ func TestHandleAttachSessionHydratesEmptyLiveChildFromStoreAndKeepsChildQueue(t 
 	require.Equal(t, "child", m.application.Session().ID)
 	require.Len(t, m.application.Session().Messages, 1)
 	require.Contains(t, m.application.Session().Messages[0].Message.Message.Content, "delegated prompt")
+
+	require.NoError(t, m.application.FollowUpWithAttachments("hello child", nil))
+	require.Equal(t, "child", rt.followID)
+}
+
+func TestHandleAttachSessionHydratesStoredChildAndInitialChatPageRendersHistory(t *testing.T) {
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	root := session.New(session.WithID("root"))
+	require.NoError(t, store.AddSession(ctx, root))
+	liveChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"))
+	storedChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"))
+	storedChild.AddMessage(session.UserMessage("delegated prompt"))
+	storedChild.AddMessage(&session.Message{AgentName: "greppy", Message: chat.Message{Role: chat.MessageRoleAssistant, Content: "persisted child reply"}})
+	require.NoError(t, store.AddSubSession(ctx, "root", storedChild))
+
+	rt := &attachHydrationRuntime{store: store, live: liveChild}
+	rootApp := app.New(ctx, rt, root)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+
+	model, cmd := m.handleAttachSession("child")
+	require.NotNil(t, cmd)
+	m = model.(*appModel)
+	require.Equal(t, "child", m.application.Session().ID)
+	require.Len(t, m.application.Session().Messages, 2)
+
+	if initCmd := m.chatPage.Init(); initCmd != nil {
+		_ = initCmd()
+	}
+	m.chatPage.SetSize(100, 24)
+	view := m.chatPage.View()
+	require.Contains(t, view, "delegated prompt")
+	require.Contains(t, view, "persisted child reply")
 
 	require.NoError(t, m.application.FollowUpWithAttachments("hello child", nil))
 	require.Equal(t, "child", rt.followID)

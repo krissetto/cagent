@@ -7,6 +7,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/chat"
+	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
@@ -69,4 +71,34 @@ func TestToolRowsAndSubagentLifecycleRowsDoNotInsertExtraSeparatorsBetweenEachOt
 	plain := strings.Join(plainLines, "\n")
 	require.Contains(t, plain, "greppy")
 	require.NotContains(t, plain, "\n\n")
+}
+
+func TestLoadFromSessionRendersSubagentEnvelopeBetweenAssistantMessages(t *testing.T) {
+	t.Parallel()
+
+	sess := session.New(session.WithID("root"))
+	sess.AddMessage(&session.Message{AgentName: "root", Message: chat.Message{Role: chat.MessageRoleAssistant, Content: "first assistant"}})
+	sess.AddMessage(session.SubagentEnvelopeMessage("[director] (abc12) turn finished. Preview: done"))
+	sess.AddMessage(&session.Message{AgentName: "root", Message: chat.Message{Role: chat.MessageRoleAssistant, Content: "second assistant"}})
+
+	m := NewScrollableView(100, 24, &service.SessionState{}).(*model)
+	m.SetSize(100, 24)
+	m.LoadFromSession(sess)
+	m.ensureAllItemsRendered()
+
+	plainLines := make([]string, len(m.renderedLines))
+	for i, line := range m.renderedLines {
+		plainLines[i] = ansi.Strip(line)
+	}
+	plain := strings.Join(plainLines, "\n")
+
+	require.Contains(t, plain, "first assistant")
+	require.Contains(t, plain, "director")
+	require.Contains(t, plain, "abc12")
+	require.Contains(t, plain, "turn finished")
+	require.Contains(t, plain, "second assistant")
+	require.Less(t, strings.Index(plain, "first assistant"), strings.Index(plain, "director"))
+	require.Less(t, strings.Index(plain, "director"), strings.Index(plain, "second assistant"))
+	require.NotContains(t, plain, "first assistantsecond assistant")
+	require.NotContains(t, plain, "turn finishedsecond assistant")
 }

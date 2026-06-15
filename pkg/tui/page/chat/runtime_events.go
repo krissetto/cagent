@@ -82,7 +82,7 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 	// ===== Content Events =====
 	case *runtime.UserMessageEvent:
 		if msg.Kind == session.MessageKindSubagentEnvelope || looksLikeRawSubagentEnvelope(msg.Message) {
-			return true, nil
+			return true, p.messages.AddSubAgentMessage(subAgentInfoFromText(msg.Message))
 		}
 		return true, p.messages.ReplaceLoadingWithUser(msg.Message, msg.SessionPosition)
 
@@ -417,15 +417,7 @@ func looksLikeRawSubagentEnvelope(content string) bool {
 }
 
 func subAgentInfoFromEnvelope(env runtime.SubagentEnvelope) types.SubAgentInfo {
-	kind := types.SubAgentEventTurnCompleted
-	switch env.Kind {
-	case "closed":
-		kind = types.SubAgentEventClosed
-	case "stopped":
-		kind = types.SubAgentEventStopped
-	case "failed":
-		kind = types.SubAgentEventFailed
-	}
+	kind := subAgentEventKindFromString(env.Kind)
 	detail := env.Preview
 	if env.Error != "" {
 		if detail != "" {
@@ -434,6 +426,87 @@ func subAgentInfoFromEnvelope(env runtime.SubagentEnvelope) types.SubAgentInfo {
 		detail += env.Error
 	}
 	return types.SubAgentInfo{Kind: kind, AgentName: env.AgentName, ShortID: sidebarShortID(env.SubAgentID), Detail: detail, Truncated: env.Truncated}
+}
+
+func subAgentInfoFromText(text string) types.SubAgentInfo {
+	info := types.SubAgentInfo{Kind: types.SubAgentEventTurnCompleted, Detail: strings.TrimSpace(text)}
+	content := info.Detail
+	if content == "" {
+		return info
+	}
+
+	if strings.HasPrefix(content, "<") {
+		if attr := parseSubagentEnvelopeAttrs(content); attr != nil {
+			info.AgentName = attr["agent_name"]
+			info.ShortID = sidebarShortID(firstNonEmpty(attr["subagent_id"], attr["id"]))
+			if kind := firstNonEmpty(attr["kind"], attr["status"]); kind != "" {
+				info.Kind = subAgentEventKindFromString(kind)
+			}
+			info.Detail = strings.TrimSpace(firstNonEmpty(attr["preview"], attr["message"], attr["error"], content))
+			return info
+		}
+	}
+
+	switch {
+	case strings.Contains(content, " finalized"):
+		info.Kind = types.SubAgentEventClosed
+	case strings.Contains(content, " stopped"):
+		info.Kind = types.SubAgentEventStopped
+	case strings.Contains(content, " failed"):
+		info.Kind = types.SubAgentEventFailed
+	}
+
+	if end := strings.Index(content, "]"); strings.HasPrefix(content, "[") && end > 1 {
+		info.AgentName = strings.TrimSpace(content[1:end])
+		if rest := strings.TrimSpace(content[end+1:]); strings.HasPrefix(rest, "(") {
+			if closeIdx := strings.Index(rest, ")"); closeIdx > 1 {
+				info.ShortID = strings.TrimSpace(rest[1:closeIdx])
+			}
+		}
+	}
+	return info
+}
+
+func subAgentEventKindFromString(kind string) types.SubAgentEventKind {
+	switch strings.TrimSpace(kind) {
+	case "closed":
+		return types.SubAgentEventClosed
+	case "stopped":
+		return types.SubAgentEventStopped
+	case "failed":
+		return types.SubAgentEventFailed
+	default:
+		return types.SubAgentEventTurnCompleted
+	}
+}
+
+func parseSubagentEnvelopeAttrs(content string) map[string]string {
+	end := strings.Index(content, ">")
+	if end == -1 {
+		return nil
+	}
+	fields := strings.Fields(strings.Trim(content[1:end], "/ "))
+	if len(fields) == 0 {
+		return nil
+	}
+	attrs := make(map[string]string)
+	for _, field := range fields[1:] {
+		key, val, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		attrs[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(val), "\"'")
+	}
+	return attrs
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func sidebarShortID(id string) string {

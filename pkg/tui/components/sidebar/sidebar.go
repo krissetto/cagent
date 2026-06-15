@@ -1356,15 +1356,15 @@ func (m *model) renderLiveSessionNode(lines *[]string, node *runtime.LiveSession
 	if node == nil {
 		return
 	}
-	prefix, childAncestors := subagentTreePrefix(depth, last, ancestorsHaveMore)
+	prefix, childAncestors := subagentTreePrefix(last, ancestorsHaveMore)
 	agent := node.AgentName
 	if agent == "" {
 		agent = "subagent"
 	}
 	status := subagentStatusLabel(node)
-	spinnerView := ""
+	indicator := styles.MutedStyle.Render("•")
 	if subagentStatusWorking(node) {
-		spinnerView = m.subagentSpinnerView(node.ID, agent) + " "
+		indicator = styles.AgentAccentStyleFor(agent).Render(m.subagentSpinnerView(node.ID, agent))
 	}
 	nameStyle := styles.AgentAccentStyleFor(agent)
 	if m.hoveredSubagentID == node.ID {
@@ -1372,28 +1372,31 @@ func (m *model) renderLiveSessionNode(lines *[]string, node *runtime.LiveSession
 	}
 	name := nameStyle.Render(agent)
 	id := styles.MutedStyle.Render(" (" + sidebarShortID(node.ID) + ")")
-	left := styles.MutedStyle.Render(prefix) + spinnerView + name + id
-	plainLeftWidth := lipgloss.Width(prefix) + lipgloss.Width(spinnerView) + lipgloss.Width(agent) + lipgloss.Width(" ("+sidebarShortID(node.ID)+")")
-	statusStyled := styles.MutedStyle.Render(status)
-	gap := max(1, contentWidth-plainLeftWidth-lipgloss.Width(status))
-	*lines = append(*lines, left+strings.Repeat(" ", gap)+statusStyled)
+	left := styles.MutedStyle.Render(prefix) + indicator + " " + name + id
+	plainLeftWidth := lipgloss.Width(prefix) + 2 + lipgloss.Width(agent) + lipgloss.Width(" ("+sidebarShortID(node.ID)+")")
+	right := status
+	if m.hoveredSubagentID == node.ID {
+		if rel := relativeCreatedAt(node.CreatedAt); rel != "" {
+			right = rel
+		}
+	}
+	rightStyled := styles.MutedStyle.Render(right)
+	gap := max(1, contentWidth-plainLeftWidth-lipgloss.Width(right))
+	*lines = append(*lines, left+strings.Repeat(" ", gap)+rightStyled)
 	if node.Error != "" || (node.Status == "failed" && node.LastPreview != "") {
 		detail := node.Error
 		if detail == "" {
 			detail = node.LastPreview
 		}
 		detailPrefix := subagentDetailPrefix(childAncestors)
-		*lines = append(*lines, styles.MutedStyle.Render(detailPrefix+toolcommon.TruncateText(detail, max(1, contentWidth-lipgloss.Width(detailPrefix)))))
+		*lines = append(*lines, styles.MutedStyle.Render(detailPrefix+"  "+toolcommon.TruncateText(detail, max(1, contentWidth-lipgloss.Width(detailPrefix)-2))))
 	}
 	for i, child := range node.Children {
 		m.renderLiveSessionNode(lines, child, depth+1, i == len(node.Children)-1, childAncestors, contentWidth)
 	}
 }
 
-func subagentTreePrefix(depth int, isLast bool, ancestorsHaveMore []bool) (string, []bool) {
-	if depth <= 1 {
-		return "", nil
-	}
+func subagentTreePrefix(isLast bool, ancestorsHaveMore []bool) (string, []bool) {
 	var b strings.Builder
 	for _, hasMore := range ancestorsHaveMore {
 		if hasMore {
@@ -1421,6 +1424,23 @@ func subagentDetailPrefix(ancestorsHaveMore []bool) string {
 		}
 	}
 	return b.String()
+}
+
+func relativeCreatedAt(createdAt time.Time) string {
+	if createdAt.IsZero() {
+		return ""
+	}
+	elapsed := max(time.Since(createdAt), 0)
+	switch {
+	case elapsed < time.Minute:
+		return fmt.Sprintf("%ds ago", int(elapsed.Seconds()))
+	case elapsed < time.Hour:
+		return fmt.Sprintf("%dm ago", int(elapsed.Minutes()))
+	case elapsed < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(elapsed.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(elapsed.Hours()/24))
+	}
 }
 
 func (m *model) seedSubagentSpinners(root *runtime.LiveSessionNode) {

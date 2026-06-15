@@ -51,3 +51,80 @@ func TestSubagentStartAndUpdateManageSpinnerState(t *testing.T) {
 		_ = cmd()
 	}
 }
+
+func TestSubagentRowsUseStableStatusPrefix(t *testing.T) {
+	m := New(&service.SessionState{}).(*model)
+	created := time.Now().Add(-2 * time.Minute)
+	m.SetLiveSessionTree(&runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{
+		ID: "root",
+		Children: []*runtime.LiveSessionNode{
+			{ID: "running12345", AgentName: "greppy", Status: "running", Live: true, CreatedAt: created},
+			{ID: "waiting12345", AgentName: "reviewer", Status: "waiting", Live: true, CreatedAt: created},
+		},
+	}})
+	out := m.subagentsSection(80)
+	plain := stripANSILines(strings.Split(out, "\n"))
+	running := findLineContaining(t, plain, "greppy")
+	waiting := findLineContaining(t, plain, "reviewer")
+
+	if strings.Index(running, "greppy") != strings.Index(waiting, "reviewer") {
+		t.Fatalf("agent names should start in stable column with or without spinner:\nrunning=%q\nwaiting=%q", running, waiting)
+	}
+	if !strings.Contains(waiting, "• reviewer") {
+		t.Fatalf("idle row should reserve prefix indicator column: %q", waiting)
+	}
+}
+
+func TestSubagentHoverShowsRelativeCreatedAt(t *testing.T) {
+	m := New(&service.SessionState{}).(*model)
+	m.SetLiveSessionTree(&runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{
+		ID:       "root",
+		Children: []*runtime.LiveSessionNode{{ID: "child12345", AgentName: "greppy", Status: "waiting", Live: true, CreatedAt: time.Now().Add(-2 * time.Minute)}},
+	}})
+
+	plain := strings.Join(stripANSILines(strings.Split(m.subagentsSection(80), "\n")), "\n")
+	if strings.Contains(plain, "2m ago") {
+		t.Fatalf("relative time should only show on hover: %q", plain)
+	}
+	m.hoveredSubagentID = "child12345"
+	plain = strings.Join(stripANSILines(strings.Split(m.subagentsSection(80), "\n")), "\n")
+	if !strings.Contains(plain, "2m ago") {
+		t.Fatalf("hovered row should show relative created-at: %q", plain)
+	}
+	if strings.Contains(plain, "idle") {
+		t.Fatalf("hovered row should replace status with relative time: %q", plain)
+	}
+}
+
+func TestSubagentTreeRendersDirectChildrenAndNestedDescendants(t *testing.T) {
+	m := New(&service.SessionState{}).(*model)
+	m.SetLiveSessionTree(&runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{
+		ID: "root",
+		Children: []*runtime.LiveSessionNode{
+			{ID: "director-a-000000", AgentName: "director-a", Status: "waiting", Live: true, Children: []*runtime.LiveSessionNode{
+				{ID: "worker-a-000000", AgentName: "worker-a", Status: "waiting", Live: true},
+			}},
+			{ID: "director-b-000000", AgentName: "director-b", Status: "waiting", Live: true, Children: []*runtime.LiveSessionNode{
+				{ID: "worker-b-000000", AgentName: "worker-b", Status: "waiting", Live: true},
+			}},
+		},
+	}})
+
+	plainLines := stripANSILines(strings.Split(m.subagentsSection(90), "\n"))
+	directorA := findLineContaining(t, plainLines, "director-a")
+	workerA := findLineContaining(t, plainLines, "worker-a")
+	directorB := findLineContaining(t, plainLines, "director-b")
+	workerB := findLineContaining(t, plainLines, "worker-b")
+	if !strings.Contains(directorA, "├ • director-a") {
+		t.Fatalf("first direct child should have tree branch and stable dot: %q", directorA)
+	}
+	if !strings.Contains(workerA, "│ └ • worker-a") {
+		t.Fatalf("nested child should retain ancestor guide: %q", workerA)
+	}
+	if !strings.Contains(directorB, "└ • director-b") {
+		t.Fatalf("last direct child should have closing branch: %q", directorB)
+	}
+	if !strings.Contains(workerB, "  └ • worker-b") {
+		t.Fatalf("nested child under last direct child should avoid stray guide: %q", workerB)
+	}
+}

@@ -1377,15 +1377,17 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 		}
 
 		smsg := item.Message
+		if smsg.Kind == session.MessageKindSubagentEnvelope || looksLikeRawSubagentEnvelope(smsg.Message.Content) {
+			msg := subAgentMessageFromSessionText(smsg.Message.Content)
+			appendSessionMessage(msg, m.createMessageView(msg))
+			continue
+		}
 		if smsg.Implicit {
 			continue
 		}
 
 		switch smsg.Message.Role {
 		case chat.MessageRoleUser:
-			if smsg.Kind == session.MessageKindSubagentEnvelope || looksLikeRawSubagentEnvelope(smsg.Message.Content) {
-				continue
-			}
 			msg := types.User(smsg.Message.Content)
 			msgPos := pos
 			msg.SessionPosition = &msgPos
@@ -1457,6 +1459,27 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 
 	cmds = append(cmds, m.ScrollToBottom())
 	return tea.Batch(cmds...)
+}
+
+func subAgentMessageFromSessionText(content string) *types.Message {
+	info := types.SubAgentInfo{Kind: types.SubAgentEventTurnCompleted, Detail: strings.TrimSpace(content)}
+	switch {
+	case strings.Contains(info.Detail, " finalized"):
+		info.Kind = types.SubAgentEventClosed
+	case strings.Contains(info.Detail, " stopped"):
+		info.Kind = types.SubAgentEventStopped
+	case strings.Contains(info.Detail, " failed"):
+		info.Kind = types.SubAgentEventFailed
+	}
+	if end := strings.Index(info.Detail, "]"); strings.HasPrefix(info.Detail, "[") && end > 1 {
+		info.AgentName = strings.TrimSpace(info.Detail[1:end])
+		if rest := strings.TrimSpace(info.Detail[end+1:]); strings.HasPrefix(rest, "(") {
+			if closeIdx := strings.Index(rest, ")"); closeIdx > 1 {
+				info.ShortID = strings.TrimSpace(rest[1:closeIdx])
+			}
+		}
+	}
+	return types.SubAgent(info)
 }
 
 func looksLikeRawSubagentEnvelope(content string) bool {

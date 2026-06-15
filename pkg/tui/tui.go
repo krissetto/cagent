@@ -1397,7 +1397,7 @@ func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
 }
 
 func (m *appModel) hydrateAttachedSessionMessages(ctx context.Context, sess *session.Session) *session.Session {
-	if sess == nil || len(sess.Messages) > 0 || m == nil || m.application == nil {
+	if sess == nil || m == nil || m.application == nil {
 		return sess
 	}
 	store := m.application.SessionStore()
@@ -1405,12 +1405,14 @@ func (m *appModel) hydrateAttachedSessionMessages(ctx context.Context, sess *ses
 		return sess
 	}
 	stored, err := store.GetSession(ctx, sess.ID)
-	if err != nil || stored == nil || len(stored.Messages) == 0 {
+	if err != nil || stored == nil || len(stored.Messages) == 0 || len(stored.Messages) <= len(sess.Messages) {
 		return sess
 	}
 	// Keep the live session object so attached sends continue targeting the live
 	// child queue, but hydrate its persisted transcript for the attached tab's
-	// initial chat model.
+	// initial chat model. Prefer the persisted transcript when it is more
+	// complete than the live pointer/snapshot; the live attach stream will append
+	// subsequent updates after the tab opens.
 	sess.Messages = append(sess.Messages[:0], stored.Messages...)
 	return sess
 }
