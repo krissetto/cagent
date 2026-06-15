@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+## What's New
+
+- Adds TUI affordances for runtime-managed subagents: sidebar live status/previews, `/subagents` tree dialog, click-to-attach child tabs, attached follow-up sends, child queue visibility, and dedicated subagent tool-call rendering.
+
+## Bug Fixes
+
+- Keeps TUI input active and flushes queued parent messages when runtime-managed children put the parent into idle waiting.
+- Shows child-session queued follow-ups from `SessionQueueEvent` so attached child tabs no longer hide pending input.
+
+## Documentation
+
+- Adds a runtime-managed subagents TUI smoke checklist for manual stacked-branch validation.
+
 
 ## [v1.77.0] - 2026-06-10
 

@@ -12,13 +12,13 @@ import (
 
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/sessiontitle"
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
 const (
 	MaxSubagentDepth       = 8
 	MaxSubagentDescendants = 64
-	DefaultSubagentTTL     = 10 * time.Minute
 )
 
 type SubagentManager struct {
@@ -34,7 +34,6 @@ type subagentHandle struct {
 	parent    *session.Session
 	sess      *session.Session
 	created   time.Time
-	ttl       time.Duration
 	inbox     chan string
 	stop      chan struct{}
 	done      chan struct{}
@@ -49,17 +48,15 @@ func NewSubagentManager(r *LocalRuntime) *SubagentManager {
 	return &SubagentManager{r: r, all: make(map[string]*subagentHandle)}
 }
 
-func subagentIdleAutoFinalizeTTL(a interface{ IdleAutoFinalizeTimeout() time.Duration }, override time.Duration) time.Duration {
-	if override > 0 {
-		return override
-	}
-	if a == nil || a.IdleAutoFinalizeTimeout() <= 0 {
-		return DefaultSubagentTTL
-	}
-	return a.IdleAutoFinalizeTimeout()
+func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, agentName, task string) (*subagentHandle, error) {
+	return m.start(ctx, parent, agentName, task, nil)
 }
 
-func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, agentName, task string) (*subagentHandle, error) {
+func (m *SubagentManager) StartWithSink(ctx context.Context, parent *session.Session, agentName, task string, events EventSink) (*subagentHandle, error) {
+	return m.start(ctx, parent, agentName, task, events)
+}
+
+func (m *SubagentManager) start(ctx context.Context, parent *session.Session, agentName, task string, events EventSink) (*subagentHandle, error) {
 	if m == nil || parent == nil {
 		return nil, errors.New("subagent manager unavailable")
 	}
@@ -104,7 +101,6 @@ func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, ag
 		parent:    parent,
 		sess:      child,
 		created:   m.r.now(),
-		ttl:       subagentIdleAutoFinalizeTTL(subAgent, selectedSpec.TTL),
 		inbox:     make(chan string, 64),
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
@@ -114,8 +110,13 @@ func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, ag
 	m.mu.Lock()
 	m.all[h.id] = h
 	m.mu.Unlock()
+	if m.r.liveSessions != nil {
+		m.r.liveSessions.register(child.ID, childAgentName, parent.ID)
+	}
 	m.publishToParent(parent.ID, SubAgentStarted(h.info(), parent.ID))
+	m.emitToSink(events, SubAgentStarted(h.info(), parent.ID))
 	m.publishLiveSessionTreeChanged(ctx, child.ID)
+	m.emitLiveSessionTreeChanged(ctx, events, child.ID)
 	h.inbox <- task
 	go m.runChild(ctx, h)
 	return h, nil
@@ -288,10 +289,14 @@ func (m *SubagentManager) runChild(ctx context.Context, h *subagentHandle) {
 		}
 		h.mu.Unlock()
 		h.signal()
+		if m.r.liveSessions != nil {
+			m.r.liveSessions.unregister(h.id)
+		}
+		if m.r.eventBus != nil {
+			m.r.eventBus.CloseTopic(h.id)
+		}
 		m.publishLiveSessionTreeChanged(context.Background(), h.id)
 	}()
-	idle := time.NewTimer(h.ttl)
-	defer idle.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -299,24 +304,17 @@ func (m *SubagentManager) runChild(ctx context.Context, h *subagentHandle) {
 		case <-h.stop:
 			return
 		case prompt := <-h.inbox:
-			h.runPrompt(ctx, m, prompt, idle)
+			h.runPrompt(ctx, m, prompt)
 		case <-h.wake:
 			if prompt, ok := m.dequeueChildPrompt(ctx, h); ok {
-				h.runPrompt(ctx, m, prompt, idle)
+				h.runPrompt(ctx, m, prompt)
 			}
-		case <-idle.C:
-			return
 		}
 	}
 }
 
-func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prompt string, idle *time.Timer) {
-	if !idle.Stop() {
-		select {
-		case <-idle.C:
-		default:
-		}
-	}
+func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prompt string) {
+	m.maybeGenerateChildTitle(ctx, h, prompt)
 	h.mu.Lock()
 	h.state = "running"
 	h.mu.Unlock()
@@ -337,7 +335,6 @@ func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prom
 	h.state = "waiting"
 	h.mu.Unlock()
 	m.publishLiveSessionTreeChanged(ctx, h.id)
-	idle.Reset(h.ttl)
 }
 
 func (m *SubagentManager) dequeueChildPrompt(ctx context.Context, h *subagentHandle) (string, bool) {
@@ -370,6 +367,50 @@ func (m *SubagentManager) enqueueEnvelope(h *subagentHandle, env SubagentEnvelop
 	h.mu.Unlock()
 	m.publishToParent(h.parent.ID, SubAgentUpdate(env, h.parent.ID))
 	h.signal()
+}
+
+func (m *SubagentManager) maybeGenerateChildTitle(ctx context.Context, h *subagentHandle, prompt string) {
+	if m == nil || m.r == nil || h == nil || h.sess == nil || h.sess.Title != "" {
+		return
+	}
+	gen := m.r.titleGeneratorForSession(h.sess)
+	if gen == nil {
+		return
+	}
+
+	m.r.titleGenMu.Lock()
+	if m.r.titleGen == nil {
+		m.r.titleGen = make(map[string]bool)
+	}
+	if m.r.titleGen[h.id] {
+		m.r.titleGenMu.Unlock()
+		return
+	}
+	m.r.titleGen[h.id] = true
+	m.r.titleGenMu.Unlock()
+
+	go m.generateChildTitle(ctx, h, gen, []string{prompt})
+}
+
+func (m *SubagentManager) generateChildTitle(ctx context.Context, h *subagentHandle, gen *sessiontitle.Generator, userMessages []string) {
+	defer func() {
+		m.r.titleGenMu.Lock()
+		delete(m.r.titleGen, h.id)
+		m.r.titleGenMu.Unlock()
+	}()
+
+	title, err := gen.Generate(ctx, h.id, userMessages)
+	if err != nil || title == "" {
+		return
+	}
+	if err := m.r.UpdateSessionTitle(ctx, h.sess, title); err != nil {
+		return
+	}
+	ev := SessionTitle(h.id, title)
+	if m.r.eventBus != nil {
+		m.r.eventBus.Publish(h.id, ev)
+	}
+	m.publishLiveSessionTreeChanged(ctx, h.id)
 }
 
 func (h *subagentHandle) appendEvent(ev Event) {
@@ -625,11 +666,37 @@ func (e SubagentEnvelope) parentText() string {
 	}
 }
 
+func (m *SubagentManager) emitToSink(events EventSink, ev Event) {
+	if events == nil || ev == nil {
+		return
+	}
+	events.Emit(ev)
+}
+
 func (m *SubagentManager) publishToParent(parentID string, ev Event) {
 	if m == nil || m.r == nil || m.r.eventBus == nil || parentID == "" || ev == nil {
 		return
 	}
 	m.r.eventBus.Publish(parentID, ev)
+}
+
+func (m *SubagentManager) emitLiveSessionTreeChanged(ctx context.Context, events EventSink, sessionID string) {
+	if events == nil || m == nil || m.r == nil {
+		return
+	}
+	tree, err := m.r.LiveSessionTree(ctx, sessionID)
+	if err == nil && tree != nil {
+		events.Emit(LiveSessionTreeChanged(sessionID, tree))
+		return
+	}
+	if m.r.liveSessions == nil {
+		return
+	}
+	if info, ok := m.r.liveSessions.get(sessionID); ok && info.ParentID != "" {
+		if tree, err := m.r.LiveSessionTree(ctx, info.ParentID); err == nil && tree != nil {
+			events.Emit(LiveSessionTreeChanged(info.ParentID, tree))
+		}
+	}
 }
 
 func (m *SubagentManager) publishLiveSessionTreeChanged(ctx context.Context, sessionID string) {

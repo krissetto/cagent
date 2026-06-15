@@ -185,7 +185,6 @@ func buildRuntime(ctx context.Context, cfg *latest.Config, env environment.Provi
 				Name:        name,
 				Agent:       backingAgent,
 				Description: spec.Description,
-				TTL:         spec.TTL.Duration,
 			})
 		}
 

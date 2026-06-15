@@ -562,7 +562,7 @@
         },
         "subagents": {
           "type": "array",
-          "description": "Runtime-managed child agents this agent may start with subagent_start. Items can be a configured agent name string, or an object with a user-facing name, backing agent, optional description, and optional TTL (Go duration, e.g. '15m').",
+          "description": "Runtime-managed child agents this agent may start with subagent_start. Items can be a configured agent name string, or an object with a user-facing name, backing agent, and optional description.",
           "items": {
             "oneOf": [
               {
@@ -1636,10 +1636,6 @@
         "description": {
           "type": "string",
           "description": "Description shown to the model in runtime-managed subagent tool instructions."
-        },
-        "ttl": {
-          "type": "string",
-          "description": "Idle auto-finalize timeout for this runtime-managed child (Go duration, e.g. '15m'). Omitted uses the runtime default."
         }
       }
     },

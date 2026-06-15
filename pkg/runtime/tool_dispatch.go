@@ -34,7 +34,8 @@ func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Sessi
 	// to the current events channel: r.toolMap entries take chan Event,
 	// toolexec.ToolHandler doesn't.
 	handlers := make(map[string]toolexec.ToolHandler, len(r.toolMap))
-	for name, h := range r.toolMap {
+	for name, handler := range r.toolMap {
+		h := handler
 		handlers[name] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall) (*tools.ToolCallResult, error) {
 			return h(ctx, sess, tc, events)
 		}

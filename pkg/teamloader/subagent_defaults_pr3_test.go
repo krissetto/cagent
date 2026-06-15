@@ -2,7 +2,6 @@ package teamloader
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -10,7 +9,7 @@ import (
 	"github.com/docker/docker-agent/pkg/config"
 )
 
-func TestLoadAppliesAgentLevelSubagentTTL(t *testing.T) {
+func TestLoadAppliesAgentLevelSubagentSpec(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "dummy")
 	yaml := []byte(`
 agents:
@@ -18,8 +17,9 @@ agents:
     model: openai/gpt-4o-mini
     instruction: root
     subagents:
-      - name: reviewer
-        ttl: 42ms
+      - name: scout
+        agent: reviewer
+        description: bounded discovery
   reviewer:
     model: openai/gpt-4o-mini
     instruction: reviewer
@@ -32,10 +32,8 @@ agents:
 	root, err := teams.Agent("root")
 	require.NoError(t, err)
 	require.Len(t, root.SubAgentSpecs(), 1)
-	assert.Equal(t, 42*time.Millisecond, root.SubAgentSpecs()[0].TTL)
+	assert.Equal(t, "scout", root.SubAgentSpecs()[0].Name)
+	assert.Equal(t, "reviewer", root.SubAgentSpecs()[0].Agent)
+	assert.Equal(t, "bounded discovery", root.SubAgentSpecs()[0].Description)
 	assert.NotZero(t, root.SubAgents())
-
-	reviewer, err := teams.Agent("reviewer")
-	require.NoError(t, err)
-	assert.Zero(t, reviewer.IdleAutoFinalizeTimeout())
 }

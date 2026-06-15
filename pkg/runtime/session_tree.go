@@ -123,6 +123,10 @@ func (r *LocalRuntime) liveSessionIDs() map[string]bool {
 
 func liveSessionNodeFromSession(sess *session.Session, live bool) *LiveSessionNode {
 	preview := liveSessionPreview(sess)
+	updatedAt := sess.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = sess.CreatedAt
+	}
 	return &LiveSessionNode{
 		ID:          sess.ID,
 		ParentID:    sess.ParentID,
@@ -134,7 +138,7 @@ func liveSessionNodeFromSession(sess *session.Session, live bool) *LiveSessionNo
 		CreatedAt:   sess.CreatedAt,
 		Live:        live,
 		Status:      statusFromLive(live),
-		UpdatedAt:   sess.CreatedAt,
+		UpdatedAt:   updatedAt,
 	}
 }
 
@@ -142,7 +146,7 @@ func statusFromLive(live bool) string {
 	if live {
 		return "running"
 	}
-	return "closed"
+	return "waiting"
 }
 
 func liveSessionAgentName(sess *session.Session) string {

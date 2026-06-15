@@ -35,7 +35,6 @@ func runtimeSubagentRefs(configSpecs latest.SubagentSpecs) ([]string, []agent.Su
 			Name:        name,
 			Agent:       backingAgent,
 			Description: strings.TrimSpace(configSpec.Description),
-			TTL:         configSpec.TTL.Duration,
 		})
 	}
 

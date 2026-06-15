@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -197,10 +198,31 @@ func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.S
 // or the iteration limit is reached.
 func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-chan Event {
 	slog.DebugContext(ctx, "Starting runtime stream", "agent", r.CurrentAgentName(), "session_id", sess.ID)
+	if r.sessionStore != nil && sess != nil && sess.ID != "" {
+		// Keep the durable store pointed at the live session object for the
+		// lifetime of this stream. Subagent sessions are created in the manager
+		// and then mutated by RunStream as user/follow-up/assistant messages are
+		// appended; persisting a pre-run clone here would leave SQLite with only
+		// the synthetic "Please proceed" prompt after a restart. AddSubSession
+		// remains responsible for writing a completed child under its parent.
+		r.persistLiveSessionSnapshot(ctx, sess)
+	}
 	events := make(chan Event, defaultEventChannelCapacity)
 
 	go r.runStreamLoop(ctx, sess, events)
 	return r.observe(ctx, sess, events)
+}
+
+func (r *LocalRuntime) persistLiveSessionSnapshot(ctx context.Context, sess *session.Session) {
+	if _, ok := r.sessionStore.(*session.InMemorySessionStore); ok {
+		return
+	}
+	if err := r.sessionStore.UpdateSession(ctx, sess); err == nil || errors.Is(err, session.ErrNewerDatabase) {
+		return
+	}
+	if err := r.sessionStore.AddSession(ctx, sess); err != nil && !errors.Is(err, session.ErrNewerDatabase) {
+		slog.WarnContext(ctx, "Failed to persist live session", "session_id", sess.ID, "error", err)
+	}
 }
 
 // runStreamLoop is the body of RunStream. Pulled out of the anonymous

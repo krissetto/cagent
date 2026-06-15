@@ -49,7 +49,6 @@ type Agent struct {
 	harness                 *latest.HarnessConfig
 	hooks                   *latest.HooksConfig
 	cache                   *cache.Cache
-	idleAutoFinalizeTimeout time.Duration
 
 	// warningsMu guards pendingWarnings. AddToolWarning and DrainWarnings
 	// may be called concurrently from the runtime loop, the MCP server,
@@ -193,10 +192,6 @@ func (a *Agent) Handoffs() []*Agent {
 // Parents returns the list of parent agent names
 func (a *Agent) Parents() []*Agent {
 	return a.parents
-}
-
-func (a *Agent) IdleAutoFinalizeTimeout() time.Duration {
-	return a.idleAutoFinalizeTimeout
 }
 
 // HasSubAgents checks if the agent has sub-agents
