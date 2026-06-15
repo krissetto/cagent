@@ -322,6 +322,9 @@ func (p *chatPage) Init() tea.Cmd {
 	// Load state from existing session (for session restore and branching)
 	if sess := p.app.Session(); sess != nil {
 		p.sidebar.LoadFromSession(sess)
+		if store := p.app.SessionStore(); store != nil {
+			p.sidebar.SetPersistedSessionTree(sess, store)
+		}
 		if len(sess.Messages) > 0 {
 			cmds = append(cmds, p.messages.LoadFromSession(sess))
 		}
@@ -833,6 +836,9 @@ func (p *chatPage) extractAttachmentsFromSession(position int) []msgtypes.Attach
 func (p *chatPage) refreshLiveSessionTree() {
 	if p.app == nil || p.app.Session() == nil {
 		return
+	}
+	if store := p.app.SessionStore(); store != nil {
+		p.sidebar.SetPersistedSessionTree(p.app.Session(), store)
 	}
 	if tree := p.app.LiveSessionTree(p.app.Session().EffectiveRootID()); tree != nil {
 		p.sidebar.SetLiveSessionTree(tree)

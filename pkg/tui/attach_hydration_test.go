@@ -408,6 +408,40 @@ func TestHandleAttachSessionUsesLiveTitleAndTitleEventsUpdateTab(t *testing.T) {
 	require.Equal(t, "child", rt.followID)
 }
 
+func TestHandleAttachSessionOpensPersistedChildAfterReloadWithoutLiveTree(t *testing.T) {
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	root := session.New(session.WithID("root"), session.WithTitle("Root Title"))
+	require.NoError(t, store.AddSession(ctx, root))
+	storedChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithTitle("Persisted Child"), session.WithAgentName("greppy"))
+	storedChild.AddMessage(session.UserMessage("stored prompt after reload"))
+	storedChild.AddMessage(&session.Message{AgentName: "greppy", Message: chat.Message{Role: chat.MessageRoleAssistant, Content: "stored reply after reload"}})
+	require.NoError(t, store.AddSubSession(ctx, "root", storedChild))
+
+	rt := &attachHydrationRuntime{store: store, rootTitle: "Root Title"}
+	rootApp := app.New(ctx, rt, root)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+
+	model, cmd := m.handleAttachSession("child")
+	require.NotNil(t, cmd)
+	m = model.(*appModel)
+	require.Equal(t, "child", m.application.Session().ID)
+	require.Equal(t, "Persisted Child", m.application.Session().Title)
+	require.True(t, m.application.IsReadOnly())
+	require.Len(t, m.application.Session().GetAllMessages(), 2)
+	require.Contains(t, m.application.Session().GetAllMessages()[0].Message.Content, "stored prompt after reload")
+	require.Equal(t, 0, rt.attachCalls)
+	require.ErrorContains(t, m.application.FollowUpWithAttachments("nope", nil), "follow-up")
+
+	if initCmd := m.chatPage.Init(); initCmd != nil {
+		_ = initCmd()
+	}
+	m.chatPage.SetSize(100, 24)
+	view := m.chatPage.View()
+	require.Contains(t, view, "stored prompt after reload")
+	require.Contains(t, view, "stored reply after reload")
+}
+
 func TestHandleAttachSessionFallsBackToParentEmbeddedHistoryWhenDirectChildIsEmpty(t *testing.T) {
 	ctx := t.Context()
 	store := session.NewInMemorySessionStore()
