@@ -505,7 +505,7 @@ func TestValidateConfig_HarnessAgentsSkipModelValidation(t *testing.T) {
 
 	cfg := &latest.Config{
 		Agents: []latest.AgentConfig{
-			{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"coder"}},
+			{Name: "root", Model: "openai/gpt-4o", SubagentSpecs: latest.SubagentSpecs{{Name: "coder", Agent: "coder"}}},
 			{Name: "coder", Harness: &latest.HarnessConfig{Type: "codex"}},
 		},
 	}
@@ -555,7 +555,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "OCI reference in subagents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"agentcatalog/pirate"}},
+					{Name: "root", Model: "openai/gpt-4o", SubagentSpecs: latest.SubagentSpecs{{Name: "agentcatalog/pirate", Agent: "agentcatalog/pirate"}}},
 				},
 			},
 		},
@@ -563,7 +563,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "OCI reference with tag in subagents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"docker.io/myorg/myagent:v1"}},
+					{Name: "root", Model: "openai/gpt-4o", SubagentSpecs: latest.SubagentSpecs{{Name: "docker.io/myorg/myagent:v1", Agent: "docker.io/myorg/myagent:v1"}}},
 				},
 			},
 		},
@@ -571,7 +571,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "mix of local and external subagents",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"helper", "agentcatalog/pirate"}},
+					{Name: "root", Model: "openai/gpt-4o", SubagentSpecs: latest.SubagentSpecs{{Name: "helper", Agent: "helper"}, {Name: "agentcatalog/pirate", Agent: "agentcatalog/pirate"}}},
 					{Name: "helper", Model: "openai/gpt-4o"},
 				},
 			},
@@ -580,7 +580,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "non-existent local sub_agent still fails",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"does_not_exist"}},
+					{Name: "root", Model: "openai/gpt-4o", SubagentSpecs: latest.SubagentSpecs{{Name: "does_not_exist", Agent: "does_not_exist"}}},
 				},
 			},
 			wantErr: "non-existent sub-agent 'does_not_exist'",
@@ -589,7 +589,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "URL reference in subagents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"https://example.com/agent.yaml"}},
+					{Name: "root", Model: "openai/gpt-4o", SubagentSpecs: latest.SubagentSpecs{{Name: "https://example.com/agent.yaml", Agent: "https://example.com/agent.yaml"}}},
 				},
 			},
 		},
@@ -614,7 +614,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "named OCI reference in subagents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"reviewer:agentcatalog/review-pr"}},
+					{Name: "root", Model: "openai/gpt-4o", SubagentSpecs: latest.SubagentSpecs{{Name: "reviewer:agentcatalog/review-pr", Agent: "reviewer:agentcatalog/review-pr"}}},
 				},
 			},
 		},
@@ -622,7 +622,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "named URL reference in subagents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"myagent:https://example.com/agent.yaml"}},
+					{Name: "root", Model: "openai/gpt-4o", SubagentSpecs: latest.SubagentSpecs{{Name: "myagent:https://example.com/agent.yaml", Agent: "myagent:https://example.com/agent.yaml"}}},
 				},
 			},
 		},
@@ -638,7 +638,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "external sub-agent name collides with local agent",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"pirate", "agentcatalog/pirate"}},
+					{Name: "root", Model: "openai/gpt-4o", SubagentSpecs: latest.SubagentSpecs{{Name: "pirate", Agent: "pirate"}, {Name: "agentcatalog/pirate", Agent: "agentcatalog/pirate"}}},
 					{Name: "pirate", Model: "openai/gpt-4o"},
 				},
 			},
@@ -648,7 +648,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "named external sub-agent collides with local agent",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"helper", "helper:agentcatalog/review-pr"}},
+					{Name: "root", Model: "openai/gpt-4o", SubagentSpecs: latest.SubagentSpecs{{Name: "helper", Agent: "helper"}, {Name: "helper:agentcatalog/review-pr", Agent: "helper:agentcatalog/review-pr"}}},
 					{Name: "helper", Model: "openai/gpt-4o"},
 				},
 			},

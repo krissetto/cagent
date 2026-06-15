@@ -569,6 +569,14 @@ func splitRuntimeSubagents(specs SubagentSpecs) ([]string, SubagentSpecs) {
 	return refs, detailed
 }
 
+func splitRuntimeSubagentsFromRefs(refs []string) ([]string, SubagentSpecs) {
+	specs := make(SubagentSpecs, 0, len(refs))
+	for _, ref := range refs {
+		specs = append(specs, SubagentSpec{Name: ref, Agent: ref})
+	}
+	return refs, specs
+}
+
 // CacheConfig configures the agent's response cache. When set and Enabled
 // is true, the agent stores the assistant response produced for a given
 // user question and replays it when the same question is asked again,

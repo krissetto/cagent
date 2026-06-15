@@ -412,6 +412,66 @@ type HarnessConfig struct {
 }
 
 // AgentConfig represents a single agent configuration
+
+type SubagentSpec struct {
+	Name        string   `json:"name,omitempty" yaml:"name,omitempty"`
+	Agent       string   `json:"agent,omitempty" yaml:"agent,omitempty"`
+	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
+	TTL         Duration `json:"ttl,omitzero" yaml:"ttl,omitempty"`
+}
+
+func (s *SubagentSpec) UnmarshalYAML(unmarshal func(any) error) error {
+	var name string
+	if err := unmarshal(&name); err == nil {
+		s.Name = name
+		s.Agent = name
+		return nil
+	}
+	type alias SubagentSpec
+	var spec alias
+	if err := unmarshal(&spec); err != nil {
+		return err
+	}
+	*s = SubagentSpec(spec)
+	return nil
+}
+
+func (s *SubagentSpec) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		s.Name = name
+		s.Agent = name
+		return nil
+	}
+	type alias SubagentSpec
+	var spec alias
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return err
+	}
+	*s = SubagentSpec(spec)
+	return nil
+}
+
+type SubagentSpecs []SubagentSpec
+
+func (s *SubagentSpecs) UnmarshalYAML(unmarshal func(any) error) error {
+	var specs []SubagentSpec
+	if err := unmarshal(&specs); err != nil {
+		return err
+	}
+	*s = specs
+	return nil
+}
+
+func (s *SubagentSpecs) UnmarshalJSON(data []byte) error {
+	var specs []SubagentSpec
+	if err := json.Unmarshal(data, &specs); err != nil {
+		return err
+	}
+	*s = specs
+	return nil
+}
+
 type AgentConfig struct {
 	Name           string
 	Model          string          `json:"model,omitempty"`
@@ -421,7 +481,7 @@ type AgentConfig struct {
 	Toolsets       []Toolset       `json:"toolsets,omitempty"`
 	Instruction    string          `json:"instruction,omitempty"`
 	Harness        *HarnessConfig  `json:"harness,omitempty"`
-	SubAgents      []string        `json:"subagents,omitempty" yaml:"subagents,omitempty"`
+	SubAgents      SubagentSpecs   `json:"subagents,omitempty" yaml:"subagents,omitempty"`
 	Handoffs       []string        `json:"handoffs,omitempty"`
 
 	AddDate            bool `json:"add_date,omitempty"`
