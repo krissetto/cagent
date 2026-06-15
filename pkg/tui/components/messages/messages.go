@@ -66,7 +66,13 @@ type Model interface {
 	AddShellOutputMessage(content string) tea.Cmd
 	AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd
 	LoadFromSession(sess *session.Session) tea.Cmd
-	HasSessionMessage(kind session.MessageKind, role chat.MessageRole, agentName, content string, sessionPos int) bool
+	// HydratedThroughPosition returns the highest session position loaded into
+	// the viewport by LoadFromSession, or -1 if none. Live-attach event
+	// hydration uses this as a watermark: position-bearing events at or below
+	// it are already on screen (loaded from the durable store) and must be
+	// skipped to avoid duplicate transcript, while higher positions and
+	// in-flight streaming deltas render normally so nothing is lost.
+	HydratedThroughPosition() int
 	MergeAssistantFinal(agentName, content string, sessionPos int) bool
 
 	RemoveSpinner()
@@ -153,6 +159,12 @@ type model struct {
 	// Hover state for showing copy button on assistant messages
 	hoveredMessageIndex int // Index of message under mouse (-1 = none)
 
+	// hydratedThroughPos is the highest session position loaded by
+	// LoadFromSession (-1 if none). Used as the live-attach hydration
+	// watermark so already-loaded transcript isn't re-rendered from the
+	// runtime event snapshot.
+	hydratedThroughPos int
+
 	// Hovered URL for underline-on-hover effect (nil = no URL hovered)
 	hoveredURL *hoveredURL
 }
@@ -183,6 +195,7 @@ func newModel(width, height int, sessionState *service.SessionState) *model {
 		selectedMessageIndex: -1,
 		inlineEditMsgIndex:   -1,
 		hoveredMessageIndex:  -1,
+		hydratedThroughPos:   -1,
 		renderDirty:          true,
 	}
 }
@@ -1304,32 +1317,6 @@ func (m *model) addMessage(msg *types.Message) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m *model) HasSessionMessage(kind session.MessageKind, role chat.MessageRole, agentName, content string, sessionPos int) bool {
-	if sessionPos >= 0 {
-		for _, msg := range m.messages {
-			if msg.SessionPosition != nil && *msg.SessionPosition == sessionPos {
-				return true
-			}
-		}
-	}
-	wantType := messageTypeFromSessionRole(kind, role)
-	if wantType == types.MessageTypeSpinner {
-		return false
-	}
-	for _, msg := range m.messages {
-		if msg == nil || msg.Type != wantType {
-			continue
-		}
-		if agentName != "" && msg.Sender != "" && msg.Sender != agentName {
-			continue
-		}
-		if strings.TrimSpace(msg.Content) == strings.TrimSpace(content) {
-			return true
-		}
-	}
-	return false
-}
-
 func (m *model) MergeAssistantFinal(agentName, content string, sessionPos int) bool {
 	if content == "" {
 		return false
@@ -1371,22 +1358,6 @@ func (m *model) MergeAssistantFinal(agentName, content string, sessionPos int) b
 		}
 	}
 	return false
-}
-
-func messageTypeFromSessionRole(kind session.MessageKind, role chat.MessageRole) types.MessageType {
-	if kind == session.MessageKindSubagentEnvelope {
-		return types.MessageTypeSubAgent
-	}
-	switch role {
-	case chat.MessageRoleUser:
-		return types.MessageTypeUser
-	case chat.MessageRoleAssistant:
-		return types.MessageTypeAssistant
-	case chat.MessageRoleTool:
-		return types.MessageTypeToolResult
-	default:
-		return types.MessageTypeSpinner
-	}
 }
 
 func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
@@ -1443,6 +1414,7 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 	m.selectedMessageIndex = -1
 	m.hoveredMessageIndex = -1
 	m.hoveredURL = nil
+	m.hydratedThroughPos = -1
 
 	var cmds []tea.Cmd
 
@@ -1461,6 +1433,14 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 	for pos, item := range sess.Messages {
 		if !item.IsMessage() {
 			continue
+		}
+
+		// Track the highest loaded session position as the live-attach
+		// hydration watermark. Every persisted item we render here has a
+		// position; events replayed from the runtime snapshot at or below
+		// this position are already on screen and must be skipped.
+		if pos > m.hydratedThroughPos {
+			m.hydratedThroughPos = pos
 		}
 
 		smsg := item.Message
@@ -1500,6 +1480,11 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 			// Step 2: Handle assistant content - this breaks the reasoning block chain
 			if hasContent {
 				msg := types.Agent(types.MessageTypeAssistant, smsg.AgentName, smsg.Message.Content)
+				// Record the session position so a later finalizing
+				// MessageAddedEvent for this same turn merges in place by
+				// position instead of appending a duplicate.
+				msgPos := pos
+				msg.SessionPosition = &msgPos
 				appendSessionMessage(msg, m.createMessageView(msg))
 			}
 
@@ -1546,6 +1531,12 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 
 	cmds = append(cmds, m.ScrollToBottom())
 	return tea.Batch(cmds...)
+}
+
+// HydratedThroughPosition returns the highest session position loaded into the
+// viewport by LoadFromSession, or -1 if no positioned messages were loaded.
+func (m *model) HydratedThroughPosition() int {
+	return m.hydratedThroughPos
 }
 
 func subAgentMessageFromSessionText(content string) *types.Message {

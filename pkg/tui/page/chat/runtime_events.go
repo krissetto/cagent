@@ -82,7 +82,7 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	// ===== Content Events =====
 	case *runtime.UserMessageEvent:
-		if p.alreadyRenderedSessionMessage(msg.Kind, chatmsg.MessageRoleUser, "", msg.Message, msg.SessionPosition) {
+		if p.alreadyHydratedPosition(msg.SessionPosition) {
 			return true, nil
 		}
 		if msg.Kind == session.MessageKindSubagentEnvelope || looksLikeRawSubagentEnvelope(msg.Message) {
@@ -249,18 +249,20 @@ func (p *chatPage) handleStreamStarted(msg *runtime.StreamStartedEvent) tea.Cmd 
 	return tea.Batch(pendingCmd, spinnerCmd, sidebarCmd)
 }
 
-func (p *chatPage) alreadyRenderedSessionMessage(kind session.MessageKind, role chatmsg.MessageRole, agentName, content string, sessionPos int) bool {
+func (p *chatPage) alreadyHydratedPosition(sessionPos int) bool {
 	if !p.app.IsAttachedLive() {
 		return false
 	}
-	return p.messages.HasSessionMessage(kind, role, agentName, content, sessionPos)
+	// Store history is the single transcript source for an attached session
+	// (loaded once in chat.Init -> LoadFromSession). Any positioned event at or
+	// below the hydration watermark is already on screen. Higher positions and
+	// position-less in-flight streaming deltas (sessionPos < 0) are genuinely
+	// new and render normally — nothing is lost.
+	return sessionPos >= 0 && sessionPos <= p.messages.HydratedThroughPosition()
 }
 
 func (p *chatPage) handleAgentChoice(msg *runtime.AgentChoiceEvent) tea.Cmd {
 	if p.streamCancelled {
-		return nil
-	}
-	if p.app.IsAttachedLive() && p.messages.MergeAssistantFinal(msg.AgentName, msg.Content, -1) {
 		return nil
 	}
 	// Track that we've received assistant content
@@ -279,17 +281,27 @@ func (p *chatPage) handleMessageAdded(msg *runtime.MessageAddedEvent) tea.Cmd {
 	if agentName == "" {
 		agentName = msg.Message.AgentName
 	}
-	if p.alreadyRenderedSessionMessage(msg.Message.Kind, m.Role, agentName, m.Content, msg.SessionPosition) {
-		return nil
-	}
 	switch m.Role {
 	case chatmsg.MessageRoleUser:
+		// A user message already loaded from store history (positioned at or
+		// below the hydration watermark on a live attach) is already on screen.
+		if p.alreadyHydratedPosition(msg.SessionPosition) {
+			return nil
+		}
 		return p.messages.ReplaceLoadingWithUser(m.Content, msg.SessionPosition)
 	case chatmsg.MessageRoleAssistant:
+		// Assistant turns stream in via AgentChoiceEvent deltas; the
+		// MessageAddedEvent is the persisted finalization of that same turn.
+		// Merge it into the matching streamed message by position. This is
+		// idempotent: identical content already on screen is a no-op, while a
+		// fuller final replaces a partial. We do not gate this on the
+		// hydration watermark so a finalized version can still correct a
+		// partial that was loaded from store history. Only when there is no
+		// matching message to finalize do we append.
 		if p.messages.MergeAssistantFinal(agentName, m.Content, msg.SessionPosition) {
 			return nil
 		}
-		if p.messages.MergeAssistantFinal(agentName, m.Content, -1) {
+		if p.alreadyHydratedPosition(msg.SessionPosition) {
 			return nil
 		}
 		return p.messages.AppendToLastMessage(agentName, m.Content)

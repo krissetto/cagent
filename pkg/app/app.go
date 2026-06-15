@@ -243,7 +243,24 @@ func attachSessionEventStream(ctx context.Context, rt runtime.Runtime, sessionID
 	out := make(chan runtime.Event, 128)
 	go func() {
 		defer close(out)
+		// Transcript truth comes from the durable session store, loaded once by
+		// the attached chat page (chat.Init -> LoadFromSession). The eventbus
+		// snapshot is the full accumulated event log for this session, so it
+		// re-contains every transcript event of any already-completed turn.
+		// Replaying those would render the same user/assistant/tool content a
+		// second time.
+		//
+		// Subscription is atomic: the snapshot and the live tail are split under
+		// the same lock, so a turn is either entirely in the snapshot (already
+		// persisted and loaded from the store) or arrives entirely on the live
+		// tail (new, after attach). That makes it safe and lossless to drop
+		// transcript events from the snapshot while forwarding the live tail in
+		// full. Non-transcript snapshot events (live tree, queue, status, title,
+		// agent info) are kept so the sidebar and header hydrate immediately.
 		for _, ev := range filterAttachedSessionEvents(snapshot, sessionID) {
+			if isTranscriptReplayEvent(ev) {
+				continue
+			}
 			select {
 			case out <- ev:
 			case <-ctx.Done():
@@ -323,6 +340,29 @@ func eventSessionID(ev runtime.Event) string {
 		return scoped.GetSessionID()
 	}
 	return ""
+}
+
+// isTranscriptReplayEvent reports whether ev carries chat transcript content
+// (user/assistant/reasoning/tool/message-added). These are dropped from an
+// attach snapshot because the durable session store is the single transcript
+// source; see attachSessionEventStream. Non-transcript events (stream
+// lifecycle, live tree, queue, title, agent/team info) are not matched here so
+// they continue to drive the sidebar/header on attach.
+func isTranscriptReplayEvent(ev runtime.Event) bool {
+	switch ev.(type) {
+	case *runtime.UserMessageEvent,
+		*runtime.AgentChoiceEvent,
+		*runtime.AgentChoiceReasoningEvent,
+		*runtime.MessageAddedEvent,
+		*runtime.PartialToolCallEvent,
+		*runtime.ToolCallEvent,
+		*runtime.ToolCallOutputEvent,
+		*runtime.ToolCallResponseEvent,
+		*runtime.ShellOutputEvent:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsAttachedLive reports whether this app is attached to a currently live

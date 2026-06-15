@@ -319,11 +319,12 @@ func (p *chatPage) Init() tea.Cmd {
 		p.messages.Init(),
 	)
 
-	// Load state from existing session (for session restore and branching).
-	// Attached live sessions also replay a durable live snapshot through runtime
-	// events; loading stored history here would render the same transcript twice
-	// before restart. History-only/read-only attaches still hydrate exclusively
-	// from the session below.
+	// Load state from the durable session store. This is the single source of
+	// transcript truth for every tab, including attached live/history-only
+	// subagent sessions. Live attaches additionally subscribe to the runtime
+	// event stream, but that stream's snapshot has transcript events stripped
+	// (see app.attachSessionEventStream) so the same content is never rendered
+	// twice; only the live tail of brand-new turns is appended.
 	if sess := p.app.Session(); sess != nil {
 		p.sidebar.LoadFromSession(sess)
 		if store := p.app.SessionStore(); store != nil {
