@@ -172,6 +172,12 @@ func validateConfig(cfg *latest.Config) error {
 			}
 		}
 
+		for _, transferRef := range agent.TransferAgents {
+			if err := validateSubAgentRef(agent.Name, transferRef, allNames); err != nil {
+				return err
+			}
+		}
+
 		for _, handoffRef := range agent.Handoffs {
 			if _, exists := allNames[handoffRef]; !exists && !IsExternalReference(handoffRef) {
 				return fmt.Errorf("agent '%s' references non-existent handoff agent '%s'", agent.Name, handoffRef)

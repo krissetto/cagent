@@ -574,6 +574,13 @@
             ]
           }
         },
+        "transfer_agents": {
+          "type": "array",
+          "description": "Legacy sequential transfer_task agents. Use subagents for runtime-managed background children.",
+          "items": {
+            "type": "string"
+          }
+        },
         "handoffs": {
           "type": "array",
           "description": "List of agents this agent can hand off the conversation to. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:agentcatalog/review-pr'). External agents without an explicit name are named after their last path segment.",

@@ -1862,7 +1862,7 @@ func TestTransferTaskRejectsNonSubAgent(t *testing.T) {
 	root := agent.New("root", "Root agent", agent.WithModel(prov))
 	planner := agent.New("planner", "Planner agent", agent.WithModel(prov))
 
-	agent.WithSubAgents(librarian)(root)
+	agent.WithTransferAgents(librarian)(root)
 
 	tm := team.New(team.WithAgents(root, planner, librarian))
 
@@ -1900,7 +1900,7 @@ func TestTransferTaskAllowsSubAgent(t *testing.T) {
 	librarian := agent.New("librarian", "Library agent", agent.WithModel(prov))
 	root := agent.New("root", "Root agent", agent.WithModel(prov))
 
-	agent.WithSubAgents(librarian)(root)
+	agent.WithTransferAgents(librarian)(root)
 
 	tm := team.New(team.WithAgents(root, librarian))
 

@@ -1,4 +1,4 @@
-version: "2"
+version: "10"
 
 agents:
   root:
@@ -6,7 +6,7 @@ agents:
     instruction: |
       You are a knowledgeable assistant that helps users with various tasks.
       Be helpful, accurate, and concise in your responses.
-    subagents:
+    transfer_agents:
       - web
   
   web:
