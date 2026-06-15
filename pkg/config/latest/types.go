@@ -31,17 +31,11 @@ type Config struct {
 	// or AgentConfig.UseSkills; the group is merged into the agent during config
 	// resolution (see resolveCommandDefinitions / resolveSkillDefinitions). This
 	// mirrors the top-level MCPs/RAG reference-by-name convention.
-	Commands    map[string]types.Commands          `json:"commands,omitempty"`
-	Skills      map[string]SkillsConfig            `json:"skills,omitempty"`
-	Metadata    Metadata                           `json:"metadata"`
-	Permissions *PermissionsConfig                 `json:"permissions,omitempty"`
-	Runtime     *RuntimeDefaults                   `json:"runtime,omitempty"`
-	Subagents   map[string]RuntimeSubagentDefaults `json:"subagents,omitempty" yaml:"subagents,omitempty"`
-}
-
-// RuntimeSubagentDefaults captures per-runtime-managed-subagent execution defaults.
-type RuntimeSubagentDefaults struct {
-	IdleAutoFinalizeTimeout Duration `json:"idle_auto_finalize_timeout,omitzero" yaml:"idle_auto_finalize_timeout,omitempty"`
+	Commands    map[string]types.Commands `json:"commands,omitempty"`
+	Skills      map[string]SkillsConfig   `json:"skills,omitempty"`
+	Metadata    Metadata                  `json:"metadata"`
+	Permissions *PermissionsConfig        `json:"permissions,omitempty"`
+	Runtime     *RuntimeDefaults          `json:"runtime,omitempty"`
 }
 
 // RuntimeDefaults captures execution-time defaults the agent author
@@ -434,8 +428,8 @@ type AgentConfig struct {
 	Toolsets       []Toolset       `json:"toolsets,omitempty"`
 	Instruction    string          `json:"instruction,omitempty"`
 	Harness        *HarnessConfig  `json:"harness,omitempty"`
-	SubAgents      []string        `json:"sub_agents,omitempty"`
-	SubagentSpecs  []SubagentSpec  `json:"subagents,omitempty" yaml:"subagents,omitempty"`
+	SubAgents      []string        `json:"-" yaml:"-"`
+	SubagentSpecs  SubagentSpecs   `json:"subagents,omitempty" yaml:"subagents,omitempty"`
 	Handoffs       []string        `json:"handoffs,omitempty"`
 
 	AddDate            bool `json:"add_date,omitempty"`
@@ -475,10 +469,104 @@ type AgentConfig struct {
 }
 
 type SubagentSpec struct {
-	Name        string `json:"name,omitempty" yaml:"name,omitempty"`
-	Agent       string `json:"agent,omitempty" yaml:"agent,omitempty"`
-	Description string `json:"description,omitempty" yaml:"description,omitempty"`
-	TTL         string `json:"ttl,omitempty" yaml:"ttl,omitempty"`
+	Name        string   `json:"name,omitempty" yaml:"name,omitempty"`
+	Agent       string   `json:"agent,omitempty" yaml:"agent,omitempty"`
+	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
+	TTL         Duration `json:"ttl,omitzero" yaml:"ttl,omitempty"`
+}
+
+func (s *SubagentSpec) UnmarshalYAML(unmarshal func(any) error) error {
+	var name string
+	if err := unmarshal(&name); err == nil {
+		s.Name = name
+		s.Agent = name
+		return nil
+	}
+	type alias SubagentSpec
+	var spec alias
+	if err := unmarshal(&spec); err != nil {
+		return err
+	}
+	*s = SubagentSpec(spec)
+	return nil
+}
+
+func (s *SubagentSpec) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		s.Name = name
+		s.Agent = name
+		return nil
+	}
+	type alias SubagentSpec
+	var spec alias
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return err
+	}
+	*s = SubagentSpec(spec)
+	return nil
+}
+
+type SubagentSpecs []SubagentSpec
+
+func (s *SubagentSpecs) UnmarshalYAML(unmarshal func(any) error) error {
+	var specs []SubagentSpec
+	if err := unmarshal(&specs); err != nil {
+		return err
+	}
+	*s = specs
+	return nil
+}
+
+func (s *SubagentSpecs) UnmarshalJSON(data []byte) error {
+	var specs []SubagentSpec
+	if err := json.Unmarshal(data, &specs); err != nil {
+		return err
+	}
+	*s = specs
+	return nil
+}
+
+func (a *AgentConfig) UnmarshalYAML(unmarshal func(any) error) error {
+	type agentConfig AgentConfig
+	var raw agentConfig
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	*a = AgentConfig(raw)
+	if a.SubagentSpecs == nil {
+		return nil
+	}
+	a.SubAgents, a.SubagentSpecs = splitRuntimeSubagents(a.SubagentSpecs)
+	return nil
+}
+
+func (a *AgentConfig) UnmarshalJSON(data []byte) error {
+	type agentConfig AgentConfig
+	var raw agentConfig
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*a = AgentConfig(raw)
+	if a.SubagentSpecs == nil {
+		return nil
+	}
+	a.SubAgents, a.SubagentSpecs = splitRuntimeSubagents(a.SubagentSpecs)
+	return nil
+}
+
+func splitRuntimeSubagents(specs SubagentSpecs) ([]string, SubagentSpecs) {
+	refs := make([]string, 0, len(specs))
+	detailed := make(SubagentSpecs, 0, len(specs))
+	for _, spec := range specs {
+		ref := spec.Agent
+		if ref == "" {
+			ref = spec.Name
+		}
+		refs = append(refs, ref)
+		detailed = append(detailed, spec)
+	}
+	return refs, detailed
 }
 
 // CacheConfig configures the agent's response cache. When set and Enabled

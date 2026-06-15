@@ -17,7 +17,7 @@ agents:
       - type: mcp
         command: docker
         args: ["mcp", "gateway", "run", "--servers=duckduckgo"]
-    sub_agents: ["researcher", "scriptwriter"]
+    subagents: ["researcher", "scriptwriter"]
   researcher:
     model: github-model
     description: "Podcast Researcher - Gathers comprehensive information for podcast content"

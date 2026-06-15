@@ -31,7 +31,7 @@ agents:
       - Use the most specific filter(s) possible to narrow down results.
       - Use tables to display data
       - Always include sources
-    sub_agents:
+    subagents:
       - finance_agent
       - web_search_agent
     toolsets:

@@ -552,7 +552,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "OCI reference in sub_agents is allowed",
+			name: "OCI reference in subagents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
 					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"agentcatalog/pirate"}},
@@ -560,7 +560,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			},
 		},
 		{
-			name: "OCI reference with tag in sub_agents is allowed",
+			name: "OCI reference with tag in subagents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
 					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"docker.io/myorg/myagent:v1"}},
@@ -568,7 +568,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			},
 		},
 		{
-			name: "mix of local and external sub_agents",
+			name: "mix of local and external subagents",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
 					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"helper", "agentcatalog/pirate"}},
@@ -586,7 +586,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			wantErr: "non-existent sub-agent 'does_not_exist'",
 		},
 		{
-			name: "URL reference in sub_agents is allowed",
+			name: "URL reference in subagents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
 					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"https://example.com/agent.yaml"}},
@@ -611,7 +611,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			wantErr: "non-existent handoff agent 'does_not_exist'",
 		},
 		{
-			name: "named OCI reference in sub_agents is allowed",
+			name: "named OCI reference in subagents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
 					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"reviewer:agentcatalog/review-pr"}},
@@ -619,7 +619,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			},
 		},
 		{
-			name: "named URL reference in sub_agents is allowed",
+			name: "named URL reference in subagents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
 					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"myagent:https://example.com/agent.yaml"}},

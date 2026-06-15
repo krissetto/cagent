@@ -32,7 +32,7 @@ agents:
     description: Lead developer
     instruction: |
       You are the lead developer. Coordinate the team.
-    sub_agents: [docs-writer]
+    subagents: [docs-writer]
     # Pull in the "ci" command group and the "base" skill group by name.
     use_commands: [ci]
     use_skills: [base]

@@ -32,7 +32,7 @@ agents:
     model: custom_model
     description: A helpful assistant.
     instruction: You are a helpful assistant.
-    sub_agents:
+    subagents:
       - shorthand_agent
 
   # Shorthand syntax: should auto-materialize as a model

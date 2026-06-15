@@ -84,7 +84,7 @@ type AgentConfig struct {
 	Description     string         `json:"description,omitempty" yaml:"description,omitempty"`
 	Toolsets        []Toolset      `json:"toolsets,omitempty" yaml:"toolsets,omitempty"`
 	Instruction     string         `json:"instruction,omitempty" yaml:"instruction,omitempty"`
-	SubAgents       []string       `json:"sub_agents,omitempty" yaml:"sub_agents,omitempty"`
+	SubAgents       []string       `json:"subagents,omitempty" yaml:"subagents,omitempty"`
 	AddDate         bool           `json:"add_date,omitempty" yaml:"add_date,omitempty"`
 	Think           bool           `json:"think,omitempty" yaml:"think,omitempty"`
 	Todo            TodoConfig     `json:"todo" yaml:"todo,omitempty"`

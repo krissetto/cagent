@@ -48,7 +48,10 @@ func NewSubagentManager(r *LocalRuntime) *SubagentManager {
 	return &SubagentManager{r: r, all: make(map[string]*subagentHandle)}
 }
 
-func subagentIdleAutoFinalizeTTL(a interface{ IdleAutoFinalizeTimeout() time.Duration }) time.Duration {
+func subagentIdleAutoFinalizeTTL(a interface{ IdleAutoFinalizeTimeout() time.Duration }, override time.Duration) time.Duration {
+	if override > 0 {
+		return override
+	}
 	if a == nil || a.IdleAutoFinalizeTimeout() <= 0 {
 		return DefaultSubagentTTL
 	}
@@ -70,12 +73,16 @@ func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, ag
 	if m.descendants(parent.EffectiveRootID()) >= MaxSubagentDescendants {
 		return nil, fmt.Errorf("subagent descendant cap %d exceeded", MaxSubagentDescendants)
 	}
-	subAgent, err := m.r.team.Agent(agentName)
-	if err != nil {
-		return nil, err
+	subAgent, selectedSpec, ok := m.r.CurrentAgent().SubAgentForName(agentName)
+	if !ok || subAgent == nil {
+		return nil, fmt.Errorf("agent %q is not in the subagents list", agentName)
+	}
+	childAgentName := selectedSpec.Agent
+	if childAgentName == "" {
+		childAgentName = agentName
 	}
 	child := session.NewRuntimeManagedSubSession(parent,
-		session.WithAgentName(agentName),
+		session.WithAgentName(childAgentName),
 		session.WithWorkingDir(parent.WorkingDir),
 		session.WithToolsApproved(parent.ToolsApproved),
 		session.WithExcludedTools(parent.ExcludedTools),
@@ -96,7 +103,7 @@ func (m *SubagentManager) Start(ctx context.Context, parent *session.Session, ag
 		parent:    parent,
 		sess:      child,
 		created:   m.r.now(),
-		ttl:       subagentIdleAutoFinalizeTTL(subAgent),
+		ttl:       subagentIdleAutoFinalizeTTL(subAgent, selectedSpec.TTL),
 		inbox:     make(chan string, 64),
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),

@@ -289,7 +289,7 @@ func TestLoadHarnessAgentWithoutModel(t *testing.T) {
 	data := []byte(`agents:
   root:
     model: openai/gpt-4o
-    sub_agents: [coder]
+    subagents: [coder]
   coder:
     description: External coder
     instruction: You are a coding agent.

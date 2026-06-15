@@ -947,18 +947,22 @@ func buildInvariantSystemMessages(a *agent.Agent) []chat.Message {
 	var messages []chat.Message
 
 	if a.HasSubAgents() {
-		subAgents := a.SubAgents()
-
 		var text strings.Builder
 		var validAgentIDs []string
-		for _, subAgent := range subAgents {
+		for _, spec := range a.SubAgentSpecs() {
+			description := spec.Description
+			if description == "" {
+				if subAgent, _, ok := a.SubAgentForName(spec.Name); ok && subAgent != nil {
+					description = subAgent.Description()
+				}
+			}
 			text.WriteString("Name: ")
-			text.WriteString(subAgent.Name())
+			text.WriteString(spec.Name)
 			text.WriteString(" | Description: ")
-			text.WriteString(subAgent.Description())
+			text.WriteString(description)
 			text.WriteString("\n")
 
-			validAgentIDs = append(validAgentIDs, subAgent.Name())
+			validAgentIDs = append(validAgentIDs, spec.Name)
 		}
 
 		messages = append(messages, chat.Message{

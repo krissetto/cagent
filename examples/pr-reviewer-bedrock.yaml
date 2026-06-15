@@ -64,7 +64,7 @@ agents:
       - Only include issues from agents - don't invent your own
       - Preserve file:line references from agent reports
       - Be concise but actionable
-    sub_agents:
+    subagents:
       - code-reviewer
       - silent-failure-hunter
       - code-simplifier

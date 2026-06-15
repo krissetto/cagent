@@ -95,13 +95,6 @@
     "runtime": {
       "$ref": "#/definitions/RuntimeDefaults",
       "description": "Execution-time defaults the agent author wants applied. Values act as defaults only — explicit CLI flags or user-config settings always win."
-    },
-    "subagents": {
-      "type": "object",
-      "description": "Per-runtime-managed-subagent defaults keyed by agent name.",
-      "additionalProperties": {
-        "$ref": "#/definitions/RuntimeSubagentDefaults"
-      }
     }
   },
   "additionalProperties": false,
@@ -567,25 +560,18 @@
           "type": "boolean",
           "description": "Enable Code Mode for tools"
         },
-        "sub_agents": {
-          "type": "array",
-          "description": "List of sub-agents. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:agentcatalog/review-pr'). External agents without an explicit name are named after their last path segment.",
-          "items": {
-            "type": "string"
-          }
-        },
         "subagents": {
           "type": "array",
-          "description": "Runtime-managed subagent specs with optional per-agent TTL.",
+          "description": "Runtime-managed child agents this agent may start with subagent_start. Items can be a configured agent name string, or an object with a user-facing name, backing agent, optional description, and optional TTL (Go duration, e.g. '15m').",
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "name": { "type": "string" },
-              "agent": { "type": "string" },
-              "description": { "type": "string" },
-              "ttl": { "type": "string" }
-            }
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/definitions/SubagentSpec"
+              }
+            ]
           }
         },
         "handoffs": {
@@ -1627,16 +1613,28 @@
       },
       "additionalProperties": false
     },
-    "RuntimeSubagentDefaults": {
+    "SubagentSpec": {
       "type": "object",
-      "description": "Per-runtime-managed-subagent execution defaults.",
+      "description": "Runtime-managed child-agent spec for an agent-level subagents entry.",
+      "additionalProperties": false,
       "properties": {
-        "idle_auto_finalize_timeout": {
+        "name": {
           "type": "string",
-          "description": "Idle auto-finalize timeout for this runtime-managed subagent (Go duration format, e.g. '5m'). 0 or omitted uses the runtime default."
+          "description": "User-facing name accepted by subagent_start(agent: ...). Defaults to agent when omitted."
+        },
+        "agent": {
+          "type": "string",
+          "description": "Backing configured agent name or external agent reference. Defaults to name when omitted."
+        },
+        "description": {
+          "type": "string",
+          "description": "Description shown to the model in runtime-managed subagent tool instructions."
+        },
+        "ttl": {
+          "type": "string",
+          "description": "Idle auto-finalize timeout for this runtime-managed child (Go duration, e.g. '15m'). Omitted uses the runtime default."
         }
-      },
-      "additionalProperties": false
+      }
     },
     "PermissionsConfig": {
       "type": "object",

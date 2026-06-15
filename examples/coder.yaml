@@ -63,7 +63,7 @@ agents:
     add_environment_info: true
     add_prompt_files:
       - AGENTS.md
-    sub_agents:
+    subagents:
       - librarian
     toolsets:
       - type: filesystem
@@ -86,7 +86,7 @@ agents:
     toolsets:
       - type: filesystem
       - type: user_prompt
-    sub_agents:
+    subagents:
       - root
 
   librarian:

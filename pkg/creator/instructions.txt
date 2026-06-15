@@ -21,7 +21,7 @@ agents:
     description: string     # Agent purpose (shown when delegating tasks)
     instruction: string     # Detailed behavior instructions
     toolsets: []            # Available tools (optional)
-    sub_agents: []          # Sub-agent names for delegation (optional)
+    subagents: []          # Sub-agent names for delegation (optional)
     add_date: boolean       # Add current date to context (optional)
     add_environment_info: boolean  # Add environment info like working dir, OS, git status (optional)
 ```
@@ -164,7 +164,7 @@ agents:
     instruction: |
       Coordinate tasks between the researcher and writer agents.
       Use researcher for gathering information, writer for creating content.
-    sub_agents: [researcher, writer]
+    subagents: [researcher, writer]
     toolsets:
       - type: filesystem
 

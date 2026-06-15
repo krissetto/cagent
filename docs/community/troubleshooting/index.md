@@ -148,7 +148,7 @@ docker-agent validates config at startup and reports errors with line numbers. C
 
 ### Missing references
 
-- Local agents in `sub_agents` must be defined in the `agents` section (external OCI references like `agentcatalog/pirate` are resolved from registries automatically)
+- Local agents in `subagents` must be defined in the `agents` section (external OCI references like `agentcatalog/pirate` are resolved from registries automatically)
 - Named model references must exist in the `models` section (or use inline format like `openai/gpt-5`)
 - RAG source names referenced by agents must be defined in the `rag` section
 

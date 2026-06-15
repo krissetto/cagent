@@ -3,7 +3,7 @@ agents:
     model: anthropic/claude-sonnet-4-5
     description: Orchestrator
     instruction: Route coding tasks to the appropriate specialist.
-    sub_agents:
+    subagents:
       - claude-coder
       - codex-coder
 

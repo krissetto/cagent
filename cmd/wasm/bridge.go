@@ -114,7 +114,7 @@ func configToMap(cfg *latest.Config) map[string]any {
 			"description":  a.Description,
 			"model":        a.Model,
 			"instruction":  a.Instruction,
-			"sub_agents":   stringsToAny(a.SubAgents),
+			"subagents":    stringsToAny(a.SubAgents),
 			"handoffs":     stringsToAny(a.Handoffs),
 			"add_date":     a.AddDate,
 			"add_env_info": a.AddEnvironmentInfo,
