@@ -98,6 +98,9 @@ type Session struct {
 	// CreatedAt is the time the session was created
 	CreatedAt time.Time `json:"created_at"`
 
+	// UpdatedAt is the last persisted activity time for this session.
+	UpdatedAt time.Time `json:"updated_at,omitzero"`
+
 	// ToolsApproved is a flag to indicate if the tools have been approved
 	ToolsApproved bool `json:"tools_approved"`
 

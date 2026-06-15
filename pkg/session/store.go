@@ -450,7 +450,7 @@ func ensureTopology(session *Session) {
 // sessionSelectColumns is the canonical SELECT list for the sessions table.
 // The column order matches what scanSession expects; all read paths use this
 // constant so that adding a column requires updating exactly one place.
-const sessionSelectColumns = `id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message, max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides, custom_models_used, thinking, parent_id, root_id, runtime_managed`
+const sessionSelectColumns = `id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message, max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides, custom_models_used, thinking, parent_id, root_id, runtime_managed, updated_at`
 
 // sessionPersistedFields holds the encoded form of a Session's JSON-bearing
 // columns plus SQL-ready topology values.
@@ -670,6 +670,19 @@ func backupDatabase(path string) error {
 	return nil
 }
 
+func sessionUpdatedAt(sess *Session) time.Time {
+	if sess == nil {
+		return time.Now().UTC()
+	}
+	if !sess.UpdatedAt.IsZero() {
+		return sess.UpdatedAt
+	}
+	if !sess.CreatedAt.IsZero() {
+		return sess.CreatedAt
+	}
+	return time.Now().UTC()
+}
+
 // AddSession adds a new session to the store, including any messages
 func (s *SQLiteSessionStore) AddSession(ctx context.Context, session *Session) error {
 	if session.ID == "" {
@@ -691,12 +704,12 @@ func (s *SQLiteSessionStore) AddSession(ctx context.Context, session *Session) e
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO sessions (
 			id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message,
-			max_iterations, working_dir, created_at, permissions, agent_model_overrides,
+			max_iterations, working_dir, created_at, updated_at, permissions, agent_model_overrides,
 			custom_models_used, thinking, parent_id, root_id, runtime_managed
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.ToolsApproved, session.InputTokens, session.OutputTokens, session.Title,
 		session.Cost, session.SendUserMessage, session.MaxIterations, session.WorkingDir,
-		session.CreatedAt.Format(time.RFC3339), fields.PermissionsJSON, fields.AgentModelOverridesJSON,
+		session.CreatedAt.Format(time.RFC3339), sessionUpdatedAt(session).Format(time.RFC3339), fields.PermissionsJSON, fields.AgentModelOverridesJSON,
 		fields.CustomModelsUsedJSON, false, fields.ParentID, fields.RootID, session.RuntimeManaged)
 	if err != nil {
 		return err
@@ -729,6 +742,7 @@ func scanSession(scanner interface {
 		agentModelOverridesJSON string
 		customModelsUsedJSON    string
 		createdAtStr            string
+		updatedAtStr            sql.NullString
 		thinking                bool // discarded
 	)
 
@@ -737,7 +751,7 @@ func scanSession(scanner interface {
 		&sess.Title, &sess.Cost, &sess.SendUserMessage, &sess.MaxIterations,
 		&workingDir, &createdAtStr, &sess.Starred, &permissionsJSON,
 		&agentModelOverridesJSON, &customModelsUsedJSON, &thinking, &parentID,
-		&rootID, &sess.RuntimeManaged,
+		&rootID, &sess.RuntimeManaged, &updatedAtStr,
 	)
 	if err != nil {
 		return nil, err
@@ -746,6 +760,11 @@ func scanSession(scanner interface {
 	sess.CreatedAt, err = time.Parse(time.RFC3339, createdAtStr)
 	if err != nil {
 		return nil, err
+	}
+	if updatedAtStr.Valid && updatedAtStr.String != "" {
+		if updatedAt, err := time.Parse(time.RFC3339, updatedAtStr.String); err == nil {
+			sess.UpdatedAt = updatedAt
+		}
 	}
 
 	sess.WorkingDir = workingDir.String
@@ -1081,10 +1100,10 @@ func (s *SQLiteSessionStore) UpdateSession(ctx context.Context, session *Session
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO sessions (
 			id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message,
-			max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides,
+			max_iterations, working_dir, created_at, updated_at, starred, permissions, agent_model_overrides,
 			custom_models_used, thinking, parent_id, root_id, runtime_managed
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   title = excluded.title,
 		   tools_approved = excluded.tools_approved,
@@ -1094,6 +1113,7 @@ func (s *SQLiteSessionStore) UpdateSession(ctx context.Context, session *Session
 		   send_user_message = excluded.send_user_message,
 		   max_iterations = excluded.max_iterations,
 		   working_dir = excluded.working_dir,
+		   updated_at = excluded.updated_at,
 		   starred = excluded.starred,
 		   permissions = excluded.permissions,
 		   agent_model_overrides = excluded.agent_model_overrides,
@@ -1104,7 +1124,7 @@ func (s *SQLiteSessionStore) UpdateSession(ctx context.Context, session *Session
 		   runtime_managed = excluded.runtime_managed`,
 		session.ID, session.ToolsApproved, session.InputTokens, session.OutputTokens,
 		session.Title, session.Cost, session.SendUserMessage, session.MaxIterations, session.WorkingDir,
-		session.CreatedAt.Format(time.RFC3339), session.Starred, fields.PermissionsJSON, fields.AgentModelOverridesJSON,
+		session.CreatedAt.Format(time.RFC3339), sessionUpdatedAt(session).Format(time.RFC3339), session.Starred, fields.PermissionsJSON, fields.AgentModelOverridesJSON,
 		fields.CustomModelsUsedJSON, false, fields.ParentID, fields.RootID, session.RuntimeManaged)
 	if err != nil {
 		return err
@@ -1156,8 +1176,7 @@ func (s *SQLiteSessionStore) AddMessage(ctx context.Context, sessionID string, m
 		return 0, fmt.Errorf("marshaling message: %w", err)
 	}
 
-	// Insert a new message at the next position
-	result, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO session_items (session_id, position, item_type, agent_name, message_json, implicit, kind)
 		 VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_items WHERE session_id = ?), 'message', ?, ?, ?, ?)`,
 		sessionID, sessionID, msg.AgentName, string(msgJSON), msg.Implicit, msg.Kind)
@@ -1165,9 +1184,9 @@ func (s *SQLiteSessionStore) AddMessage(ctx context.Context, sessionID string, m
 		return 0, fmt.Errorf("inserting message: %w", err)
 	}
 
-	id, err := result.LastInsertId()
+	id, err := s.lastInsertIDAndTouch(ctx, sessionID)
 	if err != nil {
-		return 0, fmt.Errorf("getting last insert id: %w", err)
+		return 0, err
 	}
 
 	slog.DebugContext(ctx, "[STORE] AddMessage", "session_id", sessionID, "message_id", id, "role", msg.Message.Role, "agent", msg.AgentName)
@@ -1224,9 +1243,38 @@ func (s *SQLiteSessionStore) AddMessageAt(ctx context.Context, sessionID string,
 	if err != nil {
 		return 0, fmt.Errorf("getting last insert id: %w", err)
 	}
+	if err := s.touchSession(ctx, sessionID); err != nil {
+		return 0, err
+	}
 
 	slog.DebugContext(ctx, "[STORE] AddMessageAt", "session_id", sessionID, "position", position, "message_id", id, "role", msg.Message.Role, "agent", msg.AgentName)
 	return id, nil
+}
+
+func sessionIDForMessage(ctx context.Context, q querier, messageID int64) string {
+	var sessionID string
+	_ = q.QueryRowContext(ctx, "SELECT session_id FROM session_items WHERE id = ?", messageID).Scan(&sessionID)
+	return sessionID
+}
+
+func (s *SQLiteSessionStore) touchSession(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return ErrEmptyID
+	}
+	_, err := s.db.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?", time.Now().UTC().Format(time.RFC3339), sessionID)
+	return err
+}
+
+func (s *SQLiteSessionStore) lastInsertIDAndTouch(ctx context.Context, sessionID string) (int64, error) {
+	row := s.db.QueryRowContext(ctx, "SELECT last_insert_rowid()")
+	var lastID int64
+	if err := row.Scan(&lastID); err != nil {
+		return 0, fmt.Errorf("getting last insert id: %w", err)
+	}
+	if err := s.touchSession(ctx, sessionID); err != nil {
+		return 0, err
+	}
+	return lastID, nil
 }
 
 // UpdateMessage updates an existing message by its ID.
@@ -1250,6 +1298,11 @@ func (s *SQLiteSessionStore) UpdateMessage(ctx context.Context, messageID int64,
 
 	if rowsAffected == 0 {
 		return ErrNotFound
+	}
+	if sessionID := sessionIDForMessage(ctx, s.db, messageID); sessionID != "" {
+		if err := s.touchSession(ctx, sessionID); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -1310,13 +1363,13 @@ func (s *SQLiteSessionStore) addSessionTx(ctx context.Context, tx *sql.Tx, sessi
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO sessions (
 			id, tools_approved, input_tokens, output_tokens, title, cost, send_user_message,
-			max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides,
+			max_iterations, working_dir, created_at, updated_at, starred, permissions, agent_model_overrides,
 			custom_models_used, thinking, parent_id, root_id, runtime_managed
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.ToolsApproved, session.InputTokens, session.OutputTokens,
 		session.Title, session.Cost, session.SendUserMessage, session.MaxIterations,
-		session.WorkingDir, session.CreatedAt.Format(time.RFC3339), session.Starred,
+		session.WorkingDir, session.CreatedAt.Format(time.RFC3339), sessionUpdatedAt(session).Format(time.RFC3339), session.Starred,
 		fields.PermissionsJSON, fields.AgentModelOverridesJSON, fields.CustomModelsUsedJSON, false,
 		fields.ParentID, fields.RootID, session.RuntimeManaged)
 	return err
@@ -1396,8 +1449,8 @@ func (s *SQLiteSessionStore) UpdateSessionTokens(ctx context.Context, sessionID 
 		return ErrEmptyID
 	}
 	_, err := s.db.ExecContext(ctx,
-		"UPDATE sessions SET input_tokens = ?, output_tokens = ?, cost = ? WHERE id = ?",
-		inputTokens, outputTokens, cost, sessionID)
+		"UPDATE sessions SET input_tokens = ?, output_tokens = ?, cost = ?, updated_at = ? WHERE id = ?",
+		inputTokens, outputTokens, cost, time.Now().UTC().Format(time.RFC3339), sessionID)
 	return err
 }
 
@@ -1407,7 +1460,7 @@ func (s *SQLiteSessionStore) UpdateSessionTitle(ctx context.Context, sessionID, 
 		return ErrEmptyID
 	}
 	_, err := s.db.ExecContext(ctx,
-		"UPDATE sessions SET title = ? WHERE id = ?",
-		title, sessionID)
+		"UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
+		title, time.Now().UTC().Format(time.RFC3339), sessionID)
 	return err
 }
