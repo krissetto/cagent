@@ -35,7 +35,7 @@ func (r *attachedLiveRuntime) AttachLiveSessionWithSnapshot(context.Context, str
 }
 
 func (r *attachedLiveRuntime) LiveSessionTree(context.Context, string) (*runtime.LiveSessionTree, error) {
-	return &runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{ID: "child", AgentName: "greppy", Live: true}}, nil
+	return &runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{ID: "child", AgentName: "greppy", Live: true, Status: "waiting"}}, nil
 }
 
 func (r *attachedLiveRuntime) LiveChildSession(string) (*session.Session, bool) {
@@ -65,7 +65,7 @@ func TestNewAttachedUsesSessionIDForSendAndLiveTail(t *testing.T) {
 		mockRuntime: &mockRuntime{},
 		stream:      liveTail,
 	}
-	attached := NewAttached(ctx, rt, stored, runtime.LiveSessionNode{ID: "child", AgentName: "greppy"})
+	attached := NewAttached(ctx, rt, stored, runtime.LiveSessionNode{ID: "child", AgentName: "greppy", Live: true, Status: "waiting"})
 
 	received := make(chan runtime.Event, 8)
 	subCtx, subCancel := context.WithCancel(ctx)

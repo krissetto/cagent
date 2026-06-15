@@ -168,10 +168,12 @@ func New(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts ..
 func NewAttached(ctx context.Context, rt runtime.Runtime, sess *session.Session, node runtime.LiveSessionNode, opts ...Opt) *App {
 	a := New(ctx, rt, sess, opts...)
 	a.attached = true
-	if tree, ok := rt.(runtime.LiveSessionRuntime); ok {
+	if tree, ok := rt.(runtime.LiveSessionRuntime); ok && node.Live && !isClosedLiveSessionStatus(node.Status) {
 		a.attachedSend = func(_ context.Context, msg runtime.QueuedMessage) error {
 			return tree.FollowUpSessionByID(sess.ID, msg)
 		}
+	} else {
+		a.readOnly = true
 	}
 
 	go func() {
@@ -180,38 +182,53 @@ func NewAttached(ctx context.Context, rt runtime.Runtime, sess *session.Session,
 		case <-ctx.Done():
 			return
 		}
-		if node.Title != "" {
+		title := node.Title
+		if title == "" && sess != nil {
+			title = sess.Title
+		}
+		if title != "" {
 			select {
-			case a.events <- runtime.SessionTitle(sess.ID, node.Title):
+			case a.events <- runtime.SessionTitle(sess.ID, title):
 			case <-ctx.Done():
 				return
 			}
 		}
-		stream, err := attachSessionEventStream(ctx, rt, sess.ID)
-		if err != nil {
-			select {
-			case a.events <- runtime.Error("failed to attach live session: " + err.Error()):
-			case <-ctx.Done():
-			}
-			return
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case ev, ok := <-stream:
-				if !ok {
-					return
-				}
+		if node.Live && !isClosedLiveSessionStatus(node.Status) {
+			stream, err := attachSessionEventStream(ctx, rt, sess.ID)
+			if err != nil {
 				select {
-				case a.events <- ev:
+				case a.events <- runtime.Error("failed to attach live session: " + err.Error()):
+				case <-ctx.Done():
+				}
+				return
+			}
+			for {
+				select {
 				case <-ctx.Done():
 					return
+				case ev, ok := <-stream:
+					if !ok {
+						return
+					}
+					select {
+					case a.events <- ev:
+					case <-ctx.Done():
+						return
+					}
 				}
 			}
 		}
 	}()
 	return a
+}
+
+func isClosedLiveSessionStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "running", "waiting", "live":
+		return false
+	default:
+		return true
+	}
 }
 
 func attachSessionEventStream(ctx context.Context, rt runtime.Runtime, sessionID string) (<-chan runtime.Event, error) {
@@ -1128,6 +1145,11 @@ func (a *App) ShouldExitAfterFirstResponse() bool {
 // messages should be sent to the LLM.
 func (a *App) IsReadOnly() bool {
 	return a.readOnly
+}
+
+// SetReadOnlyForAttachHistory marks a history-only attached session read-only.
+func (a *App) SetReadOnlyForAttachHistory() {
+	a.readOnly = true
 }
 
 func (a *App) CompactSession(ctx context.Context, additionalPrompt string) {

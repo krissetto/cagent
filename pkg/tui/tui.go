@@ -820,6 +820,9 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case *runtime.SessionTitleEvent:
 		m.sessionState.SetSessionTitle(msg.Title)
+		if activeID := m.supervisor.ActiveID(); activeID != "" {
+			m.supervisor.SetRunnerTitle(activeID, msg.Title)
+		}
 		return m.forwardChat(msg)
 
 	// --- New session (slash command /new) ---
@@ -1092,6 +1095,10 @@ func (m *appModel) handleRoutedMsg(msg messages.RoutedMsg) (tea.Model, tea.Cmd) 
 		if sessionState, ok := m.sessionStates[msg.SessionID]; ok {
 			if agentName := event.GetAgentName(); agentName != "" {
 				sessionState.SetCurrentAgentName(agentName)
+			}
+			if titleEvent, ok := event.(*runtime.SessionTitleEvent); ok {
+				sessionState.SetSessionTitle(titleEvent.Title)
+				m.supervisor.SetRunnerTitle(msg.SessionID, titleEvent.Title)
 			}
 		}
 	}
@@ -1380,49 +1387,76 @@ func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
 	if m.supervisor.GetRunner(sessionID) != nil {
 		return m.handleSwitchTab(sessionID)
 	}
+	ctx := context.Background()
+	stored, hasStored := m.storedSession(ctx, sessionID)
 	node, nodeOK := m.application.LiveSessionNode(sessionID)
-	sess, ok := m.application.LiveSession(sessionID)
-	if !ok {
-		if !nodeOK {
-			return m, notification.ErrorCmd("Live session not found")
-		}
+	liveSess, liveOK := m.application.LiveSession(sessionID)
+	liveAttach := nodeOK && node.Live && !isClosedAttachedSessionStatus(node.Status) && (liveOK || !hasStored)
+
+	var sess *session.Session
+	switch {
+	case hasStored:
+		sess = stored.Clone()
+	case liveOK && liveAttach:
+		sess = liveSess
+	case nodeOK && liveAttach:
 		sess = session.New(session.WithID(sessionID))
+	default:
+		return m, notification.ErrorCmd("Session not found")
 	}
-	sess = m.hydrateAttachedSessionMessages(context.Background(), sess)
-	attached := app.NewAttached(context.Background(), m.application.Runtime(), sess, node)
+	if sess.ID == "" {
+		sess.ID = sessionID
+	}
+	if sess.WorkingDir == "" && liveSess != nil {
+		sess.WorkingDir = liveSess.WorkingDir
+	}
+	if sess.Title == "" && node.Title != "" {
+		sess.Title = node.Title
+	}
+
+	if !liveAttach && !hasStored && liveOK {
+		return m, notification.ErrorCmd("Session not found")
+	}
+	if !liveAttach {
+		node.Live = false
+		node.Status = "closed"
+		sess.NonInteractive = true
+	}
+	attached := app.NewAttached(ctx, m.application.Runtime(), sess, node)
+	if !liveAttach {
+		attached.SetReadOnlyForAttachHistory()
+	}
 	workingDir := sess.WorkingDir
 	if workingDir == "" && m.application.Session() != nil {
 		workingDir = m.application.Session().WorkingDir
 	}
-	m.supervisor.AddSession(context.Background(), attached, sess, workingDir, nil)
+	m.supervisor.AddSession(ctx, attached, sess, workingDir, nil)
 	m.initSessionComponents(sessionID, attached, sess)
+	if sess.Title != "" {
+		m.supervisor.SetRunnerTitle(sessionID, sess.Title)
+	}
 	return m.handleSwitchTab(sessionID)
 }
 
-func (m *appModel) hydrateAttachedSessionMessages(ctx context.Context, sess *session.Session) *session.Session {
-	if sess == nil || m == nil || m.application == nil {
-		return sess
+func (m *appModel) storedSession(ctx context.Context, sessionID string) (*session.Session, bool) {
+	if m == nil || m.application == nil {
+		return nil, false
 	}
 	store := m.application.SessionStore()
 	if store == nil {
-		return sess
+		return nil, false
 	}
-	stored, err := store.GetSession(ctx, sess.ID)
-	if err != nil || stored == nil || len(stored.Messages) == 0 {
-		return sess
-	}
+	sess, err := store.GetSession(ctx, sessionID)
+	return sess, err == nil && sess != nil
+}
 
-	// Attach history is durable-store first. The live child session pointer is
-	// only a live-control/routing handle and may have an empty or partial message
-	// slice. Seed the attached tab from the stored child transcript whenever it
-	// exists; NewAttached still uses this session ID to route sends to the live
-	// child queue and to subscribe to the live event tail.
-	hydrated := stored.Clone()
-	hydrated.ID = sess.ID
-	if hydrated.WorkingDir == "" {
-		hydrated.WorkingDir = sess.WorkingDir
+func isClosedAttachedSessionStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "running", "waiting", "live":
+		return false
+	default:
+		return true
 	}
-	return hydrated
 }
 
 // handleSwitchTab switches to a different session.

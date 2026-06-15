@@ -110,6 +110,8 @@ type attachHydrationRuntime struct {
 
 	store       session.Store
 	live        *session.Session
+	rootTitle   string
+	childTitle  string
 	followID    string
 	steerID     string
 	snapshot    []runtime.Event
@@ -130,17 +132,33 @@ func (r *attachHydrationRuntime) liveChildID() string {
 	return "child"
 }
 
-func (r *attachHydrationRuntime) LiveSessionTree(context.Context, string) (*runtime.LiveSessionTree, error) {
+func (r *attachHydrationRuntime) liveChildTitle() string {
+	if r.childTitle != "" {
+		return r.childTitle
+	}
+	if r.live != nil {
+		return r.live.Title
+	}
+	return ""
+}
+
+func (r *attachHydrationRuntime) LiveSessionTree(_ context.Context, rootID string) (*runtime.LiveSessionTree, error) {
+	children := []*runtime.LiveSessionNode{}
+	if r.live != nil || r.childTitle != "" || (r.store == nil && rootID != "missing") {
+		children = append(children, &runtime.LiveSessionNode{
+			ID:        r.liveChildID(),
+			ParentID:  "root",
+			AgentName: "greppy",
+			Title:     r.liveChildTitle(),
+			Status:    "waiting",
+			Live:      true,
+		})
+	}
 	return &runtime.LiveSessionTree{
 		Root: &runtime.LiveSessionNode{
-			ID: "root",
-			Children: []*runtime.LiveSessionNode{{
-				ID:        r.liveChildID(),
-				ParentID:  "root",
-				AgentName: "greppy",
-				Status:    "waiting",
-				Live:      true,
-			}},
+			ID:       "root",
+			Title:    r.rootTitle,
+			Children: children,
 		},
 	}, nil
 }
@@ -287,4 +305,69 @@ func TestHandleAttachSessionOpensEmptyLiveStateWhenNoHistory(t *testing.T) {
 	require.Equal(t, "child", m.application.Session().ID)
 	require.Empty(t, m.application.Session().Messages)
 	require.Equal(t, 1, rt.attachCalls)
+}
+
+func TestHandleAttachSessionOpensNonLiveStoredChildHistoryOnlyReadOnlyWithTitle(t *testing.T) {
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	root := session.New(session.WithID("root"))
+	require.NoError(t, store.AddSession(ctx, root))
+	storedChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithTitle("Stored Child Title"))
+	storedChild.AddMessage(session.UserMessage("stored historical prompt"))
+	require.NoError(t, store.AddSubSession(ctx, "root", storedChild))
+
+	rt := &attachHydrationRuntime{store: store, rootTitle: "Root Title"}
+	rootApp := app.New(ctx, rt, root)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+
+	model, cmd := m.handleAttachSession("child")
+	require.NotNil(t, cmd)
+	m = model.(*appModel)
+	require.Equal(t, "child", m.application.Session().ID)
+	require.Equal(t, "Stored Child Title", m.application.Session().Title)
+	require.Equal(t, "Stored Child Title", m.sessionState.SessionTitle())
+	require.True(t, m.application.IsReadOnly())
+	require.ErrorContains(t, m.application.FollowUpWithAttachments("nope", nil), "follow-up")
+	require.Empty(t, rt.followID)
+	if initCmd := m.chatPage.Init(); initCmd != nil {
+		_ = initCmd()
+	}
+	m.chatPage.SetSize(100, 24)
+	view := m.chatPage.View()
+	require.Contains(t, view, "stored historical prompt")
+}
+
+func TestHandleAttachSessionMissingStoreAndMissingLiveErrorsGracefully(t *testing.T) {
+	ctx := t.Context()
+	root := session.New(session.WithID("root"))
+	rt := &attachHydrationRuntime{rootTitle: "Root Title"}
+	rootApp := app.New(ctx, rt, root)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+
+	model, cmd := m.handleAttachSession("missing")
+	require.NotNil(t, cmd)
+	require.Same(t, m, model)
+	require.Equal(t, "root", m.application.Session().ID)
+}
+
+func TestHandleAttachSessionUsesLiveTitleAndTitleEventsUpdateTab(t *testing.T) {
+	ctx := t.Context()
+	root := session.New(session.WithID("root"))
+	liveChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"))
+	rt := &attachHydrationRuntime{live: liveChild, childTitle: "Live Child Title"}
+	rootApp := app.New(ctx, rt, root)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+
+	model, cmd := m.handleAttachSession("child")
+	require.NotNil(t, cmd)
+	m = model.(*appModel)
+	require.Equal(t, "Live Child Title", m.application.Session().Title)
+	require.Equal(t, "Live Child Title", m.sessionState.SessionTitle())
+
+	model, _ = m.Update(runtime.SessionTitle("child", "Updated Child Title"))
+	m = model.(*appModel)
+	require.Equal(t, "Updated Child Title", m.sessionState.SessionTitle())
+	require.Equal(t, "Updated Child Title", m.supervisor.GetRunner("child").Title)
+	require.NoError(t, m.application.FollowUpWithAttachments("hello child", nil))
+	require.Equal(t, "child", rt.followID)
 }
