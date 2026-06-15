@@ -288,7 +288,7 @@ When in doubt, prefer `${env.X}` for prompts and headers, and `${X}` (or `$X`) f
 
 docker-agent validates your configuration at startup:
 
-- Local `sub_agents` must reference agents defined in the config (external OCI references like `agentcatalog/pirate` are pulled from registries automatically)
+- Local `subagents` must reference agents defined in the config (external OCI references like `agentcatalog/pirate` are pulled from registries automatically)
 - Named model references must exist in the `models` section
 - Provider names must be valid (`openai`, `anthropic`, `google`, `dmr`, etc.)
 - Required environment variables (API keys) must be set

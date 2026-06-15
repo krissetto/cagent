@@ -5,7 +5,7 @@ agents:
     model: openai/gpt-3.5-turbo
     description: Root agent
     instruction: You are the root agent.
-    sub_agents:
+    subagents:
       - helper
   helper:
     model: openai/gpt-3.5-turbo

@@ -102,7 +102,7 @@ models:
 agents:
   root:
     model: claude # coordinator uses Claude
-    sub_agents: [coder, helper]
+    subagents: [coder, helper]
   coder:
     model: gpt # coder uses GPT-5
   helper:

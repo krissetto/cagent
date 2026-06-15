@@ -183,10 +183,6 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			agent.WithCommands(expander.ExpandCommands(ctx, agentConfig.Commands)),
 			agent.WithHooks(config.MergeHooks(agentConfig.Hooks, cliHooks)),
 		}
-		if subagentDefaults, ok := cfg.Subagents[agentConfig.Name]; ok {
-			opts = append(opts, agent.WithIdleAutoFinalizeTimeout(subagentDefaults.IdleAutoFinalizeTimeout.Duration))
-		}
-
 		if agentConfig.Cache != nil && agentConfig.Cache.Enabled {
 			c, err := buildAgentCache(agentConfig.Name, agentConfig.Cache, parentDir)
 			if err != nil {
@@ -277,12 +273,22 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			continue
 		}
 
-		subAgents, err := resolveAgentRefs(ctx, agentConfig.SubAgents, agentsByName, externalAgents, &agents, runConfig, &loadOpts)
+		refs, specs, err := runtimeSubagentRefs(agentConfig.SubagentSpecs)
 		if err != nil {
-			return nil, fmt.Errorf("agent '%s': resolving sub-agents: %w", agentConfig.Name, err)
+			return nil, fmt.Errorf("agent '%s': resolving subagents: %w", agentConfig.Name, err)
+		}
+		if len(refs) == 0 {
+			refs = agentConfig.SubAgents
+		}
+		subAgents, err := resolveAgentRefs(ctx, refs, agentsByName, externalAgents, &agents, runConfig, &loadOpts)
+		if err != nil {
+			return nil, fmt.Errorf("agent '%s': resolving subagents: %w", agentConfig.Name, err)
 		}
 		if len(subAgents) > 0 {
 			agent.WithSubAgents(subAgents...)(a)
+		}
+		if len(specs) > 0 {
+			agent.WithSubAgentSpecs(specs...)(a)
 		}
 
 		handoffs, err := resolveAgentRefs(ctx, agentConfig.Handoffs, agentsByName, externalAgents, &agents, runConfig, &loadOpts)
@@ -560,7 +566,7 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 		toolSets = append(toolSets, deferredToolset)
 	}
 
-	if len(a.SubAgents) > 0 {
+	if len(a.SubAgents) > 0 || len(a.SubagentSpecs) > 0 {
 		toolSets = append(toolSets, transfertask.New())
 	}
 	if len(a.Handoffs) > 0 {

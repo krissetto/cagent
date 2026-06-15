@@ -136,7 +136,7 @@ agents:
       You are a project orchestrator. Break down coding requests into
       focused tasks and delegate each task to the most appropriate
       coding agent. Collect results and synthesize a final summary.
-    sub_agents:
+    subagents:
       - claude-coder
       - codex-coder
 
@@ -173,7 +173,7 @@ agents:
     instruction: |
       Use background agents to run multiple coding tasks at once.
       Dispatch all tasks, then collect results when each finishes.
-    sub_agents:
+    subagents:
       - claude-coder
       - codex-coder
     toolsets:

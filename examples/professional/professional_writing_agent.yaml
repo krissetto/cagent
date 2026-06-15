@@ -17,7 +17,7 @@ agents:
       4. Ensure quality control by reviewing both outputs before final delivery
 
       Always maintain a professional and helpful tone. Make sure both agents complete their tasks before presenting the final results.
-    sub_agents: ["english_editor", "french_translator"]
+    subagents: ["english_editor", "french_translator"]
     toolsets:
       - type: filesystem
 

@@ -421,7 +421,7 @@ type AgentConfig struct {
 	Toolsets       []Toolset       `json:"toolsets,omitempty"`
 	Instruction    string          `json:"instruction,omitempty"`
 	Harness        *HarnessConfig  `json:"harness,omitempty"`
-	SubAgents      []string        `json:"sub_agents,omitempty"`
+	SubAgents      []string        `json:"subagents,omitempty" yaml:"subagents,omitempty"`
 	Handoffs       []string        `json:"handoffs,omitempty"`
 
 	AddDate            bool `json:"add_date,omitempty"`

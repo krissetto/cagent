@@ -31,6 +31,7 @@ type Agent struct {
 	titleModel              provider.Provider                   // Optional dedicated model for session-title generation
 	modelOverrides          atomic.Pointer[[]provider.Provider] // Optional model override(s) set at runtime (supports alloy)
 	subAgents               []*Agent
+	subAgentSpecs           []SubAgentSpec
 	handoffs                []*Agent
 	parents                 []*Agent
 	addDate                 bool
@@ -134,6 +135,50 @@ func (a *Agent) SubAgents() []*Agent {
 	return a.subAgents
 }
 
+// SubAgentSpecs returns the runtime-managed subagent specs configured for this
+// agent. When no specs were configured, the legacy sub-agent list is adapted so
+// existing transfer/background-agent delegation keeps working.
+func (a *Agent) SubAgentSpecs() []SubAgentSpec {
+	if len(a.subAgentSpecs) > 0 {
+		return slices.Clone(a.subAgentSpecs)
+	}
+	specs := make([]SubAgentSpec, 0, len(a.subAgents))
+	for _, subAgent := range a.subAgents {
+		if subAgent == nil {
+			continue
+		}
+		specs = append(specs, SubAgentSpec{
+			Name:        subAgent.Name(),
+			Agent:       subAgent.Name(),
+			Description: subAgent.Description(),
+		})
+	}
+	return specs
+}
+
+// SubAgentForName resolves a runtime-managed child-agent name to its backing
+// configured agent and spec. If no explicit specs were configured, it falls back
+// to the legacy sub-agent list.
+func (a *Agent) SubAgentForName(name string) (*Agent, SubAgentSpec, bool) {
+	for _, spec := range a.subAgentSpecs {
+		if spec.Name != name {
+			continue
+		}
+		for _, subAgent := range a.subAgents {
+			if subAgent != nil && subAgent.Name() == spec.Agent {
+				return subAgent, spec, true
+			}
+		}
+		return nil, SubAgentSpec{}, false
+	}
+	for _, subAgent := range a.subAgents {
+		if subAgent != nil && subAgent.Name() == name {
+			return subAgent, SubAgentSpec{Name: name, Agent: name, Description: subAgent.Description()}, true
+		}
+	}
+	return nil, SubAgentSpec{}, false
+}
+
 // Handoffs returns the list of handoff agents
 func (a *Agent) Handoffs() []*Agent {
 	return a.handoffs
@@ -150,7 +195,7 @@ func (a *Agent) IdleAutoFinalizeTimeout() time.Duration {
 
 // HasSubAgents checks if the agent has sub-agents
 func (a *Agent) HasSubAgents() bool {
-	return len(a.subAgents) > 0
+	return len(a.subAgents) > 0 || len(a.subAgentSpecs) > 0
 }
 
 // Model returns the model to use for this agent.

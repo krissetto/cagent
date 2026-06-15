@@ -105,6 +105,7 @@ func buildRuntime(ctx context.Context, cfg *latest.Config, env environment.Provi
 		opts     []agent.Opt
 		handoffs []string
 		subs     []string
+		specs    []agent.SubAgentSpec
 	}
 	var buildInfos []agentBuildInfo
 
@@ -168,11 +169,32 @@ func buildRuntime(ctx context.Context, cfg *latest.Config, env environment.Provi
 			rt.hookExec[agentCfg.Name] = hookExec
 		}
 
+		var subRefs []string
+		var subSpecs []agent.SubAgentSpec
+		for _, spec := range agentCfg.SubagentSpecs {
+			name := spec.Name
+			backingAgent := spec.Agent
+			if name == "" {
+				name = backingAgent
+			}
+			if backingAgent == "" {
+				backingAgent = name
+			}
+			subRefs = append(subRefs, backingAgent)
+			subSpecs = append(subSpecs, agent.SubAgentSpec{
+				Name:        name,
+				Agent:       backingAgent,
+				Description: spec.Description,
+				TTL:         spec.TTL.Duration,
+			})
+		}
+
 		buildInfos = append(buildInfos, agentBuildInfo{
 			name:     agentCfg.Name,
 			opts:     opts,
 			handoffs: agentCfg.Handoffs,
-			subs:     agentCfg.SubAgents,
+			subs:     subRefs,
+			specs:    subSpecs,
 		})
 	}
 
@@ -215,6 +237,10 @@ func buildRuntime(ctx context.Context, cfg *latest.Config, env environment.Provi
 				extraOpts = append(extraOpts, agent.WithSubAgents(subAgents...))
 				needsRebuild = true
 			}
+		}
+		if len(info.specs) > 0 {
+			extraOpts = append(extraOpts, agent.WithSubAgentSpecs(info.specs...))
+			needsRebuild = true
 		}
 
 		if needsRebuild {
@@ -677,12 +703,18 @@ func (rt *wasmRuntime) addDelegationTools(a *agent.Agent, existingTools []tools.
 		})
 	}
 
-	if len(a.SubAgents()) > 0 {
+	if a.HasSubAgents() {
 		var names []string
 		var descriptions []string
-		for _, s := range a.SubAgents() {
-			names = append(names, s.Name())
-			descriptions = append(descriptions, fmt.Sprintf("- %s: %s", s.Name(), s.Description()))
+		for _, spec := range a.SubAgentSpecs() {
+			names = append(names, spec.Name)
+			description := spec.Description
+			if description == "" {
+				if subAgent, _, ok := a.SubAgentForName(spec.Name); ok && subAgent != nil {
+					description = subAgent.Description()
+				}
+			}
+			descriptions = append(descriptions, fmt.Sprintf("- %s: %s", spec.Name, description))
 		}
 		existingTools = append(existingTools, tools.Tool{
 			Name:        "transfer_task",

@@ -100,6 +100,12 @@ func WithSubAgents(subAgents ...*Agent) Opt {
 	}
 }
 
+func WithSubAgentSpecs(specs ...SubAgentSpec) Opt {
+	return func(a *Agent) {
+		a.subAgentSpecs = specs
+	}
+}
+
 func WithIdleAutoFinalizeTimeout(timeout time.Duration) Opt {
 	return func(a *Agent) {
 		a.idleAutoFinalizeTimeout = timeout

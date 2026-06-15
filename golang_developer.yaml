@@ -96,7 +96,7 @@ agents:
       - type: shell
       - type: todo
       - type: fetch
-    sub_agents:
+    subagents:
       - librarian
 
   planner:
@@ -108,7 +108,7 @@ agents:
       Once the plan is created, you will delegate tasks to the root agent. Make sure to provide the file name of the plan when delegating. Write the plan in the current directory.
     toolsets:
       - type: filesystem
-    sub_agents:
+    subagents:
       - root
 
   librarian:

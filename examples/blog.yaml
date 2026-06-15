@@ -21,7 +21,7 @@ agents:
       - DO NOT transfer to multiple members at once
       - ONLY CALL ONE AGENT AT A TIME
       - When using the `transfer_to_agent` tool, make exactly one call and wait for the result before making another. Do not batch or parallelize tool calls.
-    sub_agents:
+    subagents:
       - web_search_agent
       - writer
     toolsets:

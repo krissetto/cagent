@@ -76,7 +76,7 @@ agents:
     model: openai/gpt-5
     description: Coordinator
     instruction: Delegate tasks to the right sub-agent.
-    sub_agents:
+    subagents:
       - agentcatalog/pirate         # auto-named "pirate"
       - my_reviewer:myorg/reviewer  # explicitly named "my_reviewer"
 ```

@@ -158,14 +158,17 @@ func validateConfig(cfg *latest.Config) error {
 
 	for _, agent := range cfg.Agents {
 		for _, subAgentRef := range agent.SubAgents {
-			if _, exists := allNames[subAgentRef]; !exists && !IsExternalReference(subAgentRef) {
-				return fmt.Errorf("agent '%s' references non-existent sub-agent '%s'", agent.Name, subAgentRef)
+			if err := validateSubAgentRef(agent.Name, subAgentRef, allNames); err != nil {
+				return err
 			}
-			if IsExternalReference(subAgentRef) {
-				name, _ := ParseExternalAgentRef(subAgentRef)
-				if allNames[name] {
-					return fmt.Errorf("agent '%s': external sub-agent '%s' resolves to name '%s' which conflicts with a locally-defined agent", agent.Name, subAgentRef, name)
-				}
+		}
+		for _, subAgentSpec := range agent.SubagentSpecs {
+			subAgentRef := subAgentSpec.Agent
+			if subAgentRef == "" {
+				subAgentRef = subAgentSpec.Name
+			}
+			if err := validateSubAgentRef(agent.Name, subAgentRef, allNames); err != nil {
+				return err
 			}
 		}
 
@@ -186,6 +189,19 @@ func validateConfig(cfg *latest.Config) error {
 		}
 	}
 
+	return nil
+}
+
+func validateSubAgentRef(agentName, subAgentRef string, allNames map[string]bool) error {
+	if _, exists := allNames[subAgentRef]; !exists && !IsExternalReference(subAgentRef) {
+		return fmt.Errorf("agent '%s' references non-existent sub-agent '%s'", agentName, subAgentRef)
+	}
+	if IsExternalReference(subAgentRef) {
+		name, _ := ParseExternalAgentRef(subAgentRef)
+		if allNames[name] {
+			return fmt.Errorf("agent '%s': external sub-agent '%s' resolves to name '%s' which conflicts with a locally-defined agent", agentName, subAgentRef, name)
+		}
+	}
 	return nil
 }
 

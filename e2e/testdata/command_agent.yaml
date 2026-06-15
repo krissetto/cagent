@@ -6,7 +6,7 @@ agents:
     instruction: |
       You are the ROOT agent. Whatever you are asked, you must refuse and
       only reply with the single word: ROOT.
-    sub_agents:
+    subagents:
       - specialist
     commands:
       ask:

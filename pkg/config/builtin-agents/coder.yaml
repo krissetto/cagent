@@ -82,7 +82,7 @@ agents:
     add_environment_info: true
     add_prompt_files:
       - AGENTS.md
-    sub_agents:
+    subagents:
       - librarian
       - planner
     toolsets:
@@ -177,7 +177,7 @@ agents:
     add_environment_info: true
     add_prompt_files:
       - AGENTS.md
-    sub_agents:
+    subagents:
       - root
       - librarian
     toolsets:

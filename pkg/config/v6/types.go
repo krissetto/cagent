@@ -242,7 +242,7 @@ type AgentConfig struct {
 	WelcomeMessage          string            `json:"welcome_message,omitempty"`
 	Toolsets                []Toolset         `json:"toolsets,omitempty"`
 	Instruction             string            `json:"instruction,omitempty"`
-	SubAgents               []string          `json:"sub_agents,omitempty"`
+	SubAgents               []string          `json:"subagents,omitempty" yaml:"subagents,omitempty"`
 	Handoffs                []string          `json:"handoffs,omitempty"`
 	RAG                     []string          `json:"rag,omitempty"`
 	AddDate                 bool              `json:"add_date,omitempty"`

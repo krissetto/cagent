@@ -18,7 +18,7 @@ agents:
       You are the implementation agent. You write and edit code.
       If the user asks for a plan or design discussion, use the /plan command
       to switch to the planner sub-agent.
-    sub_agents:
+    subagents:
       - planner
       - reviewer
     toolsets:
@@ -38,7 +38,7 @@ agents:
     instruction: |
       You are the planning agent. Ask clarifying questions, then produce a
       step-by-step plan in markdown. Do not write code.
-    sub_agents:
+    subagents:
       - root
     commands:
       back:
@@ -51,7 +51,7 @@ agents:
     instruction: |
       You review the local Git changes and provide concise, actionable feedback
       on code quality, security, and maintainability.
-    sub_agents:
+    subagents:
       - root
     toolsets:
       - type: shell

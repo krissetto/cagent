@@ -25,7 +25,7 @@ The background agents tool lets an orchestrator dispatch work to sub-agents conc
 
 | Parameter         | Type   | Required | Description                                                                 |
 | ----------------- | ------ | -------- | --------------------------------------------------------------------------- |
-| `agent`           | string | ✓        | Name of the sub-agent to run. Must be listed under the caller's `sub_agents`. |
+| `agent`           | string | ✓        | Name of the sub-agent to run. Must be listed under the caller's `subagents`. |
 | `task`            | string | ✓        | Clear, concise description of the task the sub-agent should achieve.        |
 | `expected_output` | string | ✗        | Optional description of the result format the caller expects.               |
 
@@ -46,7 +46,7 @@ toolsets:
   - type: background_agents
 ```
 
-No configuration options. Requires the agent to have `sub_agents` configured so the background tasks have agents to dispatch to.
+No configuration options. Requires the agent to have `subagents` configured so the background tasks have agents to dispatch to.
 
 ## Example
 
@@ -56,7 +56,7 @@ agents:
     model: openai/gpt-4o
     description: Orchestrates parallel research
     instruction: Fan out research tasks and synthesize results.
-    sub_agents: [researcher]
+    subagents: [researcher]
     toolsets:
       - type: background_agents
       - type: think
@@ -88,7 +88,7 @@ agents:
     instruction: |
       Dispatch the frontend and backend tasks in parallel,
       then collect results and produce a summary.
-    sub_agents:
+    subagents:
       - claude-coder
       - codex-coder
     toolsets:

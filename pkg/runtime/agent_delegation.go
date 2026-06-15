@@ -363,7 +363,12 @@ func (r *LocalRuntime) CurrentAgentSubAgentNames() []string {
 	if a == nil {
 		return nil
 	}
-	return agentNames(a.SubAgents())
+	specs := a.SubAgentSpecs()
+	names := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		names = append(names, spec.Name)
+	}
+	return names
 }
 
 // RunAgent implements agenttool.Runner. It starts a sub-agent synchronously
@@ -402,15 +407,25 @@ func (r *LocalRuntime) handleTaskTransfer(ctx context.Context, sess *session.Ses
 	}
 
 	a := r.CurrentAgent()
-	if errResult := validateAgentInList(a.Name(), params.Agent, "transfer task to", "sub-agents list", a.SubAgents()); errResult != nil {
-		return errResult, nil
+	var childAgentName string
+	if subAgent, spec, ok := a.SubAgentForName(params.Agent); ok && subAgent != nil {
+		childAgentName = spec.Agent
+		if childAgentName == "" {
+			childAgentName = subAgent.Name()
+		}
+	} else {
+		var names []string
+		for _, spec := range a.SubAgentSpecs() {
+			names = append(names, spec.Name)
+		}
+		return tools.ResultError(fmt.Sprintf("cannot transfer task to %s: agent %s does not list %s in its subagents list; available subagents: %s", params.Agent, a.Name(), params.Agent, strings.Join(names, ", "))), nil
 	}
 
 	slog.DebugContext(ctx, "Transferring task to agent", "from_agent", a.Name(), "to_agent", params.Agent, "task", params.Task)
 
 	ctx, span := r.startSpan(ctx, "runtime.task_transfer", trace.WithAttributes(
 		attribute.String("from.agent", a.Name()),
-		attribute.String("to.agent", params.Agent),
+		attribute.String("to.agent", childAgentName),
 		attribute.String("session.id", sess.ID),
 	))
 	defer span.End()
@@ -419,7 +434,7 @@ func (r *LocalRuntime) handleTaskTransfer(ctx context.Context, sess *session.Ses
 		SubSessionConfig: SubSessionConfig{
 			Task:           params.Task,
 			ExpectedOutput: params.ExpectedOutput,
-			AgentName:      params.Agent,
+			AgentName:      childAgentName,
 			Title:          "Transferred task",
 			ToolsApproved:  sess.ToolsApproved,
 			NonInteractive: sess.NonInteractive,
