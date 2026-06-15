@@ -293,14 +293,21 @@ func (m *SubagentManager) WaitForSubagentWork(ctx context.Context, parent *sessi
 }
 
 func (m *SubagentManager) runChild(ctx context.Context, h *subagentHandle) {
+	terminalState := "stopped"
 	defer close(h.done)
 	defer func() {
 		h.mu.Lock()
 		if h.state != "closed" && h.state != "failed" {
-			h.state = "stopped"
+			h.state = terminalState
 		}
 		h.mu.Unlock()
 		h.signal()
+		if m.r.liveSessions != nil {
+			m.r.liveSessions.unregister(h.id)
+		}
+		if m.r.eventBus != nil {
+			m.r.eventBus.CloseTopic(h.id)
+		}
 		m.publishLiveSessionTreeChanged(context.Background(), h.id)
 	}()
 	idle := time.NewTimer(h.ttl)
@@ -318,6 +325,7 @@ func (m *SubagentManager) runChild(ctx context.Context, h *subagentHandle) {
 				h.runPrompt(ctx, m, prompt, idle)
 			}
 		case <-idle.C:
+			terminalState = "closed"
 			return
 		}
 	}

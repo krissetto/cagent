@@ -89,11 +89,17 @@ func (r *LocalRuntime) observe(ctx context.Context, sess *session.Session, inner
 		if r.recorder != nil {
 			r.recorder.FlushSession(sess.ID)
 		}
-		if r.liveSessions != nil {
-			r.liveSessions.unregister(sess.ID)
-		}
-		if r.eventBus != nil {
-			r.eventBus.CloseTopic(sess.ID)
+		// Runtime-managed child sessions are parked by the subagent manager between
+		// turns. Keep their live registry entry and event topic open until the manager
+		// reaches an explicit terminal lifecycle path (stop/finalize/TTL/root close),
+		// otherwise post-turn attach and parent-to-child follow-ups lose the session.
+		if !sess.RuntimeManaged {
+			if r.liveSessions != nil {
+				r.liveSessions.unregister(sess.ID)
+			}
+			if r.eventBus != nil {
+				r.eventBus.CloseTopic(sess.ID)
+			}
 		}
 	}()
 	return out
