@@ -17,31 +17,34 @@ import (
 )
 
 const (
-	MaxSubagentDepth       = 8
-	MaxSubagentDescendants = 64
+	MaxSubagentDepth                = 8
+	MaxSubagentDescendants          = 64
+	subagentEnvelopePreviewMaxRunes = 320
 )
 
 type SubagentManager struct {
-	r   *LocalRuntime
-	mu  sync.Mutex
-	all map[string]*subagentHandle
+	r          *LocalRuntime
+	mu         sync.Mutex
+	envelopeMu sync.Mutex
+	all        map[string]*subagentHandle
 }
 
 type subagentHandle struct {
-	id        string
-	shortID   string
-	agentName string
-	parent    *session.Session
-	sess      *session.Session
-	created   time.Time
-	inbox     chan string
-	stop      chan struct{}
-	done      chan struct{}
-	wake      chan struct{}
-	mu        sync.Mutex
-	state     string
-	last      []Event
-	envelopes []SubagentEnvelope
+	id                  string
+	shortID             string
+	agentName           string
+	parent              *session.Session
+	sess                *session.Session
+	created             time.Time
+	inbox               chan string
+	stop                chan struct{}
+	done                chan struct{}
+	wake                chan struct{}
+	mu                  sync.Mutex
+	state               string
+	awaitingDescendants bool
+	last                []Event
+	envelopes           []SubagentEnvelope
 }
 
 func NewSubagentManager(r *LocalRuntime) *SubagentManager {
@@ -71,7 +74,11 @@ func (m *SubagentManager) start(ctx context.Context, parent *session.Session, ag
 	if m.descendants(parent.EffectiveRootID()) >= MaxSubagentDescendants {
 		return nil, fmt.Errorf("subagent descendant cap %d exceeded", MaxSubagentDescendants)
 	}
-	subAgent, selectedSpec, ok := m.r.CurrentAgent().SubAgentForName(agentName)
+	parentAgent := m.r.resolveSessionAgent(parent)
+	if parentAgent == nil {
+		return nil, errors.New("parent agent unavailable")
+	}
+	subAgent, selectedSpec, ok := parentAgent.SubAgentForName(agentName)
 	if !ok || subAgent == nil {
 		return nil, fmt.Errorf("agent %q is not in the subagents list", agentName)
 	}
@@ -90,6 +97,9 @@ func (m *SubagentManager) start(ctx context.Context, parent *session.Session, ag
 	if m.r.sessionStore != nil {
 		if err := m.r.sessionStore.AddSubSession(ctx, parent.ID, child); err != nil {
 			return nil, err
+		}
+		if _, ok := m.r.sessionStore.(*session.InMemorySessionStore); !ok {
+			parent.AddSubSession(child)
 		}
 	} else {
 		parent.AddSubSession(child)
@@ -156,7 +166,7 @@ func (m *SubagentManager) Stop(parent *session.Session, ref string) error {
 		h.state = "stopped"
 		h.mu.Unlock()
 		close(h.stop)
-		m.publishToParent(parent.ID, SubAgentUpdate(h.envelope("stopped", "stopped", ""), parent.ID))
+		m.publishToParent(parent.ID, SubAgentUpdate(h.envelope("stopped", "stopped"), parent.ID))
 		m.publishLiveSessionTreeChanged(context.Background(), h.id)
 	}
 	return nil
@@ -174,7 +184,7 @@ func (m *SubagentManager) Finalize(parent *session.Session, ref string) error {
 		h.state = "closed"
 		h.mu.Unlock()
 		close(h.stop)
-		m.publishToParent(parent.ID, SubAgentUpdate(h.envelope("closed", "closed", ""), parent.ID))
+		m.publishToParent(parent.ID, SubAgentUpdate(h.envelope("closed", "closed"), parent.ID))
 		m.publishLiveSessionTreeChanged(context.Background(), h.id)
 	}
 	return nil
@@ -234,25 +244,72 @@ func (m *SubagentManager) DrainEnvelopes(ctx context.Context, parent *session.Se
 		h.mu.Unlock()
 		for _, env := range envs {
 			text := env.parentText()
-			msg := session.SubagentEnvelopeMessage(text)
-			pos := len(parent.Messages)
-			if m.r.sessionStore != nil {
-				if ps, ok := m.r.sessionStore.(session.PositionalStore); ok {
-					_, _ = ps.AddMessageAt(ctx, parent.ID, pos, msg)
-				} else {
-					_, _ = m.r.sessionStore.AddMessage(ctx, parent.ID, msg)
-				}
-			}
-			parent.AddMessage(msg)
-			events.Emit(TypedUserMessage(session.MessageKindSubagentEnvelope, text, parent.ID, nil, len(parent.Messages)-1))
+			pos := m.persistParentEnvelope(ctx, parent, text)
+			events.Emit(TypedUserMessage(session.MessageKindSubagentEnvelope, text, parent.ID, nil, pos))
 			drained = true
 		}
+	}
+	if drained {
+		m.emitLiveSessionTreeChanged(ctx, events, parent.ID)
 	}
 	return drained
 }
 
+func (m *SubagentManager) persistParentEnvelope(ctx context.Context, parent *session.Session, text string) int {
+	if m != nil {
+		m.envelopeMu.Lock()
+		defer m.envelopeMu.Unlock()
+	}
+	if parent == nil || text == "" {
+		return -1
+	}
+	if pos, ok := findSubagentEnvelopePosition(parent, text); ok {
+		return pos
+	}
+	msg := session.SubagentEnvelopeMessage(text)
+	pos := len(parent.Messages)
+	if m != nil && m.r != nil && m.r.sessionStore != nil {
+		m.persistParentEnvelopeMessage(ctx, parent.ID, pos, msg)
+	}
+	parent.AddMessage(msg)
+	return pos
+}
+
+func (m *SubagentManager) persistParentEnvelopeMessage(ctx context.Context, parentID string, pos int, msg *session.Message) {
+	if m == nil || m.r == nil || m.r.sessionStore == nil {
+		return
+	}
+	if ps, ok := m.r.sessionStore.(session.PositionalStore); ok {
+		if id, err := ps.AddMessageAt(ctx, parentID, pos, msg); err == nil && id != 0 {
+			return
+		}
+	}
+	_, _ = m.r.sessionStore.AddMessage(ctx, parentID, msg)
+}
+
+func findSubagentEnvelopePosition(parent *session.Session, text string) (int, bool) {
+	if parent == nil {
+		return -1, false
+	}
+	for pos, item := range parent.Messages {
+		if item.Message == nil || item.Message.Kind != session.MessageKindSubagentEnvelope {
+			continue
+		}
+		if item.Message.Message.Content == text {
+			return pos, true
+		}
+	}
+	return -1, false
+}
+
 func (m *SubagentManager) WaitForSubagentWork(ctx context.Context, parent *session.Session, queues sessionQueues, events EventSink) bool {
-	children := m.liveChildren(parent)
+	if m == nil || parent == nil {
+		return false
+	}
+	if m.DrainEnvelopes(ctx, parent, events) {
+		return true
+	}
+	children := m.inFlightChildren(parent)
 	if len(children) == 0 {
 		return false
 	}
@@ -270,6 +327,10 @@ func (m *SubagentManager) WaitForSubagentWork(ctx context.Context, parent *sessi
 		}
 		if queueHasPending(queues.steer) || queueHasPending(queues.followUp) {
 			return true
+		}
+		children = m.inFlightChildren(parent)
+		if len(children) == 0 {
+			return false
 		}
 		select {
 		case <-ctx.Done():
@@ -318,22 +379,53 @@ func (h *subagentHandle) runPrompt(ctx context.Context, m *SubagentManager, prom
 	h.mu.Lock()
 	h.state = "running"
 	h.mu.Unlock()
-	m.publishToParent(h.parent.ID, SubAgentUpdate(h.envelope("status_only", "running", ""), h.parent.ID))
+	m.publishToParent(h.parent.ID, SubAgentUpdate(h.envelope("status_only", "running"), h.parent.ID))
 	m.publishLiveSessionTreeChanged(ctx, h.id)
 	h.sess.AddMessage(session.UserMessage(prompt))
 	stream := m.r.RunStream(ctx, h.sess)
+	publishedCurrentTurn := false
 	for ev := range stream {
 		h.appendEvent(ev)
+		switch msg := ev.(type) {
+		case *ParentIdleEvent:
+			if msg.SessionID != h.sess.ID {
+				continue
+			}
+			h.mu.Lock()
+			h.state = "waiting"
+			h.awaitingDescendants = true
+			h.mu.Unlock()
+			m.enqueueEnvelope(ctx, h, h.envelope("turn_completed", "waiting"))
+			m.publishLiveSessionTreeChanged(ctx, h.id)
+			publishedCurrentTurn = true
+		case *ParentResumeEvent:
+			if msg.SessionID != h.sess.ID {
+				continue
+			}
+			h.mu.Lock()
+			h.state = "running"
+			h.awaitingDescendants = false
+			h.mu.Unlock()
+			m.publishToParent(h.parent.ID, SubAgentUpdate(h.envelope("status_only", "running"), h.parent.ID))
+			m.publishLiveSessionTreeChanged(ctx, h.id)
+			publishedCurrentTurn = false
+		}
 	}
 	// Drain any queued child inbox before notifying the parent.
 	if len(h.inbox) > 0 {
 		return
 	}
-	preview := h.latestPreview()
-	m.enqueueEnvelope(h, h.envelope("turn_completed", "waiting", preview))
-	h.mu.Lock()
-	h.state = "waiting"
-	h.mu.Unlock()
+	if !publishedCurrentTurn {
+		h.mu.Lock()
+		h.state = "waiting"
+		h.awaitingDescendants = false
+		h.mu.Unlock()
+		m.enqueueEnvelope(ctx, h, h.envelope("turn_completed", "waiting"))
+	} else {
+		h.mu.Lock()
+		h.awaitingDescendants = false
+		h.mu.Unlock()
+	}
 	m.publishLiveSessionTreeChanged(ctx, h.id)
 }
 
@@ -361,7 +453,8 @@ func queuedMessageContent(msg QueuedMessage) string {
 	return ""
 }
 
-func (m *SubagentManager) enqueueEnvelope(h *subagentHandle, env SubagentEnvelope) {
+func (m *SubagentManager) enqueueEnvelope(ctx context.Context, h *subagentHandle, env SubagentEnvelope) {
+	m.persistParentEnvelope(ctx, h.parent, env.parentText())
 	h.mu.Lock()
 	h.envelopes = append(h.envelopes, env)
 	h.mu.Unlock()
@@ -498,14 +591,50 @@ func (m *SubagentManager) children(parent *session.Session) []*subagentHandle {
 	return out
 }
 
-func (m *SubagentManager) liveChildren(parent *session.Session) []*subagentHandle {
+func (m *SubagentManager) inFlightChildren(parent *session.Session) []*subagentHandle {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var out []*subagentHandle
-	for _, h := range m.children(parent) {
-		if h.live() {
+	for _, h := range m.all {
+		if h.parent.ID == parent.ID && m.handleInFlightLocked(h) {
 			out = append(out, h)
 		}
 	}
 	return out
+}
+
+func (m *SubagentManager) handleInFlightLocked(h *subagentHandle) bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	state := h.state
+	waitingForDescendants := h.awaitingDescendants
+	pendingEnvelope := len(h.envelopes) > 0
+	h.mu.Unlock()
+	if pendingEnvelope {
+		return true
+	}
+	if !h.live() {
+		return false
+	}
+	switch state {
+	case "", "running", "starting":
+		return true
+	case "waiting":
+		return waitingForDescendants || m.hasInFlightDescendantsLocked(h.id)
+	default:
+		return false
+	}
+}
+
+func (m *SubagentManager) hasInFlightDescendantsLocked(parentID string) bool {
+	for _, h := range m.all {
+		if h.parent.ID == parentID && m.handleInFlightLocked(h) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *SubagentManager) descendants(root string) int {
@@ -610,10 +739,8 @@ func (h *subagentHandle) info() SubagentInfo {
 	return SubagentInfo{ID: h.id, ShortID: h.shortID, AgentName: h.agentName, State: h.state, CreatedAt: h.created}
 }
 
-func (h *subagentHandle) envelope(kind, status, preview string) SubagentEnvelope {
-	if preview == "" {
-		preview = h.latestPreview()
-	}
+func (h *subagentHandle) envelope(kind, status string) SubagentEnvelope {
+	preview, truncated := h.latestPreviewWithTruncation()
 	if status == "" {
 		h.mu.Lock()
 		status = h.state
@@ -626,22 +753,27 @@ func (h *subagentHandle) envelope(kind, status, preview string) SubagentEnvelope
 		Kind:            kind,
 		Status:          status,
 		Preview:         preview,
-		Truncated:       len([]rune(preview)) >= 320,
+		Truncated:       truncated,
 		At:              time.Now(),
 	}
 }
 
 func (h *subagentHandle) latestPreview() string {
+	preview, _ := h.latestPreviewWithTruncation()
+	return preview
+}
+
+func (h *subagentHandle) latestPreviewWithTruncation() (string, bool) {
 	for _, item := range slices.Backward(h.sess.OwnMessages()) {
 		msg := item.Message
 		if msg.Role == chat.MessageRoleSystem || msg.Role == chat.MessageRoleUser {
 			continue
 		}
 		if text := strings.TrimSpace(messageTextPreview(msg)); text != "" {
-			return truncateRunes(text, 320)
+			return truncateRunesWithStatus(text, subagentEnvelopePreviewMaxRunes)
 		}
 	}
-	return ""
+	return "", false
 }
 
 func (e SubagentEnvelope) parentText() string {
@@ -649,7 +781,10 @@ func (e SubagentEnvelope) parentText() string {
 	switch e.Kind {
 	case "turn_completed":
 		if e.Preview != "" {
-			return fmt.Sprintf("%s turn finished. Preview: %s", ref, e.Preview)
+			if e.Truncated {
+				return fmt.Sprintf("%s turn finished. Preview (short, truncated; use subagent_inspect if you need the full last message or more session history): %s", ref, e.Preview)
+			}
+			return fmt.Sprintf("%s turn finished. Preview (short): %s", ref, e.Preview)
 		}
 		return ref + " turn finished."
 	case "closed":
@@ -733,6 +868,17 @@ func truncateEnvelope(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+func truncateRunesWithStatus(s string, limit int) (string, bool) {
+	if limit <= 0 {
+		return "", s != ""
+	}
+	r := []rune(s)
+	if len(r) <= limit {
+		return s, false
+	}
+	return string(r[:limit]), true
 }
 
 func jsonResult(v any) *tools.ToolCallResult {

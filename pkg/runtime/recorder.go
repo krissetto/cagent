@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -271,14 +273,79 @@ func (r *SessionRecorder) addUserMessage(ctx context.Context, e *UserMessageEven
 			slog.WarnContext(ctx, "Skipping persistence of UserMessageEvent with unknown position", "session_id", e.SessionID, "position", e.SessionPosition)
 			return
 		}
-		if _, err := ps.AddMessageAt(ctx, e.SessionID, e.SessionPosition, msg); err != nil {
+		if e.Kind == session.MessageKindSubagentEnvelope && r.userMessageExists(ctx, e.SessionID, msg) {
+			return
+		}
+		id, err := ps.AddMessageAt(ctx, e.SessionID, e.SessionPosition, msg)
+		if err != nil {
+			if errors.Is(err, session.ErrPositionGap) {
+				r.appendUserMessage(ctx, e.SessionID, msg, "position gap")
+				return
+			}
 			slog.WarnContext(ctx, "Failed to persist user message at position", "session_id", e.SessionID, "position", e.SessionPosition, "error", err)
+			return
+		}
+		if id == 0 {
+			if r.userMessageAtPositionMatches(ctx, e.SessionID, e.SessionPosition, msg) {
+				return
+			}
+			r.appendUserMessage(ctx, e.SessionID, msg, "position collision")
 		}
 		return
 	}
-	if _, err := r.store.AddMessage(ctx, e.SessionID, msg); err != nil {
-		slog.WarnContext(ctx, "Failed to persist user message", "session_id", e.SessionID, "error", err)
+	r.appendUserMessage(ctx, e.SessionID, msg, "")
+}
+
+func (r *SessionRecorder) appendUserMessage(ctx context.Context, sessionID string, msg *session.Message, reason string) {
+	if reason != "" {
+		slog.WarnContext(ctx, "Appending user message after positional persistence failed", "session_id", sessionID, "reason", reason)
 	}
+	if _, err := r.store.AddMessage(ctx, sessionID, msg); err != nil {
+		slog.WarnContext(ctx, "Failed to persist user message", "session_id", sessionID, "error", err)
+	}
+}
+
+func (r *SessionRecorder) userMessageAtPositionMatches(ctx context.Context, sessionID string, position int, msg *session.Message) bool {
+	persisted, err := r.store.GetSession(ctx, sessionID)
+	if err != nil || persisted == nil || position < 0 || position >= len(persisted.Messages) {
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to inspect existing user message position", "session_id", sessionID, "position", position, "error", err)
+		}
+		return false
+	}
+	existing := persisted.Messages[position].Message
+	if existing == nil {
+		return false
+	}
+	return sameUserMessage(existing, msg)
+}
+
+func (r *SessionRecorder) userMessageExists(ctx context.Context, sessionID string, msg *session.Message) bool {
+	persisted, err := r.store.GetSession(ctx, sessionID)
+	if err != nil || persisted == nil {
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to inspect existing user messages", "session_id", sessionID, "error", err)
+		}
+		return false
+	}
+	for _, item := range persisted.Messages {
+		if sameUserMessage(item.Message, msg) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameUserMessage(a, b *session.Message) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.AgentName == b.AgentName &&
+		a.Implicit == b.Implicit &&
+		a.Kind == b.Kind &&
+		a.Message.Role == b.Message.Role &&
+		a.Message.Content == b.Message.Content &&
+		reflect.DeepEqual(a.Message.MultiContent, b.Message.MultiContent)
 }
 
 func (r *SessionRecorder) persistStreamingContent(ctx context.Context, sessionID string) {

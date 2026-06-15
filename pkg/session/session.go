@@ -971,12 +971,13 @@ func buildInvariantSystemMessages(a *agent.Agent) []chat.Message {
 			"Runtime-managed subagents are asynchronous background sessions with their own context. Start a subagent only with a clear, self-contained task and a clear owner. " +
 			"When the task involves files, always include their absolute paths in the `task` description (never just bare filenames). Subagents do not see the parent conversation history or user attachments unless you include the needed context.\n\n" +
 			"After calling `subagent_start`, continue only with work that is clearly independent of the delegated scope, or end your turn and wait. " +
-			"The runtime will automatically deliver automatic subagent update/result envelope messages back into this conversation when a subagent has status or a turn result. Do not poll for progress. " +
+			"The runtime automatically delivers subagent update/result envelope messages back into this conversation when a direct child subagent reaches a turn boundary, including when that child parks to wait on its own descendants; you do not have to wait for the whole descendant tree to finish before updates arrive. " +
+			"Envelopes contain only a short preview of the child subagent's latest message, not the full message or transcript. If the preview is truncated, the envelope says so. Do not poll for progress. " +
 			"In particular, do not call `subagent_inspect` or `subagent_list` just to check whether the subagent is done.\n\n" +
 			"Use subagent tools this way:\n" +
 			"- `subagent_start`: start a configured subagent in the background.\n" +
 			"- `subagent_send`: send new information, a follow-up task, or a course correction to a live subagent.\n" +
-			"- `subagent_inspect`: read more context only when the user explicitly asks, or when the latest automatic update preview is insufficient for the next decision.\n" +
+			"- `subagent_inspect`: read more context only when the user explicitly asks, or when the latest automatic update preview is truncated or otherwise insufficient for the next decision. Use `last` for the full latest message, `recent` for several recent messages, or `full` for the full child session history (rare).\n" +
 			"- `subagent_list`: recover forgotten IDs or reconstruct context after context loss; not for polling progress.\n" +
 			"- `subagent_finalize`: ask a subagent to finish cleanly after its current safe point.\n" +
 			"- `subagent_stop`: immediately cancel a subagent when it is obsolete, harmful, or explicitly unwanted.\n\n" +

@@ -3,12 +3,14 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/session"
 )
 
@@ -56,7 +58,53 @@ func TestSubagentCrossRootRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "cross-root")
 }
 
-func TestSubagentEnvelopePersistedBeforeHandoffAndNotPublicQueue(t *testing.T) {
+func TestSubagentEnvelopePersistedWhenQueuedBeforeParentDrain(t *testing.T) {
+	root := session.New(session.WithID("root"))
+	store := session.NewInMemorySessionStore()
+	require.NoError(t, store.UpdateSession(t.Context(), root))
+	r := &LocalRuntime{sessionStore: store, steerQueue: rejectingQueue{}, followUpQueue: rejectingQueue{}}
+	m := NewSubagentManager(r)
+	child := session.NewRuntimeManagedSubSession(root, session.WithID("child"))
+	h := &subagentHandle{id: child.ID, shortID: "child", parent: root, sess: child, done: make(chan struct{})}
+	m.all[h.id] = h
+
+	m.enqueueEnvelope(t.Context(), h, SubagentEnvelope{SubAgentID: child.ID, AgentName: "implementer", Kind: "turn_completed", Status: "waiting", Preview: "done"})
+
+	got, err := store.GetSession(t.Context(), root.ID)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 1)
+	assert.Equal(t, session.MessageKindSubagentEnvelope, got.Messages[0].Message.Kind)
+	assert.Contains(t, got.Messages[0].Message.Message.Content, "turn finished")
+
+	var events []Event
+	drained := m.DrainEnvelopes(t.Context(), root, EventSinkFunc(func(ev Event) { events = append(events, ev) }))
+	require.True(t, drained)
+	got, err = store.GetSession(t.Context(), root.ID)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 1, "parent drain must not duplicate an already persisted envelope")
+	require.Len(t, events, 2)
+	assert.IsType(t, &UserMessageEvent{}, events[0])
+	assert.IsType(t, &LiveSessionTreeChangedEvent{}, events[1])
+}
+
+func TestSubagentEnvelopeMarksTruncatedPreviewInParentText(t *testing.T) {
+	root := session.New(session.WithID("root"))
+	child := session.NewRuntimeManagedSubSession(root, session.WithID("child"))
+	h := &subagentHandle{id: child.ID, shortID: "child", agentName: "implementer", parent: root, sess: child, done: make(chan struct{})}
+	child.AddMessage(session.NewAgentMessage("implementer", sessionAssistantMessage(strings.Repeat("x", subagentEnvelopePreviewMaxRunes+1))))
+
+	env := h.envelope("turn_completed", "waiting")
+	require.True(t, env.Truncated)
+	require.Len(t, []rune(env.Preview), subagentEnvelopePreviewMaxRunes)
+	assert.Contains(t, env.parentText(), "Preview (short, truncated; use subagent_inspect")
+	assert.Contains(t, env.parentText(), "full last message or more session history")
+}
+
+func sessionAssistantMessage(content string) *chat.Message {
+	return &chat.Message{Role: chat.MessageRoleAssistant, Content: content}
+}
+
+func TestParentDrainPersistsLegacyQueuedSubagentEnvelope(t *testing.T) {
 	root := session.New(session.WithID("root"))
 	store := session.NewInMemorySessionStore()
 	require.NoError(t, store.UpdateSession(t.Context(), root))
@@ -72,8 +120,9 @@ func TestSubagentEnvelopePersistedBeforeHandoffAndNotPublicQueue(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got.Messages, 1)
 	assert.Equal(t, session.MessageKindSubagentEnvelope, got.Messages[0].Message.Kind)
-	require.Len(t, events, 1)
+	require.Len(t, events, 2)
 	assert.IsType(t, &UserMessageEvent{}, events[0])
+	assert.IsType(t, &LiveSessionTreeChangedEvent{}, events[1])
 }
 
 func TestParentIdleResumeEventsStableType(t *testing.T) {

@@ -54,7 +54,7 @@ func (s *ToolSet) Tools(context.Context) ([]tools.Tool, error) {
 		{
 			Name:        ToolNameSubagentStart,
 			Category:    "subagents",
-			Description: s.toolDescription("Start a persistent runtime-managed subagent in the background. The subagent gets its own session and reports back through automatic runtime updates. Use this to parallelize independent work with a clear owner. After starting, continue only with work independent of the delegated scope, or end your turn and wait for the automatic update/result envelope; do not poll for progress."),
+			Description: s.toolDescription("Start a persistent runtime-managed subagent in the background. The subagent gets its own session and reports back through automatic runtime updates. Use this to parallelize independent work with a clear owner. After starting, continue only with work independent of the delegated scope, or end your turn and wait for automatic update/result envelopes. Envelopes arrive at direct-child turn boundaries, including when that child parks to wait on its own descendants; they are short previews, not full transcripts; do not poll for progress."),
 			Parameters:  tools.MustSchemaFor[StartArgs](),
 			Annotations: tools.ToolAnnotations{ReadOnlyHint: true, Title: "Start subagent"},
 		},
@@ -68,7 +68,7 @@ func (s *ToolSet) Tools(context.Context) ([]tools.Tool, error) {
 		{
 			Name:        ToolNameSubagentInspect,
 			Category:    "subagents",
-			Description: "Read context from a runtime-managed subagent session only after an automatic update when more detail is needed, or when the user explicitly asks. Do not use this to poll for progress. Modes: last, recent, or full.",
+			Description: "Read context from a runtime-managed subagent session only after an automatic update when more detail is needed, or when the user explicitly asks. Automatic envelopes contain short previews and say when truncated; use inspect mode last for the full latest message, recent for several messages, or full for the full child session history. Do not use this to poll for progress.",
 			Parameters:  tools.MustSchemaFor[InspectArgs](),
 			Annotations: tools.ToolAnnotations{ReadOnlyHint: true, Title: "Inspect subagent"},
 		},

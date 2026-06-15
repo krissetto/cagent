@@ -77,7 +77,12 @@ func TestRuntimeManagedSubagentPromptGatedSeparatelyFromTransferPrompt(t *testin
 				assert.Contains(t, text, "end your turn and wait")
 				assert.Contains(t, text, "Do not poll for progress")
 				assert.Contains(t, text, "do not call `subagent_inspect` or `subagent_list` just to check whether the subagent is done")
-				assert.Contains(t, text, "automatic subagent update/result envelope")
+				assert.Contains(t, text, "subagent update/result envelope messages")
+				assert.Contains(t, text, "when a direct child subagent reaches a turn boundary")
+				assert.Contains(t, text, "parks to wait on its own descendants")
+				assert.Contains(t, text, "short preview")
+				assert.Contains(t, text, "If the preview is truncated, the envelope says so")
+				assert.Contains(t, text, "Use `last` for the full latest message")
 			} else {
 				assert.NotContains(t, text, "runtime-managed subagents")
 				assert.NotContains(t, text, "Do not poll for progress")

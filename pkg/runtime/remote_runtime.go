@@ -190,6 +190,43 @@ func (r *RemoteRuntime) EmitStartupInfo(ctx context.Context, _ *session.Session,
 	events.Emit(ToolsetInfo(toolCount, false, agentName))
 }
 
+// EmitSessionStartupInfo emits startup/sidebar metadata for a specific
+// session/agent without relying on the active runtime agent. Attached session
+// tabs use this to hydrate their Agent/Tools sidebar sections independently of
+// the root tab's one-shot startup event flow.
+func (r *RemoteRuntime) EmitSessionStartupInfo(ctx context.Context, _ *session.Session, agentName string, events EventSink) {
+	if strings.TrimSpace(agentName) == "" {
+		agentName, _ = r.resolvedAgent(ctx)
+	}
+
+	details := r.agentDetailsFromConfig(ctx)
+	var selected AgentDetails
+	for _, detail := range details {
+		if detail.Name == agentName {
+			selected = detail
+			break
+		}
+	}
+	model := selected.Model
+	if selected.Provider != "" && model != "" {
+		model = selected.Provider + "/" + selected.Model
+	}
+	events.Emit(AgentInfo(agentName, model, selected.Description, ""))
+	events.Emit(TeamInfo(details, agentName))
+
+	if len(details) == 0 {
+		return
+	}
+	events.Emit(ToolsetInfo(0, true, agentName))
+	toolCount, err := r.client.GetAgentToolCount(ctx, r.agentFilename, agentName)
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to get attached agent tool count", "agent", agentName, "error", err)
+		events.Emit(ToolsetInfo(0, false, agentName))
+		return
+	}
+	events.Emit(ToolsetInfo(toolCount, false, agentName))
+}
+
 // EmitAgentInfo emits agent and team info without re-fetching tool counts.
 func (r *RemoteRuntime) EmitAgentInfo(ctx context.Context, events EventSink) {
 	agentName, cfg := r.resolvedAgent(ctx)

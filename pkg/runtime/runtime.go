@@ -1097,7 +1097,13 @@ func (r *LocalRuntime) emitToolsChanged() {
 // sidebar's agent/model/thinking display. It returns false when sending was
 // aborted (e.g. the context was cancelled). Shared by EmitStartupInfo and
 // EmitAgentInfo so both render identical model labels.
-func (r *LocalRuntime) emitAgentAndTeamInfo(ctx context.Context, a *agent.Agent, send func(Event) bool) bool {
+func (r *LocalRuntime) emitAgentAndTeamInfo(ctx context.Context, a *agent.Agent, currentAgentName string, send func(Event) bool) bool {
+	if a == nil {
+		return true
+	}
+	if currentAgentName == "" {
+		currentAgentName = a.Name()
+	}
 	modelLabel := r.getEffectiveModelID(a).String()
 	if a.HasHarness() {
 		modelLabel = agentModelLabel(a)
@@ -1105,7 +1111,7 @@ func (r *LocalRuntime) emitAgentAndTeamInfo(ctx context.Context, a *agent.Agent,
 	if !send(AgentInfo(a.Name(), modelLabel, a.Description(), a.WelcomeMessage())) {
 		return false
 	}
-	return send(TeamInfo(r.agentDetailsFromTeam(ctx), r.CurrentAgentName()))
+	return send(TeamInfo(r.agentDetailsFromTeam(ctx), currentAgentName))
 }
 
 // EmitAgentInfo implements [Runtime.EmitAgentInfo]: it refreshes the agent and
@@ -1115,7 +1121,7 @@ func (r *LocalRuntime) EmitAgentInfo(ctx context.Context, events EventSink) {
 	if a == nil {
 		return
 	}
-	r.emitAgentAndTeamInfo(ctx, a, func(event Event) bool {
+	r.emitAgentAndTeamInfo(ctx, a, a.Name(), func(event Event) bool {
 		if ctx.Err() != nil {
 			return false
 		}
@@ -1148,7 +1154,7 @@ func (r *LocalRuntime) EmitStartupInfo(ctx context.Context, sess *session.Sessio
 	// Emit agent and team information immediately for fast sidebar display.
 	// Use getEffectiveModelID to account for active fallback cooldowns.
 	modelID := r.getEffectiveModelID(a)
-	if !r.emitAgentAndTeamInfo(ctx, a, send) {
+	if !r.emitAgentAndTeamInfo(ctx, a, a.Name(), send) {
 		return
 	}
 
@@ -1200,7 +1206,7 @@ func (r *LocalRuntime) EmitStartupInfo(ctx context.Context, sess *session.Sessio
 	// the TUI is not yet ready to render. The actual prompt happens on
 	// the first RunStream when the user is interacting with the agent.
 	nonInteractiveCtx := mcptools.WithoutInteractivePrompts(ctx)
-	r.emitToolsProgressively(nonInteractiveCtx, a, send)
+	r.emitToolsProgressively(nonInteractiveCtx, a, a.Name(), send)
 
 	// Flush any agent warnings: load-time warnings recorded at agent
 	// construction (WithLoadTimeWarnings) and per-toolset warnings recorded
@@ -1212,21 +1218,68 @@ func (r *LocalRuntime) EmitStartupInfo(ctx context.Context, sess *session.Sessio
 	r.emitAgentWarnings(a, events)
 }
 
+// EmitSessionStartupInfo emits sidebar startup metadata for a specific
+// session/agent without consuming the runtime-wide startup-info gate. It is
+// used by attached subagent tabs: transcript and topology come from the
+// durable session store, but agent/team/tool metadata is runtime/config state
+// and must be re-hydrated for each attached view.
+func (r *LocalRuntime) EmitSessionStartupInfo(ctx context.Context, sess *session.Session, agentName string, events EventSink) {
+	var a *agent.Agent
+	if strings.TrimSpace(agentName) != "" {
+		var err error
+		a, err = r.team.Agent(agentName)
+		if err != nil {
+			a = nil
+		}
+	}
+	if a == nil && sess != nil {
+		a = r.resolveSessionAgent(sess)
+	}
+	if a == nil {
+		a = r.CurrentAgent()
+	}
+	if a == nil {
+		return
+	}
+	if agentName == "" {
+		agentName = a.Name()
+	}
+
+	send := func(event Event) bool {
+		if ctx.Err() != nil {
+			return false
+		}
+		events.Emit(event)
+		return true
+	}
+	if !r.emitAgentAndTeamInfo(ctx, a, agentName, send) {
+		return
+	}
+	r.emitToolsProgressively(mcptools.WithoutInteractivePrompts(ctx), a, agentName, send)
+	r.emitAgentWarnings(a, events)
+}
+
 // emitToolsProgressively loads tools from each toolset and emits progress updates.
 // This allows the UI to show the tool count incrementally as each toolset loads,
 // with a spinner indicating that more tools may be coming.
-func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agent, send func(Event) bool) {
+func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agent, agentName string, send func(Event) bool) {
+	if a == nil {
+		return
+	}
+	if agentName == "" {
+		agentName = a.Name()
+	}
 	toolsets := a.ToolSets()
 	totalToolsets := len(toolsets)
 
 	// If no toolsets, emit final state immediately
 	if totalToolsets == 0 {
-		send(ToolsetInfo(0, false, r.CurrentAgentName()))
+		send(ToolsetInfo(0, false, agentName))
 		return
 	}
 
 	// Emit initial loading state
-	if !send(ToolsetInfo(0, true, r.CurrentAgentName())) {
+	if !send(ToolsetInfo(0, true, agentName)) {
 		return
 	}
 
@@ -1288,13 +1341,13 @@ func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agen
 		totalTools += len(ts)
 
 		// Emit progress update - still loading unless this is the last toolset
-		if !send(ToolsetInfo(totalTools, !isLast, r.CurrentAgentName())) {
+		if !send(ToolsetInfo(totalTools, !isLast, agentName)) {
 			return
 		}
 	}
 
 	// Emit final state (not loading)
-	send(ToolsetInfo(totalTools, false, r.CurrentAgentName()))
+	send(ToolsetInfo(totalTools, false, agentName))
 }
 
 func (r *LocalRuntime) Resume(_ context.Context, req ResumeRequest) {

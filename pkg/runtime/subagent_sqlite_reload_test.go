@@ -3,6 +3,7 @@ package runtime
 import (
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,78 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/subagents"
 )
+
+func TestSQLiteReloadedParentKeepsQueuedSubagentEnvelope(t *testing.T) {
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+
+	store, err := session.NewSQLiteSessionStore(dbPath)
+	require.NoError(t, err)
+	root := session.New(session.WithID("parent-session"))
+	require.NoError(t, store.AddSession(ctx, root))
+
+	rt := &LocalRuntime{sessionStore: store}
+	m := NewSubagentManager(rt)
+	child := session.NewRuntimeManagedSubSession(root, session.WithID("child-session"))
+	require.NoError(t, store.AddSubSession(ctx, root.ID, child))
+	root.AddSubSession(child)
+	h := &subagentHandle{id: child.ID, shortID: "child", parent: root, sess: child, done: make(chan struct{})}
+	m.all[h.id] = h
+
+	m.enqueueEnvelope(ctx, h, SubagentEnvelope{SubAgentID: child.ID, AgentName: "worker", Kind: "turn_completed", Status: "waiting", Preview: "done"})
+	require.NoError(t, store.Close())
+
+	reloaded, err := session.NewSQLiteSessionStore(dbPath)
+	require.NoError(t, err)
+	defer func() { _ = reloaded.Close() }()
+	parent, err := reloaded.GetSession(ctx, root.ID)
+	require.NoError(t, err)
+	require.True(t, transcriptContainsKind(parent, session.MessageKindSubagentEnvelope, "turn finished"), "reloaded parent transcript missing subagent envelope: %#v", parent.Messages)
+}
+
+func TestSQLiteReloadedParentKeepsConcurrentQueuedSubagentEnvelopes(t *testing.T) {
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+
+	store, err := session.NewSQLiteSessionStore(dbPath)
+	require.NoError(t, err)
+	root := session.New(session.WithID("parent-session"))
+	require.NoError(t, store.AddSession(ctx, root))
+
+	rt := &LocalRuntime{sessionStore: store}
+	m := NewSubagentManager(rt)
+	children := make([]*subagentHandle, 8)
+	for i := range children {
+		id := "child-" + string(rune('a'+i))
+		child := session.NewRuntimeManagedSubSession(root, session.WithID(id))
+		require.NoError(t, store.AddSubSession(ctx, root.ID, child))
+		root.AddSubSession(child)
+		h := &subagentHandle{id: child.ID, shortID: shortID(child.ID), parent: root, sess: child, done: make(chan struct{})}
+		m.all[h.id] = h
+		children[i] = h
+	}
+
+	var wg sync.WaitGroup
+	for _, h := range children {
+		wg.Add(1)
+		go func(h *subagentHandle) {
+			defer wg.Done()
+			m.enqueueEnvelope(ctx, h, SubagentEnvelope{SubAgentID: h.id, AgentName: "worker", Kind: "turn_completed", Status: "waiting", Preview: "done " + h.id})
+		}(h)
+	}
+	wg.Wait()
+	require.NoError(t, store.Close())
+
+	reloaded, err := session.NewSQLiteSessionStore(dbPath)
+	require.NoError(t, err)
+	defer func() { _ = reloaded.Close() }()
+	parent, err := reloaded.GetSession(ctx, root.ID)
+	require.NoError(t, err)
+	require.Equal(t, len(children), transcriptKindCount(parent, session.MessageKindSubagentEnvelope), "reloaded parent transcript missing one of the concurrently queued envelopes: %#v", parent.Messages)
+	for _, h := range children {
+		require.True(t, transcriptContainsKind(parent, session.MessageKindSubagentEnvelope, "done "+h.id))
+	}
+}
 
 func TestSQLiteReloadedSubagentSessionKeepsDirectTranscript(t *testing.T) {
 	ctx := t.Context()
@@ -67,6 +140,34 @@ func TestSQLiteReloadedSubagentSessionKeepsDirectTranscript(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, transcriptContains(child, "durable child prompt"), "reloaded child transcript missing user prompt: %#v", child.Messages)
 	require.True(t, transcriptContainsPrefix(child, "child reply "), "reloaded child transcript missing assistant reply: %#v", child.Messages)
+}
+
+func transcriptKindCount(sess *session.Session, kind session.MessageKind) int {
+	if sess == nil {
+		return 0
+	}
+	var count int
+	for _, item := range sess.Messages {
+		if item.Message != nil && item.Message.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func transcriptContainsKind(sess *session.Session, kind session.MessageKind, text string) bool {
+	if sess == nil {
+		return false
+	}
+	for _, item := range sess.Messages {
+		if item.Message == nil || item.Message.Kind != kind {
+			continue
+		}
+		if strings.Contains(item.Message.Message.Content, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func transcriptContainsPrefix(sess *session.Session, prefix string) bool {
