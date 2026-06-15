@@ -408,17 +408,18 @@ func (r *LocalRuntime) handleTaskTransfer(ctx context.Context, sess *session.Ses
 
 	a := r.CurrentAgent()
 	var childAgentName string
-	if subAgent, spec, ok := a.SubAgentForName(params.Agent); ok && subAgent != nil {
-		childAgentName = spec.Agent
-		if childAgentName == "" {
-			childAgentName = subAgent.Name()
+	for _, transferAgent := range a.TransferAgents() {
+		if transferAgent.Name() == params.Agent {
+			childAgentName = transferAgent.Name()
+			break
 		}
-	} else {
+	}
+	if childAgentName == "" {
 		var names []string
-		for _, spec := range a.SubAgentSpecs() {
-			names = append(names, spec.Name)
+		for _, transferAgent := range a.TransferAgents() {
+			names = append(names, transferAgent.Name())
 		}
-		return tools.ResultError(fmt.Sprintf("cannot transfer task to %s: agent %s does not list %s in its subagents list; available subagents: %s", params.Agent, a.Name(), params.Agent, strings.Join(names, ", "))), nil
+		return tools.ResultError(fmt.Sprintf("cannot transfer task to %s: agent %s does not list %s in its transfer_agents list; available transfer agents: %s", params.Agent, a.Name(), params.Agent, strings.Join(names, ", "))), nil
 	}
 
 	slog.DebugContext(ctx, "Transferring task to agent", "from_agent", a.Name(), "to_agent", params.Agent, "task", params.Task)

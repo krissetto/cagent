@@ -968,6 +968,24 @@ func buildInvariantSystemMessages(a *agent.Agent) []chat.Message {
 		})
 	}
 
+	if transferAgents := a.TransferAgents(); len(transferAgents) > 0 {
+		var text strings.Builder
+		var validAgentIDs []string
+		for _, transferAgent := range transferAgents {
+			text.WriteString("Name: ")
+			text.WriteString(transferAgent.Name())
+			text.WriteString(" | Description: ")
+			text.WriteString(transferAgent.Description())
+			text.WriteString("\n")
+			validAgentIDs = append(validAgentIDs, transferAgent.Name())
+		}
+
+		messages = append(messages, chat.Message{
+			Role:    chat.MessageRoleSystem,
+			Content: "You are a multi-agent system, make sure to answer the user query in the most helpful way possible. You have access to these sub-agents:\n" + text.String() + "\nIMPORTANT: You can ONLY transfer tasks to the agents listed above using their ID. The valid agent names are: " + strings.Join(validAgentIDs, ", ") + ". You MUST NOT attempt to transfer to any other agent IDs - doing so will cause system errors.\n\nIf you are the best to answer the question according to your description, you can answer it.\n\nIf another agent is better for answering the question according to its description, call `transfer_task` function to transfer the question to that agent using the agent's ID. When transferring, do not generate any text other than the function call.\n\nWhen the task involves files, always include their absolute paths in the `task` description (never just bare filenames). Sub-agents start in a fresh session and do not see the conversation history or files attached by the user, so a non-absolute path may resolve to the wrong file or force the sub-agent to scan the filesystem.\n\n",
+		})
+	}
+
 	if handoffs := a.Handoffs(); len(handoffs) > 0 {
 		var text strings.Builder
 		var validAgentIDs []string

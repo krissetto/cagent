@@ -30,6 +30,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin/lsp"
 	skillstool "github.com/docker/docker-agent/pkg/tools/builtin/skills"
 	"github.com/docker/docker-agent/pkg/tools/builtin/subagents"
+	"github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
 	"github.com/docker/docker-agent/pkg/tools/codemode"
 )
 
@@ -280,6 +281,14 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		a, exists := agentsByName[agentConfig.Name]
 		if !exists {
 			continue
+		}
+
+		transferAgents, err := resolveAgentRefs(ctx, agentConfig.TransferAgents, agentsByName, externalAgents, &agents, runConfig, &loadOpts)
+		if err != nil {
+			return nil, fmt.Errorf("agent '%s': resolving transfer agents: %w", agentConfig.Name, err)
+		}
+		if len(transferAgents) > 0 {
+			agent.WithTransferAgents(transferAgents...)(a)
 		}
 
 		refs, specs, err := runtimeSubagentRefs(agentConfig.SubagentSpecs)
@@ -572,6 +581,9 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 		toolSets = append(toolSets, deferredToolset)
 	}
 
+	if len(a.TransferAgents) > 0 {
+		toolSets = append(toolSets, transfertask.New())
+	}
 	if len(a.Handoffs) > 0 {
 		toolSets = append(toolSets, handoff.New())
 	}

@@ -112,6 +112,15 @@ func WithIdleAutoFinalizeTimeout(timeout time.Duration) Opt {
 	}
 }
 
+func WithTransferAgents(transferAgents ...*Agent) Opt {
+	return func(a *Agent) {
+		a.transferAgents = transferAgents
+		for _, transferAgent := range transferAgents {
+			transferAgent.parents = append(transferAgent.parents, a)
+		}
+	}
+}
+
 func WithHandoffs(handoffs ...*Agent) Opt {
 	return func(a *Agent) {
 		a.handoffs = handoffs

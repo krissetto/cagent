@@ -32,6 +32,7 @@ type Agent struct {
 	modelOverrides          atomic.Pointer[[]provider.Provider] // Optional model override(s) set at runtime (supports alloy)
 	subAgents               []*Agent
 	subAgentSpecs           []SubAgentSpec
+	transferAgents          []*Agent
 	handoffs                []*Agent
 	parents                 []*Agent
 	addDate                 bool
@@ -180,6 +181,11 @@ func (a *Agent) SubAgentForName(name string) (*Agent, SubAgentSpec, bool) {
 }
 
 // Handoffs returns the list of handoff agents
+
+func (a *Agent) TransferAgents() []*Agent {
+	return a.transferAgents
+}
+
 func (a *Agent) Handoffs() []*Agent {
 	return a.handoffs
 }

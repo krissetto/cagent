@@ -571,9 +571,9 @@ func TestTransferTaskPromptExcludesParents(t *testing.T) {
 		agent.WithDescription("Planner agent"),
 	)
 	// Connect: root -> librarian (root has librarian as sub-agent)
-	agent.WithSubAgents(librarian)(root)
+	agent.WithTransferAgents(librarian)(root)
 	// Connect: planner -> root (planner has root as sub-agent, making root's parent = planner)
-	agent.WithSubAgents(root)(planner)
+	agent.WithTransferAgents(root)(planner)
 
 	// Verify parent relationship was established
 	require.Len(t, root.Parents(), 1)

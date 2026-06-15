@@ -430,6 +430,7 @@ type AgentConfig struct {
 	Harness        *HarnessConfig  `json:"harness,omitempty"`
 	SubAgents      []string        `json:"-" yaml:"-"`
 	SubagentSpecs  SubagentSpecs   `json:"subagents,omitempty" yaml:"subagents,omitempty"`
+	TransferAgents []string        `json:"transfer_agents,omitempty" yaml:"transfer_agents,omitempty"`
 	Handoffs       []string        `json:"handoffs,omitempty"`
 
 	AddDate            bool `json:"add_date,omitempty"`
