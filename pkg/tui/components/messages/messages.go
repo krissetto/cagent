@@ -66,6 +66,7 @@ type Model interface {
 	AddShellOutputMessage(content string) tea.Cmd
 	AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd
 	LoadFromSession(sess *session.Session) tea.Cmd
+	HasSessionMessage(kind session.MessageKind, role chat.MessageRole, agentName, content string, sessionPos int) bool
 
 	RemoveSpinner()
 	ScrollToBottom() tea.Cmd
@@ -1300,6 +1301,48 @@ func (m *model) addMessage(msg *types.Message) tea.Cmd {
 	}
 
 	return tea.Batch(cmds...)
+}
+
+func (m *model) HasSessionMessage(kind session.MessageKind, role chat.MessageRole, agentName, content string, sessionPos int) bool {
+	if sessionPos >= 0 {
+		for _, msg := range m.messages {
+			if msg.SessionPosition != nil && *msg.SessionPosition == sessionPos {
+				return true
+			}
+		}
+	}
+	wantType := messageTypeFromSessionRole(kind, role)
+	if wantType == types.MessageTypeSpinner {
+		return false
+	}
+	for _, msg := range m.messages {
+		if msg == nil || msg.Type != wantType {
+			continue
+		}
+		if agentName != "" && msg.Sender != "" && msg.Sender != agentName {
+			continue
+		}
+		if strings.TrimSpace(msg.Content) == strings.TrimSpace(content) {
+			return true
+		}
+	}
+	return false
+}
+
+func messageTypeFromSessionRole(kind session.MessageKind, role chat.MessageRole) types.MessageType {
+	if kind == session.MessageKindSubagentEnvelope {
+		return types.MessageTypeSubAgent
+	}
+	switch role {
+	case chat.MessageRoleUser:
+		return types.MessageTypeUser
+	case chat.MessageRoleAssistant:
+		return types.MessageTypeAssistant
+	case chat.MessageRoleTool:
+		return types.MessageTypeToolResult
+	default:
+		return types.MessageTypeSpinner
+	}
 }
 
 func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {

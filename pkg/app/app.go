@@ -325,6 +325,13 @@ func eventSessionID(ev runtime.Event) string {
 	return ""
 }
 
+// IsAttachedLive reports whether this app is attached to a currently live
+// descendant session. Live attaches hydrate transcript through the runtime
+// snapshot/event stream rather than preloading store history into the viewport.
+func (a *App) IsAttachedLive() bool {
+	return a != nil && a.attached && !a.readOnly && a.attachedSend != nil
+}
+
 func (a *App) SendFirstMessage() tea.Cmd {
 	if a.firstMessage == nil {
 		return nil

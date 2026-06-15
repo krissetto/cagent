@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	chatmsg "github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sound"
@@ -81,6 +82,9 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	// ===== Content Events =====
 	case *runtime.UserMessageEvent:
+		if p.alreadyRenderedSessionMessage(msg.Kind, chatmsg.MessageRoleUser, "", msg.Message, msg.SessionPosition) {
+			return true, nil
+		}
 		if msg.Kind == session.MessageKindSubagentEnvelope || looksLikeRawSubagentEnvelope(msg.Message) {
 			return true, p.messages.AddSubAgentMessage(subAgentInfoFromText(msg.Message))
 		}
@@ -242,8 +246,18 @@ func (p *chatPage) handleStreamStarted(msg *runtime.StreamStartedEvent) tea.Cmd 
 	return tea.Batch(pendingCmd, spinnerCmd, sidebarCmd)
 }
 
+func (p *chatPage) alreadyRenderedSessionMessage(kind session.MessageKind, role chatmsg.MessageRole, agentName, content string, sessionPos int) bool {
+	if !p.app.IsAttachedLive() {
+		return false
+	}
+	return p.messages.HasSessionMessage(kind, role, agentName, content, sessionPos)
+}
+
 func (p *chatPage) handleAgentChoice(msg *runtime.AgentChoiceEvent) tea.Cmd {
 	if p.streamCancelled {
+		return nil
+	}
+	if p.alreadyRenderedSessionMessage(session.MessageKindMessage, chatmsg.MessageRoleAssistant, msg.AgentName, msg.Content, -1) {
 		return nil
 	}
 	// Track that we've received assistant content

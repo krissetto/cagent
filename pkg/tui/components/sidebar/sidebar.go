@@ -17,6 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/paths"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
@@ -414,24 +415,111 @@ func persistedLiveSessionTree(ctx context.Context, root *session.Session, store 
 	if len(rootNode.Children) == 0 {
 		return nil
 	}
+	assignPersistedLiveSessionDepth(rootNode, 0)
 	return &runtime.LiveSessionTree{Root: rootNode}
 }
 
 func persistedLiveSessionNode(sess *session.Session, isRoot bool) *runtime.LiveSessionNode {
+	preview := persistedSessionPreview(sess)
 	node := &runtime.LiveSessionNode{
-		ID:        sess.ID,
-		ParentID:  sess.ParentID,
-		RootID:    sess.EffectiveRootID(),
-		AgentName: sess.AgentName,
-		Title:     sess.Title,
-		Status:    "waiting",
-		Live:      false,
-		CreatedAt: sess.CreatedAt,
+		ID:          sess.ID,
+		ParentID:    sess.ParentID,
+		RootID:      sess.EffectiveRootID(),
+		AgentName:   persistedSessionAgentName(sess),
+		Title:       sess.Title,
+		Preview:     preview,
+		LastPreview: preview,
+		Status:      persistedSessionStatus(sess),
+		Live:        false,
+		CreatedAt:   sess.CreatedAt,
+		UpdatedAt:   persistedSessionUpdatedAt(sess),
 	}
 	if node.Title == "" && isRoot {
 		node.Title = "root"
 	}
 	return node
+}
+
+func persistedSessionStatus(sess *session.Session) string {
+	return "waiting"
+}
+
+func persistedSessionAgentName(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+	if sess.AgentName != "" {
+		return sess.AgentName
+	}
+	for _, msg := range slices.Backward(sess.OwnMessages()) {
+		if msg.AgentName != "" {
+			return msg.AgentName
+		}
+	}
+	return ""
+}
+
+func persistedSessionPreview(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+	for _, msg := range slices.Backward(sess.OwnMessages()) {
+		if msg.Message.Role == chat.MessageRoleSystem {
+			continue
+		}
+		if preview := strings.TrimSpace(persistedMessagePreview(msg.Message)); preview != "" {
+			return truncateRunes(preview, 200)
+		}
+	}
+	return ""
+}
+
+func persistedMessagePreview(msg chat.Message) string {
+	if msg.Content != "" {
+		return msg.Content
+	}
+	if len(msg.MultiContent) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, part := range msg.MultiContent {
+		if part.Type != chat.MessagePartTypeText || part.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(part.Text)
+	}
+	return b.String()
+}
+
+func persistedSessionUpdatedAt(sess *session.Session) time.Time {
+	if sess == nil {
+		return time.Time{}
+	}
+	return sess.CreatedAt
+}
+
+func assignPersistedLiveSessionDepth(node *runtime.LiveSessionNode, depth int) {
+	if node == nil {
+		return
+	}
+	node.Depth = depth
+	for _, child := range node.Children {
+		assignPersistedLiveSessionDepth(child, depth+1)
+	}
+}
+
+func truncateRunes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit])
 }
 
 func (m *model) setChildQueue(event *runtime.SessionQueueEvent) {

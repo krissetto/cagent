@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -239,6 +240,43 @@ func TestHandleAttachSessionReloadedPersistedChildViewRendersHistoryBody(t *test
 	view := ansi.Strip(m.View().Content)
 	require.Contains(t, view, "persisted child prompt after reload")
 	require.Contains(t, view, "persisted child answer after reload")
+}
+
+func TestHandleAttachSessionLiveSwitchInitDedupesStoreAndSnapshotHistory(t *testing.T) {
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	root := session.New(session.WithID("root"))
+	require.NoError(t, store.AddSession(ctx, root))
+	liveChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithAgentName("greppy"))
+	storedChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithAgentName("greppy"))
+	storedChild.AddMessage(session.UserMessage("dedupe live prompt"))
+	storedChild.AddMessage(&session.Message{AgentName: "greppy", Message: chat.Message{Role: chat.MessageRoleAssistant, Content: "dedupe live answer"}})
+	require.NoError(t, store.AddSubSession(ctx, "root", storedChild))
+
+	rt := &attachHydrationRuntime{store: store, live: liveChild, snapshot: []runtime.Event{
+		runtime.UserMessage("dedupe live prompt", "child", nil, 0),
+		runtime.AgentChoice("greppy", "child", "dedupe live answer"),
+	}}
+	rootApp := app.New(ctx, rt, root)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+
+	model, cmd := m.handleAttachSession("child")
+	require.NotNil(t, cmd)
+	m = model.(*appModel)
+	if msg := cmd(); msg != nil {
+		model, updateCmd := m.Update(msg)
+		m = model.(*appModel)
+		if updateCmd != nil {
+			_ = updateCmd()
+		}
+	}
+
+	m.chatPage.SetSize(120, 30)
+	view := ansi.Strip(m.chatPage.View())
+	require.Equal(t, 1, strings.Count(view, "dedupe live prompt"), view)
+	require.Equal(t, 1, strings.Count(view, "dedupe live answer"), view)
+	require.False(t, m.application.IsReadOnly())
+	require.Equal(t, 1, rt.attachCalls)
 }
 
 func TestHandleAttachSessionHydratesEmptyLiveChildFromStoreAndKeepsChildQueue(t *testing.T) {
