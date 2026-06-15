@@ -177,6 +177,14 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 		return true, p.forwardToSidebar(msg)
 
 	case *runtime.ParentIdleEvent:
+		// The parent has parked waiting on live child work: its own stream is
+		// idle. Clear working and reset the depth counter so a later
+		// StreamStarted/Stopped pair can't leave the counter out of sync with
+		// the working flag (which manifested as a spinner stuck between
+		// messages after a delegation).
+		if p.ownsSessionStream(msg.SessionID) {
+			p.streamDepth = 0
+		}
 		p.refreshLiveSessionTree()
 		cmds := []tea.Cmd{p.setWorking(false), p.setPendingResponse(false), p.flushQueuedFollowUps()}
 		cmds = append(cmds, p.forwardToSidebar(msg))
@@ -268,6 +276,18 @@ func (p *chatPage) ownsSessionStream(sessionID string) bool {
 		return true
 	}
 	return sessionID == p.app.Session().ID
+}
+
+// setWorkingIfStreaming sets the working state to true only while this page's
+// own stream is active (streamDepth > 0). Tool events can be delivered after
+// the turn's StreamStopped due to event throttling/ordering; using this guard
+// for them prevents a late tool event from re-lighting a spinner that no
+// subsequent StreamStopped will clear. Passing working=false always applies.
+func (p *chatPage) setWorkingIfStreaming(working bool) tea.Cmd {
+	if working && p.streamDepth == 0 {
+		return nil
+	}
+	return p.setWorking(working)
 }
 
 func (p *chatPage) alreadyHydratedPosition(sessionPos int) bool {
@@ -364,6 +384,8 @@ func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd 
 
 	// Nested same-session stream stopped while an outer one is still active —
 	// keep the working/cancel state intact and just refresh the sidebar.
+	// streamDepth is only ever incremented by an owned StreamStarted, so a
+	// remaining depth here means a genuine nested same-session stream.
 	if p.streamDepth > 0 {
 		return tea.Batch(p.messages.ScrollToBottom(), sidebarCmd)
 	}
@@ -421,7 +443,11 @@ func (p *chatPage) handleToolCallConfirmation(msg *runtime.ToolCallConfirmationE
 
 func (p *chatPage) handleToolCall(msg *runtime.ToolCallEvent) tea.Cmd {
 	p.setPendingResponse(false)
-	spinnerCmd := p.setWorking(true)
+	// Only assert the working spinner while this page's stream is actually
+	// running. A tool event that arrives after the turn's StreamStopped (e.g.
+	// the trailing subagent_start tool response after a delegation) must not
+	// re-light a spinner that nothing will clear.
+	spinnerCmd := p.setWorkingIfStreaming(true)
 	sidebarCmd := p.forwardToSidebar(msg)
 	toolCmd := p.messages.AddOrUpdateToolCall(msg.AgentName, msg.ToolCall, msg.ToolDefinition, types.ToolStatusRunning)
 	return tea.Batch(toolCmd, p.messages.ScrollToBottom(), spinnerCmd, sidebarCmd)
@@ -432,7 +458,10 @@ func (p *chatPage) handleToolCallOutput(msg *runtime.ToolCallOutputEvent) tea.Cm
 }
 
 func (p *chatPage) handleToolCallResponse(msg *runtime.ToolCallResponseEvent) tea.Cmd {
-	spinnerCmd := p.setWorking(true)
+	// As with handleToolCall, don't re-light the spinner for a tool response
+	// that lands after the turn already stopped (the common case for the
+	// trailing subagent_start response that leaves the parent spinner stuck).
+	spinnerCmd := p.setWorkingIfStreaming(true)
 	sidebarCmd := p.forwardToSidebar(msg)
 
 	status := types.ToolStatusCompleted
