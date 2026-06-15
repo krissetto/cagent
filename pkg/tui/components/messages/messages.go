@@ -64,6 +64,7 @@ type Model interface {
 	AppendToLastMessage(agentName, content string) tea.Cmd
 	AppendReasoning(agentName, content string) tea.Cmd
 	AddShellOutputMessage(content string) tea.Cmd
+	AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd
 	LoadFromSession(sess *session.Session) tea.Cmd
 
 	RemoveSpinner()
@@ -1237,6 +1238,10 @@ func (m *model) AddShellOutputMessage(content string) tea.Cmd {
 	return m.addMessage(types.ShellOutput(content))
 }
 
+func (m *model) AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd {
+	return m.addMessage(types.SubAgent(info))
+}
+
 func (m *model) AddAssistantMessage() tea.Cmd {
 	return m.addMessage(types.Spinner())
 }
@@ -1369,6 +1374,9 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 
 		switch smsg.Message.Role {
 		case chat.MessageRoleUser:
+			if smsg.Kind == session.MessageKindSubagentEnvelope || looksLikeRawSubagentEnvelope(smsg.Message.Content) {
+				continue
+			}
 			msg := types.User(smsg.Message.Content)
 			msgPos := pos
 			msg.SessionPosition = &msgPos
@@ -1440,6 +1448,11 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 
 	cmds = append(cmds, m.ScrollToBottom())
 	return tea.Batch(cmds...)
+}
+
+func looksLikeRawSubagentEnvelope(content string) bool {
+	content = strings.TrimSpace(content)
+	return strings.HasPrefix(content, "<subagent_update") || strings.HasPrefix(content, "<subagent_result") || strings.HasPrefix(content, "<subagent_envelope")
 }
 
 func (m *model) AddOrUpdateToolCall(agentName string, toolCall tools.ToolCall, toolDef tools.Tool, status types.ToolStatus) tea.Cmd {

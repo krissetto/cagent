@@ -207,13 +207,14 @@ func (mv *messageModel) Render(width int) string {
 	cacheable := !mv.isSpinnerDriven() && !mv.finalized
 	if cacheable {
 		c := &mv.renderCache
+		keyContent := msg.Content + subagentCacheKey(msg)
 		if c.valid &&
 			c.width == width &&
 			c.msgType == msg.Type &&
 			c.selected == mv.selected &&
 			c.hovered == mv.hovered &&
 			c.expanded == mv.expanded &&
-			c.content == msg.Content &&
+			c.content == keyContent &&
 			c.sameAgent == mv.sameAgentAsPrevious(msg) {
 			return c.result
 		}
@@ -224,7 +225,7 @@ func (mv *messageModel) Render(width int) string {
 	if cacheable {
 		mv.renderCache = renderCache{
 			valid:     true,
-			content:   msg.Content,
+			content:   msg.Content + subagentCacheKey(msg),
 			msgType:   msg.Type,
 			width:     width,
 			selected:  mv.selected,
@@ -235,6 +236,14 @@ func (mv *messageModel) Render(width int) string {
 		}
 	}
 	return result
+}
+
+func subagentCacheKey(msg *types.Message) string {
+	if msg == nil || msg.SubAgent == nil {
+		return ""
+	}
+	info := msg.SubAgent
+	return string(info.Kind) + "\x00" + info.AgentName + "\x00" + info.ShortID + "\x00" + info.Detail
 }
 
 // isSpinnerDriven reports whether the rendered output animates on every tick
@@ -393,6 +402,11 @@ func (mv *messageModel) render(width int) string {
 			description = ansi.Truncate(description, maxDescWidth, "…")
 		}
 		return spinnerView + " " + styles.MutedStyle.Render(description)
+	case types.MessageTypeSubAgent:
+		if msg.SubAgent == nil {
+			return styles.MutedStyle.Render("Subagent event")
+		}
+		return mv.renderSubAgent(width, msg.SubAgent)
 	default:
 		return msg.Content
 	}
@@ -414,6 +428,71 @@ func (mv *messageModel) render(width int) string {
 // It also returns the list of fenced code blocks emitted by the renderer so
 // that callers can map clicks on the per-block copy affordance back to the
 // underlying raw code.
+
+func (mv *messageModel) renderSubAgent(width int, info *types.SubAgentInfo) string {
+	agent := strings.TrimSpace(info.AgentName)
+	header := ""
+	if agent != "" {
+		header = styles.SubagentAccentStyleFor(agent).Render(agent)
+	}
+	if info.ShortID != "" {
+		idPart := styles.MutedStyle.Render("(" + info.ShortID + ")")
+		if header == "" {
+			header = idPart
+		} else {
+			header += " " + idPart
+		}
+	}
+
+	glyph := "→"
+	trailer := ""
+	switch info.Kind {
+	case types.SubAgentEventStarted:
+		trailer = "started"
+	case types.SubAgentEventSent:
+		trailer = "sent"
+	case types.SubAgentEventTurnCompleted:
+		glyph = "<"
+		trailer = "turn finished"
+	case types.SubAgentEventClosed:
+		glyph = "◇"
+		trailer = "finalized"
+	case types.SubAgentEventStopped:
+		glyph = "■"
+		trailer = "stopped"
+	case types.SubAgentEventFailed:
+		glyph = "!"
+		trailer = "failed"
+	}
+
+	line := styles.ToolCompletedIcon.Render(glyph)
+	if header != "" {
+		line += " " + header
+	}
+	if trailer != "" {
+		line += " " + styles.MutedStyle.Render(trailer)
+	}
+	body := line
+	if info.Kind == types.SubAgentEventFailed {
+		detail := strings.TrimSpace(info.Detail)
+		if info.Truncated {
+			detail = strings.TrimRight(detail, " …") + "…"
+		}
+		if detail != "" {
+			body = line + "\n" + styles.MutedStyle.Render(detail)
+		}
+	}
+	return styles.ToolMessageStyle.Width(width).Render(body)
+}
+
+// SubAgentShortRef returns the short subagent reference represented by this message view, if any.
+func (mv *messageModel) SubAgentShortRef() string {
+	if mv == nil || mv.message == nil || mv.message.Type != types.MessageTypeSubAgent || mv.message.SubAgent == nil {
+		return ""
+	}
+	return strings.TrimSpace(mv.message.SubAgent.ShortID)
+}
+
 func (mv *messageModel) renderAssistantMarkdown(content string, width int) (string, []markdown.CodeBlock, error) {
 	if mv.finalized {
 		r := markdown.NewIncrementalRenderer(width)

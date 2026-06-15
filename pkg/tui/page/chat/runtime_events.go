@@ -3,11 +3,13 @@ package chat
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sound"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
@@ -79,7 +81,23 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	// ===== Content Events =====
 	case *runtime.UserMessageEvent:
+		if msg.Kind == session.MessageKindSubagentEnvelope || looksLikeRawSubagentEnvelope(msg.Message) {
+			return true, nil
+		}
 		return true, p.messages.ReplaceLoadingWithUser(msg.Message, msg.SessionPosition)
+
+	case *runtime.SubAgentStartedEvent:
+		return true, p.messages.AddSubAgentMessage(types.SubAgentInfo{Kind: types.SubAgentEventStarted, AgentName: msg.SubAgent.AgentName, ShortID: msg.SubAgent.ShortID})
+
+	case *runtime.SubAgentSentEvent:
+		return true, p.messages.AddSubAgentMessage(types.SubAgentInfo{Kind: types.SubAgentEventSent, ShortID: sidebarShortID(msg.SubAgentID)})
+
+	case *runtime.SubAgentUpdateEvent:
+		return true, p.messages.AddSubAgentMessage(subAgentInfoFromEnvelope(msg.Envelope))
+
+	case *runtime.LiveSessionTreeChangedEvent:
+		p.sidebar.SetLiveSessionTree(msg.Tree)
+		return true, nil
 
 	case *runtime.AgentChoiceEvent:
 		return true, p.handleAgentChoice(msg)
@@ -391,6 +409,39 @@ func (p *chatPage) handleElicitationRequest(msg *runtime.ElicitationRequestEvent
 		})
 		return tea.Batch(spinnerCmd, dialogCmd)
 	}
+}
+
+func looksLikeRawSubagentEnvelope(content string) bool {
+	content = strings.TrimSpace(content)
+	return strings.HasPrefix(content, "<subagent_update") || strings.HasPrefix(content, "<subagent_result") || strings.HasPrefix(content, "<subagent_envelope")
+}
+
+func subAgentInfoFromEnvelope(env runtime.SubagentEnvelope) types.SubAgentInfo {
+	kind := types.SubAgentEventTurnCompleted
+	switch env.Kind {
+	case "closed":
+		kind = types.SubAgentEventClosed
+	case "stopped":
+		kind = types.SubAgentEventStopped
+	case "failed":
+		kind = types.SubAgentEventFailed
+	}
+	detail := env.Preview
+	if env.Error != "" {
+		if detail != "" {
+			detail += " "
+		}
+		detail += env.Error
+	}
+	return types.SubAgentInfo{Kind: kind, AgentName: env.AgentName, ShortID: sidebarShortID(env.SubAgentID), Detail: detail, Truncated: env.Truncated}
+}
+
+func sidebarShortID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) <= 5 {
+		return id
+	}
+	return id[:5]
 }
 
 // isSuccessfulStop returns true when the stream reason indicates a

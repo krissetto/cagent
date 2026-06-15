@@ -324,6 +324,14 @@ func (p *chatPage) Init() tea.Cmd {
 		}
 	}
 
+	if p.app != nil && p.app.Session() != nil {
+		if tree, ok := p.app.Runtime().(runtime.LiveSessionRuntime); ok {
+			if liveTree, err := tree.LiveSessionTree(context.Background(), p.app.Session().ID); err == nil && liveTree != nil {
+				p.sidebar.SetLiveSessionTree(liveTree)
+			}
+		}
+	}
+
 	return tea.Batch(cmds...)
 }
 

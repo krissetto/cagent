@@ -269,10 +269,36 @@ func isAttachedSessionEvent(ev runtime.Event, sessionID string) bool {
 	if ev == nil {
 		return false
 	}
+	if treeChanged, ok := ev.(*runtime.LiveSessionTreeChangedEvent); ok {
+		return liveTreeContainsSession(treeChanged.Tree, sessionID)
+	}
+	if subUpdate, ok := ev.(*runtime.SubAgentUpdateEvent); ok {
+		return subUpdate.Envelope.ParentSessionID == sessionID || subUpdate.Envelope.SubAgentID == sessionID
+	}
+	if subSent, ok := ev.(*runtime.SubAgentSentEvent); ok {
+		return eventSessionID(ev) == sessionID || subSent.SubAgentID == sessionID
+	}
 	if eventSessionID(ev) == "" {
 		return true
 	}
 	return eventSessionID(ev) == sessionID
+}
+
+func liveTreeContainsSession(tree *runtime.LiveSessionTree, sessionID string) bool {
+	if tree == nil || tree.Root == nil {
+		return false
+	}
+	var walk func(*runtime.LiveSessionNode) bool
+	walk = func(node *runtime.LiveSessionNode) bool {
+		if node == nil {
+			return false
+		}
+		if node.ID == sessionID {
+			return true
+		}
+		return slices.ContainsFunc(node.Children, walk)
+	}
+	return walk(tree.Root)
 }
 
 func eventSessionID(ev runtime.Event) string {

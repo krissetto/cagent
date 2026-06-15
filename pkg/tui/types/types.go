@@ -22,6 +22,9 @@ const (
 	MessageTypeToolResult
 	MessageTypeWelcome
 	MessageTypeLoading
+	// MessageTypeSubAgent renders a compact lifecycle line for a
+	// runtime-managed subagent event.
+	MessageTypeSubAgent
 )
 
 const (
@@ -60,6 +63,8 @@ type Message struct {
 	// SessionPosition is the index of this message in session.Messages (when known).
 	// Used for operations like branching on edits.
 	SessionPosition *int
+	// SubAgent carries MessageTypeSubAgent card data.
+	SubAgent *SubAgentInfo
 }
 
 func Agent(typ MessageType, agentName, content string) *Message {
@@ -148,4 +153,29 @@ func Loading(description string) *Message {
 		Type:    MessageTypeLoading,
 		Content: strings.ReplaceAll(description, "\t", "    "),
 	}
+}
+
+// SubAgentEventKind classifies a runtime-managed subagent lifecycle card.
+type SubAgentEventKind string
+
+const (
+	SubAgentEventStarted       SubAgentEventKind = "started"
+	SubAgentEventSent          SubAgentEventKind = "sent"
+	SubAgentEventTurnCompleted SubAgentEventKind = "turn_completed"
+	SubAgentEventClosed        SubAgentEventKind = "closed"
+	SubAgentEventStopped       SubAgentEventKind = "stopped"
+	SubAgentEventFailed        SubAgentEventKind = "failed"
+)
+
+// SubAgentInfo carries the data needed to render a compact lifecycle card.
+type SubAgentInfo struct {
+	Kind      SubAgentEventKind
+	AgentName string
+	ShortID   string
+	Detail    string
+	Truncated bool
+}
+
+func SubAgent(info SubAgentInfo) *Message {
+	return &Message{Type: MessageTypeSubAgent, SubAgent: &info}
 }
