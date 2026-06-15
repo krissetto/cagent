@@ -102,3 +102,28 @@ func TestLoadFromSessionRendersSubagentEnvelopeBetweenAssistantMessages(t *testi
 	require.NotContains(t, plain, "first assistantsecond assistant")
 	require.NotContains(t, plain, "turn finishedsecond assistant")
 }
+
+// TestSubAgentMessageRemovesPendingSpinner is the regression for a static,
+// non-spinning pending row left between messages after a subagent delegation.
+// A pending spinner (added on StreamStarted) followed by a subagent envelope
+// must not leave the spinner stranded: removeSpinner only removes a trailing
+// spinner, so AddSubAgentMessage must clear it before appending.
+func TestSubAgentMessageRemovesPendingSpinner(t *testing.T) {
+	t.Parallel()
+
+	m := NewScrollableView(80, 24, &service.SessionState{}).(*model)
+	m.SetSize(80, 24)
+
+	// Pending-response spinner is showing (as after StreamStarted).
+	_ = m.AddAssistantMessage()
+	require.Equal(t, types.MessageTypeSpinner, m.messages[len(m.messages)-1].Type)
+
+	// A subagent envelope arrives.
+	_ = m.AddSubAgentMessage(types.SubAgentInfo{Kind: types.SubAgentEventStarted, AgentName: "director", ShortID: "e546b"})
+
+	// No spinner message must remain anywhere in the list.
+	for _, msg := range m.messages {
+		require.NotEqual(t, types.MessageTypeSpinner, msg.Type, "pending spinner must be removed when a subagent message is added")
+	}
+	require.Equal(t, types.MessageTypeSubAgent, m.messages[len(m.messages)-1].Type)
+}

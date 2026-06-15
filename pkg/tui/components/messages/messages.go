@@ -1263,6 +1263,12 @@ func (m *model) AddShellOutputMessage(content string) tea.Cmd {
 }
 
 func (m *model) AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd {
+	// Drop any pending-response spinner first. Otherwise the spinner (added on
+	// StreamStarted) is left stranded above the appended subagent line, and
+	// removeSpinner — which only removes a trailing spinner — can never clean it
+	// up, leaving a static non-spinning pending row between messages after a
+	// delegation.
+	m.removeSpinner()
 	return m.addMessage(types.SubAgent(info))
 }
 
