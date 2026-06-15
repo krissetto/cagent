@@ -498,6 +498,9 @@ func persistedSessionUpdatedAt(sess *session.Session) time.Time {
 	if sess == nil {
 		return time.Time{}
 	}
+	if !sess.UpdatedAt.IsZero() {
+		return sess.UpdatedAt
+	}
 	return sess.CreatedAt
 }
 

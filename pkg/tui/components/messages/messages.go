@@ -67,6 +67,7 @@ type Model interface {
 	AddSubAgentMessage(info types.SubAgentInfo) tea.Cmd
 	LoadFromSession(sess *session.Session) tea.Cmd
 	HasSessionMessage(kind session.MessageKind, role chat.MessageRole, agentName, content string, sessionPos int) bool
+	MergeAssistantFinal(agentName, content string, sessionPos int) bool
 
 	RemoveSpinner()
 	ScrollToBottom() tea.Cmd
@@ -1323,6 +1324,49 @@ func (m *model) HasSessionMessage(kind session.MessageKind, role chat.MessageRol
 			continue
 		}
 		if strings.TrimSpace(msg.Content) == strings.TrimSpace(content) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *model) MergeAssistantFinal(agentName, content string, sessionPos int) bool {
+	if content == "" {
+		return false
+	}
+	iter := slices.Backward(m.messages)
+	for i, msg := range iter {
+		if msg == nil || msg.Type != types.MessageTypeAssistant {
+			continue
+		}
+		if agentName != "" && msg.Sender != agentName {
+			continue
+		}
+		if msg.SessionPosition != nil && sessionPos >= 0 {
+			if *msg.SessionPosition != sessionPos {
+				continue
+			}
+		} else if sessionPos >= 0 || msg.SessionPosition != nil {
+			continue
+		}
+
+		if msg.Content == content {
+			return true
+		}
+		if strings.HasPrefix(content, msg.Content) {
+			msg.Content = content
+			if sessionPos >= 0 {
+				pos := sessionPos
+				msg.SessionPosition = &pos
+			}
+			m.views[i] = m.createMessageView(msg)
+			return true
+		}
+		if strings.HasPrefix(msg.Content, content) {
+			if sessionPos >= 0 && msg.SessionPosition == nil {
+				pos := sessionPos
+				msg.SessionPosition = &pos
+			}
 			return true
 		}
 	}

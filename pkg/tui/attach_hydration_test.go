@@ -176,8 +176,12 @@ func (r *attachHydrationRuntime) AttachLiveSessionWithSnapshot(context.Context, 
 	r.attachCalls++
 	ch := r.liveEvents
 	if ch == nil {
-		ch = make(chan runtime.Event)
+		ch = make(chan runtime.Event, len(r.snapshot))
+		for _, ev := range r.snapshot {
+			ch <- ev
+		}
 		close(ch)
+		return nil, ch, nil
 	}
 	return r.snapshot, ch, nil
 }
@@ -277,6 +281,69 @@ func TestHandleAttachSessionLiveSwitchInitDedupesStoreAndSnapshotHistory(t *test
 	require.Equal(t, 1, strings.Count(view, "dedupe live answer"), view)
 	require.False(t, m.application.IsReadOnly())
 	require.Equal(t, 1, rt.attachCalls)
+}
+
+func TestHandleAttachSessionLiveAttachFinalReplayReplacesPartialStream(t *testing.T) {
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	root := session.New(session.WithID("root"))
+	require.NoError(t, store.AddSession(ctx, root))
+	liveChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithAgentName("greppy"))
+	storedChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithAgentName("greppy"))
+	storedChild.AddMessage(session.UserMessage("partial prompt"))
+	storedChild.AddMessage(session.NewAgentMessage("greppy", &chat.Message{Role: chat.MessageRoleAssistant, Content: "partial"}))
+	require.NoError(t, store.AddSubSession(ctx, "root", storedChild))
+	final := session.NewAgentMessage("greppy", &chat.Message{Role: chat.MessageRoleAssistant, Content: "partial final answer"})
+
+	rt := &attachHydrationRuntime{store: store, live: liveChild, snapshot: []runtime.Event{
+		runtime.MessageAdded("child", final, "greppy", 1),
+	}}
+	rootApp := app.New(ctx, rt, root)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+
+	model, _ := m.handleAttachSession("child")
+	m = model.(*appModel)
+	model, _ = m.Update(runtime.MessageAdded("child", final, "greppy", 1))
+	m = model.(*appModel)
+
+	m.chatPage.SetSize(120, 30)
+	view := ansi.Strip(m.chatPage.View())
+	require.Equal(t, 1, strings.Count(view, "partial final answer"), view)
+	require.Equal(t, 0, strings.Count(view, "partialpartial final answer"), view)
+}
+
+func TestHandleAttachSessionRepeatedLiveAttachDoesNotDuplicateHistoryOrFinalReplay(t *testing.T) {
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	root := session.New(session.WithID("root"))
+	require.NoError(t, store.AddSession(ctx, root))
+	liveChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithAgentName("greppy"))
+	storedChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithAgentName("greppy"))
+	storedChild.AddMessage(session.UserMessage("repeat prompt"))
+	storedChild.AddMessage(session.NewAgentMessage("greppy", &chat.Message{Role: chat.MessageRoleAssistant, Content: "repeat answer"}))
+	require.NoError(t, store.AddSubSession(ctx, "root", storedChild))
+
+	rt := &attachHydrationRuntime{store: store, live: liveChild, snapshot: []runtime.Event{
+		runtime.UserMessage("repeat prompt", "child", nil, 0),
+		runtime.MessageAdded("child", session.NewAgentMessage("greppy", &chat.Message{Role: chat.MessageRoleAssistant, Content: "repeat answer"}), "greppy", 1),
+	}}
+	rootApp := app.New(ctx, rt, root)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+
+	for range 2 {
+		model, _ := m.handleAttachSession("child")
+		m = model.(*appModel)
+		model, _ = m.Update(runtime.UserMessage("repeat prompt", "child", nil, 0))
+		m = model.(*appModel)
+		model, _ = m.Update(runtime.MessageAdded("child", session.NewAgentMessage("greppy", &chat.Message{Role: chat.MessageRoleAssistant, Content: "repeat answer"}), "greppy", 1))
+		m = model.(*appModel)
+	}
+
+	m.chatPage.SetSize(120, 30)
+	view := ansi.Strip(m.chatPage.View())
+	require.Equal(t, 1, strings.Count(view, "repeat prompt"), view)
+	require.Equal(t, 1, strings.Count(view, "repeat answer"), view)
+	require.GreaterOrEqual(t, rt.attachCalls, 1)
 }
 
 func TestHandleAttachSessionHydratesEmptyLiveChildFromStoreAndKeepsChildQueue(t *testing.T) {

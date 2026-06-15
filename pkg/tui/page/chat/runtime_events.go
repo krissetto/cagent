@@ -109,6 +109,9 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 	case *runtime.AgentChoiceEvent:
 		return true, p.handleAgentChoice(msg)
 
+	case *runtime.MessageAddedEvent:
+		return true, p.handleMessageAdded(msg)
+
 	case *runtime.AgentChoiceReasoningEvent:
 		return true, p.handleAgentChoiceReasoning(msg)
 
@@ -257,7 +260,7 @@ func (p *chatPage) handleAgentChoice(msg *runtime.AgentChoiceEvent) tea.Cmd {
 	if p.streamCancelled {
 		return nil
 	}
-	if p.alreadyRenderedSessionMessage(session.MessageKindMessage, chatmsg.MessageRoleAssistant, msg.AgentName, msg.Content, -1) {
+	if p.app.IsAttachedLive() && p.messages.MergeAssistantFinal(msg.AgentName, msg.Content, -1) {
 		return nil
 	}
 	// Track that we've received assistant content
@@ -265,6 +268,34 @@ func (p *chatPage) handleAgentChoice(msg *runtime.AgentChoiceEvent) tea.Cmd {
 	// Clear pending response indicator - first chunk has arrived
 	p.setPendingResponse(false)
 	return p.messages.AppendToLastMessage(msg.AgentName, msg.Content)
+}
+
+func (p *chatPage) handleMessageAdded(msg *runtime.MessageAddedEvent) tea.Cmd {
+	if msg == nil || msg.Message == nil {
+		return nil
+	}
+	m := msg.Message.Message
+	agentName := msg.AgentName
+	if agentName == "" {
+		agentName = msg.Message.AgentName
+	}
+	if p.alreadyRenderedSessionMessage(msg.Message.Kind, m.Role, agentName, m.Content, msg.SessionPosition) {
+		return nil
+	}
+	switch m.Role {
+	case chatmsg.MessageRoleUser:
+		return p.messages.ReplaceLoadingWithUser(m.Content, msg.SessionPosition)
+	case chatmsg.MessageRoleAssistant:
+		if p.messages.MergeAssistantFinal(agentName, m.Content, msg.SessionPosition) {
+			return nil
+		}
+		if p.messages.MergeAssistantFinal(agentName, m.Content, -1) {
+			return nil
+		}
+		return p.messages.AppendToLastMessage(agentName, m.Content)
+	default:
+		return nil
+	}
 }
 
 func (p *chatPage) handleAgentChoiceReasoning(msg *runtime.AgentChoiceReasoningEvent) tea.Cmd {

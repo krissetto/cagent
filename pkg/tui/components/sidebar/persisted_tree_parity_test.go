@@ -17,8 +17,10 @@ func TestPersistedLiveSessionTreeHydratesMetadataLikeLiveTree(t *testing.T) {
 	store := session.NewInMemorySessionStore()
 	root := session.New(session.WithID("root"), session.WithTitle("Root"))
 	root.CreatedAt = time.Now().Add(-10 * time.Minute)
+	updatedChild := time.Now().Add(-30 * time.Second)
 	child := session.NewRuntimeManagedSubSession(root, session.WithID("child12345"), session.WithTitle("Generated Child Title"), session.WithAgentName("greppy"))
 	child.CreatedAt = time.Now().Add(-2 * time.Minute)
+	child.UpdatedAt = updatedChild
 	child.SetUsage(1234, 56)
 	child.AddMessage(&session.Message{AgentName: "greppy", Message: chat.Message{Role: chat.MessageRoleAssistant, Content: "child latest detail"}})
 	grandchild := session.NewRuntimeManagedSubSession(child, session.WithID("grand12345"), session.WithTitle("Generated Grandchild Title"), session.WithAgentName("reviewer"))
@@ -40,6 +42,7 @@ func TestPersistedLiveSessionTreeHydratesMetadataLikeLiveTree(t *testing.T) {
 	require.False(t, childNode.Live)
 	require.Equal(t, 1, childNode.Depth)
 	require.Equal(t, child.CreatedAt, childNode.CreatedAt)
+	require.Equal(t, updatedChild, childNode.UpdatedAt)
 	require.Equal(t, "child latest detail", childNode.Preview)
 	require.Equal(t, childNode.Preview, childNode.LastPreview)
 	require.Len(t, childNode.Children, 1)

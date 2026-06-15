@@ -435,6 +435,15 @@ func getAllMigrations() []Migration {
 					ON session_items(session_id, position);
 			`,
 		},
+		{
+			ID:          24,
+			Name:        "024_add_session_updated_at",
+			Description: "Persist last session update time for durable subagent tree parity",
+			UpSQL: `
+				ALTER TABLE sessions ADD COLUMN updated_at TEXT;
+				UPDATE sessions SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = '';
+			`,
+		},
 	}
 }
 
