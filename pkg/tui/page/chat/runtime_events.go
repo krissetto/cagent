@@ -240,6 +240,13 @@ func (p *chatPage) handleTokenUsage(msg *runtime.TokenUsageEvent) {
 
 func (p *chatPage) handleStreamStarted(msg *runtime.StreamStartedEvent) tea.Cmd {
 	slog.Debug("handleStreamStarted called", "agent", msg.AgentName, "session_id", msg.SessionID)
+	// Working state is owned by this page's own session. A start for another
+	// session (e.g. a child whose events reached this page) must not drive the
+	// parent's working spinner, otherwise an unmatched child start leaves the
+	// parent spinning forever between messages.
+	if !p.ownsSessionStream(msg.SessionID) {
+		return p.forwardToSidebar(msg)
+	}
 	p.streamCancelled = false
 	p.streamDepth++
 	p.streamStartTime = time.Now()
@@ -247,6 +254,20 @@ func (p *chatPage) handleStreamStarted(msg *runtime.StreamStartedEvent) tea.Cmd 
 	pendingCmd := p.setPendingResponse(true)
 	sidebarCmd := p.forwardToSidebar(msg)
 	return tea.Batch(pendingCmd, spinnerCmd, sidebarCmd)
+}
+
+// ownsSessionStream reports whether a stream lifecycle event belongs to this
+// page's own session and should drive its working/spinner state. Events with
+// an empty session id come from the main loop and are treated as owned;
+// events scoped to a different session (a descendant) are not.
+func (p *chatPage) ownsSessionStream(sessionID string) bool {
+	if sessionID == "" {
+		return true
+	}
+	if p.app == nil || p.app.Session() == nil {
+		return true
+	}
+	return sessionID == p.app.Session().ID
 }
 
 func (p *chatPage) alreadyHydratedPosition(sessionPos int) bool {
@@ -327,16 +348,22 @@ func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd 
 		"has_content", p.hasReceivedAssistantContent,
 		"stream_depth", p.streamDepth)
 
+	// Stops for descendant sessions don't affect this page's own working
+	// state; just refresh the sidebar. This prevents cross-session stop
+	// events from driving the parent counter negative or clearing the
+	// parent spinner mid-turn.
+	if !p.ownsSessionStream(msg.SessionID) {
+		return p.forwardToSidebar(msg)
+	}
+
 	if p.streamDepth > 0 {
 		p.streamDepth--
 	}
 
 	sidebarCmd := p.forwardToSidebar(msg)
 
-	// Sub-agent stream stopped — the parent is still running, so only
-	// forward to the sidebar and keep the working/cancel state intact.
-	// Without this guard, pressing Esc after a sub-agent completes but
-	// while the parent continues would have no effect.
+	// Nested same-session stream stopped while an outer one is still active —
+	// keep the working/cancel state intact and just refresh the sidebar.
 	if p.streamDepth > 0 {
 		return tea.Batch(p.messages.ScrollToBottom(), sidebarCmd)
 	}
