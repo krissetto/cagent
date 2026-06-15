@@ -165,3 +165,53 @@ func assertBefore(t *testing.T, haystack, earlier, later string) {
 		t.Fatalf("expected %q before %q in %q", earlier, later, haystack)
 	}
 }
+
+func TestParentIdleClearsRootAgentSpinnerImmediately(t *testing.T) {
+	m := New(&service.SessionState{}).(*model)
+	m.SetTeamInfo([]runtime.AgentDetails{{Name: "root", Description: "parent"}})
+	m.sessionState.SetCurrentAgentName("root")
+
+	updated, cmd := m.Update(runtime.StreamStarted("root-session", "root"))
+	m = updated.(*model)
+	if cmd == nil {
+		t.Fatalf("expected root stream to start spinner")
+	}
+	if m.workingAgent != "root" || !m.spinnerActive {
+		t.Fatalf("expected root spinner active, workingAgent=%q spinnerActive=%v", m.workingAgent, m.spinnerActive)
+	}
+
+	updated, cmd = m.Update(&runtime.ParentIdleEvent{SessionID: "root-session"})
+	m = updated.(*model)
+	if cmd != nil {
+		_ = cmd()
+	}
+	if m.workingAgent != "" || m.spinnerActive {
+		t.Fatalf("expected ParentIdle to clear root spinner immediately, workingAgent=%q spinnerActive=%v", m.workingAgent, m.spinnerActive)
+	}
+	if out := strings.Join(stripANSILines(strings.Split(m.agentInfo(80), "\n")), "\n"); strings.Contains(out, "⠋") || strings.Contains(out, "⠙") {
+		t.Fatalf("root agent row should not render spinner after ParentIdle: %q", out)
+	}
+}
+
+func TestParentIdleKeepsChildSpinnerInSubagentsSection(t *testing.T) {
+	m := New(&service.SessionState{}).(*model)
+	m.SetTeamInfo([]runtime.AgentDetails{{Name: "root", Description: "parent"}})
+	m.sessionState.SetCurrentAgentName("root")
+	m.SetLiveSessionTree(&runtime.LiveSessionTree{Root: &runtime.LiveSessionNode{
+		ID:       "root-session",
+		Children: []*runtime.LiveSessionNode{{ID: "child-session", AgentName: "greppy", Status: "running", Live: true}},
+	}})
+
+	updated, _ := m.Update(runtime.StreamStarted("root-session", "root"))
+	m = updated.(*model)
+	updated, _ = m.Update(&runtime.ParentIdleEvent{SessionID: "root-session"})
+	m = updated.(*model)
+
+	if m.workingAgent != "" || m.spinnerActive {
+		t.Fatalf("expected root spinner stopped while waiting, workingAgent=%q spinnerActive=%v", m.workingAgent, m.spinnerActive)
+	}
+	plain := strings.Join(stripANSILines(strings.Split(m.subagentsSection(80), "\n")), "\n")
+	if !strings.Contains(plain, "greppy") || !strings.Contains(plain, "working") {
+		t.Fatalf("running child should still be reflected in subagents section: %q", plain)
+	}
+}

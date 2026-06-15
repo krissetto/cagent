@@ -371,3 +371,39 @@ func TestHandleAttachSessionUsesLiveTitleAndTitleEventsUpdateTab(t *testing.T) {
 	require.NoError(t, m.application.FollowUpWithAttachments("hello child", nil))
 	require.Equal(t, "child", rt.followID)
 }
+
+func TestHandleAttachSessionFallsBackToParentEmbeddedHistoryWhenDirectChildIsEmpty(t *testing.T) {
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	root := session.New(session.WithID("root"))
+	embeddedChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithTitle("Embedded Child"))
+	embeddedChild.AddMessage(session.UserMessage("parent embedded prompt"))
+	embeddedChild.AddMessage(&session.Message{AgentName: "greppy", Message: chat.Message{Role: chat.MessageRoleAssistant, Content: "parent embedded reply"}})
+	root.AddSubSession(embeddedChild)
+	require.NoError(t, store.AddSession(ctx, root))
+	emptyDirectChild := session.NewRuntimeManagedSubSession(root, session.WithID("child"), session.WithTitle("Direct Child"))
+	require.NoError(t, store.UpdateSession(ctx, emptyDirectChild))
+
+	rt := &attachHydrationRuntime{store: store, rootTitle: "Root Title"}
+	rootApp := app.New(ctx, rt, root)
+	m := New(ctx, func(context.Context, string) (*app.App, *session.Session, func(), error) { return nil, nil, nil, nil }, rootApp, "", nil).(*appModel)
+
+	model, cmd := m.handleAttachSession("child")
+	require.NotNil(t, cmd)
+	m = model.(*appModel)
+	require.Equal(t, "child", m.application.Session().ID)
+	require.Len(t, m.application.Session().Messages, 2)
+	require.Contains(t, m.application.Session().Messages[0].Message.Message.Content, "parent embedded prompt")
+	require.Contains(t, m.application.Session().Messages[1].Message.Message.Content, "parent embedded reply")
+	require.True(t, m.application.IsReadOnly())
+	require.Equal(t, 0, rt.attachCalls)
+
+	if initCmd := m.chatPage.Init(); initCmd != nil {
+		_ = initCmd()
+	}
+	m.chatPage.SetSize(100, 24)
+	view := m.chatPage.View()
+	require.Contains(t, view, "parent embedded prompt")
+	require.Contains(t, view, "parent embedded reply")
+	require.ErrorContains(t, m.application.FollowUpWithAttachments("nope", nil), "follow-up")
+}

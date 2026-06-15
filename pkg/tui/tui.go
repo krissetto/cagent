@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	goruntime "runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -819,9 +820,11 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.forwardChat(msg)
 
 	case *runtime.SessionTitleEvent:
-		m.sessionState.SetSessionTitle(msg.Title)
-		if activeID := m.supervisor.ActiveID(); activeID != "" {
-			m.supervisor.SetRunnerTitle(activeID, msg.Title)
+		if msg.SessionID == "" || msg.SessionID == m.application.Session().ID {
+			m.sessionState.SetSessionTitle(msg.Title)
+			if activeID := m.supervisor.ActiveID(); activeID != "" {
+				m.supervisor.SetRunnerTitle(activeID, msg.Title)
+			}
 		}
 		return m.forwardChat(msg)
 
@@ -1106,7 +1109,60 @@ func (m *appModel) handleRoutedMsg(msg messages.RoutedMsg) (tea.Model, tea.Cmd) 
 	// Update the inactive chat page (discard cmds — UI effects aren't needed for hidden pages)
 	updated, _ := chatPage.Update(msg.Inner)
 	m.chatPages[msg.SessionID] = updated.(chat.Page)
+
+	// Root aggregate events can be routed to a hidden owner tab while the user is
+	// viewing an attached/related child tab. Apply those events to the visible
+	// sidebar too so subagent tree/status/queue changes appear immediately,
+	// without duplicating chat transcript messages or adding polling.
+	if activePage, ok := m.chatPages[activeID]; ok && sidebarEventRelatesToSession(msg.Inner, activeID) {
+		cmd := activePage.ApplySidebarRuntimeEvent(msg.Inner)
+		m.chatPages[activeID] = activePage
+		return m, cmd
+	}
 	return m, nil
+}
+
+func sidebarEventRelatesToSession(msg tea.Msg, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	switch ev := msg.(type) {
+	case *runtime.LiveSessionTreeChangedEvent:
+		return liveSessionTreeContainsSession(ev.Tree, sessionID)
+	case *runtime.SessionQueueEvent:
+		return ev.SessionID == sessionID
+	case *runtime.ParentIdleEvent:
+		return ev.SessionID == sessionID
+	case *runtime.ParentResumeEvent:
+		return ev.SessionID == sessionID
+	case *runtime.SessionTitleEvent:
+		return ev.SessionID == sessionID
+	case *runtime.SubAgentStartedEvent:
+		return ev.SessionID == sessionID || ev.SubAgent.ID == sessionID
+	case *runtime.SubAgentSentEvent:
+		return ev.SessionID == sessionID || ev.SubAgentID == sessionID
+	case *runtime.SubAgentUpdateEvent:
+		return ev.SessionID == sessionID || ev.Envelope.ParentSessionID == sessionID || ev.Envelope.SubAgentID == sessionID
+	default:
+		return false
+	}
+}
+
+func liveSessionTreeContainsSession(tree *runtime.LiveSessionTree, sessionID string) bool {
+	if tree == nil || tree.Root == nil || sessionID == "" {
+		return false
+	}
+	var walk func(*runtime.LiveSessionNode) bool
+	walk = func(node *runtime.LiveSessionNode) bool {
+		if node == nil {
+			return false
+		}
+		if node.ID == sessionID {
+			return true
+		}
+		return slices.ContainsFunc(node.Children, walk)
+	}
+	return walk(tree.Root)
 }
 
 // handleWorkingStateChanged updates the editor working indicator and resize handle spinner.
@@ -1439,15 +1495,92 @@ func (m *appModel) handleAttachSession(sessionID string) (tea.Model, tea.Cmd) {
 }
 
 func (m *appModel) storedSession(ctx context.Context, sessionID string) (*session.Session, bool) {
-	if m == nil || m.application == nil {
+	if m == nil || m.application == nil || sessionID == "" {
 		return nil, false
 	}
 	store := m.application.SessionStore()
 	if store == nil {
 		return nil, false
 	}
+
+	direct, directOK := sessionFromStore(ctx, store, sessionID)
+	if sessionHasAttachHistory(direct) {
+		return direct, true
+	}
+	if found := findSubSessionByID(m.application.Session(), sessionID); sessionHasAttachHistory(found) {
+		return mergeAttachSessionMetadata(direct, found), true
+	}
+
+	if treeStore, ok := store.(session.TreeStore); ok {
+		if rootID, err := treeStore.ResolveRootID(ctx, sessionID); err == nil && rootID != "" && rootID != sessionID {
+			if root, ok := sessionFromStore(ctx, store, rootID); ok {
+				if found := findSubSessionByID(root, sessionID); sessionHasAttachHistory(found) {
+					return mergeAttachSessionMetadata(direct, found), true
+				}
+			}
+		}
+	}
+
+	if directOK {
+		return direct, true
+	}
+	return nil, false
+}
+
+func sessionFromStore(ctx context.Context, store session.Store, sessionID string) (*session.Session, bool) {
+	if store == nil || sessionID == "" {
+		return nil, false
+	}
 	sess, err := store.GetSession(ctx, sessionID)
 	return sess, err == nil && sess != nil
+}
+
+func sessionHasAttachHistory(sess *session.Session) bool {
+	return sess != nil && len(sess.Messages) > 0
+}
+
+func findSubSessionByID(sess *session.Session, sessionID string) *session.Session {
+	if sess == nil || sessionID == "" {
+		return nil
+	}
+	if sess.ID == sessionID {
+		return sess
+	}
+	for _, item := range sess.Messages {
+		if item.SubSession == nil {
+			continue
+		}
+		if found := findSubSessionByID(item.SubSession, sessionID); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func mergeAttachSessionMetadata(preferredMeta, historySess *session.Session) *session.Session {
+	if historySess == nil || preferredMeta == nil {
+		return historySess
+	}
+	merged := historySess.Clone()
+	if merged.ID == "" {
+		merged.ID = preferredMeta.ID
+	}
+	if merged.Title == "" {
+		merged.Title = preferredMeta.Title
+	}
+	if merged.WorkingDir == "" {
+		merged.WorkingDir = preferredMeta.WorkingDir
+	}
+	if merged.ParentID == "" {
+		merged.ParentID = preferredMeta.ParentID
+	}
+	if merged.RootID == "" {
+		merged.RootID = preferredMeta.RootID
+	}
+	if !merged.RuntimeManaged {
+		merged.RuntimeManaged = preferredMeta.RuntimeManaged
+	}
+	return merged
 }
 
 func isClosedAttachedSessionStatus(status string) bool {

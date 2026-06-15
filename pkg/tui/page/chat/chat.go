@@ -111,6 +111,9 @@ type Page interface {
 	FocusMessageAt(x, y int) tea.Cmd
 	// BlurMessages removes focus from the messages panel
 	BlurMessages()
+	// ApplySidebarRuntimeEvent applies runtime events that affect the sidebar
+	// aggregate without adding chat transcript messages.
+	ApplySidebarRuntimeEvent(msg tea.Msg) tea.Cmd
 	// GetSidebarSettings returns the current sidebar display settings
 	GetSidebarSettings() SidebarSettings
 	// SetSidebarSettings applies sidebar display settings

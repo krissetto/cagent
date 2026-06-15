@@ -236,6 +236,17 @@ func (m *model) stopSpinner() {
 	m.spinner.Stop()
 }
 
+func (m *model) stopRootAgentSpinner() {
+	if !m.spinnerActive {
+		return
+	}
+	if m.toolsLoading || m.mcpInit || m.titleRegenerating {
+		return
+	}
+	m.spinnerActive = false
+	m.spinner.Stop()
+}
+
 // invalidateCache marks the sidebar render cache as dirty so it will be rebuilt on the next View().
 func (m *model) invalidateCache() {
 	m.cacheDirty = true
@@ -804,11 +815,27 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		return m, cmd
 	case *runtime.StreamStoppedEvent:
 		m.workingAgent = ""
+		m.titleRegenerating = false
 		if n := len(m.sessionStack); n > 0 {
 			m.sessionStack = m.sessionStack[:n-1]
 		}
 		m.invalidateCache()
-		m.stopSpinner() // Will only stop if no other state needs it
+		m.stopRootAgentSpinner()
+		return m, nil
+	case *runtime.ParentIdleEvent:
+		// The parent/root turn is no longer actively streaming while it waits for
+		// subagents. Clear only the root Agents spinner state; child spinners are
+		// driven separately from the live session tree/subagent events.
+		m.workingAgent = ""
+		m.titleRegenerating = false
+		if len(m.sessionStack) == 1 && (msg.SessionID == "" || m.sessionStack[0] == msg.SessionID) {
+			m.sessionStack = nil
+		}
+		m.invalidateCache()
+		m.stopRootAgentSpinner()
+		return m, nil
+	case *runtime.ParentResumeEvent:
+		m.invalidateCache()
 		return m, nil
 	case *runtime.AgentInfoEvent:
 		cmd := m.SetAgentInfo(msg.AgentName, msg.Model, msg.Description)

@@ -87,13 +87,16 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 		return true, p.messages.ReplaceLoadingWithUser(msg.Message, msg.SessionPosition)
 
 	case *runtime.SubAgentStartedEvent:
-		return true, p.messages.AddSubAgentMessage(types.SubAgentInfo{Kind: types.SubAgentEventStarted, AgentName: msg.SubAgent.AgentName, ShortID: msg.SubAgent.ShortID})
+		msgCmd := p.messages.AddSubAgentMessage(types.SubAgentInfo{Kind: types.SubAgentEventStarted, AgentName: msg.SubAgent.AgentName, ShortID: msg.SubAgent.ShortID})
+		return true, tea.Batch(msgCmd, p.forwardToSidebar(msg))
 
 	case *runtime.SubAgentSentEvent:
-		return true, p.messages.AddSubAgentMessage(types.SubAgentInfo{Kind: types.SubAgentEventSent, ShortID: sidebarShortID(msg.SubAgentID)})
+		msgCmd := p.messages.AddSubAgentMessage(types.SubAgentInfo{Kind: types.SubAgentEventSent, ShortID: sidebarShortID(msg.SubAgentID)})
+		return true, tea.Batch(msgCmd, p.forwardToSidebar(msg))
 
 	case *runtime.SubAgentUpdateEvent:
-		return true, p.messages.AddSubAgentMessage(subAgentInfoFromEnvelope(msg.Envelope))
+		msgCmd := p.messages.AddSubAgentMessage(subAgentInfoFromEnvelope(msg.Envelope))
+		return true, tea.Batch(msgCmd, p.forwardToSidebar(msg))
 
 	case *runtime.LiveSessionTreeChangedEvent:
 		p.sidebar.SetLiveSessionTree(msg.Tree)
