@@ -21,6 +21,7 @@ import (
 	"github.com/docker/docker-agent/pkg/model/provider"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/teamloader"
 	loaderdefaults "github.com/docker/docker-agent/pkg/teamloader/defaults"
@@ -337,6 +338,14 @@ func (a *Agent) ResumeSession(ctx context.Context, params acp.ResumeSessionReque
 		return acp.ResumeSessionResponse{}, err
 	}
 
+	// Re-adopt any persisted subagent swarm so the resumed session's
+	// send_message / read_subagent keep working.
+	if restorer, ok := rt.(subagentRestorer); ok {
+		if _, err := restorer.RestoreSubagentTree(ctx, sess); err != nil {
+			slog.WarnContext(ctx, "Failed to restore subagent tree for session", "session_id", sid, "error", err)
+		}
+	}
+
 	// Register atomically: if another goroutine raced us and registered
 	// the same session id between our initial check and now, drop the
 	// runtime we just built and reuse the existing registration.
@@ -601,7 +610,11 @@ func (a *Agent) runAgent(ctx context.Context, acpSess *Session) error {
 		slog.DebugContext(ctx, "Failed to emit available commands", "error", err)
 	}
 
-	eventsChan := acpSess.rt.RunStream(ctx, acpSess.sess)
+	// The turn goes through the session actor (RunOrAttach) so async
+	// subagent wake runs — which the runtime drives between prompts — never
+	// collide with this prompt's run; a prompt landing mid-wake mirrors the
+	// live run and then drives its own staged turn.
+	eventsChan := runtime.RunOrAttachStream(ctx, acpSess.rt, acpSess.sess)
 	toolCallArgs := map[string]string{}
 
 	for event := range eventsChan {
@@ -949,4 +962,10 @@ func resolveAdditionalDirectories(dirs []string) ([]string, error) {
 		resolved = append(resolved, absDir)
 	}
 	return dedupePaths(resolved), nil
+}
+
+// subagentRestorer is the capability local runtimes expose for re-adopting
+// a session's persisted subagent swarm on load.
+type subagentRestorer interface {
+	RestoreSubagentTree(ctx context.Context, sess *session.Session) (*subagent.Snapshot, error)
 }
