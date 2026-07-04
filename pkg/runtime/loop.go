@@ -22,6 +22,7 @@ import (
 	ragtypes "github.com/docker/docker-agent/pkg/rag/types"
 	"github.com/docker/docker-agent/pkg/runtime/toolexec"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/telemetry/genai"
 	"github.com/docker/docker-agent/pkg/tools"
 	bgagent "github.com/docker/docker-agent/pkg/tools/builtin/agent"
@@ -48,6 +49,10 @@ func (r *LocalRuntime) registerDefaultTools() {
 	r.toolMap[sessionplan.ToolNameExitPlanMode] = r.handleExitPlanMode
 	r.toolMap[sessioncontext.ToolNameListSessions] = r.handleListSessions
 	r.toolMap[sessioncontext.ToolNameReadSession] = r.handleReadSession
+	r.toolMap[subagent.ToolSpawnSubagent] = r.handleSpawnSubagent
+	r.toolMap[subagent.ToolSendMessage] = r.handleSendMessage
+	r.toolMap[subagent.ToolReadSubagent] = r.handleReadSubagent
+	r.toolMap[subagent.ToolStopSubagent] = r.handleStopSubagent
 
 	r.bgAgents.RegisterHandlers(func(name string, fn func(context.Context, *session.Session, tools.ToolCall) (*tools.ToolCallResult, error)) {
 		r.toolMap[name] = func(ctx context.Context, sess *session.Session, tc tools.ToolCall, _ EventSink) (*tools.ToolCallResult, error) {
@@ -91,6 +96,7 @@ func (r *LocalRuntime) appendSteerAndEmit(sess *session.Session, sm QueuedMessag
 // were drained and emitted; otherwise drained=false.
 func (r *LocalRuntime) drainAndEmitSteered(ctx context.Context, sess *session.Session, a *agent.Agent, events EventSink) steerResult {
 	steered := r.steerQueue.Drain(ctx)
+	steered = append(steered, r.drainSessionSteer(sess.ID)...)
 	if len(steered) == 0 {
 		return steerResult{}
 	}
@@ -244,6 +250,14 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 // in editors.
 func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session, events chan Event) {
 	sink := &channelSink{ch: events}
+
+	// Mark this session's loop as live for the whole stream so detached
+	// messages (notes from async subagents) are steered into it at iteration
+	// boundaries instead of being queued behind the turn. Registered first so
+	// it runs last (after finalizeEventChannel): a stranded message is then
+	// re-dispatched only once the stream has fully stopped.
+	r.beginSessionRun(sess.ID)
+	defer func() { r.endSessionRun(ctx, sess.ID) }()
 
 	// Seed the cagent session ID at the run-loop boundary so any
 	// gateway-bound HTTP call originating from this loop can correlate
@@ -919,6 +933,10 @@ func (r *LocalRuntime) runTurn(
 		}
 
 		// Re-check steer queue: closes the race between the mid-loop drain and this stop.
+		// This drain also covers session-scoped steering (subagent reports
+		// routed by deliverMessage): the loop itself has no awareness of
+		// subagents — once it stops, their reports start fresh turns through
+		// the session's message receiver instead (see subagents.go).
 		if sr := r.drainAndEmitSteered(ctx, sess, a, events); sr.drained {
 			if sr.stop {
 				slog.WarnContext(ctx, "user_steering_messages_submit hook signalled run termination",

@@ -14,6 +14,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/agent"
 	"github.com/docker/docker-agent/pkg/chat"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
@@ -213,6 +214,13 @@ type Session struct {
 	// having to scan the workspace or guess from a bare filename. Paths are
 	// deduplicated and order-preserved.
 	AttachedFiles []string `json:"attached_files,omitempty"`
+
+	// SubagentTree is the latest snapshot of this session's async subagent
+	// swarm, mirrored by the runtime's subagent manager on every state change
+	// and reloaded from the [subagent.Store] on session load. Session stores do
+	// not persist it — subagent data lives in its own table/backend (see
+	// subagent.Store).
+	SubagentTree *subagent.Snapshot `json:"subagent_tree,omitempty"`
 
 	// ExcludedTools lists tool names that should be filtered out of the agent's
 	// tool list for this session. This is used by skill sub-sessions to prevent
@@ -561,11 +569,14 @@ func cloneSchemaValue(v any) any {
 
 // Session helper methods
 
-// AddMessage adds a message to the session
-func (s *Session) AddMessage(msg *Message) {
+// AddMessage appends a message to the session and returns the index it was
+// stored at (its session position, used to stamp commit events so viewers
+// can merge a transcript snapshot with the live event stream exactly).
+func (s *Session) AddMessage(msg *Message) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Messages = append(s.Messages, NewMessageItem(msg))
+	return len(s.Messages) - 1
 }
 
 // SetUsage records cumulative input/output token counts under s.mu.
@@ -586,6 +597,23 @@ func (s *Session) Usage() (input, output int64) {
 	return s.InputTokens, s.OutputTokens
 }
 
+// SetSubagentTree records the latest subagent swarm snapshot under s.mu: the
+// runtime's subagent manager writes it from detached goroutines while the
+// persistence path snapshots the session for saving. The snapshot value itself
+// is immutable once built — callers always assign a fresh one.
+func (s *Session) SetSubagentTree(snapshot *subagent.Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SubagentTree = snapshot
+}
+
+// GetSubagentTree returns the latest subagent swarm snapshot.
+func (s *Session) GetSubagentTree() *subagent.Snapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.SubagentTree
+}
+
 // ApplyCompaction atomically resets the session's cumulative token
 // counts and appends a summary item under s.mu so concurrent readers
 // (e.g. the persistence observer's UpdateSession snapshot) cannot
@@ -602,6 +630,15 @@ func (s *Session) ApplyCompaction(inputTokens, outputTokens int64, item Item) {
 func (s *Session) AddSubSession(subSession *Session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Idempotent by sub-session id: persistent sub-sessions (async subagents)
+	// are re-recorded after every finished turn and must not accumulate
+	// duplicate items in the parent's transcript.
+	for i := range s.Messages {
+		if s.Messages[i].SubSession != nil && s.Messages[i].SubSession.ID == subSession.ID {
+			s.Messages[i] = NewSubSessionItem(subSession)
+			return
+		}
+	}
 	s.Messages = append(s.Messages, NewSubSessionItem(subSession))
 }
 
@@ -993,6 +1030,29 @@ func (s *Session) MessageCount() int {
 		}
 	}
 	return n
+}
+
+// ItemCount returns the raw length of the item list (messages and
+// non-message items alike) under the session lock. Runtime event positions
+// (e.g. [UserMessageEvent.SessionPosition]) index into this list, so viewers
+// use it as a dedup barrier when merging a transcript snapshot with a live
+// event stream.
+func (s *Session) ItemCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.Messages)
+}
+
+// ItemsSnapshot returns a copy of the item list taken under the session
+// lock. Viewers merging the transcript with a live event stream render this
+// copy and use its length as the position barrier — a consistent pair, unlike
+// reading Messages and its length at different times while a run appends.
+func (s *Session) ItemsSnapshot() []Item {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	items := make([]Item, len(s.Messages))
+	copy(items, s.Messages)
+	return items
 }
 
 // TotalCost computes the total cost of a session by walking all messages,

@@ -35,6 +35,7 @@ type Agent struct {
 	sessionCompactionOff    bool                                // True when the agent opted out of automatic session compaction
 	modelOverrides          atomic.Pointer[[]provider.Provider] // Optional model override(s) set at runtime (supports alloy)
 	subAgents               []*Agent
+	asyncSubagents          []latest.SubagentRef
 	handoffs                []*Agent
 	forceHandoff            *Agent
 	parents                 []*Agent
@@ -151,6 +152,19 @@ func (a *Agent) WelcomeMessage() string {
 // SubAgents returns the list of sub-agents
 func (a *Agent) SubAgents() []*Agent {
 	return a.subAgents
+}
+
+// AsyncSubagents returns the resolved async subagent references (the `subagents`
+// config key). Each entry maps a model-facing alias to a target agent name and
+// optional description; the async subagent runtime uses this as the spawn
+// allow-list and to build the harness prompt.
+func (a *Agent) AsyncSubagents() []latest.SubagentRef {
+	return a.asyncSubagents
+}
+
+// HasAsyncSubagents reports whether the agent declared any `subagents`.
+func (a *Agent) HasAsyncSubagents() bool {
+	return len(a.asyncSubagents) > 0
 }
 
 // Handoffs returns the list of handoff agents

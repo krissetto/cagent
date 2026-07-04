@@ -53,6 +53,18 @@ type App struct {
 	titleGen               *sessiontitle.Generator     // Title generator for local runtime (nil for remote)
 	snapshotController     builtins.SnapshotController // Drives /undo, /snapshots, /reset; nil for runtimes that don't capture snapshots
 
+	// unregisterReceiver removes the message receiver this App registered
+	// with the runtime for its current session; re-set whenever the session
+	// changes. nil when the runtime does not support message delivery (e.g.
+	// remote).
+	unregisterReceiver func()
+
+	// attachedSubagent marks this App as a live viewer of an async subagent's
+	// sub-session: the runtime's subagent manager stays the session's driver
+	// (receiver, runs); the App only observes its events and hands user input
+	// to the runtime for delivery.
+	attachedSubagent *runtime.SubagentAttachInfo
+
 	startOnce  sync.Once
 	subsMu     sync.Mutex
 	subs       []chan tea.Msg
@@ -142,6 +154,17 @@ func New(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts ..
 // lifecycle.
 func (a *App) Start(ctx context.Context) {
 	a.startOnce.Do(func() {
+		if a.attachedSubagent == nil {
+			a.registerMessageReceiver()
+			a.reloadSubagentTree(ctx)
+		} else {
+			a.startSessionEventBridge(ctx)
+			// The shared runtime already emitted startup info for the spawning
+			// tab's App; reset the once-flag so this attached tab gets its own
+			// agent/team/tool info (resolved for the pinned child agent).
+			a.runtime.ResetStartupInfo()
+		}
+		a.startSubagentTreeBridge(ctx)
 		// Emit startup info (agent, team, tools) through the events channel.
 		// This runs in the background so the TUI can start immediately while
 		// slow operations (like MCP tool loading) complete asynchronously.
@@ -466,6 +489,19 @@ func (a *App) EmitStartupInfo(ctx context.Context, events chan runtime.Event) {
 // Run one agent loop
 func (a *App) Run(ctx context.Context, cancel context.CancelFunc, message string, attachments []messages.Attachment) {
 	a.cancel = cancel
+
+	// Attached viewer: hand the input to the session's driver (the subagent
+	// manager) instead of starting a competing run. A live run steers it in at
+	// the next iteration boundary; an idle subagent is re-run with it. Events
+	// come back through the session event bridge.
+	if a.attachedSubagent != nil {
+		if rt, ok := a.runtime.(subagentRuntime); ok {
+			if !rt.DeliverMessage(ctx, a.session.ID, message) {
+				a.sendEvent(ctx, runtime.Error("subagent is no longer accepting input (stopped)"))
+			}
+		}
+		return
+	}
 
 	// If this is the first message and no title exists, start local title generation
 	if a.session.Title == "" && a.titleGen != nil {
@@ -912,6 +948,9 @@ func (a *App) ResumeElicitation(ctx context.Context, action tools.ElicitationAct
 }
 
 func (a *App) NewSession() {
+	if a.attachedSubagent != nil {
+		return // an attached viewer cannot swap out the subagent's session
+	}
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil
@@ -930,6 +969,7 @@ func (a *App) NewSession() {
 	// Clear first message so it won't be re-sent on re-init
 	a.firstMessage = nil
 	a.firstMessageAttach = ""
+	a.registerMessageReceiver()
 
 	// Re-emit startup info so the sidebar shows agent/tools info in the new session
 	a.reEmitStartupInfo(a.ctx())
@@ -1048,6 +1088,12 @@ func resolveAttachedFile(attached []string, path string) (string, error) {
 	default:
 		return "", fmt.Errorf("%q matches %d attached files, use the full path", path, len(matches))
 	}
+}
+
+// Runtime returns the runtime this App drives. Used by the TUI to spawn
+// attached viewer tabs that share it (e.g. subagent sessions).
+func (a *App) Runtime() runtime.Runtime {
+	return a.runtime
 }
 
 // PermissionsInfo returns combined permissions info from team and session.
@@ -1323,6 +1369,9 @@ func (a *App) SessionStore() session.Store {
 // so the sidebar displays the agent and tool information.
 // If the session has stored model overrides, they are applied to the runtime.
 func (a *App) ReplaceSession(ctx context.Context, sess *session.Session) {
+	if a.attachedSubagent != nil {
+		return // an attached viewer cannot swap out the subagent's session
+	}
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil
@@ -1331,12 +1380,22 @@ func (a *App) ReplaceSession(ctx context.Context, sess *session.Session) {
 	// Clear first message so it won't be re-sent on re-init
 	a.firstMessage = nil
 	a.firstMessageAttach = ""
+	a.registerMessageReceiver()
 
 	// Apply any stored model overrides from the session
 	a.applySessionModelOverrides(ctx, sess)
 
+	// Hydrate the loaded session's subagent view from the subagent store
+	// before the TUI components read it.
+	a.reloadSubagentTree(ctx)
+
 	// Reset and re-emit startup info so the sidebar shows agent/tools info
 	a.reEmitStartupInfo(ctx)
+
+	// If this runtime is still driving subagents for the loaded session (an
+	// in-process switch back), push the live swarm snapshot: the sidebar just
+	// restored the persisted tree with active nodes marked stopped.
+	a.emitLiveSubagentTree(ctx)
 }
 
 // applySessionModelOverrides applies any stored model overrides from a loaded session.

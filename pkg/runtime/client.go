@@ -86,6 +86,7 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 			"stream_stopped":         func() Event { return &StreamStoppedEvent{} },
 			"runtime_paused":         func() Event { return &PausedEvent{} },
 			"stream_started":         func() Event { return &StreamStartedEvent{} },
+			"subagent_tree":          func() Event { return &SubagentTreeEvent{} },
 			"shell":                  func() Event { return &ShellOutputEvent{} },
 			"session_title":          func() Event { return &SessionTitleEvent{} },
 			"session_plan_updated":   func() Event { return &SessionPlanUpdatedEvent{} },

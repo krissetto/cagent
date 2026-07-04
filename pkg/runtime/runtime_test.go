@@ -354,7 +354,7 @@ func TestSimple(t *testing.T) {
 		ToolsetInfo(0, false, "root"),
 		AgentInfo("root", "test/mock-model", "", ""),
 		AgentChoice("root", sess.ID, "Hello"),
-		MessageAdded(sess.ID, msgAdded.Message, "root"),
+		MessageAddedAt(sess.ID, msgAdded.Message, "root", msgAdded.SessionPosition),
 		NewTokenUsageEvent(sess.ID, "root", &Usage{InputTokens: 3, OutputTokens: 2, ContextLength: 5, LastMessage: &MessageUsage{
 			Usage:        chat.Usage{InputTokens: 3, OutputTokens: 2},
 			Model:        "test/mock-model",
@@ -400,7 +400,7 @@ func TestMultipleContentChunks(t *testing.T) {
 		AgentChoice("root", sess.ID, "how "),
 		AgentChoice("root", sess.ID, "are "),
 		AgentChoice("root", sess.ID, "you?"),
-		MessageAdded(sess.ID, msgAdded.Message, "root"),
+		MessageAddedAt(sess.ID, msgAdded.Message, "root", msgAdded.SessionPosition),
 		NewTokenUsageEvent(sess.ID, "root", &Usage{InputTokens: 8, OutputTokens: 12, ContextLength: 20, LastMessage: &MessageUsage{
 			Usage:        chat.Usage{InputTokens: 8, OutputTokens: 12},
 			Model:        "test/mock-model",
@@ -442,7 +442,7 @@ func TestWithReasoning(t *testing.T) {
 		AgentChoiceReasoning("root", sess.ID, "Let me think about this..."),
 		AgentChoiceReasoning("root", sess.ID, " I should respond politely."),
 		AgentChoice("root", sess.ID, "Hello, how can I help you?"),
-		MessageAdded(sess.ID, msgAdded.Message, "root"),
+		MessageAddedAt(sess.ID, msgAdded.Message, "root", msgAdded.SessionPosition),
 		NewTokenUsageEvent(sess.ID, "root", &Usage{InputTokens: 10, OutputTokens: 15, ContextLength: 25, LastMessage: &MessageUsage{
 			Usage:        chat.Usage{InputTokens: 10, OutputTokens: 15},
 			Model:        "test/mock-model",
@@ -486,7 +486,7 @@ func TestMixedContentAndReasoning(t *testing.T) {
 		AgentChoice("root", sess.ID, "Hello!"),
 		AgentChoiceReasoning("root", sess.ID, " I should be friendly"),
 		AgentChoice("root", sess.ID, " How can I help you today?"),
-		MessageAdded(sess.ID, msgAdded.Message, "root"),
+		MessageAddedAt(sess.ID, msgAdded.Message, "root", msgAdded.SessionPosition),
 		NewTokenUsageEvent(sess.ID, "root", &Usage{InputTokens: 15, OutputTokens: 20, ContextLength: 35, LastMessage: &MessageUsage{
 			Usage:        chat.Usage{InputTokens: 15, OutputTokens: 20},
 			Model:        "test/mock-model",

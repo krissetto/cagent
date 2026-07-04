@@ -156,6 +156,22 @@ func TestNewSubSession(t *testing.T) {
 		// We can verify the user message is still the default.
 		assert.Equal(t, "Please proceed.", s.GetLastUserMessageContent())
 	})
+
+	// A config with no Task, SystemMessage, or ImplicitUserMessage yields a
+	// bare session: no fabricated system message and no synthetic kick-off.
+	// Async subagents rely on this and add the task as the child's first
+	// regular user message themselves.
+	t.Run("bare session fabricates no messages", func(t *testing.T) {
+		cfg := SubSessionConfig{
+			AgentName: "worker",
+			PinAgent:  true,
+		}
+
+		s := newSubSession(parent, cfg, childAgent)
+
+		assert.Empty(t, s.Messages)
+		assert.Equal(t, parent.ID, s.ParentID)
+	})
 }
 
 func TestSubSessionConfig_DefaultValues(t *testing.T) {

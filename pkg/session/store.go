@@ -565,7 +565,12 @@ func setupAndMigrate(ctx context.Context, db *sql.DB) error {
 	}
 
 	migrationManager := NewMigrationManager(db)
-	return migrationManager.InitializeMigrations(ctx)
+	if err := migrationManager.InitializeMigrations(ctx); err != nil {
+		return err
+	}
+
+	// Feature-owned tables created outside the sessions migration catalog.
+	return ensureSubagentTreeTable(ctx, db)
 }
 
 // backupDatabase moves the database file (and related WAL files) to a backup
@@ -1108,26 +1113,24 @@ func (s *SQLiteSessionStore) AddSubSession(ctx context.Context, parentSessionID 
 		_ = tx.Rollback()
 	}()
 
-	// 1. Set parent_id on sub-session
-	subSession.ParentID = parentSessionID
-
-	// 2. Insert sub-session as a new session row
-	if err := s.addSessionTx(ctx, tx, subSession); err != nil {
-		return fmt.Errorf("inserting sub-session: %w", err)
+	// Upsert the sub-session snapshot (session row + full item list). This
+	// must be idempotent: persistent sub-sessions (async subagents) persist
+	// once per finished turn, so repeat calls replace the previous snapshot
+	// instead of conflicting on the session row — which would roll back the
+	// whole write and silently lose the transcript.
+	if err := s.upsertSubSessionTx(ctx, tx, parentSessionID, subSession); err != nil {
+		return err
 	}
 
-	// 3. Recursively add all items from the sub-session
-	for i, item := range subSession.Messages {
-		if err := s.addItemTx(ctx, tx, subSession.ID, i, item); err != nil {
-			return fmt.Errorf("inserting sub-session item %d: %w", i, err)
-		}
-	}
-
-	// 4. Add reference in parent's items
+	// Add the reference in the parent's items, once: repeat persists of the
+	// same sub-session must not duplicate it in the parent's transcript.
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO session_items (session_id, position, item_type, subsession_id)
-		 VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_items WHERE session_id = ?), 'subsession', ?)`,
-		parentSessionID, parentSessionID, subSession.ID)
+		 SELECT ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_items WHERE session_id = ?), 'subsession', ?
+		 WHERE NOT EXISTS (
+			SELECT 1 FROM session_items WHERE session_id = ? AND item_type = 'subsession' AND subsession_id = ?
+		 )`,
+		parentSessionID, parentSessionID, subSession.ID, parentSessionID, subSession.ID)
 	if err != nil {
 		return fmt.Errorf("inserting subsession reference: %w", err)
 	}
@@ -1135,8 +1138,32 @@ func (s *SQLiteSessionStore) AddSubSession(ctx context.Context, parentSessionID 
 	return tx.Commit()
 }
 
-// addSessionTx inserts a session within a transaction.
-func (s *SQLiteSessionStore) addSessionTx(ctx context.Context, tx *sql.Tx, session *Session) error {
+// upsertSubSessionTx writes a sub-session snapshot within a transaction: the
+// session row is upserted (it may already exist from an earlier turn's
+// persist or a title update) and its items are replaced wholesale, recursing
+// into nested sub-sessions.
+func (s *SQLiteSessionStore) upsertSubSessionTx(ctx context.Context, tx *sql.Tx, parentSessionID string, subSession *Session) error {
+	subSession.ParentID = parentSessionID
+
+	if err := s.upsertSessionRowTx(ctx, tx, subSession); err != nil {
+		return fmt.Errorf("upserting sub-session: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_items WHERE session_id = ?`, subSession.ID); err != nil {
+		return fmt.Errorf("clearing sub-session items: %w", err)
+	}
+	for i, item := range subSession.Messages {
+		if err := s.addItemTx(ctx, tx, subSession.ID, i, item); err != nil {
+			return fmt.Errorf("inserting sub-session item %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// upsertSessionRowTx inserts or updates a session row within a transaction.
+// Used for sub-session snapshots, whose row may already exist from an
+// earlier turn's persist or a title update.
+func (s *SQLiteSessionStore) upsertSessionRowTx(ctx context.Context, tx *sql.Tx, session *Session) error {
 	fields, err := sessionPersistedFieldsOf(session)
 	if err != nil {
 		return err
@@ -1148,7 +1175,21 @@ func (s *SQLiteSessionStore) addSessionTx(ctx context.Context, tx *sql.Tx, sessi
 			max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides,
 			custom_models_used, thinking, parent_id
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   title = excluded.title,
+		   tools_approved = excluded.tools_approved,
+		   input_tokens = excluded.input_tokens,
+		   output_tokens = excluded.output_tokens,
+		   cost = excluded.cost,
+		   send_user_message = excluded.send_user_message,
+		   max_iterations = excluded.max_iterations,
+		   working_dir = excluded.working_dir,
+		   starred = excluded.starred,
+		   permissions = excluded.permissions,
+		   agent_model_overrides = excluded.agent_model_overrides,
+		   custom_models_used = excluded.custom_models_used,
+		   parent_id = excluded.parent_id`,
 		session.ID, session.ToolsApproved, session.InputTokens, session.OutputTokens,
 		session.Title, session.Cost, session.SendUserMessage, session.MaxIterations,
 		session.WorkingDir, session.CreatedAt.Format(time.RFC3339), session.Starred,
@@ -1172,24 +1213,16 @@ func (s *SQLiteSessionStore) addItemTx(ctx context.Context, tx *sql.Tx, sessionI
 		return err
 
 	case item.SubSession != nil:
-		// Recursively add the sub-session
-		subSession := item.SubSession
-		subSession.ParentID = sessionID
-
-		if err := s.addSessionTx(ctx, tx, subSession); err != nil {
-			return fmt.Errorf("inserting nested sub-session: %w", err)
-		}
-
-		for i, subItem := range subSession.Messages {
-			if err := s.addItemTx(ctx, tx, subSession.ID, i, subItem); err != nil {
-				return fmt.Errorf("inserting nested sub-session item %d: %w", i, err)
-			}
+		// Nested sub-session: same idempotent snapshot semantics as
+		// AddSubSession (the row and items may exist from an earlier persist).
+		if err := s.upsertSubSessionTx(ctx, tx, sessionID, item.SubSession); err != nil {
+			return fmt.Errorf("upserting nested sub-session: %w", err)
 		}
 
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO session_items (session_id, position, item_type, subsession_id)
 			 VALUES (?, ?, 'subsession', ?)`,
-			sessionID, position, subSession.ID)
+			sessionID, position, item.SubSession.ID)
 		return err
 
 	case item.Summary != "":

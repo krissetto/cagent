@@ -8,6 +8,7 @@ import (
 	"github.com/docker/docker-agent/pkg/config/types"
 	"github.com/docker/docker-agent/pkg/hooks"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
@@ -556,6 +557,25 @@ func StreamStopped(sessionID, agentName, reason string) Event {
 
 func (e *StreamStoppedEvent) GetSessionID() string { return e.SessionID }
 
+// SubagentTreeEvent carries a snapshot of the async subagent swarm for a
+// runtime. It is emitted outside of any RunStream (a subagent's state can
+// change while the parent is idle), so the app forwards it through its event
+// bus for the sidebar to render a live tree.
+type SubagentTreeEvent struct {
+	AgentContext
+
+	Type     string            `json:"type"`
+	Snapshot subagent.Snapshot `json:"snapshot"`
+}
+
+// SubagentTree builds a SubagentTreeEvent from a swarm snapshot.
+func SubagentTree(snapshot subagent.Snapshot) Event {
+	return &SubagentTreeEvent{
+		Type:     "subagent_tree",
+		Snapshot: snapshot,
+	}
+}
+
 // PausedEvent reports that the run loop has reached an iteration
 // boundary and is now blocked because /pause was toggled on. It is emitted
 // once the in-flight LLM request and its tool calls have finished — i.e. the
@@ -899,16 +919,28 @@ type MessageAddedEvent struct {
 	Type      string           `json:"type"`
 	SessionID string           `json:"session_id"`
 	Message   *session.Message `json:"-"`
+	// SessionPosition is the index in session.Messages the message was
+	// committed at, -1 when unknown. Emission happens synchronously after
+	// the commit and the event stream preserves order, so viewers merging a
+	// transcript snapshot with the live stream use it as an exact
+	// reconciliation anchor (see the attach protocol notes).
+	SessionPosition int `json:"session_position"`
 }
 
 func (e *MessageAddedEvent) GetSessionID() string { return e.SessionID }
 
 func MessageAdded(sessionID string, msg *session.Message, agentName string) Event {
+	return MessageAddedAt(sessionID, msg, agentName, -1)
+}
+
+// MessageAddedAt is MessageAdded with the commit position stamp.
+func MessageAddedAt(sessionID string, msg *session.Message, agentName string, position int) Event {
 	return &MessageAddedEvent{
-		Type:         "message_added",
-		SessionID:    sessionID,
-		Message:      msg,
-		AgentContext: newAgentContext(agentName),
+		Type:            "message_added",
+		SessionID:       sessionID,
+		Message:         msg,
+		SessionPosition: position,
+		AgentContext:    newAgentContext(agentName),
 	}
 }
 

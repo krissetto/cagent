@@ -150,6 +150,15 @@ type delegationRequest struct {
 // newSubSession builds a *session.Session from a SubSessionConfig and a parent
 // session. It consolidates the session options that were previously duplicated
 // across handleTaskTransfer and RunAgent.
+//
+// The session only carries the messages its config asked for: a Task is
+// framed as the usual delegation system message, and the synthetic "Please
+// proceed." kick-off accompanies whatever instructions were given. A config
+// with no Task, SystemMessage, or ImplicitUserMessage therefore yields a bare
+// session with no messages at all — async subagents rely on this and make the
+// task the child's first regular user message, so their sessions read like
+// ordinary sessions everywhere (attached tabs, read_subagent transcripts, and
+// the model's own context alike).
 func newSubSession(parent *session.Session, cfg SubSessionConfig, childAgent *agent.Agent) *session.Session {
 	// Sub-agents start in a fresh session, so they don't see the user's
 	// original messages or attached files. Snapshot the parent's attached
@@ -159,18 +168,11 @@ func newSubSession(parent *session.Session, cfg SubSessionConfig, childAgent *ag
 	attachedFiles := parent.AttachedFilesSnapshot()
 
 	sysMsg := cfg.SystemMessage
-	if sysMsg == "" {
+	if sysMsg == "" && cfg.Task != "" {
 		sysMsg = buildTaskSystemMessage(cfg.Task, cfg.ExpectedOutput, attachedFiles)
 	}
 
-	userMsg := cfg.ImplicitUserMessage
-	if userMsg == "" {
-		userMsg = "Please proceed."
-	}
-
 	opts := []session.Opt{
-		session.WithSystemMessage(sysMsg),
-		session.WithImplicitUserMessage(userMsg),
 		session.WithMaxIterations(childAgent.MaxIterations()),
 		session.WithMaxConsecutiveToolCalls(childAgent.MaxConsecutiveToolCalls()),
 		session.WithMaxOldToolCallTokens(childAgent.MaxOldToolCallTokens()),
@@ -180,6 +182,15 @@ func newSubSession(parent *session.Session, cfg SubSessionConfig, childAgent *ag
 		session.WithSendUserMessage(false),
 		session.WithParentID(parent.ID),
 		session.WithAttachedFiles(attachedFiles),
+	}
+	if sysMsg != "" {
+		opts = append(opts, session.WithSystemMessage(sysMsg))
+	}
+	if userMsg := cfg.ImplicitUserMessage; userMsg != "" || sysMsg != "" {
+		if userMsg == "" {
+			userMsg = "Please proceed."
+		}
+		opts = append(opts, session.WithImplicitUserMessage(userMsg))
 	}
 	if cfg.PinAgent {
 		opts = append(opts, session.WithAgentName(cfg.AgentName))
@@ -342,18 +353,27 @@ func (r *LocalRuntime) runCollecting(ctx context.Context, parent *session.Sessio
 	if err != nil {
 		return &agenttool.RunResult{ErrMsg: fmt.Sprintf("agent %q not found: %s", cfg.AgentName, err)}
 	}
-
 	s := newSubSession(parent, cfg, child)
+	return r.runCollectingSession(ctx, parent, s, child, r.CurrentAgent(), onContent)
+}
 
-	// subagent_stop fires after the background sub-session has fully
-	// drained — success or failure. The parent agent at the time of
-	// dispatch (whoever called run_background_agent) owns the executor;
-	// we resolve it via CurrentAgent because the background path doesn't
-	// carry the parent agent name. dispatchHook silently no-ops when
-	// CurrentAgent is nil. The deferred call ensures the hook fires even
+// runCollectingSession runs a pre-built child session to completion, collecting
+// its output. Splitting the session construction out of [runCollecting] lets
+// the async subagent manager build the session first (so it can capture the
+// session id for message routing and transcript reads) and then hand it here to
+// run.
+func (r *LocalRuntime) runCollectingSession(ctx context.Context, parent, s *session.Session, child, parentAgent *agent.Agent, onContent func(string)) *agenttool.RunResult {
+	// subagent_stop fires after the sub-session has fully drained —
+	// success or failure. parentAgent owns the executor: subagent_stop is
+	// observed by whoever spawned the sub-agent. runCollecting resolves it
+	// via CurrentAgent (the background path doesn't carry the parent agent
+	// name); the subagent manager passes the recorded parent instead, since
+	// its children run concurrently with (and nest below) whatever agent
+	// currently drives the runtime. dispatchHook silently no-ops when
+	// parentAgent is nil. The deferred call ensures the hook fires even
 	// when an ErrorEvent or ctx cancellation breaks us out of the loop.
 	defer func() {
-		r.executeSubagentStopHooks(ctx, parent, s, r.CurrentAgent(), cfg.AgentName, s.GetLastAssistantMessageContent())
+		r.executeSubagentStopHooks(ctx, parent, s, parentAgent, child.Name(), s.GetLastAssistantMessageContent())
 	}()
 
 	var errMsg string

@@ -109,6 +109,12 @@ func (e *sinkEmitter) EmitMessageAdded(sessionID string, msg *session.Message, a
 	e.events.Emit(MessageAdded(sessionID, msg, agentName))
 }
 
+// EmitMessageAddedAt implements [toolexec.PositionalEmitter], stamping the
+// session commit position viewers use as a reconciliation anchor.
+func (e *sinkEmitter) EmitMessageAddedAt(sessionID string, msg *session.Message, agentName string, position int) {
+	e.events.Emit(MessageAddedAt(sessionID, msg, agentName, position))
+}
+
 // hookDispatcher adapts the runtime's per-agent [hooks.Executor] machinery
 // into the small [toolexec.HookDispatcher] interface. The events channel
 // is captured here so [LocalRuntime.dispatchHook] can surface SystemMessage
@@ -155,6 +161,6 @@ func denySourceFor(checkerSource string) string {
 // directly via the [toolexec.Emitter] interface.
 func addAgentMessage(sess *session.Session, a *agent.Agent, msg *chat.Message, events EventSink) {
 	agentMsg := session.NewAgentMessage(a.Name(), msg)
-	sess.AddMessage(agentMsg)
-	events.Emit(MessageAdded(sess.ID, agentMsg, a.Name()))
+	pos := sess.AddMessage(agentMsg)
+	events.Emit(MessageAddedAt(sess.ID, agentMsg, a.Name(), pos))
 }

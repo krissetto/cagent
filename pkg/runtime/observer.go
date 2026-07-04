@@ -74,6 +74,12 @@ func (r *LocalRuntime) observe(ctx context.Context, sess *session.Session, inner
 			for _, obs := range r.observers {
 				obs.OnEvent(ctx, sess, event)
 			}
+			// Mirror every event to attached session viewers (TUI tabs
+			// following this session live). Non-blocking; the primary
+			// consumer below is unaffected.
+			if r.sessionEvents != nil {
+				r.sessionEvents.Publish(sess.ID, event)
+			}
 			out <- event
 		}
 	}()

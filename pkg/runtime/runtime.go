@@ -31,6 +31,7 @@ import (
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sessiontitle"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
 	agenttool "github.com/docker/docker-agent/pkg/tools/builtin/agent"
@@ -308,6 +309,30 @@ type LocalRuntime struct {
 
 	bgAgents *agenttool.Handler
 
+	subagents *subagentManager
+
+	// sessionEvents broadcasts each session's run events to attached viewers
+	// (e.g. a TUI tab following a subagent's sub-session live).
+	sessionEvents *sessionEventHub
+
+	// subagentStore persists subagent swarm snapshots in their own
+	// table/backend. Defaults to the session store when it implements
+	// [subagent.Store] (the built-in SQLite store does), else in-memory.
+	// Embedders override it with [WithSubagentStore].
+	subagentStore subagent.Store
+
+	receiversMu sync.RWMutex
+	receivers   map[string]MessageReceiver
+
+	// sessionRuns counts live run-stream loops per session; sessionSteer
+	// buffers detached messages (notes from async subagents) targeted at a
+	// session whose loop is running. The loop drains its session's buffer at
+	// the same iteration boundaries as user steering, so the notes reach the
+	// model mid-turn instead of waiting for the turn to end.
+	sessionRunsMu sync.Mutex
+	sessionRuns   map[string]int
+	sessionSteer  map[string][]QueuedMessage
+
 	// dmrModelLister lists the models pulled locally in Docker Model Runner,
 	// used to populate DMR entries in the model picker. Defaults to
 	// dmr.ListModels in NewLocalRuntime; left nil by runtimes built directly
@@ -442,6 +467,15 @@ func WithModelStore(store ModelStore) Opt {
 func WithSessionStore(store session.Store) Opt {
 	return func(r *LocalRuntime) {
 		r.sessionStore = store
+	}
+}
+
+// WithSubagentStore sets the backend for subagent swarm snapshots. Without it
+// the runtime uses the session store when it implements [subagent.Store] (the
+// built-in SQLite store does, with a dedicated table), or an in-memory store.
+func WithSubagentStore(store subagent.Store) Opt {
+	return func(r *LocalRuntime) {
+		r.subagentStore = store
 	}
 }
 
@@ -618,6 +652,11 @@ func NewLocalRuntime(ctx context.Context, agents *team.Team, opts ...Opt) (*Loca
 		dmrModelLister:         dmr.ListModels,
 	}
 	r.bgAgents = agenttool.NewHandler(r)
+	r.receivers = map[string]MessageReceiver{}
+	r.sessionRuns = map[string]int{}
+	r.sessionSteer = map[string][]QueuedMessage{}
+	r.sessionEvents = newSessionEventHub()
+	r.subagents = newSubagentManager(r)
 
 	// stripUnsupportedModalitiesTransform captures the runtime closure to
 	// resolve the agent from Input.AgentName, so it lives here rather
@@ -640,6 +679,17 @@ func NewLocalRuntime(ctx context.Context, agents *team.Team, opts ...Opt) (*Loca
 
 	for _, opt := range opts {
 		opt(r)
+	}
+
+	// Default the subagent snapshot backend: piggyback on the session store
+	// when it implements [subagent.Store] (the built-in SQLite store persists
+	// snapshots in a dedicated table), else keep them in memory.
+	if r.subagentStore == nil {
+		if s, ok := r.sessionStore.(subagent.Store); ok {
+			r.subagentStore = s
+		} else {
+			r.subagentStore = subagent.NewInMemoryStore()
+		}
 	}
 
 	// Set up the hooks registry. Use the embedder-supplied registry
@@ -1383,6 +1433,9 @@ func (r *LocalRuntime) SessionStore() session.Store {
 // when their process is shutting down.
 func (r *LocalRuntime) Close() error {
 	r.bgAgents.StopAll()
+	if r.subagents != nil {
+		r.subagents.Close()
+	}
 	return nil
 }
 
@@ -1488,7 +1541,11 @@ func (r *LocalRuntime) emitAgentAndTeamInfo(ctx context.Context, a *agent.Agent,
 	if !send(AgentInfo(a.Name(), modelLabel, a.Description(), a.WelcomeMessage(), contextLimit)) {
 		return false
 	}
-	return send(TeamInfo(r.agentDetailsFromTeam(ctx), r.currentAgentName()))
+	// The "current" agent is the one these events describe — for a pinned
+	// session (e.g. an attached subagent tab) that is the session's agent,
+	// not the runtime's global current agent. Callers that describe the
+	// global current agent pass it as a, so this is identical for them.
+	return send(TeamInfo(r.agentDetailsFromTeam(ctx), a.Name()))
 }
 
 func (r *LocalRuntime) contextLimitForAgentModel(ctx context.Context, a *agent.Agent, modelID modelsdev.ID) int64 {
@@ -1524,7 +1581,12 @@ func (r *LocalRuntime) EmitStartupInfo(ctx context.Context, sess *session.Sessio
 	}
 	r.startupInfoEmitted = true
 
+	// Honour the session's pinned agent (e.g. an attached subagent
+	// sub-session); unpinned sessions resolve to the current agent as before.
 	a := r.CurrentAgent()
+	if sess != nil {
+		a = r.resolveSessionAgent(sess)
+	}
 
 	// Helper to send events with context check
 	send := func(event Event) bool {
@@ -1580,7 +1642,7 @@ func (r *LocalRuntime) EmitStartupInfo(ctx context.Context, sess *session.Sessio
 			break
 		}
 
-		send(NewTokenUsageEvent(sess.ID, r.currentAgentName(), usage))
+		send(NewTokenUsageEvent(sess.ID, a.Name(), usage))
 	}
 
 	// Tool loading can be slow (MCP servers need to start). Mark the
@@ -1605,18 +1667,23 @@ func (r *LocalRuntime) EmitStartupInfo(ctx context.Context, sess *session.Sessio
 // emitToolsProgressively loads tools from each toolset and emits progress updates.
 // This allows the UI to show the tool count incrementally as each toolset loads,
 // with a spinner indicating that more tools may be coming.
+//
+// Events are stamped with a's name — the agent whose tools are being counted —
+// not the runtime's global current agent: for a pinned session's startup info
+// (e.g. an attached subagent tab) the two differ, and the TUI derives the
+// selected agent from event agent names.
 func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agent, send func(Event) bool) {
 	toolsets := a.ToolSets()
 	totalToolsets := len(toolsets)
 
 	// If no toolsets, emit final state immediately
 	if totalToolsets == 0 {
-		send(ToolsetInfo(0, false, r.currentAgentName()))
+		send(ToolsetInfo(0, false, a.Name()))
 		return
 	}
 
 	// Emit initial loading state
-	if !send(ToolsetInfo(0, true, r.currentAgentName())) {
+	if !send(ToolsetInfo(0, true, a.Name())) {
 		return
 	}
 
@@ -1709,13 +1776,13 @@ func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agen
 		totalTools += len(ts)
 
 		// Emit progress update - still loading unless this is the last toolset
-		if !send(ToolsetInfo(totalTools, !isLast, r.currentAgentName())) {
+		if !send(ToolsetInfo(totalTools, !isLast, a.Name())) {
 			return
 		}
 	}
 
 	// Emit final state (not loading)
-	send(ToolsetInfo(totalTools, false, r.currentAgentName()))
+	send(ToolsetInfo(totalTools, false, a.Name()))
 }
 
 // listToolsWithTimeout enumerates a toolset's tools under a bounded deadline.

@@ -29,6 +29,7 @@ import (
 	"github.com/docker/docker-agent/pkg/permissions"
 	"github.com/docker/docker-agent/pkg/remote"
 	"github.com/docker/docker-agent/pkg/skills"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/deferred"
@@ -344,7 +345,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			}
 		}
 
-		agentTools, warnings := getToolsForAgent(ctx, &agentConfig, parentDir, runConfig, loadOpts.toolsetRegistry, configName, expander)
+		agentTools, warnings := getToolsForAgent(ctx, &agentConfig, parentDir, runConfig, loadOpts.toolsetRegistry, configName, expander, cfg)
 		if len(warnings) > 0 {
 			opts = append(opts, agent.WithLoadTimeWarnings(warnings))
 		}
@@ -372,6 +373,10 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		}
 
 		opts = append(opts, agent.WithToolSets(agentTools...))
+
+		if len(agentConfig.Subagents) > 0 {
+			opts = append(opts, agent.WithAsyncSubagents(agentConfig.Subagents...))
+		}
 
 		ag := agent.New(agentConfig.Name, expander.Expand(ctx, agentConfig.Instruction, nil), opts...)
 		agents = append(agents, ag)
@@ -711,10 +716,34 @@ func compactionThresholdForAgent(cfg *latest.Config, a *latest.AgentConfig) *flo
 	return a.CompactionThreshold
 }
 
+func allowedSubagents(cfg *latest.Config, refs latest.SubagentRefs) []subagent.AllowedSubagent {
+	allowed := make([]subagent.AllowedSubagent, 0, len(refs))
+	for _, ref := range refs {
+		desc := ref.Description
+		if desc == "" {
+			if cfg != nil {
+				if target, ok := cfg.Agents.Lookup(ref.Agent); ok {
+					desc = target.Description
+				}
+			}
+		}
+		allowed = append(allowed, subagent.AllowedSubagent{
+			Agent:       ref.Agent,
+			Name:        ref.Name,
+			Description: desc,
+		})
+	}
+	return allowed
+}
+
 // getToolsForAgent returns the tool definitions for an agent based on its
 // configuration. Toolset instructions support ${...} JavaScript placeholders
 // (e.g. ${env.X}); they are expanded here using the runtime env provider.
-func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir string, runConfig *config.RuntimeConfig, registry ToolsetRegistry, configName string, expander *js.Expander) ([]tools.ToolSet, []string) {
+func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir string, runConfig *config.RuntimeConfig, registry ToolsetRegistry, configName string, expander *js.Expander, cfgs ...*latest.Config) ([]tools.ToolSet, []string) {
+	var cfg *latest.Config
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+	}
 	var (
 		toolSets    []tools.ToolSet
 		warnings    []string
@@ -781,6 +810,9 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 
 	if len(a.SubAgents) > 0 {
 		toolSets = append(toolSets, transfertask.New())
+	}
+	if len(a.Subagents) > 0 {
+		toolSets = append(toolSets, subagent.NewToolSet(allowedSubagents(cfg, a.Subagents)))
 	}
 	if len(a.Handoffs) > 0 {
 		toolSets = append(toolSets, handoff.New())

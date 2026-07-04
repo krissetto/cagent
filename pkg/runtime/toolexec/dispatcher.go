@@ -91,6 +91,14 @@ type Emitter interface {
 	EmitMessageAdded(sessionID string, msg *session.Message, agentName string)
 }
 
+// PositionalEmitter is an optional extension of [Emitter]: emitters that also
+// implement it receive the message's session commit position, which viewers
+// merging a transcript snapshot with the live event stream use as an exact
+// reconciliation anchor. Emitters without it get the plain EmitMessageAdded.
+type PositionalEmitter interface {
+	EmitMessageAddedAt(sessionID string, msg *session.Message, agentName string, position int)
+}
+
 // HookDispatcher abstracts pre/post tool-use hook dispatch and the
 // "user is being prompted" notification.
 type HookDispatcher interface {
@@ -1101,10 +1109,15 @@ func (c *call) errorResponse(ctx context.Context, errorMsg string) {
 	})
 }
 
-// addMessage records msg in the session and emits MessageAdded.
+// addMessage records msg in the session and emits MessageAdded (with the
+// commit position when the emitter supports it).
 func (c *call) addMessage(msg *chat.Message) {
 	agentMsg := session.NewAgentMessage(c.a.Name(), msg)
-	c.sess.AddMessage(agentMsg)
+	pos := c.sess.AddMessage(agentMsg)
+	if em, ok := c.em.(PositionalEmitter); ok {
+		em.EmitMessageAddedAt(c.sess.ID, agentMsg, c.a.Name(), pos)
+		return
+	}
 	c.em.EmitMessageAdded(c.sess.ID, agentMsg, c.a.Name())
 }
 
