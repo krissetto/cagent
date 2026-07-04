@@ -25,6 +25,7 @@ import (
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sessiontitle"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/teamloader"
 	loaderdefaults "github.com/docker/docker-agent/pkg/teamloader/defaults"
@@ -40,6 +41,20 @@ type activeRuntimes struct {
 	titleGen *sessiontitle.Generator // Title generator (includes fallback models)
 
 	streaming sync.Mutex // Held while a RunStream is in progress; serialises concurrent requests
+}
+
+// actorRuntime is the capability surface local runtimes expose for serve-mode
+// integration with the session actor (see pkg/runtime/session_actor.go):
+// turns route through RunOrAttach so client requests never collide with
+// runtime-owned wake runs (async subagent reports to an idle parent), the
+// session's canonical event stream feeds the event log so tailing clients
+// see those wake runs too, and persisted subagent swarms are re-adopted when
+// a session is loaded. Remote runtimes fall back to the classic RunStream
+// path and simply lack between-request updates.
+type actorRuntime interface {
+	runtime.SessionRunner
+	SubscribeSessionEvents(sessionID string) ([]runtime.Event, <-chan runtime.Event, func())
+	RestoreSubagentTree(ctx context.Context, sess *session.Session) (*subagent.Snapshot, error)
 }
 
 // SessionManager manages sessions for HTTP and Connect-RPC servers.
@@ -131,6 +146,10 @@ func (sm *SessionManager) WaitReady(ctx context.Context) error {
 type pumpedEventLog struct {
 	log    *eventLog
 	cancel context.CancelFunc
+	// hubFed marks logs fed from the runtime's session event hub (every run,
+	// client- or runtime-initiated). Paths that append run events manually
+	// (recallSession) must skip hub-fed logs or events would double up.
+	hubFed bool
 }
 
 // RegisterEventSource attaches an event source for sessionID and immediately
@@ -157,6 +176,41 @@ func (sm *SessionManager) RegisterEventSource(sessionID string, src EventSource)
 func (sm *SessionManager) HasEventSource(sessionID string) bool {
 	_, ok := sm.eventLogs.Load(sessionID)
 	return ok
+}
+
+// registerHubEventLog buffers the session's canonical event stream (every
+// run, client- or runtime-initiated) so clients tailing
+// GET /api/sessions/:id/events see async subagent wake runs that happen
+// between requests — the POST /run response only carries its own turn.
+// No-op when an event log already exists (attached mode registers its own
+// via RegisterEventSource).
+func (sm *SessionManager) registerHubEventLog(ctx context.Context, sessionID string, ar actorRuntime) {
+	if sm.HasEventSource(sessionID) {
+		return
+	}
+	pumpCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	log := newEventLog(defaultEventLogCapacity)
+	sm.eventLogs.Store(sessionID, &pumpedEventLog{log: log, cancel: cancel, hubFed: true})
+
+	go func() {
+		defer log.close("session ended")
+		seed, events, cancelSub := ar.SubscribeSessionEvents(sessionID)
+		defer cancelSub()
+		for _, e := range seed {
+			log.append(e)
+		}
+		for {
+			select {
+			case <-pumpCtx.Done():
+				return
+			case e, ok := <-events:
+				if !ok {
+					return
+				}
+				log.append(e)
+			}
+		}
+	}()
 }
 
 // LastEventSeq returns the most recent event sequence number for sessionID,
@@ -635,6 +689,14 @@ func (sm *SessionManager) RunSession(ctx context.Context, sessionID, agentFilena
 		}
 		sm.runtimeSessions.Store(sessionID, runtimeSession)
 		sm.registerRecallHandler(sessionID, rt)
+		if ar, ok := rt.(actorRuntime); ok {
+			// Re-adopt any persisted subagent swarm so send_message /
+			// read_subagent keep working across server restarts.
+			if _, err := ar.RestoreSubagentTree(ctx, sess); err != nil {
+				slog.WarnContext(ctx, "Failed to restore subagent tree for session", "session_id", sessionID, "error", err)
+			}
+			sm.registerHubEventLog(ctx, sessionID, ar)
+		}
 		sm.markReady()
 	} else {
 		titleGen = runtimeSession.titleGen
@@ -715,7 +777,7 @@ func (sm *SessionManager) RunSession(ctx context.Context, sessionID, agentFilena
 			streamChan <- runtime.SessionTitle(sess.ID, titleToEmit)
 		}
 
-		stream := runtimeSession.runtime.RunStream(streamCtx, sess)
+		stream := runtime.RunOrAttachStream(streamCtx, runtimeSession.runtime, sess)
 		for event := range stream {
 			if streamCtx.Err() != nil {
 				return
@@ -891,9 +953,11 @@ func (sm *SessionManager) recallSession(ctx context.Context, sessionID string, m
 	go func() {
 		defer rt.streaming.Unlock()
 		defer runCancel()
-		stream := rt.runtime.RunStream(runCtx, sess)
+		stream := runtime.RunOrAttachStream(runCtx, rt.runtime, sess)
 		for event := range stream {
-			if pe, ok := sm.eventLogs.Load(sessionID); ok {
+			// Hub-fed logs already carry every run's events; appending here
+			// too would double them up.
+			if pe, ok := sm.eventLogs.Load(sessionID); ok && !pe.hubFed {
 				pe.log.append(event)
 			}
 		}
