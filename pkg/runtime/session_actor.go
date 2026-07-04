@@ -2,32 +2,33 @@ package runtime
 
 import (
 	"context"
+	"time"
 
 	"github.com/docker/docker-agent/pkg/session"
 )
 
 // The session actor: the runtime can drive any session it has seen, so a
 // note arriving while a session is idle starts a runtime-owned run instead
-// of depending on the embedder to relay it. Sessions fall into two camps:
+// of depending on the embedder to relay it. Every session works this way —
+// there is one camp. A registered MessageReceiver is a delivery override,
+// not a different lifecycle: the subagent manager registers one per child
+// so their input flows through its pending-queue turn loop, and any embedder
+// may register one to intercept delivery, but nothing requires it.
 //
-//   - receiver-managed: an interactive embedder (the TUI) registered a
-//     MessageReceiver at least once. The embedder owns interactivity (tool
-//     approvals, elicitations), so the runtime never runs these unattended —
-//     during receiver gaps notes buffer and drain when the receiver returns.
-//
-//   - actor-managed: everything else (API server, protocol adapters, exec).
-//     A note to an idle session wakes it: a runtime-owned run whose opening
-//     steer drain turns the note into a regular steered user message, with
-//     the standard hooks, events, and persistence (the persistence observer
-//     is part of every RunStream). Events reach embedders through the
-//     session event hub, the same "subscribe to the session's event stream"
-//     they already use for live viewing.
+// A wake is a runtime-owned run whose opening steer drain turns buffered
+// notes into regular steered user messages, with the standard hooks, events,
+// and persistence (the persistence observer is part of every RunStream).
+// Events reach embedders through the session event hub — the same "subscribe
+// to the session's event stream" they use for live viewing — so a wake run
+// renders in the TUI and lands in serve-mode event logs like any other run.
 //
 // Embedder-initiated turns go through [LocalRuntime.RunOrAttach], which
 // keeps the classic shape (stage the message, run, stream the turn) when the
 // session is free and attaches to the live run when the actor got there
-// first. The single-driver invariant holds throughout: one loop per session,
-// everyone else steers into it or watches the hub.
+// first. [LocalRuntime.StopSession] cancels a live wake run (the embedder
+// holds the cancel for runs it started itself). The single-driver invariant
+// holds throughout: one loop per session, everyone else steers into it or
+// watches the hub.
 
 // rememberSession records the session object so the actor can wake it later.
 // The pointer is shared with the embedder on purpose: a wake mutates the
@@ -41,17 +42,9 @@ func (r *LocalRuntime) rememberSession(sess *session.Session) {
 	r.knownSessions[sess.ID] = sess
 }
 
-// isReceiverManaged reports whether a session's embedder ever registered a
-// receiver, marking it interactive (see the package note above).
-func (r *LocalRuntime) isReceiverManaged(sessionID string) bool {
-	r.receiversMu.RLock()
-	defer r.receiversMu.RUnlock()
-	return r.receiverManaged[sessionID]
-}
-
-// wakeSession starts a runtime-owned run for an idle actor-managed session
-// with buffered input. No-op when the session is unknown, already running,
-// reserved or waking, or has nothing buffered — every caller may fire it
+// wakeSession starts a runtime-owned run for an idle session with buffered
+// input. No-op when the session is unknown, already running, reserved or
+// waking, or has nothing buffered — every caller may fire it
 // opportunistically.
 func (r *LocalRuntime) wakeSession(sessionID string) {
 	r.sessionRunsMu.Lock()
@@ -62,12 +55,38 @@ func (r *LocalRuntime) wakeSession(sessionID string) {
 		return
 	}
 	r.sessionWaking[sessionID] = true
+	// The wake outlives whatever delivery triggered it: it runs on the
+	// runtime's root context, like the subagent manager's child runs. The
+	// cancel is kept so StopSession (the embedder's Esc on a run it does
+	// not own) can end it; runWakeLoop releases it on exit.
+	ctx, cancel := context.WithCancel(context.WithoutCancel(r.ctx())) //nolint:gosec // released by runWakeLoop on exit (or StopSession)
+	if r.sessionWakeCancel == nil {
+		r.sessionWakeCancel = map[string]context.CancelFunc{}
+	}
+	r.sessionWakeCancel[sessionID] = cancel
 	r.sessionRunsMu.Unlock()
 
-	// The wake outlives whatever delivery triggered it: it runs on the
-	// runtime's root context, like the subagent manager's child runs.
-	ctx := context.WithoutCancel(r.ctx())
 	go r.runWakeLoop(ctx, sess)
+}
+
+// StopSession cancels the session's live runtime-owned wake run, if any,
+// and drops its buffered input: an explicit cancel must stick, so the notes
+// that would otherwise re-wake the session via the teardown re-dispatch die
+// with the run (their content stays recoverable via read_subagent). Runs the
+// embedder started itself are its own to cancel (it holds their context).
+// Returns whether a wake run was cancelled.
+func (r *LocalRuntime) StopSession(sessionID string) bool {
+	r.sessionRunsMu.Lock()
+	cancel := r.sessionWakeCancel[sessionID]
+	if cancel != nil {
+		delete(r.sessionSteer, sessionID)
+	}
+	r.sessionRunsMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
 }
 
 // runWakeLoop drives wake runs until the session's buffer stays empty. The
@@ -77,14 +96,24 @@ func (r *LocalRuntime) wakeSession(sessionID string) {
 // turn waiting in attachThenRun) ends the loop — the reserved run's opening
 // drain takes over whatever is left in the buffer.
 func (r *LocalRuntime) runWakeLoop(ctx context.Context, sess *session.Session) {
+	var cleanup context.CancelFunc
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
 	for {
 		for range r.RunStream(ctx, sess) {
 			// Drained for flow control only: observers persist and the
 			// session event hub mirrors to every subscriber.
 		}
 		r.sessionRunsMu.Lock()
-		if len(r.sessionSteer[sess.ID]) == 0 || r.sessionReserved[sess.ID] {
+		if ctx.Err() != nil || len(r.sessionSteer[sess.ID]) == 0 || r.sessionReserved[sess.ID] {
 			delete(r.sessionWaking, sess.ID)
+			if cancel := r.sessionWakeCancel[sess.ID]; cancel != nil {
+				delete(r.sessionWakeCancel, sess.ID)
+				cleanup = cancel
+			}
 			r.sessionRunsMu.Unlock()
 			return
 		}
@@ -173,10 +202,21 @@ func (r *LocalRuntime) attachThenRun(ctx context.Context, sess *session.Session)
 				return
 			}
 		}
+		// The stop-event retry below can miss a run that stopped between our
+		// settle check and the subscription (its StreamStopped predates the
+		// subscribe); the ticker closes that window.
+		retry := time.NewTicker(50 * time.Millisecond)
+		defer retry.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-retry.C:
+				if r.reserveIfSettled(sess.ID) {
+					cancel()
+					drive()
+					return
+				}
 			case e, ok := <-events:
 				if !ok || !emit(e) {
 					return

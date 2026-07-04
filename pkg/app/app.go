@@ -53,11 +53,19 @@ type App struct {
 	titleGen               *sessiontitle.Generator     // Title generator for local runtime (nil for remote)
 	snapshotController     builtins.SnapshotController // Drives /undo, /snapshots, /reset; nil for runtimes that don't capture snapshots
 
-	// unregisterReceiver removes the message receiver this App registered
-	// with the runtime for its current session; re-set whenever the session
-	// changes. nil when the runtime does not support message delivery (e.g.
-	// remote).
-	unregisterReceiver func()
+	// stopBridge tears down the session-event bridge (the hub subscription
+	// feeding the App bus); re-set whenever the session changes. hubBridged
+	// reports whether a bridge is active: the bus is then the single event
+	// source and Run's own channel is drained for flow control only.
+	// runCancelled mutes bridged events after the user cancels the in-flight
+	// turn (all but the stream stop), mirroring the classic drop-on-cancel.
+	stopBridge   func()
+	hubBridged   bool
+	runCancelled atomic.Bool
+	// suppressUserEcho drops the pre-StreamStarted user-message re-emission
+	// of a retried run from the bridged stream — the bubble is already on
+	// screen. Cleared by the run's StreamStarted.
+	suppressUserEcho atomic.Bool
 
 	// attachedSubagent marks this App as a live viewer of an async subagent's
 	// sub-session: the runtime's subagent manager stays the session's driver
@@ -155,15 +163,17 @@ func New(ctx context.Context, rt runtime.Runtime, sess *session.Session, opts ..
 func (a *App) Start(ctx context.Context) {
 	a.startOnce.Do(func() {
 		if a.attachedSubagent == nil {
-			a.registerMessageReceiver()
 			a.reloadSubagentTree(ctx)
 		} else {
-			a.startSessionEventBridge(ctx)
 			// The shared runtime already emitted startup info for the spawning
 			// tab's App; reset the once-flag so this attached tab gets its own
 			// agent/team/tool info (resolved for the pinned child agent).
 			a.runtime.ResetStartupInfo()
 		}
+		// One event source for local runtimes: the session's canonical stream
+		// feeds the bus, whoever drives a run — this App, the subagent
+		// manager, or the runtime's session actor waking the session.
+		a.hubBridged = a.startSessionEventBridge(ctx)
 		a.startSubagentTreeBridge(ctx)
 		// Emit startup info (agent, team, tools) through the events channel.
 		// This runs in the background so the TUI can start immediately while
@@ -489,6 +499,7 @@ func (a *App) EmitStartupInfo(ctx context.Context, events chan runtime.Event) {
 // Run one agent loop
 func (a *App) Run(ctx context.Context, cancel context.CancelFunc, message string, attachments []messages.Attachment) {
 	a.cancel = cancel
+	a.runCancelled.Store(false)
 
 	// Attached viewer: hand the input to the session's driver (the subagent
 	// manager) instead of starting a competing run. A live run steers it in at
@@ -516,7 +527,18 @@ func (a *App) Run(ctx context.Context, cancel context.CancelFunc, message string
 		} else {
 			a.session.AddMessage(session.UserMessage(message))
 		}
-		for event := range a.runtime.RunStream(ctx, a.session) {
+		// The turn goes through the session actor (RunOrAttach) so it never
+		// collides with a runtime-owned wake run (a subagent report answering
+		// turn); on a free session it is byte-for-byte RunStream.
+		stream := runtime.RunOrAttachStream(ctx, a.runtime, a.session)
+		if a.hubBridged {
+			// The bridge is the bus's single event source — this channel is
+			// drained for flow control and turn completion only.
+			for range stream {
+			}
+			return
+		}
+		for event := range stream {
 			// If context is cancelled, continue draining but don't forward events
 			// — except StreamStoppedEvent, which must always propagate so the
 			// supervisor can mark the session as no longer running.
@@ -697,8 +719,18 @@ func (a *App) processInlineAttachment(att messages.Attachment, textBuilder *stri
 // arrive after StreamStarted and are forwarded normally.
 func (a *App) Retry(ctx context.Context, cancel context.CancelFunc) {
 	a.cancel = cancel
+	a.runCancelled.Store(false)
 
 	go func() {
+		if a.hubBridged {
+			// The bus is fed by the session event bridge; this channel is
+			// flow-control only. The pre-StreamStarted user-message
+			// re-emission is suppressed in the bridge filter instead.
+			a.suppressUserEcho.Store(true)
+			for range runtime.RunOrAttachStream(ctx, a.runtime, a.session) {
+			}
+			return
+		}
 		streamStarted := false
 		for event := range a.runtime.RunStream(ctx, a.session) {
 			// If context is cancelled, continue draining but don't forward events
@@ -733,6 +765,7 @@ func (a *App) Retry(ctx context.Context, cancel context.CancelFunc) {
 // This is used for special cases like image attachments.
 func (a *App) RunWithMessage(ctx context.Context, cancel context.CancelFunc, msg *session.Message) {
 	a.cancel = cancel
+	a.runCancelled.Store(false)
 
 	// If this is the first message and no title exists, start local title generation
 	if a.session.Title == "" && a.titleGen != nil {
@@ -752,7 +785,15 @@ func (a *App) RunWithMessage(ctx context.Context, cancel context.CancelFunc, msg
 
 	go func() {
 		a.session.AddMessage(msg)
-		for event := range a.runtime.RunStream(ctx, a.session) {
+		stream := runtime.RunOrAttachStream(ctx, a.runtime, a.session)
+		if a.hubBridged {
+			// The bridge is the bus's single event source — this channel is
+			// drained for flow control and turn completion only.
+			for range stream {
+			}
+			return
+		}
+		for event := range stream {
 			// If context is cancelled, continue draining but don't forward events
 			// — except StreamStoppedEvent, which must always propagate so the
 			// supervisor can mark the session as no longer running.
@@ -969,7 +1010,7 @@ func (a *App) NewSession() {
 	// Clear first message so it won't be re-sent on re-init
 	a.firstMessage = nil
 	a.firstMessageAttach = ""
-	a.registerMessageReceiver()
+	a.hubBridged = a.startSessionEventBridge(a.ctx())
 
 	// Re-emit startup info so the sidebar shows agent/tools info in the new session
 	a.reEmitStartupInfo(a.ctx())
@@ -1310,6 +1351,32 @@ func (a *App) ShouldExitAfterFirstResponse() bool {
 	return a.exitAfterFirstResponse
 }
 
+// MarkRunCancelled mutes bridged events for the cancelled in-flight turn
+// (all but the stream stop) so the UI freezes immediately while the run
+// winds down, matching the classic drop-on-cancel behavior. Cleared on the
+// next Run.
+func (a *App) MarkRunCancelled() {
+	a.runCancelled.Store(true)
+}
+
+// StopWakeRun cancels a runtime-owned wake run rendering in this session
+// (a subagent report answering turn the user did not start). Returns whether
+// one was cancelled.
+func (a *App) StopWakeRun() bool {
+	rt, ok := a.runtime.(subagentRuntime)
+	if !ok || a.session == nil {
+		return false
+	}
+	// Gate first so no tail event slips onto the bus between the cancel and
+	// the filter noticing; the run's stream-stop releases the gate.
+	a.runCancelled.Store(true)
+	if rt.StopSession(a.session.ID) {
+		return true
+	}
+	a.runCancelled.Store(false)
+	return false
+}
+
 // IsReadOnly returns true when the session is in read-only mode and no new
 // messages should be sent to the LLM.
 func (a *App) IsReadOnly() bool {
@@ -1380,7 +1447,7 @@ func (a *App) ReplaceSession(ctx context.Context, sess *session.Session) {
 	// Clear first message so it won't be re-sent on re-init
 	a.firstMessage = nil
 	a.firstMessageAttach = ""
-	a.registerMessageReceiver()
+	a.hubBridged = a.startSessionEventBridge(ctx)
 
 	// Apply any stored model overrides from the session
 	a.applySessionModelOverrides(ctx, sess)

@@ -773,14 +773,24 @@ func (p *chatPage) Help() help.KeyMap {
 	return core.NewSimpleHelp(p.Bindings())
 }
 
-// cancelStream cancels the current stream and cleans up associated state
+// cancelStream cancels the current stream and cleans up associated state.
+// Turns this tab started are cancelled through their own context; a
+// runtime-owned wake run (a subagent report answering turn) is stopped
+// through the runtime instead.
 func (p *chatPage) cancelStream(showCancelMessage bool) tea.Cmd {
-	if p.msgCancel == nil {
+	switch {
+	case p.msgCancel != nil:
+		if p.app != nil {
+			p.app.MarkRunCancelled()
+		}
+		p.msgCancel()
+		p.msgCancel = nil
+	case p.app != nil && p.app.StopWakeRun():
+		// Stopped a runtime-owned run; fall through to the shared cleanup.
+	default:
 		return nil
 	}
 
-	p.msgCancel()
-	p.msgCancel = nil
 	p.streamCancelled = true
 	p.streamDepth = 0
 	p.agentStack = nil

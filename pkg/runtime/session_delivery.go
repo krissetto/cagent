@@ -30,13 +30,7 @@ func (r *LocalRuntime) RegisterMessageReceiver(sessionID string, fn MessageRecei
 	if r.receivers == nil {
 		r.receivers = map[string]MessageReceiver{}
 	}
-	if r.receiverManaged == nil {
-		r.receiverManaged = map[string]bool{}
-	}
 	r.receivers[sessionID] = fn
-	// Sticky on purpose: once an interactive embedder owns a session, the
-	// actor never runs it unattended, even during receiver gaps.
-	r.receiverManaged[sessionID] = true
 	r.receiversMu.Unlock()
 
 	r.sessionRunsMu.Lock()
@@ -103,10 +97,9 @@ func (r *LocalRuntime) deliverMessage(ctx context.Context, sessionID, content st
 
 // deliverOrBuffer is deliverMessage for messages that must never be lost:
 // when the session is idle and has no receiver, the message is buffered and
-// the session actor takes over. For receiver-managed (interactive) sessions
-// the buffer waits for a wake path to reappear — the next run's opening
-// steer drain or a receiver re-registration; for everything else the actor
-// wakes the session immediately with a runtime-owned run (wakeSession).
+// the session actor wakes the session with a runtime-owned run (wakeSession).
+// Sessions the actor has never seen keep the buffer until their next run's
+// opening steer drain.
 //
 // This is the right semantic for parent-directed notes (turn reports,
 // send_message(parent)). Child-directed input must use deliverMessage
@@ -119,9 +112,6 @@ func (r *LocalRuntime) deliverOrBuffer(ctx context.Context, sessionID, content s
 	r.sessionRunsMu.Lock()
 	r.bufferSessionSteerLocked(sessionID, QueuedMessage{Content: content})
 	r.sessionRunsMu.Unlock()
-	if r.isReceiverManaged(sessionID) {
-		return
-	}
 	r.wakeSession(sessionID)
 }
 

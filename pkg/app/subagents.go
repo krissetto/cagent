@@ -14,9 +14,6 @@ import (
 // runtimes that don't (e.g. remote) degrade every use below to a no-op. The
 // methods are one cohesive feature, so they are asserted as one interface.
 type subagentRuntime interface {
-	// RegisterMessageReceiver wires delivery of messages (notes from async
-	// subagents) for an idle session; the returned func unregisters it.
-	RegisterMessageReceiver(sessionID string, fn runtime.MessageReceiver) func()
 	// DeliverMessage delivers a detached user message to a session by id.
 	DeliverMessage(ctx context.Context, sessionID, content string) bool
 	// SubagentTree is the live swarm registry, for snapshot subscriptions.
@@ -25,6 +22,8 @@ type subagentRuntime interface {
 	SubscribeSessionEvents(sessionID string) (seed []runtime.Event, events <-chan runtime.Event, cancel func())
 	// RestoreSubagentTree rebuilds a reloaded session's swarm from the store.
 	RestoreSubagentTree(ctx context.Context, sess *session.Session) (*subagent.Snapshot, error)
+	// StopSession cancels a live runtime-owned wake run for the session.
+	StopSession(sessionID string) bool
 }
 
 // WithSubagentAttach marks the App as a live viewer of an async subagent's
@@ -67,40 +66,94 @@ func (a *App) reloadSubagentTree(ctx context.Context) {
 	}
 }
 
-// registerMessageReceiver wires the current session's detached-message
-// delivery (notes from async subagents). The runtime steers messages into a
-// live run loop itself and only calls the receiver when the session is idle,
-// so routing through the normal SendMsg path starts a fresh run immediately.
-func (a *App) registerMessageReceiver() {
-	if a.unregisterReceiver != nil {
-		a.unregisterReceiver()
-		a.unregisterReceiver = nil
-	}
-	if a.session == nil {
-		return
+// startSessionEventBridge mirrors the App's session's run events onto the
+// App bus — the single event source for local runtimes. Whoever drives a run
+// (this App's own turns, the subagent manager for attached children, or the
+// runtime's session actor waking the session with a subagent report), the
+// bus carries the same ordered stream. Seed events (the head of an in-flight
+// run when subscribing mid-stream) are forwarded first, then the live
+// channel. Restartable: a new call replaces the previous session's bridge
+// (session switches). Reports whether a bridge is active, so Run knows the
+// bus is fed and its own channel is flow-control only.
+func (a *App) startSessionEventBridge(ctx context.Context) bool {
+	if a.stopBridge != nil {
+		a.stopBridge()
+		a.stopBridge = nil
 	}
 	rt, ok := a.runtime.(subagentRuntime)
-	if !ok {
-		return
+	if !ok || a.session == nil {
+		return false
 	}
-	a.unregisterReceiver = rt.RegisterMessageReceiver(a.session.ID, func(ctx context.Context, content string) {
-		a.InjectUserMessage(ctx, content)
-	})
+	bridgeCtx, cancel := context.WithCancel(ctx)
+	a.stopBridge = cancel
+	seed, ch, cancelSub := rt.SubscribeSessionEvents(a.session.ID)
+	// The hub drops events for subscribers whose buffer is full — fine for
+	// casual viewers, not for the tab's only event source. The elastic pump
+	// drains the subscription promptly regardless of bus pressure, so the
+	// stream the user watches is lossless, like the per-run channels were.
+	forwardToBus(bridgeCtx, a, seed, pumpElastic(bridgeCtx, ch), cancelSub, a.filterBridgedEvent)
+	return true
 }
 
-// startSessionEventBridge mirrors the attached session's run events onto the
-// App bus: the subagent manager drives the session (spawn task, parent
-// messages, re-runs); this App just watches everything those runs
-// emit — streaming deltas, tool calls, steered user messages, lifecycle.
-// Seed events (the head of an in-flight assistant message when attaching
-// mid-stream) are forwarded first, then the live channel.
-func (a *App) startSessionEventBridge(ctx context.Context) {
-	rt, ok := a.runtime.(subagentRuntime)
-	if !ok {
-		return
+// pumpElastic relays in to the returned channel through an unbounded
+// in-memory queue: reads from in never wait on the consumer. Closes the
+// output when in closes and the queue is drained, or when ctx ends.
+func pumpElastic[T any](ctx context.Context, in <-chan T) <-chan T {
+	out := make(chan T)
+	go func() {
+		defer close(out)
+		var queue []T
+		for {
+			var send chan<- T
+			var head T
+			if len(queue) > 0 {
+				send = out
+				head = queue[0]
+			} else if in == nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case v, ok := <-in:
+				if !ok {
+					in = nil
+					continue
+				}
+				queue = append(queue, v)
+			case send <- head:
+				queue = queue[1:]
+			}
+		}
+	}()
+	return out
+}
+
+// filterBridgedEvent applies the App's own-run semantics to the bridged
+// stream: while the user has cancelled the in-flight turn, everything but
+// the stream-stop is dropped — and that stop releases the gate, so it mutes
+// exactly the cancelled run's tail and later runs render normally. A retry's
+// pre-StreamStarted user-message re-emission is suppressed (the bubble is
+// already on screen), and a session title arriving from any run clears the
+// title-generating flag.
+func (a *App) filterBridgedEvent(e runtime.Event) runtime.Event {
+	switch e.(type) {
+	case *runtime.SessionTitleEvent:
+		a.titleGenerating.Store(false)
+	case *runtime.StreamStartedEvent:
+		a.suppressUserEcho.Store(false)
+	case *runtime.UserMessageEvent:
+		if a.suppressUserEcho.Load() {
+			return nil
+		}
+	case *runtime.StreamStoppedEvent:
+		a.runCancelled.Store(false)
+		return e
 	}
-	seed, ch, cancel := rt.SubscribeSessionEvents(a.session.ID)
-	forwardToBus(ctx, a, seed, ch, cancel, func(e runtime.Event) runtime.Event { return e })
+	if a.runCancelled.Load() {
+		return nil
+	}
+	return e
 }
 
 // startSubagentTreeBridge mirrors live swarm snapshots onto the App bus so the
@@ -115,13 +168,18 @@ func (a *App) startSubagentTreeBridge(ctx context.Context) {
 }
 
 // forwardToBus pumps seed then ch onto the App's event bus, wrapping each
-// value, until ctx is done or ch closes. cancel releases the subscription.
+// value, until ctx is done or ch closes. A nil wrap result drops the value.
+// cancel releases the subscription.
 func forwardToBus[T any](ctx context.Context, a *App, seed []T, ch <-chan T, cancel func(), wrap func(T) runtime.Event) {
 	go func() {
 		defer cancel()
 		send := func(v T) bool {
+			e := wrap(v)
+			if e == nil {
+				return true
+			}
 			select {
-			case a.events <- wrap(v):
+			case a.events <- e:
 				return true
 			case <-ctx.Done():
 				return false

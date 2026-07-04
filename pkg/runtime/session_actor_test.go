@@ -86,9 +86,11 @@ func TestActorWakesIdleSessionOnNote(t *testing.T) {
 }
 
 // A note for a session the actor has never seen stays buffered (nothing to
-// run), and receiver-managed sessions are never run unattended — the
-// interactive embedder owns tool approvals and elicitations.
-func TestActorNeverRunsUnknownOrReceiverManagedSessions(t *testing.T) {
+// run — the next run's opening drain picks it up); a live receiver takes
+// precedence over waking; and once the receiver is gone the actor drives the
+// session itself — every session is an actor, receivers are just a delivery
+// override.
+func TestActorWakePrecedence(t *testing.T) {
 	t.Parallel()
 
 	rt, sess := newActorFixture(t)
@@ -100,17 +102,26 @@ func TestActorNeverRunsUnknownOrReceiverManagedSessions(t *testing.T) {
 	assert.False(t, rt.sessionWaking["never-ran"])
 	rt.sessionRunsMu.Unlock()
 
-	// Receiver-managed session (sticky, even after unregistering): buffered.
 	sess.AddMessage(session.UserMessage("hi"))
 	for range rt.RunStream(t.Context(), sess) {
 	}
-	unregister := rt.RegisterMessageReceiver(sess.ID, func(context.Context, string) {})
-	unregister()
-	rt.deliverOrBuffer(t.Context(), sess.ID, "note")
+
+	// Live receiver: delivery routes through it, no wake.
+	got := make(chan string, 1)
+	unregister := rt.RegisterMessageReceiver(sess.ID, func(_ context.Context, content string) { got <- content })
+	rt.deliverOrBuffer(t.Context(), sess.ID, "via-receiver")
+	assert.Equal(t, "via-receiver", <-got)
 	rt.sessionRunsMu.Lock()
-	defer rt.sessionRunsMu.Unlock()
-	assert.False(t, rt.sessionWaking[sess.ID], "interactive sessions are never run unattended")
-	assert.Len(t, rt.sessionSteer[sess.ID], 1)
+	assert.False(t, rt.sessionWaking[sess.ID], "receiver delivery must not also wake")
+	rt.sessionRunsMu.Unlock()
+
+	// Receiver gone: the actor wakes the session itself.
+	unregister()
+	turnOne := len(sess.Messages)
+	rt.deliverOrBuffer(t.Context(), sess.ID, "via-actor")
+	assert.Eventually(t, func() bool {
+		return rt.sessionSettled(sess.ID) && len(sess.Messages) > turnOne
+	}, 5*time.Second, 10*time.Millisecond, "the actor must run the note once no receiver exists")
 }
 
 // RunOrAttach on a free session is byte-for-byte the classic embedder turn:
@@ -186,4 +197,38 @@ func TestRunOrAttachMirrorsLiveRunThenDrives(t *testing.T) {
 	require.NotNil(t, last.Message)
 	assert.Equal(t, chat.MessageRoleAssistant, last.Message.Message.Role,
 		"the staged turn must be answered by the follow-up drive")
+}
+
+// StopSession cancels a live wake run — the embedder's Esc for a run it
+// does not own. Runs the embedder started are untouched (it holds their
+// context).
+func TestStopSessionCancelsWakeRun(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	prov := &activeRootBlockingProvider{id: "test/blocking-model", release: release}
+	tm := team.New(team.WithAgents(agent.New("root", "prompt", agent.WithModel(prov))))
+	rt, err := NewLocalRuntime(t.Context(), tm)
+	require.NoError(t, err)
+	t.Cleanup(rt.subagents.Close)
+	t.Cleanup(func() { close(release) })
+
+	sess := session.New(session.WithID("stop-sess"))
+	rt.rememberSession(sess)
+
+	rt.deliverOrBuffer(t.Context(), sess.ID, "note")
+	require.Eventually(t, func() bool {
+		rt.sessionRunsMu.Lock()
+		defer rt.sessionRunsMu.Unlock()
+		return rt.sessionWaking[sess.ID]
+	}, 2*time.Second, 5*time.Millisecond, "the note must start a wake run")
+
+	require.True(t, rt.StopSession(sess.ID), "a live wake run must be stoppable")
+	assert.Eventually(t, func() bool {
+		rt.sessionRunsMu.Lock()
+		defer rt.sessionRunsMu.Unlock()
+		return !rt.sessionWaking[sess.ID] && rt.sessionRuns[sess.ID] == 0
+	}, 5*time.Second, 10*time.Millisecond, "the wake run must wind down after StopSession")
+
+	assert.False(t, rt.StopSession(sess.ID), "nothing left to stop")
 }
