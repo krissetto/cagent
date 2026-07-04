@@ -290,6 +290,26 @@ func validateConfig(cfg *latest.Config) error {
 			}
 		}
 
+		seenAlias := map[string]bool{}
+		for _, ref := range agent.Subagents {
+			alias := ref.ResolvedName()
+			if seenAlias[alias] {
+				return fmt.Errorf("agent '%s' has duplicate async subagent alias '%s'", agent.Name, alias)
+			}
+			seenAlias[alias] = true
+		}
+		for _, subAgentRef := range agent.Subagents.AgentNames() {
+			if _, exists := allNames[subAgentRef]; !exists && !IsExternalReference(subAgentRef) {
+				return fmt.Errorf("agent '%s' references non-existent async subagent '%s'", agent.Name, subAgentRef)
+			}
+			if IsExternalReference(subAgentRef) {
+				name, _ := ParseExternalAgentRef(subAgentRef)
+				if allNames[name] {
+					return fmt.Errorf("agent '%s': external async subagent '%s' resolves to name '%s' which conflicts with a locally-defined agent", agent.Name, subAgentRef, name)
+				}
+			}
+		}
+
 		for _, handoffRef := range agent.Handoffs {
 			if _, exists := allNames[handoffRef]; !exists && !IsExternalReference(handoffRef) {
 				return fmt.Errorf("agent '%s' references non-existent handoff agent '%s'", agent.Name, handoffRef)
