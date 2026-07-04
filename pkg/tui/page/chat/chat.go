@@ -23,6 +23,7 @@ import (
 	msgtypes "github.com/docker/docker-agent/pkg/tui/messages"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/styles"
+	"github.com/docker/docker-agent/pkg/tui/subagentindex"
 )
 
 const (
@@ -187,7 +188,17 @@ type chatPage struct {
 	streamCancelled bool
 	streamDepth     int      // nesting depth of active streams (incremented on StreamStarted, decremented on StreamStopped)
 	agentStack      []string // agent per active stream level; len(agentStack)==streamDepth
+	teamAgentNames  []string // last team roster; a change re-renders cached messages with fresh agent colors
 	streamStartTime time.Time
+
+	// Attach protocol state (tabs attached to a live subagent session).
+	// snapshotEnd is the session item count captured when the transcript
+	// snapshot was rendered: position-stamped events below it are already in
+	// the snapshot and are dropped. The head of an in-flight assistant
+	// message arrives as seed events from the session event hub (captured
+	// atomically with the subscription), so nothing needs repairing after
+	// the fact — and no scroll-disturbing rebuild is needed.
+	snapshotEnd int
 
 	// Track whether we've received content from an assistant response
 	// Used by --exit-after-response to ensure we don't exit before receiving content
@@ -404,8 +415,25 @@ func (p *chatPage) Init() tea.Cmd {
 	// Load state from existing session (for session restore and branching)
 	if sess := p.app.Session(); sess != nil {
 		p.sidebar.LoadFromSession(sess)
+		// Seed the subagent id → name index from the persisted swarm so restored
+		// subagent tool calls are attributed by name, not just id.
+		if snap := sess.GetSubagentTree(); snap != nil {
+			subagentindex.Update(*snap)
+		}
 		if len(sess.Messages) > 0 {
 			cmds = append(cmds, p.messages.LoadFromSession(sess))
+		}
+		// Attached subagent tab: root the swarm section at the subagent's own
+		// node and show the clickable link back to the parent tab. snapshotEnd
+		// is the rendered snapshot's length (taken from the same item copy):
+		// position-stamped events below it are already on screen and settle or
+		// drop; events at/after it apply. Attaching mid-run needs no special
+		// working-state handling here: the session event hub seeds a synthetic
+		// StreamStarted for a live run, driving the spinner through the normal
+		// path (here and in the tab bar).
+		if info := p.app.AttachedSubagent(); info != nil {
+			p.sidebar.SetSubagentContext(info.NodeID, info.ParentAgent, info.ParentSessionID)
+			p.snapshotEnd = p.messages.LoadedItemCount()
 		}
 	}
 
@@ -1233,6 +1261,11 @@ func (p *chatPage) routeMouseEvent(msg tea.Msg, _ int) tea.Cmd {
 			p.sidebar = model.(sidebar.Model)
 			return cmd
 		}
+	}
+
+	// Motion left the sidebar: drop any hovered subagent row.
+	if _, ok := msg.(tea.MouseMotionMsg); ok {
+		p.sidebar.ClearSubagentHover()
 	}
 
 	model, cmd := p.messages.Update(msg)

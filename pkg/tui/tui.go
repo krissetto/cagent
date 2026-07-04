@@ -25,6 +25,7 @@ import (
 	"github.com/docker/docker-agent/pkg/history"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	subagentpkg "github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/commands"
 	"github.com/docker/docker-agent/pkg/tui/components/completion"
@@ -772,6 +773,7 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.(type) {
 		case messages.SpawnSessionMsg, messages.SwitchTabMsg,
 			messages.CloseTabMsg, messages.ReorderTabMsg,
+			messages.OpenSubagentMsg,
 			messages.ToggleSidebarMsg, messages.OpenSettingsDialogMsg:
 			return m, nil
 		}
@@ -826,6 +828,9 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.CloseTabMsg:
 		return m.handleCloseTab(msg.SessionID)
+
+	case messages.OpenSubagentMsg:
+		return m.handleOpenSubagent(msg)
 
 	case messages.ReorderTabMsg:
 		return m.handleReorderTab(msg)
@@ -1085,8 +1090,12 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// --- SendMsg from editor ---
 
 	case messages.SendMsg:
-		// Forward send messages to the active content view
-		if m.history != nil && !msg.BypassQueue {
+		// Forward send messages to the active content view.
+		// Runtime-authored notes (subagent turn reports, agent-to-agent
+		// relays) can reach this path — e.g. inline-editing a system_info
+		// bubble resends its content — and must never pollute the user's
+		// prompt history.
+		if m.history != nil && !msg.BypassQueue && !subagentpkg.IsSystemInfo(msg.Content) {
 			_ = m.history.Add(msg.Content)
 		}
 		return m.forwardChat(msg)
@@ -1664,6 +1673,42 @@ type stashedDialog struct {
 	event  tea.Msg
 }
 
+// subagentAttachRuntime is implemented by runtimes that can attach a live
+// viewer to an async subagent's sub-session (the local runtime).
+type subagentAttachRuntime interface {
+	SubagentAttachInfo(id subagentpkg.NodeID) (runtime.SubagentAttachInfo, bool)
+	SubagentNodeForSession(sessionID string) (subagentpkg.NodeID, bool)
+}
+
+// handleOpenSubagent opens (or focuses) a tab attached to a subagent's
+// sub-session. The tab shares the spawning tab's runtime: the subagent
+// manager keeps driving the session, the new tab watches it live and can
+// message it. Attached tabs are not persisted — on restart the subagent is
+// re-adopted under its parent's session instead.
+func (m *appModel) handleOpenSubagent(msg messages.OpenSubagentMsg) (tea.Model, tea.Cmd) {
+	runner := m.supervisor.ActiveRunner()
+	if runner == nil || runner.App == nil {
+		return m, nil
+	}
+	rt, ok := runner.App.Runtime().(subagentAttachRuntime)
+	if !ok {
+		return m, notification.WarningCmd("Subagent sessions can only be opened on a local runtime")
+	}
+	info, ok := rt.SubagentAttachInfo(subagentpkg.NodeID(msg.NodeID))
+	if !ok {
+		return m, notification.WarningCmd("This subagent has no session to open")
+	}
+
+	// Already open? Just focus its tab.
+	if open := m.supervisor.FindBySession(info.Session.ID); open != nil {
+		return m.handleSwitchTab(open.ID)
+	}
+
+	a := app.New(m.ctx(), runner.App.Runtime(), info.Session, app.WithSubagentAttach(info))
+	m.supervisor.AddSession(m.ctx(), a, info.Session, runner.WorkingDir, nil)
+	return m.handleSwitchTab(info.Session.ID)
+}
+
 // handleSwitchTab switches to a different session.
 // Existing chat pages and editors are preserved (not recreated) so that in-flight streaming
 // content and draft text are retained when switching back to a tab.
@@ -1691,6 +1736,23 @@ func (m *appModel) handleSwitchTab(sessionID string) (tea.Model, tea.Cmd) {
 
 	runner := m.supervisor.SwitchTo(sessionID)
 	if runner == nil {
+		// The id may be a session driven by a tab under another runner key
+		// (restored tabs keep their original key). Match by current session so
+		// e.g. an attached subagent tab's "parent" link still resolves.
+		if bySess := m.supervisor.FindBySession(sessionID); bySess != nil && bySess.ID != sessionID {
+			return m.handleSwitchTab(bySess.ID)
+		}
+		// No open tab — but the id may be a subagent sub-session of the active
+		// tab's runtime (e.g. the "parent" link of a nested subagent tab whose
+		// parent is itself a subagent). Open an attached tab for it so session
+		// links always work.
+		if active := m.supervisor.ActiveRunner(); active != nil && active.App != nil {
+			if rt, ok := active.App.Runtime().(subagentAttachRuntime); ok {
+				if node, ok := rt.SubagentNodeForSession(sessionID); ok {
+					return m.handleOpenSubagent(messages.OpenSubagentMsg{NodeID: string(node)})
+				}
+			}
+		}
 		return m, notification.ErrorCmd("Session not found")
 	}
 
@@ -1900,8 +1962,42 @@ func (m *appModel) handleReorderTab(msg messages.ReorderTabMsg) (tea.Model, tea.
 	return m, nil
 }
 
+// dependentAttachedTabs returns the ids of attached subagent tabs sharing the
+// given tab's runtime. Empty when that tab is itself an attached viewer:
+// viewers don't own the runtime, so closing one never cascades.
+func (m *appModel) dependentAttachedTabs(sessionID string) []string {
+	runner := m.supervisor.GetRunner(sessionID)
+	if runner == nil || runner.App == nil || runner.App.AttachedSubagent() != nil {
+		return nil
+	}
+	rt := runner.App.Runtime()
+	var deps []string
+	tabs, _ := m.supervisor.GetTabs()
+	for _, tab := range tabs {
+		if tab.SessionID == sessionID {
+			continue
+		}
+		if r := m.supervisor.GetRunner(tab.SessionID); r != nil && r.App != nil &&
+			r.App.AttachedSubagent() != nil && r.App.Runtime() == rt {
+			deps = append(deps, tab.SessionID)
+		}
+	}
+	return deps
+}
+
 // handleCloseTab closes a session tab.
 func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
+	// Attached subagent tabs are views into the closing tab's runtime; its
+	// cleanup stops the shared toolsets, so they cannot outlive it. Close
+	// them first (before capturing active-tab state — a cascaded close may
+	// itself switch tabs). Closing an attached tab has no cleanup and never
+	// cascades.
+	var cascadeCmds []tea.Cmd
+	for _, dep := range m.dependentAttachedTabs(sessionID) {
+		_, cmd := m.handleCloseTab(dep)
+		cascadeCmds = append(cascadeCmds, cmd)
+	}
+
 	wasActive := sessionID == m.supervisor.ActiveID()
 
 	// Capture the working dir before closing so we can reuse it if this is the last tab.
@@ -1948,15 +2044,17 @@ func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
 		if workingDir == "" {
 			workingDir = "/"
 		}
-		return m.handleSpawnSession(workingDir)
+		model, cmd := m.handleSpawnSession(workingDir)
+		return model, tea.Batch(append(cascadeCmds, cmd)...)
 	}
 
 	// If the closed tab was active, switch to the next one
 	if wasActive && nextActiveID != "" {
-		return m.handleSwitchTab(nextActiveID)
+		model, cmd := m.handleSwitchTab(nextActiveID)
+		return model, tea.Batch(append(cascadeCmds, cmd)...)
 	}
 
-	return m, tea.Batch(cmds...)
+	return m, tea.Batch(append(cascadeCmds, cmds...)...)
 }
 
 // handleWindowResize handles window resize.

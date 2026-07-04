@@ -8,6 +8,7 @@ package tool
 import (
 	"sync"
 
+	subagentpkg "github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/tools/builtin/fetch"
 	"github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
 	handofftool "github.com/docker/docker-agent/pkg/tools/builtin/handoff"
@@ -27,6 +28,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/components/tool/readmultiplefiles"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/searchfilescontent"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/shell"
+	"github.com/docker/docker-agent/pkg/tui/components/tool/subagenttool"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/todotool"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/transfertask"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/userprompt"
@@ -54,6 +56,10 @@ var builders = map[string]Builder{
 	filesystem.ToolNameSearchFilesContent: searchfilescontent.New,
 	shelltool.ToolNameShell:               shell.New,
 	userpromptool.ToolNameUserPrompt:      userprompt.New,
+	subagentpkg.ToolSpawnSubagent:         subagenttool.NewSpawn,
+	subagentpkg.ToolSendMessage:           subagenttool.NewSend,
+	subagentpkg.ToolReadSubagent:          subagenttool.NewRead,
+	subagentpkg.ToolStopSubagent:          subagenttool.NewStop,
 	fetch.ToolNameFetch:                   api.New,
 	"category:api":                        api.New,
 	todo.ToolNameCreateTodo:               todotool.New,

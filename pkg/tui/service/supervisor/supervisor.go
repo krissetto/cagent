@@ -322,6 +322,22 @@ func (s *Supervisor) GetRunner(sessionID string) *SessionRunner {
 	return s.runners[sessionID]
 }
 
+// FindBySession returns the runner whose App currently drives the given
+// session, or nil. Unlike GetRunner it matches the App's *current* session:
+// a restored tab keeps its original runner key but may drive another session.
+func (s *Supervisor) FindBySession(sessionID string) *SessionRunner {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, runner := range s.runners {
+		if runner.App != nil {
+			if sess := runner.App.Session(); sess != nil && sess.ID == sessionID {
+				return runner
+			}
+		}
+	}
+	return nil
+}
+
 // SetRunnerTitle updates the title of the runner for the given session ID.
 // It also triggers a tab update notification.
 func (s *Supervisor) SetRunnerTitle(sessionID, title string) {

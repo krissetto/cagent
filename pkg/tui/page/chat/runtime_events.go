@@ -3,10 +3,12 @@ package chat
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	chatmsg "github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/sound"
 	"github.com/docker/docker-agent/pkg/tools"
@@ -15,6 +17,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/core"
 	"github.com/docker/docker-agent/pkg/tui/dialog"
 	msgtypes "github.com/docker/docker-agent/pkg/tui/messages"
+	"github.com/docker/docker-agent/pkg/tui/subagentindex"
 	"github.com/docker/docker-agent/pkg/tui/types"
 	"github.com/docker/docker-agent/pkg/userconfig"
 )
@@ -79,7 +82,27 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	// ===== Content Events =====
 	case *runtime.UserMessageEvent:
+		// Attach protocol: a position inside the transcript snapshot is already
+		// on screen — the buffered event would duplicate it.
+		if p.snapshotEnd > 0 && msg.SessionPosition >= 0 && msg.SessionPosition < p.snapshotEnd {
+			return true, nil
+		}
 		return true, p.messages.ReplaceLoadingWithUser(msg.Message, msg.SessionPosition)
+
+	case *runtime.MessageAddedEvent:
+		// Attach protocol: each committed assistant message settles the
+		// streamed tail exactly. A commit inside the snapshot means the
+		// streamed bubbles duplicate a message already on screen; a commit
+		// after it finalizes them in place with the canonical content. Emitted
+		// synchronously after the session commit and delivered in order, so
+		// this is exact with no timing assumptions. Root tabs render from
+		// their own run stream and need none of this.
+		if p.app.AttachedSubagent() == nil || msg.Message == nil || msg.Message.Message.Role != chatmsg.MessageRoleAssistant {
+			return true, nil
+		}
+		alreadyShown := msg.SessionPosition >= 0 && msg.SessionPosition < p.snapshotEnd
+		return true, p.messages.FinalizeStreamedAssistant(
+			msg.GetAgentName(), msg.Message.Message.Content, msg.Message.Message.ReasoningContent, alreadyShown)
 
 	case *runtime.AgentChoiceEvent:
 		return true, p.handleAgentChoice(msg)
@@ -118,6 +141,17 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 
 	case *runtime.TeamInfoEvent:
 		p.sidebar.SetTeamInfo(msg.AvailableAgents)
+		// The appModel already updated the agent-color registry from this event.
+		// A transcript restored before the event (session reload) was rendered
+		// and cached with fallback colors; re-render it once the roster changes.
+		names := make([]string, len(msg.AvailableAgents))
+		for i, a := range msg.AvailableAgents {
+			names[i] = a.Name
+		}
+		if !slices.Equal(names, p.teamAgentNames) {
+			p.teamAgentNames = names
+			p.messages.InvalidateRenderCaches()
+		}
 		return true, nil
 
 	case *runtime.AgentSwitchingEvent:
@@ -129,6 +163,12 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 		return true, p.forwardToSidebar(msg)
 
 	case *runtime.SessionTitleEvent:
+		return true, p.forwardToSidebar(msg)
+
+	case *runtime.SubagentTreeEvent:
+		// Keep the id → name index fresh so subagent tool calls can be
+		// attributed by name while still running.
+		subagentindex.Update(msg.Snapshot)
 		return true, p.forwardToSidebar(msg)
 
 	case *runtime.SessionCompactionEvent:

@@ -25,6 +25,13 @@ type CloseTabMsg struct {
 	SessionID string // The session to close
 }
 
+// OpenSubagentMsg requests attaching a tab to an async subagent's
+// sub-session (clicked in the sidebar swarm or on a subagent tool message).
+// If a tab for that session already exists it is focused instead.
+type OpenSubagentMsg struct {
+	NodeID string // The subagent's tree node id
+}
+
 // ReorderTabMsg requests moving a tab from one position to another.
 type ReorderTabMsg struct {
 	FromIdx int
