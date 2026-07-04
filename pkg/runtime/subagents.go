@@ -704,14 +704,6 @@ func (r *LocalRuntime) handleSpawnSubagent(_ context.Context, sess *session.Sess
 	if strings.TrimSpace(args.Task) == "" {
 		return tools.ResultError("task is required"), nil
 	}
-	// Async subagents need a wake path on the spawning session: turn reports
-	// arrive after this run ends, and only a registered receiver (the TUI's
-	// app, the manager for child sessions) can start the run that shows them.
-	// Hosts that haven't wired one (e.g. the API server today) get a clean
-	// refusal here instead of a subagent whose reports nobody would relay.
-	if !r.HasMessageReceiver(sess.ID) {
-		return tools.ResultError("spawning subagents is not supported in this environment: this session cannot be woken when a subagent reports back. Handle the task yourself or use your other delegation tools."), nil
-	}
 
 	a := r.resolveSessionAgent(sess)
 	allowed := r.allowedFromAgent(a)

@@ -323,15 +323,26 @@ type LocalRuntime struct {
 
 	receiversMu sync.RWMutex
 	receivers   map[string]MessageReceiver
+	// receiverManaged marks sessions whose embedder registered a receiver at
+	// least once (interactive hosts — the TUI). The runtime never runs these
+	// unattended: the embedder owns interactivity (tool approvals,
+	// elicitations), so during receiver gaps notes buffer instead of waking.
+	receiverManaged map[string]bool
 
 	// sessionRuns counts live run-stream loops per session; sessionSteer
 	// buffers detached messages (notes from async subagents) targeted at a
 	// session whose loop is running. The loop drains its session's buffer at
 	// the same iteration boundaries as user steering, so the notes reach the
 	// model mid-turn instead of waiting for the turn to end.
-	sessionRunsMu sync.Mutex
-	sessionRuns   map[string]int
-	sessionSteer  map[string][]QueuedMessage
+	// knownSessions remembers every session this runtime has run, so the
+	// session actor can wake one that receives a note while idle; sessionWaking
+	// marks sessions with a live runtime-owned waker (single-driver guard).
+	sessionRunsMu   sync.Mutex
+	sessionRuns     map[string]int
+	sessionSteer    map[string][]QueuedMessage
+	knownSessions   map[string]*session.Session
+	sessionWaking   map[string]bool
+	sessionReserved map[string]bool
 
 	// dmrModelLister lists the models pulled locally in Docker Model Runner,
 	// used to populate DMR entries in the model picker. Defaults to
@@ -653,8 +664,12 @@ func NewLocalRuntime(ctx context.Context, agents *team.Team, opts ...Opt) (*Loca
 	}
 	r.bgAgents = agenttool.NewHandler(r)
 	r.receivers = map[string]MessageReceiver{}
+	r.receiverManaged = map[string]bool{}
 	r.sessionRuns = map[string]int{}
 	r.sessionSteer = map[string][]QueuedMessage{}
+	r.knownSessions = map[string]*session.Session{}
+	r.sessionWaking = map[string]bool{}
+	r.sessionReserved = map[string]bool{}
 	r.sessionEvents = newSessionEventHub()
 	r.subagents = newSubagentManager(r)
 

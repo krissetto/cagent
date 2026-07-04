@@ -338,12 +338,10 @@ func TestReportTurnQuiescenceGating(t *testing.T) {
 	})
 }
 
-// Async subagents are refused up front on sessions the host cannot wake:
-// turn reports arrive after the spawning run ends, and only a registered
-// receiver can start the run that surfaces them. Embedders without one
-// (RunStream-only hosts: the API server, exec mode, adapters) therefore
-// don't get half a feature — the model is told to delegate differently.
-func TestSpawnToolRequiresWakePath(t *testing.T) {
+// Spawning requires no embedder wiring: hosts that only call RunStream (API
+// server, adapters, exec) still get working async subagents because the
+// session actor wakes the parent for turn reports (see session_actor.go).
+func TestSpawnToolNeedsNoReceiver(t *testing.T) {
 	t.Parallel()
 
 	tm := team.New(team.WithAgents(
@@ -364,14 +362,6 @@ func TestSpawnToolRequiresWakePath(t *testing.T) {
 	}}
 
 	res, err := rt.handleSpawnSubagent(t.Context(), sess, tc, nil)
-	require.NoError(t, err)
-	require.True(t, res.IsError)
-	assert.Contains(t, res.Output, "not supported in this environment")
-
-	// The same spawn goes through once a wake path exists.
-	unregister := rt.RegisterMessageReceiver(sess.ID, func(context.Context, string) {})
-	defer unregister()
-	res, err = rt.handleSpawnSubagent(t.Context(), sess, tc, nil)
 	require.NoError(t, err)
 	assert.False(t, res.IsError, res.Output)
 	assert.Contains(t, res.Output, "Spawned subagent")

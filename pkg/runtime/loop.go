@@ -230,6 +230,7 @@ func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.S
 // or the iteration limit is reached.
 func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-chan Event {
 	slog.DebugContext(ctx, "Starting runtime stream", "agent", r.currentAgentName(), "session_id", sess.ID)
+	r.rememberSession(sess)
 	events := make(chan Event, defaultEventChannelCapacity)
 	rootStream := !sess.IsSubSession()
 	if rootStream {

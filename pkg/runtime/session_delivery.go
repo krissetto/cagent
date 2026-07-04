@@ -30,7 +30,13 @@ func (r *LocalRuntime) RegisterMessageReceiver(sessionID string, fn MessageRecei
 	if r.receivers == nil {
 		r.receivers = map[string]MessageReceiver{}
 	}
+	if r.receiverManaged == nil {
+		r.receiverManaged = map[string]bool{}
+	}
 	r.receivers[sessionID] = fn
+	// Sticky on purpose: once an interactive embedder owns a session, the
+	// actor never runs it unattended, even during receiver gaps.
+	r.receiverManaged[sessionID] = true
 	r.receiversMu.Unlock()
 
 	r.sessionRunsMu.Lock()
@@ -63,11 +69,8 @@ func (r *LocalRuntime) RegisterMessageReceiver(sessionID string, fn MessageRecei
 	}
 }
 
-// HasMessageReceiver reports whether a session currently has a wake path for
-// detached messages. Async subagents require one on the spawning session:
-// without it, turn reports could only reach the parent on its next
-// embedder-initiated run, so spawning is refused up front instead of
-// degrading to that.
+// HasMessageReceiver reports whether a session currently has a registered
+// receiver for detached messages.
 func (r *LocalRuntime) HasMessageReceiver(sessionID string) bool {
 	r.receiversMu.RLock()
 	defer r.receiversMu.RUnlock()
@@ -82,7 +85,7 @@ func (r *LocalRuntime) deliverMessage(ctx context.Context, sessionID, content st
 	// idle session falls through to its receiver, which starts a fresh run.
 	r.sessionRunsMu.Lock()
 	if r.sessionRuns[sessionID] > 0 {
-		r.bufferSessionSteerLocked(sessionID, content)
+		r.bufferSessionSteerLocked(sessionID, QueuedMessage{Content: content})
 		r.sessionRunsMu.Unlock()
 		return true
 	}
@@ -99,37 +102,41 @@ func (r *LocalRuntime) deliverMessage(ctx context.Context, sessionID, content st
 }
 
 // deliverOrBuffer is deliverMessage for messages that must never be lost:
-// when the session is idle and has no receiver, the message stays in the
-// steer buffer until a wake path reappears — the next run's opening steer
-// drain, or a receiver re-registration (RegisterMessageReceiver drains it).
+// when the session is idle and has no receiver, the message is buffered and
+// the session actor takes over. For receiver-managed (interactive) sessions
+// the buffer waits for a wake path to reappear — the next run's opening
+// steer drain or a receiver re-registration; for everything else the actor
+// wakes the session immediately with a runtime-owned run (wakeSession).
 //
 // This is the right semantic for parent-directed notes (turn reports,
-// send_message(parent)): spawning requires a receiver on the parent, so a
-// missing one here is a transient gap (owning tab switched away, teardown
-// race), not an unsupported host. Child-directed input must use
-// deliverMessage instead: a child without a receiver is stopped and will
-// never run again, so buffering would silently lose the message — failing is
-// truthful there.
+// send_message(parent)). Child-directed input must use deliverMessage
+// instead: a child without a receiver is stopped and will never run again,
+// so buffering would silently lose the message — failing is truthful there.
 func (r *LocalRuntime) deliverOrBuffer(ctx context.Context, sessionID, content string) {
 	if r.deliverMessage(ctx, sessionID, content) {
 		return
 	}
 	r.sessionRunsMu.Lock()
-	defer r.sessionRunsMu.Unlock()
-	r.bufferSessionSteerLocked(sessionID, content)
+	r.bufferSessionSteerLocked(sessionID, QueuedMessage{Content: content})
+	r.sessionRunsMu.Unlock()
+	if r.isReceiverManaged(sessionID) {
+		return
+	}
+	r.wakeSession(sessionID)
 }
 
 // bufferSessionSteerLocked appends a message to the session's steer buffer.
 // Caller holds sessionRunsMu.
-func (r *LocalRuntime) bufferSessionSteerLocked(sessionID, content string) {
+func (r *LocalRuntime) bufferSessionSteerLocked(sessionID string, msg QueuedMessage) {
 	if r.sessionSteer == nil {
 		r.sessionSteer = map[string][]QueuedMessage{}
 	}
-	r.sessionSteer[sessionID] = append(r.sessionSteer[sessionID], QueuedMessage{Content: content})
+	r.sessionSteer[sessionID] = append(r.sessionSteer[sessionID], msg)
 }
 
 // beginSessionRun marks a live run-stream loop for the session so deliverMessage
-// steers into it instead of starting a competing run.
+// steers into it instead of starting a competing run. It also consumes any
+// driver reservation Send placed before starting this run.
 func (r *LocalRuntime) beginSessionRun(sessionID string) {
 	r.sessionRunsMu.Lock()
 	defer r.sessionRunsMu.Unlock()
@@ -137,6 +144,7 @@ func (r *LocalRuntime) beginSessionRun(sessionID string) {
 		r.sessionRuns = map[string]int{}
 	}
 	r.sessionRuns[sessionID]++
+	delete(r.sessionReserved, sessionID)
 }
 
 // endSessionRun unmarks the loop. Messages that raced with teardown (buffered
