@@ -216,7 +216,11 @@ type agentEmit struct {
 func runAgentLoop(ctx context.Context, rt runtime.Runtime, sess *session.Session, emit agentEmit) error {
 	var runErrs []error
 	toolIndex := 0
-	for ev := range rt.RunStream(ctx, sess) {
+	// The turn goes through the session actor (RunOrAttach) so async
+	// subagent wake runs — which the runtime drives between requests — never
+	// collide with this request's run; a request landing mid-wake mirrors
+	// the live run and then drives its own staged turn.
+	for ev := range runtime.RunOrAttachStream(ctx, rt, sess) {
 		switch e := ev.(type) {
 		case *runtime.AgentChoiceEvent:
 			if emit.onContent != nil {
