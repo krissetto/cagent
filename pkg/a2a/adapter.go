@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	dagent "github.com/docker/docker-agent/pkg/agent"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/subagent"
 	"github.com/docker/docker-agent/pkg/team"
 	cgenai "github.com/docker/docker-agent/pkg/telemetry/genai"
 	"github.com/docker/docker-agent/pkg/version"
@@ -27,6 +29,12 @@ import (
 // newDockerAgentAdapter creates a new ADK agent adapter from a docker agent team and agent name.
 // When agentName is empty, the team's default agent (one explicitly named "root" if it
 // exists, otherwise the first agent declared) is used.
+// subagentRestorer is the capability local runtimes expose for re-adopting
+// a session's persisted subagent swarm on load.
+type subagentRestorer interface {
+	RestoreSubagentTree(ctx context.Context, sess *session.Session) (*subagent.Snapshot, error)
+}
+
 func newDockerAgentAdapter(t *team.Team, agentName string, sessStore session.Store) (agent.Agent, error) {
 	a, err := t.AgentOrDefault(agentName)
 	if err != nil {
@@ -111,8 +119,20 @@ func runDockerAgent(ctx agent.InvocationContext, t *team.Team, agentName string,
 			return
 		}
 
-		// Run the agent and collect events
-		eventsChan := rt.RunStream(ctx, sess)
+		// Re-adopt any persisted subagent swarm so a resumed conversation's
+		// send_message / read_subagent keep working.
+		if restorer, ok := rt.(subagentRestorer); ok {
+			if _, err := restorer.RestoreSubagentTree(ctx, sess); err != nil {
+				slog.Warn("Failed to restore subagent tree for session", "session_id", sess.ID, "error", err)
+			}
+		}
+
+		// Run the agent and collect events. The turn goes through the
+		// session actor (RunOrAttach) so async subagent wake runs — which the
+		// runtime drives between requests — never collide with this request's
+		// run; a request landing mid-wake mirrors the live run and then
+		// drives its own staged turn.
+		eventsChan := runtime.RunOrAttachStream(ctx, rt, sess)
 
 		// Track accumulated content for chunked responses
 		var contentBuilder strings.Builder
