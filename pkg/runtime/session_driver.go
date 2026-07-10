@@ -135,6 +135,7 @@ type sessionDriver struct {
 	cancel        context.CancelFunc
 	pending       []QueuedMessage
 	lastError     string
+	onStarted     map[int]func()
 	onSettled     map[int]func()
 	nextHookID    int
 	rootActive    bool
@@ -144,7 +145,7 @@ type sessionDriver struct {
 func newSessionDriver(r *LocalRuntime, sess *session.Session) *sessionDriver {
 	settled := make(chan struct{})
 	close(settled)
-	return &sessionDriver{r: r, sess: sess, settled: settled, onSettled: map[int]func(){}}
+	return &sessionDriver{r: r, sess: sess, settled: settled, onStarted: map[int]func(){}, onSettled: map[int]func(){}}
 }
 
 func (d *sessionDriver) updateSession(sess *session.Session, adopted []QueuedMessage) {
@@ -181,8 +182,12 @@ func (d *sessionDriver) Post(_ context.Context, msg QueuedMessage, wake bool) bo
 		d.mu.Unlock()
 		return true
 	}
-	d.startWakeLocked()
+	wakeCtx, callbacks := d.startWakeLocked()
 	d.mu.Unlock()
+	for _, fn := range callbacks {
+		fn()
+	}
+	go d.driveWake(wakeCtx)
 	return true
 }
 
@@ -198,6 +203,22 @@ func (d *sessionDriver) HasPending() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return len(d.pending) > 0
+}
+
+func (d *sessionDriver) OnStarted(fn func()) func() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.onStarted == nil {
+		d.onStarted = map[int]func(){}
+	}
+	d.nextHookID++
+	id := d.nextHookID
+	d.onStarted[id] = fn
+	return func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		delete(d.onStarted, id)
+	}
 }
 
 func (d *sessionDriver) OnSettled(fn func()) func() {
@@ -321,8 +342,8 @@ func (d *sessionDriver) attachThenRun(ctx context.Context) <-chan Event {
 
 func (d *sessionDriver) tryStart(ctx context.Context, wake bool) (context.Context, bool) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if d.running {
+		d.mu.Unlock()
 		return nil, false
 	}
 	d.running = true
@@ -334,6 +355,11 @@ func (d *sessionDriver) tryStart(ctx context.Context, wake bool) (context.Contex
 	d.openSettledLocked()
 	runCtx, cancel := context.WithCancel(ctx)
 	d.cancel = cancel
+	callbacks := d.startedCallbacksLocked()
+	d.mu.Unlock()
+	for _, fn := range callbacks {
+		fn()
+	}
 	return runCtx, true
 }
 
@@ -403,7 +429,17 @@ func (d *sessionDriver) finishRun(ctx context.Context, wake bool, runErr string)
 		d.cancelingWake = false
 		d.rootActive = false
 		d.cancel = nil
-		d.startWakeLocked()
+		var wakeCtx context.Context
+		wakeCtx, callbacks = d.startWakeLocked()
+		d.mu.Unlock()
+		if rootActive {
+			d.r.activeRootStreams.Add(-1)
+		}
+		for _, fn := range callbacks {
+			fn()
+		}
+		go d.driveWake(wakeCtx)
+		return false
 	} else {
 		d.running = false
 		d.wakeRunning = false
@@ -426,8 +462,9 @@ func (d *sessionDriver) finishRun(ctx context.Context, wake bool, runErr string)
 }
 
 // startWakeLocked starts a runtime-owned wake run. Caller holds d.mu and has
-// already determined the driver is idle with pending input.
-func (d *sessionDriver) startWakeLocked() {
+// already determined the driver is idle with pending input. It returns the
+// wake context and start callbacks; the caller runs them after releasing d.mu.
+func (d *sessionDriver) startWakeLocked() (context.Context, []func()) {
 	d.running = true
 	d.wakeRunning = true
 	d.rootActive = d.sess != nil && !d.sess.IsSubSession()
@@ -437,7 +474,18 @@ func (d *sessionDriver) startWakeLocked() {
 	d.openSettledLocked()
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(d.r.ctx()))
 	d.cancel = cancel
-	go d.driveWake(runCtx)
+	return runCtx, d.startedCallbacksLocked()
+}
+
+func (d *sessionDriver) startedCallbacksLocked() []func() {
+	if len(d.onStarted) == 0 {
+		return nil
+	}
+	callbacks := make([]func(), 0, len(d.onStarted))
+	for _, fn := range d.onStarted {
+		callbacks = append(callbacks, fn)
+	}
+	return callbacks
 }
 
 func (d *sessionDriver) settledCallbacksLocked() []func() {

@@ -167,6 +167,17 @@ func TestRunOrAttachMirrorsLiveRunThenDrives(t *testing.T) {
 	rt.rememberSession(sess)
 
 	rt.deliverOrBuffer(t.Context(), sess.ID, "wake note")
+	_, wakeEvents, cancelWakeSub := rt.SubscribeSessionEvents(sess.ID)
+	require.Eventually(t, func() bool {
+		select {
+		case e := <-wakeEvents:
+			choice, ok := e.(*AgentChoiceEvent)
+			return ok && choice.Content == "report handled"
+		default:
+			return false
+		}
+	}, 2*time.Second, 5*time.Millisecond)
+	cancelWakeSub()
 	require.Eventually(t, func() bool {
 		d, ok := rt.sessionDrivers.Lookup(sess.ID)
 		return ok && !d.Settled()

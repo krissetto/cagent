@@ -3,6 +3,7 @@ package runtime
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,8 +46,9 @@ func (m *subagentManager) registerChild(parent *session.Session, parentAgent str
 	st.live++
 	_ = m.tree.Add(subagent.Node{ID: id, Agent: name, Parent: st.node, State: subagent.NodeRunning})
 	m.ensureSessionLocked(childSess, name, id)
+	var d *sessionDriver
 	if m.r.sessionDrivers != nil {
-		d := m.r.sessionDrivers.Get(childSess)
+		d = m.r.sessionDrivers.Get(childSess)
 		d.mu.Lock()
 		d.running = true
 		d.openSettledLocked()
@@ -58,6 +60,10 @@ func (m *subagentManager) registerChild(parent *session.Session, parentAgent str
 		sessionID:     childSess.ID,
 		session:       childSess,
 		state:         subagent.NodeRunning,
+	}
+	if d != nil {
+		childID := id
+		d.OnStarted(func() { m.markChildRunning(childID) })
 	}
 }
 
@@ -200,6 +206,47 @@ func TestStopSubagentCascadesToDescendants(t *testing.T) {
 	}
 	_, err = m.sendToChild("child-sess", "ddddd", "hi")
 	require.Error(t, err, "stopped descendant rejects input")
+}
+
+func TestSubagentManagerMarksChildRunningWhenDriverWakes(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	tm := team.New(team.WithAgents(agent.New("root", "prompt",
+		agent.WithModel(&activeRootBlockingProvider{id: "test/mock-model", release: release}))))
+	rt, err := NewLocalRuntime(t.Context(), tm)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rt.Close() })
+	rt.subagents.ctx = t.Context()
+	rt.subagents.tree = subagent.NewTree()
+	rt.subagents.sessions = map[string]*sessionSubagents{}
+	rt.subagents.children = map[subagent.NodeID]*childRecord{}
+	rt.subagentStore = subagent.NewInMemoryStore()
+
+	parent := session.New(session.WithID("parent"))
+	child := session.New(session.WithID("child"), session.WithAgentName("root"))
+	rt.subagents.registerChild(parent, "root", "eeeee", "worker", child)
+	d := rt.sessionDrivers.Get(child)
+	d.mu.Lock()
+	d.running = false
+	d.wakeRunning = false
+	d.closeSettledLocked()
+	d.mu.Unlock()
+
+	rt.subagents.children["eeeee"].state = subagent.NodeIdle
+	require.NoError(t, rt.subagents.tree.Update("eeeee", func(n *subagent.Node) { n.State = subagent.NodeIdle }))
+
+	require.True(t, rt.subagents.deliver("child", "wake up"))
+	require.Eventually(t, func() bool {
+		rec, ok := rt.subagents.Read("eeeee")
+		return ok && rec.state == subagent.NodeRunning
+	}, 2*time.Second, 10*time.Millisecond)
+	node, ok := rt.subagents.tree.Node("eeeee")
+	require.True(t, ok)
+	assert.Equal(t, subagent.NodeRunning, node.State)
+	require.NotNil(t, parent.SubagentTree)
+	stored, err := rt.subagentStore.LoadTree(t.Context(), "parent")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
 }
 
 func TestDeliverMessageReturnsFalseWhenNoReceiver(t *testing.T) {

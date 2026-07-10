@@ -187,6 +187,12 @@ func (m *subagentManager) Spawn(parentSess *session.Session, parentAgentName str
 
 	childDriver := m.r.sessionDrivers.Get(childSess)
 	rec.unwatch = childDriver.OnSettled(func() { m.reportChildSettled(childID) })
+	unwatchStarted := childDriver.OnStarted(func() { m.markChildRunning(childID) })
+	previousUnwatch := rec.unwatch
+	rec.unwatch = func() {
+		previousUnwatch()
+		unwatchStarted()
+	}
 
 	m.persistSnapshot()
 	m.wg.Go(func() {
@@ -221,6 +227,27 @@ func (m *subagentManager) generateChildTitle(childSess *session.Session, task st
 		}
 		m.r.sessionEvents.Publish(childSess.ID, SessionTitle(childSess.ID, title))
 	})
+}
+
+// markChildRunning records that a child driver's turn has started. This keeps
+// the swarm tree/TUI in sync when a previously-idle subagent is woken by a
+// descendant report or other detached input.
+func (m *subagentManager) markChildRunning(childID subagent.NodeID) {
+	m.mu.Lock()
+	rec := m.children[childID]
+	if rec == nil || rec.state == subagent.NodeStopped {
+		m.mu.Unlock()
+		return
+	}
+	if rec.state == subagent.NodeRunning {
+		m.mu.Unlock()
+		return
+	}
+	rec.state = subagent.NodeRunning
+	m.mu.Unlock()
+
+	_ = m.tree.Update(childID, func(n *subagent.Node) { n.State = subagent.NodeRunning })
+	m.persistSnapshot()
 }
 
 // reportChildSettled records a child driver's finished turn and notifies its
@@ -447,7 +474,12 @@ func (m *subagentManager) adoptChild(ctx context.Context, parentSess *session.Se
 	if state != subagent.NodeStopped && childSess != nil {
 		childID := node.ID
 		driver := m.r.sessionDrivers.Get(childSess)
-		rec.unwatch = driver.OnSettled(func() { m.reportChildSettled(childID) })
+		unwatchSettled := driver.OnSettled(func() { m.reportChildSettled(childID) })
+		unwatchStarted := driver.OnStarted(func() { m.markChildRunning(childID) })
+		rec.unwatch = func() {
+			unwatchSettled()
+			unwatchStarted()
+		}
 	}
 
 	if childSess != nil {
