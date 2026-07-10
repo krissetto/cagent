@@ -143,7 +143,7 @@ func (m *appModel) persistedSessionID(tabID string) string {
 	if persistedID, ok := m.pendingRestores[tabID]; ok {
 		return persistedID
 	}
-	if runner := m.supervisor.GetRunner(tabID); runner != nil {
+	if runner := m.supervisor.GetRunner(tabID); runner != nil && runner.App != nil {
 		return runner.App.Session().ID
 	}
 	return tabID

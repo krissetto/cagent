@@ -995,6 +995,9 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		quit := m.quitCmd()
 		return m, quit
 
+	case dialog.CloseRunningTabConfirmedMsg:
+		return m.closeTab(msg.SessionID, true)
+
 	case dialog.RuntimeResumeMsg:
 		m.application.Resume(msg.Request)
 		return m, nil
@@ -1962,42 +1965,57 @@ func (m *appModel) handleReorderTab(msg messages.ReorderTabMsg) (tea.Model, tea.
 	return m, nil
 }
 
-// dependentAttachedTabs returns the ids of attached subagent tabs sharing the
-// given tab's runtime. Empty when that tab is itself an attached viewer:
-// viewers don't own the runtime, so closing one never cascades.
-func (m *appModel) dependentAttachedTabs(sessionID string) []string {
+// sharedRuntimeTabs returns other open tabs that use the same runtime as the
+// given tab. Attached subagent tabs share their parent's runtime, so one of
+// these peers can inherit cleanup ownership when the owner tab is closed.
+func (m *appModel) sharedRuntimeTabs(sessionID string) []string {
 	runner := m.supervisor.GetRunner(sessionID)
-	if runner == nil || runner.App == nil || runner.App.AttachedSubagent() != nil {
+	if runner == nil || runner.App == nil {
 		return nil
 	}
 	rt := runner.App.Runtime()
-	var deps []string
+	var peers []string
 	tabs, _ := m.supervisor.GetTabs()
 	for _, tab := range tabs {
 		if tab.SessionID == sessionID {
 			continue
 		}
-		if r := m.supervisor.GetRunner(tab.SessionID); r != nil && r.App != nil &&
-			r.App.AttachedSubagent() != nil && r.App.Runtime() == rt {
-			deps = append(deps, tab.SessionID)
+		if r := m.supervisor.GetRunner(tab.SessionID); r != nil && r.App != nil && r.App.Runtime() == rt {
+			peers = append(peers, tab.SessionID)
 		}
 	}
-	return deps
+	return peers
 }
 
-// handleCloseTab closes a session tab.
-func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
-	// Attached subagent tabs are views into the closing tab's runtime; its
-	// cleanup stops the shared toolsets, so they cannot outlive it. Close
-	// them first (before capturing active-tab state — a cascaded close may
-	// itself switch tabs). Closing an attached tab has no cleanup and never
-	// cascades.
-	var cascadeCmds []tea.Cmd
-	for _, dep := range m.dependentAttachedTabs(sessionID) {
-		_, cmd := m.handleCloseTab(dep)
-		cascadeCmds = append(cascadeCmds, cmd)
-	}
+func (m *appModel) tabAttachedSubagent(sessionID string) bool {
+	runner := m.supervisor.GetRunner(sessionID)
+	return runner != nil && runner.App != nil && runner.App.AttachedSubagent() != nil
+}
 
+func (m *appModel) tabHasActiveStream(sessionID string) bool {
+	if m.supervisor.IsRunning(sessionID) {
+		return true
+	}
+	page := m.chatPages[sessionID]
+	return page != nil && page.IsWorking()
+}
+
+// handleCloseTab requests closing a session tab. Running tabs require
+// confirmation because closing may interrupt the active response.
+func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
+	if m.tabAttachedSubagent(sessionID) {
+		return m.closeTab(sessionID, false)
+	}
+	if m.tabHasActiveStream(sessionID) {
+		return m, core.CmdHandler(dialog.OpenDialogMsg{
+			Model: dialog.NewCloseRunningTabDialog(sessionID),
+		})
+	}
+	return m.closeTab(sessionID, false)
+}
+
+// closeTab closes exactly one session tab.
+func (m *appModel) closeTab(sessionID string, cancelStream bool) (tea.Model, tea.Cmd) {
 	wasActive := sessionID == m.supervisor.ActiveID()
 
 	// Capture the working dir before closing so we can reuse it if this is the last tab.
@@ -2008,6 +2026,21 @@ func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
 
 	// Compute persisted session-store ID *before* closing (runner goes away).
 	persistedID := m.persistedSessionID(sessionID)
+
+	// If other tabs share this runtime, keep shared resources alive by moving
+	// cleanup ownership to one of them before removing this tab.
+	for _, peer := range m.sharedRuntimeTabs(sessionID) {
+		if m.supervisor.TransferCleanup(sessionID, peer) {
+			break
+		}
+	}
+
+	// Confirmed running-tab closes cancel the stream before removing the tab.
+	if cancelStream && !m.tabAttachedSubagent(sessionID) {
+		if page := m.chatPages[sessionID]; page != nil {
+			_ = page.CancelStream(false)
+		}
+	}
 
 	nextActiveID := m.supervisor.CloseSession(sessionID)
 
@@ -2045,16 +2078,16 @@ func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
 			workingDir = "/"
 		}
 		model, cmd := m.handleSpawnSession(workingDir)
-		return model, tea.Batch(append(cascadeCmds, cmd)...)
+		return model, cmd
 	}
 
 	// If the closed tab was active, switch to the next one
 	if wasActive && nextActiveID != "" {
 		model, cmd := m.handleSwitchTab(nextActiveID)
-		return model, tea.Batch(append(cascadeCmds, cmd)...)
+		return model, cmd
 	}
 
-	return m, tea.Batch(append(cascadeCmds, cmds...)...)
+	return m, tea.Batch(cmds...)
 }
 
 // handleWindowResize handles window resize.

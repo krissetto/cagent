@@ -1,7 +1,9 @@
 package supervisor
 
 import (
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,6 +105,20 @@ func TestCloseSession_TwoTabs_CloseSecond(t *testing.T) {
 	assert.Equal(t, "A", next)
 	assert.Equal(t, "A", s.activeID)
 	assert.Equal(t, []string{"A"}, s.order)
+}
+
+func TestTransferCleanupMovesOwnership(t *testing.T) {
+	t.Parallel()
+
+	s := newTestSupervisor([]string{"A", "B"}, "A")
+	var calls atomic.Int32
+	s.runners["A"].cleanup = func() { calls.Add(1) }
+
+	require.True(t, s.TransferCleanup("A", "B"))
+	s.CloseSession("A")
+	assert.Zero(t, calls.Load(), "closing the old owner should not run transferred cleanup")
+	s.CloseSession("B")
+	require.Eventually(t, func() bool { return calls.Load() == 1 }, time.Second, 10*time.Millisecond)
 }
 
 // TestSetPendingEvent_RoundTrip verifies that SetPendingEvent stores an event
