@@ -299,14 +299,11 @@ func validateConfig(cfg *latest.Config) error {
 			seenAlias[alias] = true
 		}
 		for _, subAgentRef := range agent.Subagents.AgentNames() {
-			if _, exists := allNames[subAgentRef]; !exists && !IsExternalReference(subAgentRef) {
-				return fmt.Errorf("agent '%s' references non-existent async subagent '%s'", agent.Name, subAgentRef)
-			}
 			if IsExternalReference(subAgentRef) {
-				name, _ := ParseExternalAgentRef(subAgentRef)
-				if allNames[name] {
-					return fmt.Errorf("agent '%s': external async subagent '%s' resolves to name '%s' which conflicts with a locally-defined agent", agent.Name, subAgentRef, name)
-				}
+				return fmt.Errorf("agent '%s' references external async subagent '%s'; external async subagents are not supported yet", agent.Name, subAgentRef)
+			}
+			if _, exists := allNames[subAgentRef]; !exists {
+				return fmt.Errorf("agent '%s' references non-existent async subagent '%s'", agent.Name, subAgentRef)
 			}
 		}
 

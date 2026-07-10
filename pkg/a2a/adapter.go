@@ -98,7 +98,7 @@ func runDockerAgent(ctx agent.InvocationContext, t *team.Team, agentName string,
 				session.WithNonInteractive(true),
 				session.WithWorkingDir(workingDir),
 			)
-			sess.Title = "A2A Session " + sessionID
+			sess.SetTitle("A2A Session " + sessionID)
 		}
 
 		// Create runtime

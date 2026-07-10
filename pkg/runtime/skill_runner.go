@@ -100,6 +100,7 @@ func (r *LocalRuntime) RunSkillFork(ctx context.Context, sess *session.Session, 
 		}
 	}
 
+	toolsApproved, safetyPolicy, permissions := sess.SafetySettings()
 	// Skills are sub-sessions of the caller, not delegations, so the
 	// runtime's currentAgent stays put.
 	return r.runForwarding(ctx, sess, evts, delegationRequest{
@@ -109,7 +110,9 @@ func (r *LocalRuntime) RunSkillFork(ctx context.Context, sess *session.Session, 
 			ImplicitUserMessage: skills.BuildSkillUserMessage(prepared),
 			AgentName:           ca,
 			Title:               "Skill: " + prepared.SkillName,
-			ToolsApproved:       sess.ToolsApproved,
+			ToolsApproved:       toolsApproved,
+			SafetyPolicy:        safetyPolicy,
+			Permissions:         permissions,
 			NonInteractive:      sess.NonInteractive,
 			ExcludedTools:       []string{skills.ToolNameRunSkill},
 			AllowedTools:        prepared.AllowedTools,

@@ -214,7 +214,7 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 		session.WithMaxOldToolCallTokens(defaultAgent.MaxOldToolCallTokens()),
 		session.WithWorkingDir(workingDir),
 	)
-	sess.Title = "ACP Session " + sess.ID
+	sess.SetTitle("ACP Session " + sess.ID)
 
 	if err := a.sessionStore.AddSession(ctx, sess); err != nil {
 		return acp.NewSessionResponse{}, fmt.Errorf("failed to persist session: %w", err)

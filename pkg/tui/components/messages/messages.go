@@ -1384,10 +1384,21 @@ func (m *model) addMessage(msg *types.Message) tea.Cmd {
 	shouldAutoScroll := !m.userHasScrolled
 
 	m.finalizePreviousMessageView()
-	m.messages = append(m.messages, msg)
 	view := m.createMessageView(msg)
 	m.sessionState.SetPreviousMessage(msg)
-	m.views = append(m.views, view)
+
+	// Keep the pending-response spinner pinned at the tail: content that
+	// arrives while waiting (e.g. runtime-injected subagent notes) slots in
+	// above it, preserving removeSpinner's tail invariant.
+	if tail := len(m.messages) - 1; tail >= 0 &&
+		msg.Type != types.MessageTypeSpinner &&
+		m.messages[tail].Type == types.MessageTypeSpinner {
+		m.messages = slices.Insert(m.messages, tail, msg)
+		m.views = slices.Insert(m.views, tail, view)
+	} else {
+		m.messages = append(m.messages, msg)
+		m.views = append(m.views, view)
+	}
 	m.renderDirty = true
 
 	var cmds []tea.Cmd
@@ -1849,8 +1860,14 @@ func (m *model) addReasoningBlock(agentName, content string) tea.Cmd {
 	block.SetReasoning(content)
 	block.SetSize(m.contentWidth(), 0)
 
-	m.messages = append(m.messages, msg)
-	m.views = append(m.views, block)
+	// Same tail-spinner pinning as addMessage.
+	if tail := len(m.messages) - 1; tail >= 0 && m.messages[tail].Type == types.MessageTypeSpinner {
+		m.messages = slices.Insert(m.messages, tail, msg)
+		m.views = slices.Insert(m.views, tail, layout.Model(block))
+	} else {
+		m.messages = append(m.messages, msg)
+		m.views = append(m.views, block)
+	}
 	m.sessionState.SetPreviousMessage(msg)
 	m.renderDirty = true
 
@@ -1939,7 +1956,7 @@ func (m *model) removeSpinner() {
 			m.views = m.views[:lastIdx]
 		}
 		m.messages = m.messages[:lastIdx]
-		// The spinner is always at the tail, so other indices are unchanged
+		// The spinner is normally at the tail, so other indices are unchanged
 		// and their cached entries remain valid. Only the joined renderedLines
 		// references the now-removed spinner, so we drop it and force a rejoin
 		// on the next render. The LRU itself never held a spinner entry
@@ -1953,6 +1970,29 @@ func (m *model) removeSpinner() {
 		m.totalHeight = 0
 		m.urlSpans.clear()
 		m.renderDirty = true
+		return
+	}
+
+	// Defensive fallback: a spinner buried mid-list (the tail invariant was
+	// broken by a direct append) would otherwise be stuck forever. Rare path,
+	// so the full cache invalidation the index shift requires is acceptable.
+	for i := range slices.Backward(m.messages) {
+		if m.messages[i].Type != types.MessageTypeSpinner {
+			continue
+		}
+		if i < len(m.views) {
+			animation.StopView(m.views[i])
+			m.views = slices.Delete(m.views, i, i+1)
+		}
+		m.messages = slices.Delete(m.messages, i, i+1)
+		if m.selectedMessageIndex > i {
+			m.selectedMessageIndex--
+		}
+		if m.hoveredMessageIndex > i {
+			m.hoveredMessageIndex--
+		}
+		m.invalidateAllItems()
+		return
 	}
 }
 

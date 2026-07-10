@@ -579,6 +579,35 @@ func (s *Session) AddMessage(msg *Message) int {
 	return len(s.Messages) - 1
 }
 
+// SetTitle records the session title under s.mu.
+func (s *Session) SetTitle(title string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Title = title
+}
+
+// GetTitle returns the current session title.
+func (s *Session) GetTitle() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Title
+}
+
+// ClonePermissions returns a copy of the session-scoped permission rules.
+func (s *Session) ClonePermissions() *PermissionsConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return clonePermissionsConfig(s.Permissions)
+}
+
+// SafetySettings returns a consistent snapshot of tool-approval settings that
+// child sessions should inherit.
+func (s *Session) SafetySettings() (toolsApproved bool, policy SafetyPolicy, permissions *PermissionsConfig) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ToolsApproved, s.SafetyPolicy, clonePermissionsConfig(s.Permissions)
+}
+
 // SetUsage records cumulative input/output token counts under s.mu.
 // The runtime stream goroutine and the persistence observer race on
 // these fields without it.

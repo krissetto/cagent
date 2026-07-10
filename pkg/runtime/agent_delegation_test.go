@@ -157,6 +157,26 @@ func TestNewSubSession(t *testing.T) {
 		assert.Equal(t, "Please proceed.", s.GetLastUserMessageContent())
 	})
 
+	t.Run("inherits safety settings", func(t *testing.T) {
+		cfg := SubSessionConfig{
+			Task:           "write tests",
+			AgentName:      "worker",
+			SafetyPolicy:   session.SafetyPolicySafer,
+			Permissions:    &session.PermissionsConfig{Allow: []string{"shell"}},
+			NonInteractive: true,
+		}
+
+		s := newSubSession(parent, cfg, childAgent)
+
+		assert.Equal(t, session.SafetyPolicySafer, s.SafetyPolicy)
+		require.NotNil(t, s.Permissions)
+		assert.Equal(t, []string{"shell"}, s.Permissions.Allow)
+		// The child gets a clone: mutating the config after construction cannot
+		// change the session's permission rules.
+		cfg.Permissions.Allow[0] = "mutated"
+		assert.Equal(t, []string{"shell"}, s.Permissions.Allow)
+	})
+
 	// A config with no Task, SystemMessage, or ImplicitUserMessage yields a
 	// bare session: no fabricated system message and no synthetic kick-off.
 	// Async subagents rely on this and add the task as the child's first

@@ -61,10 +61,49 @@ func (r *LocalRuntime) registerDefaultTools() {
 	})
 }
 
+// initialUserPrompt returns the user prompt that was staged by the embedder
+// before this RunStream began, if there is one. Detached wake input is not
+// pre-staged; it enters through drainAndEmitSteered below, so this helper keeps
+// startup from inferring a prompt from arbitrary transcript tail content.
+func initialUserPrompt(sess *session.Session) (QueuedMessage, int, bool) {
+	if !sess.SendUserMessage {
+		return QueuedMessage{}, -1, false
+	}
+	items := sess.ItemsSnapshot()
+	if len(items) == 0 {
+		return QueuedMessage{}, -1, false
+	}
+	item := items[len(items)-1]
+	if item.Message == nil || item.Message.Implicit || item.Message.Message.Role != chat.MessageRoleUser {
+		return QueuedMessage{}, -1, false
+	}
+	msg := item.Message.Message
+	return QueuedMessage{Content: msg.Content, MultiContent: msg.MultiContent}, len(items) - 1, true
+}
+
+// emitInitialUserPrompt mirrors the embedder-staged prompt and runs the
+// user_prompt_submit hook. Steered/detached messages are handled separately by
+// drainAndEmitSteered so their hook path remains user_steering_messages_submit.
+func (r *LocalRuntime) emitInitialUserPrompt(ctx context.Context, sess *session.Session, a *agent.Agent, events EventSink) (contextMsgs []chat.Message, stop bool) {
+	prompt, position, ok := initialUserPrompt(sess)
+	if !ok {
+		return nil, false
+	}
+	events.Emit(UserMessage(prompt.Content, sess.ID, prompt.MultiContent, position))
+	stopRun, msg, ctxMsgs := r.executeUserPromptSubmitHooks(ctx, sess, a, prompt.Content, events)
+	if stopRun {
+		slog.WarnContext(ctx, "user_prompt_submit hook signalled run termination",
+			"agent", a.Name(), "session_id", sess.ID, "reason", msg)
+		r.emitHookDrivenShutdown(ctx, a, sess, msg, events)
+		return nil, true
+	}
+	return ctxMsgs, false
+}
+
 // appendSteerAndEmit adds a steer message to the session and emits the corresponding event.
 func (r *LocalRuntime) appendSteerAndEmit(sess *session.Session, sm QueuedMessage, events EventSink) {
-	sess.AddMessage(session.UserMessage(sm.Content, sm.MultiContent...))
-	events.Emit(UserMessage(sm.Content, sess.ID, sm.MultiContent, len(sess.Messages)-1))
+	pos := sess.AddMessage(session.UserMessage(sm.Content, sm.MultiContent...))
+	events.Emit(UserMessage(sm.Content, sess.ID, sm.MultiContent, pos))
 }
 
 // drainAndEmitSteered drains all messages from the steer queue and injects
@@ -366,29 +405,10 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 
 	sink.Emit(ToolsetInfo(len(agentTools), false, a.Name()))
 
-	messages := sess.GetMessages(a)
-
-	// Sub-sessions (transferred tasks, background agents, skill
-	// sub-sessions) carry a synthesised "Please proceed." message that
-	// no human authored. SendUserMessage is the same flag the runtime
-	// uses to gate the UserMessageEvent, which is exactly the right
-	// signal here too: "a real user prompt is at the tail of the session".
-	if sess.SendUserMessage && len(messages) > 0 {
-		lastMsg := messages[len(messages)-1]
-		sink.Emit(UserMessage(lastMsg.Content, sess.ID, lastMsg.MultiContent, len(sess.Messages)-1))
-
-		// user_prompt_submit fires once per real user message, after
-		// session_start and before the first model call.
-		if lastMsg.Role == chat.MessageRoleUser {
-			stop, msg, ctxMsgs := r.executeUserPromptSubmitHooks(ctx, sess, a, lastMsg.Content, sink)
-			if stop {
-				slog.WarnContext(ctx, "user_prompt_submit hook signalled run termination",
-					"agent", a.Name(), "session_id", sess.ID, "reason", msg)
-				r.emitHookDrivenShutdown(ctx, a, sess, msg, sink)
-				return
-			}
-			ls.userPromptMsgs = ctxMsgs
-		}
+	if ctxMsgs, stop := r.emitInitialUserPrompt(ctx, sess, a, sink); stop {
+		return
+	} else {
+		ls.userPromptMsgs = ctxMsgs
 	}
 
 	sink.Emit(StreamStarted(sess.ID, a.Name()))
@@ -960,8 +980,8 @@ func (r *LocalRuntime) runTurn(
 		// undivided agent turn.
 		if followUp, ok := r.followUpQueue.Dequeue(ctx); ok {
 			userMsg := session.UserMessage(followUp.Content, followUp.MultiContent...)
-			sess.AddMessage(userMsg)
-			events.Emit(UserMessage(followUp.Content, sess.ID, followUp.MultiContent, len(sess.Messages)-1))
+			pos := sess.AddMessage(userMsg)
+			events.Emit(UserMessage(followUp.Content, sess.ID, followUp.MultiContent, pos))
 			stop, msg, ctxMsgs := r.executeUserFollowupSubmitHooks(ctx, sess, a, followUp.Content, events)
 			if stop {
 				slog.WarnContext(ctx, "user_followup_submit hook signalled run termination",

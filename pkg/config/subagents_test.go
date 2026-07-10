@@ -71,3 +71,18 @@ agents:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate async subagent alias 'dup'")
 }
+
+func TestSubagentsRejectsExternalReference(t *testing.T) {
+	t.Parallel()
+
+	cfg := `version: "12"
+agents:
+  root:
+    model: openai/gpt-4o
+    subagents:
+      - agentcatalog/review-pr
+`
+	_, err := Load(t.Context(), NewBytesSource("test", []byte(cfg)))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "external async subagent")
+}

@@ -366,3 +366,30 @@ func TestSpawnToolNeedsNoReceiver(t *testing.T) {
 	assert.False(t, res.IsError, res.Output)
 	assert.Contains(t, res.Output, "Spawned subagent")
 }
+
+func TestSpawnedSubagentInheritsSafetySettings(t *testing.T) {
+	t.Parallel()
+
+	tm := team.New(team.WithAgents(
+		agent.New("root", "prompt",
+			agent.WithModel(&mockProvider{id: "test/mock-model", stream: newStreamBuilder().AddContent("ok").AddStopWithUsage(1, 1).Build()}),
+			agent.WithAsyncSubagents(latest.SubagentRef{Agent: "planner"})),
+		agent.New("planner", "prompt",
+			agent.WithModel(&mockProvider{id: "test/mock-model", stream: newStreamBuilder().AddContent("ok").AddStopWithUsage(1, 1).Build()})),
+	))
+	rt, err := NewLocalRuntime(t.Context(), tm)
+	require.NoError(t, err)
+	t.Cleanup(rt.subagents.Close)
+
+	parent := session.New(
+		session.WithID("parent-sess"),
+		session.WithSafetyPolicy(session.SafetyPolicySafer),
+		session.WithPermissions(&session.PermissionsConfig{Allow: []string{"shell"}}),
+	)
+	id := rt.subagents.Spawn(parent, "root", subagent.AllowedSubagent{Agent: "planner"}, "plan safely")
+	info, ok := rt.SubagentAttachInfo(id)
+	require.True(t, ok)
+	assert.Equal(t, session.SafetyPolicySafer, info.Session.SafetyPolicy)
+	require.NotNil(t, info.Session.Permissions)
+	assert.Equal(t, []string{"shell"}, info.Session.Permissions.Allow)
+}

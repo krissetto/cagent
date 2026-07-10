@@ -159,9 +159,12 @@ func (m *subagentManager) Spawn(parentSess *session.Session, parentAgentName str
 		return childID
 	}
 
+	toolsApproved, safetyPolicy, permissions := parentSess.SafetySettings()
 	cfg := SubSessionConfig{
 		AgentName:      ref.Agent,
-		ToolsApproved:  parentSess.ToolsApproved,
+		ToolsApproved:  toolsApproved,
+		SafetyPolicy:   safetyPolicy,
+		Permissions:    permissions,
 		NonInteractive: true,
 		PinAgent:       true,
 	}
@@ -269,12 +272,12 @@ func (m *subagentManager) runChild(childID subagent.NodeID) {
 		_ = m.tree.Update(childID, func(n *subagent.Node) { n.State = subagent.NodeRunning })
 
 		for _, msg := range pending {
-			childSess.AddMessage(session.UserMessage(msg))
+			pos := childSess.AddMessage(session.UserMessage(msg))
 			// A live run would emit this via steering; an idle child's input is
 			// appended directly, so mirror it to attached viewers explicitly.
 			// The position stamp lets viewers dedupe against a transcript
 			// snapshot.
-			m.r.sessionEvents.Publish(childSess.ID, UserMessage(msg, childSess.ID, nil, len(childSess.Messages)-1))
+			m.r.sessionEvents.Publish(childSess.ID, UserMessage(msg, childSess.ID, nil, pos))
 		}
 
 		// The recorded spawning agent owns subagent_stop hooks: children run
@@ -677,11 +680,14 @@ func (r *LocalRuntime) allowedFromAgent(a *agent.Agent) []subagent.AllowedSubage
 	refs := a.AsyncSubagents()
 	allowed := make([]subagent.AllowedSubagent, 0, len(refs))
 	for _, ref := range refs {
+		target, err := r.team.Agent(ref.Agent)
+		if err != nil || target == nil {
+			slog.WarnContext(r.ctx(), "Ignoring unresolved async subagent reference", "agent", a.Name(), "subagent", ref.Agent, "error", err)
+			continue
+		}
 		desc := ref.Description
 		if desc == "" {
-			if target, err := r.team.Agent(ref.Agent); err == nil && target != nil {
-				desc = target.Description()
-			}
+			desc = target.Description()
 		}
 		allowed = append(allowed, subagent.AllowedSubagent{
 			Agent:       ref.Agent,

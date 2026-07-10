@@ -671,6 +671,41 @@ func TestXMLToolCallFallback_WithPreamble(t *testing.T) {
 	require.True(t, hasEventType(t, events, &PartialToolCallEvent{}))
 }
 
+// A run starting on a session whose tail is an assistant message (the shape
+// of every runtime-owned wake run: the previous turn's response is last, the
+// triggering notes arrive via the opening steer drain) must not echo that
+// tail as a UserMessageEvent — viewers would render agent prose inside a
+// spurious user bubble.
+func TestRunStreamDoesNotEchoAssistantTailAsUserMessage(t *testing.T) {
+	t.Parallel()
+
+	stream := newStreamBuilder().
+		AddContent("follow-up response").
+		AddStopWithUsage(10, 5).
+		Build()
+
+	prov := &mockProvider{id: "test/mock-model", stream: stream}
+	root := agent.New("root", "You are a test agent", agent.WithModel(prov))
+	tm := team.New(team.WithAgents(root))
+
+	rt, err := NewLocalRuntime(t.Context(), tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+
+	sess := session.New(session.WithUserMessage("Hi"))
+	sess.AddMessage(&session.Message{
+		AgentName: "root",
+		Message:   chat.Message{Role: chat.MessageRoleAssistant, Content: "**previous** response"},
+	})
+
+	var events []Event
+	for ev := range rt.RunStream(t.Context(), sess) {
+		events = append(events, ev)
+	}
+
+	require.False(t, hasEventType(t, events, &UserMessageEvent{}),
+		"assistant tail must not be re-emitted as a UserMessageEvent")
+}
+
 func TestErrorEvent(t *testing.T) {
 	t.Parallel()
 

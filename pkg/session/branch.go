@@ -319,6 +319,11 @@ func cloneEvalResultChecks(src EvalResultChecks) EvalResultChecks {
 	return cp
 }
 
+// ClonePermissionsConfig returns a deep copy of session-scoped permission rules.
+func ClonePermissionsConfig(src *PermissionsConfig) *PermissionsConfig {
+	return clonePermissionsConfig(src)
+}
+
 func clonePermissionsConfig(src *PermissionsConfig) *PermissionsConfig {
 	if src == nil {
 		return nil
