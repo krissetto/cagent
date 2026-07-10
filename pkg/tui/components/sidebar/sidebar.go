@@ -1740,9 +1740,9 @@ func (m *model) subagentsInfo(contentWidth int) string {
 const subagentHoverBrighten = 0.25
 
 // subagentLine renders one swarm row: branch guides start under the parent's
-// agent name, the agent name owns the left side, and status plus state glyph are
-// right-aligned. Indentation recedes before the name truncates, so deep trees
-// stay readable without wrapping.
+// agent name, the state glyph sits just after this row's name, and status text
+// is right-aligned. Indentation recedes before the name truncates, so deep
+// trees stay readable without wrapping.
 func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) string {
 	hovered := m.hoveredSubagent == n.ID
 
@@ -1757,7 +1757,7 @@ func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) s
 	if hovered {
 		rightText = timeAgo(n.CreatedAt)
 	}
-	right := styles.MutedStyle.Render(rightText) + " " + m.subagentGlyph(n)
+	right := styles.MutedStyle.Render(rightText)
 	rightWidth := lipgloss.Width(right)
 
 	leftBudget := contentWidth - rightWidth - 1
@@ -1767,17 +1767,21 @@ func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) s
 		leftBudget = contentWidth
 	}
 
+	glyph := m.subagentGlyph(n)
 	baseName := n.DisplayName()
 	suffix := ""
 	if hovered {
 		suffix = fmt.Sprintf(" (%s)", n.ID)
 	}
-	name, suffix, guideWidth := subagentLineParts(baseName, suffix, leftBudget)
+	name, suffix, guideWidth, showGlyph := subagentLineParts(baseName, suffix, leftBudget, lipgloss.Width(glyph))
 	guides = subagentGuideTail(guides, guideWidth)
 
 	left := styles.MutedStyle.Render(guides) + nameStyle.Render(name)
 	if suffix != "" {
 		left += styles.MutedStyle.Render(suffix)
+	}
+	if showGlyph {
+		left += " " + glyph
 	}
 
 	if right == "" {
@@ -1787,18 +1791,23 @@ func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) s
 	return left + strings.Repeat(" ", gap) + right
 }
 
-func subagentLineParts(name, suffix string, leftBudget int) (string, string, int) {
+func subagentLineParts(name, suffix string, leftBudget, glyphWidth int) (string, string, int, bool) {
 	if leftBudget <= 0 {
-		return "", "", 0
+		return "", "", 0, false
 	}
-	full := name + suffix
-	if lipgloss.Width(full) <= leftBudget {
-		return name, suffix, leftBudget - lipgloss.Width(full)
+	glyphReserve := glyphWidth + 1
+	if leftBudget > glyphReserve {
+		nameBudget := leftBudget - glyphReserve
+		full := name + suffix
+		if lipgloss.Width(full) <= nameBudget {
+			return name, suffix, nameBudget - lipgloss.Width(full), true
+		}
+		if suffix != "" && lipgloss.Width(name) <= nameBudget {
+			return name, "", nameBudget - lipgloss.Width(name), true
+		}
+		return toolcommon.TruncateText(name, nameBudget), "", 0, true
 	}
-	if suffix != "" && lipgloss.Width(name) <= leftBudget {
-		return name, "", leftBudget - lipgloss.Width(name)
-	}
-	return toolcommon.TruncateText(name, leftBudget), "", 0
+	return toolcommon.TruncateText(name, leftBudget), "", 0, false
 }
 
 func subagentGuideTail(guides string, width int) string {

@@ -131,8 +131,8 @@ func TestSubagentsInfo_HoverShowsTimeAgoAndID(t *testing.T) {
 	assert.Contains(t, out, "coder (a1b2c)", "hovered row shows node id next to the agent name")
 	assert.Contains(t, out, "10m ago", "hovered row shows spawn time instead of state")
 	assert.NotContains(t, out, "running", "hovered row's state text is replaced")
-	assert.Contains(t, out, "reviewer", "non-hovered rows keep their name")
-	assert.Contains(t, out, "completed ✓", "non-hovered rows show their glyph after the status")
+	assert.Contains(t, out, "reviewer ✓", "non-hovered rows show the glyph after the name")
+	assert.NotContains(t, out, "completed ✓", "glyph no longer lives in the status column")
 	assert.NotContains(t, out, "reviewer (d4e5f)", "non-hovered rows do not show ids")
 	assert.Contains(t, out, "completed", "non-hovered rows keep their state")
 }
@@ -445,15 +445,15 @@ func TestSubagentsInfoRendersBranchGuides(t *testing.T) {
 	}
 
 	assert.NotContains(t, find("planner"), "─", "top-level rows are bare")
-	assert.Contains(t, find("planner"), "planner")
-	assert.Contains(t, find("planner"), "idle ○", "state glyph appears after the status")
-	assert.Contains(t, find("coder"), "├ coder", "child branch starts under the parent name")
-	assert.Contains(t, find("coder"), "idle ○", "child glyph appears after the status")
-	assert.Contains(t, find("tester"), "│ └ tester", "nested child branch starts under its parent name")
-	assert.Contains(t, find("reviewer"), "└ reviewer", "last sibling gets an elbow")
+	assert.Contains(t, find("planner"), "planner ○")
+	assert.Contains(t, find("planner"), "idle", "state text remains right-aligned")
+	assert.Contains(t, find("coder"), "├ coder ○", "child branch starts under the parent name and glyph follows the name")
+	assert.Contains(t, find("coder"), "idle", "child status remains right-aligned")
+	assert.Contains(t, find("tester"), "│ └ tester ○", "nested child branch starts under its parent name")
+	assert.Contains(t, find("reviewer"), "└ reviewer ○", "last sibling gets an elbow")
 
-	assert.True(t, strings.HasPrefix(find("planner"), "planner"),
-		"top-level rows start with the agent name: %q", find("planner"))
+	assert.True(t, strings.HasPrefix(find("planner"), "planner ○"),
+		"top-level rows start with the agent name and glyph: %q", find("planner"))
 	assert.True(t, strings.HasPrefix(find("reviewer"), "└ reviewer"),
 		"guides start under the parent name: %q", find("reviewer"))
 	assert.True(t, strings.HasPrefix(find("tester"), "│ └ tester"),
@@ -475,9 +475,9 @@ func TestSubagentsInfoTruncatesDeepRowsWithoutWrapping(t *testing.T) {
 
 	assert.LessOrEqual(t, lipgloss.Width(line), 24)
 	assert.NotContains(t, line, "\n")
-	assert.Contains(t, line, "planner-with-a-v…", "long agent names truncate instead of wrapping")
+	assert.Contains(t, line, "planner-with-a-v… ○", "long agent names truncate before the glyph")
 	assert.NotContains(t, line, "│", "indentation recedes before the name truncates")
-	assert.Contains(t, line, "idle ○", "status and glyph stay on the right when possible")
+	assert.Contains(t, line, "idle", "status stays on the right when possible")
 }
 
 func TestSubagentGuideTailKeepsDeepRowsReadable(t *testing.T) {
