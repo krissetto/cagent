@@ -1717,9 +1717,9 @@ func (m *model) subagentsInfo(contentWidth int) string {
 	walk = func(nodes []subagent.NodeSnapshot, prefix string) {
 		for i := range nodes {
 			last := i == len(nodes)-1
-			connector, childPrefix := prefix+"├ ", prefix+"│   "
+			connector, childPrefix := prefix+"├ ", prefix+"│ "
 			if last {
-				connector, childPrefix = prefix+"└ ", prefix+"    "
+				connector, childPrefix = prefix+"└ ", prefix+"  "
 			}
 			lines = append(lines, m.subagentLine(nodes[i].Node, connector, contentWidth))
 			m.subagentLineNodes = append(m.subagentLineNodes, nodes[i].Node.ID)
@@ -1730,7 +1730,7 @@ func (m *model) subagentsInfo(contentWidth int) string {
 	for i := range m.subagentNodes {
 		lines = append(lines, m.subagentLine(m.subagentNodes[i].Node, "", contentWidth))
 		m.subagentLineNodes = append(m.subagentLineNodes, m.subagentNodes[i].Node.ID)
-		walk(m.subagentNodes[i].Children, "  ")
+		walk(m.subagentNodes[i].Children, "")
 	}
 	return m.renderTab("Subagents", strings.Join(lines, "\n"), contentWidth)
 }
@@ -1740,9 +1740,9 @@ func (m *model) subagentsInfo(contentWidth int) string {
 const subagentHoverBrighten = 0.25
 
 // subagentLine renders one swarm row: branch guides start under the parent's
-// agent name, the state glyph sits beside this row's name, and a muted status
-// (or spawn time when hovered) is right-aligned. The name is always kept on the
-// first line; it truncates with an ellipsis before the row can wrap.
+// agent name, the agent name owns the left side, and status plus state glyph are
+// right-aligned. Indentation recedes before the name truncates, so deep trees
+// stay readable without wrapping.
 func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) string {
 	hovered := m.hoveredSubagent == n.ID
 
@@ -1757,29 +1757,28 @@ func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) s
 	if hovered {
 		rightText = timeAgo(n.CreatedAt)
 	}
-	right := styles.MutedStyle.Render(rightText)
+	right := styles.MutedStyle.Render(rightText) + " " + m.subagentGlyph(n)
 	rightWidth := lipgloss.Width(right)
 
 	leftBudget := contentWidth - rightWidth - 1
-	if leftBudget < 2 {
+	if leftBudget < 1 {
 		right = ""
 		rightWidth = 0
 		leftBudget = contentWidth
 	}
 
-	glyph := m.subagentGlyph(n)
-	gapAfterGlyph := " "
-	maxGuideWidth := max(0, leftBudget-lipgloss.Width(glyph)-lipgloss.Width(gapAfterGlyph)-2)
-	guides = subagentGuideTail(guides, maxGuideWidth)
-	prefix := styles.MutedStyle.Render(guides) + glyph + gapAfterGlyph
-	nameWidth := leftBudget - lipgloss.Width(prefix)
-	if nameWidth <= 0 {
-		prefix = styles.MutedStyle.Render(guides) + glyph
-		nameWidth = max(1, leftBudget-lipgloss.Width(prefix))
+	baseName := n.DisplayName()
+	suffix := ""
+	if hovered {
+		suffix = fmt.Sprintf(" (%s)", n.ID)
 	}
+	name, suffix, guideWidth := subagentLineParts(baseName, suffix, leftBudget)
+	guides = subagentGuideTail(guides, guideWidth)
 
-	styledName := m.subagentName(n, nameStyle, nameWidth, hovered)
-	left := prefix + styledName
+	left := styles.MutedStyle.Render(guides) + nameStyle.Render(name)
+	if suffix != "" {
+		left += styles.MutedStyle.Render(suffix)
+	}
 
 	if right == "" {
 		return left
@@ -1788,21 +1787,18 @@ func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) s
 	return left + strings.Repeat(" ", gap) + right
 }
 
-func (m *model) subagentName(n subagent.Node, nameStyle lipgloss.Style, width int, hovered bool) string {
-	name := n.DisplayName()
-	if width <= 0 {
-		return ""
+func subagentLineParts(name, suffix string, leftBudget int) (string, string, int) {
+	if leftBudget <= 0 {
+		return "", "", 0
 	}
-	if !hovered {
-		return nameStyle.Render(toolcommon.TruncateText(name, width))
+	full := name + suffix
+	if lipgloss.Width(full) <= leftBudget {
+		return name, suffix, leftBudget - lipgloss.Width(full)
 	}
-
-	suffix := fmt.Sprintf(" (%s)", n.ID)
-	if width > lipgloss.Width(suffix)+1 {
-		nameWidth := width - lipgloss.Width(suffix)
-		return nameStyle.Render(toolcommon.TruncateText(name, nameWidth)) + styles.MutedStyle.Render(suffix)
+	if suffix != "" && lipgloss.Width(name) <= leftBudget {
+		return name, "", leftBudget - lipgloss.Width(name)
 	}
-	return nameStyle.Render(toolcommon.TruncateText(name, width))
+	return toolcommon.TruncateText(name, leftBudget), "", 0
 }
 
 func subagentGuideTail(guides string, width int) string {
@@ -1826,7 +1822,7 @@ func subagentGuideTail(guides string, width int) string {
 	return string(runes[start:])
 }
 
-// subagentGlyph picks the inline glyph for a swarm row: an animated spinner
+// subagentGlyph picks the state glyph for a swarm row: an animated spinner
 // while the subagent works, ○ while it idles, ✓/✗ for terminal states. Every
 // glyph is a single text cell so state transitions never shift the row's text.
 func (m *model) subagentGlyph(n subagent.Node) string {
