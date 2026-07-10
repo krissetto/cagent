@@ -1694,10 +1694,10 @@ func (m *model) parentLine() string {
 
 // subagentsInfo renders the live subagent swarm: an animated spinner (or
 // terminal-state glyph), the agent-colored name, and a right-aligned status
-// column showing the node state — or, for the hovered row, when it was
-// spawned. On an attached tab the section opens with a clickable
-// "parent: <agent>" line, separated from the children tree by a blank line.
-// It records per-row node ownership (and the parent-line offset) so
+// column showing the node state — or, for the hovered row, the node id beside
+// the name and when it was spawned. On an attached tab the section opens with a
+// clickable "parent: <agent>" line, separated from the children tree by a blank
+// line. It records per-row node ownership (and the parent-line offset) so
 // renderSections can register hover/click zones.
 func (m *model) subagentsInfo(contentWidth int) string {
 	m.subagentLineNodes = nil
@@ -1754,7 +1754,11 @@ func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) s
 	}
 	// Glyph column first so spinners align on every row; guides indent the
 	// name area, putting a child's elbow under its parent's name.
-	left := m.subagentGlyph(n) + " " + styles.MutedStyle.Render(guides) + nameStyle.Render(n.DisplayName())
+	name := nameStyle.Render(n.DisplayName())
+	if hovered {
+		name += styles.MutedStyle.Render(fmt.Sprintf(" (%s)", n.ID))
+	}
+	left := m.subagentGlyph(n) + " " + styles.MutedStyle.Render(guides) + name
 
 	rightText := string(n.State)
 	if hovered {

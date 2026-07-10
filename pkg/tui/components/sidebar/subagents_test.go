@@ -120,16 +120,19 @@ func TestSubagentsInfo_MostRecentFirstPerSubtree(t *testing.T) {
 	assert.Less(t, last, first, "grandchildren ordered most recent first too")
 }
 
-func TestSubagentsInfo_HoverShowsTimeAgo(t *testing.T) {
+func TestSubagentsInfo_HoverShowsTimeAgoAndID(t *testing.T) {
 	t.Parallel()
 
 	m := newSubagentTestModel(t)
 	m.SetSubagentTree(subagentSnapshot())
 
 	m.hoveredSubagent = "a1b2c"
-	out := m.subagentsInfo(40)
+	out := ansi.Strip(m.subagentsInfo(40))
+	assert.Contains(t, out, "coder (a1b2c)", "hovered row shows node id next to the agent name")
 	assert.Contains(t, out, "10m ago", "hovered row shows spawn time instead of state")
 	assert.NotContains(t, out, "running", "hovered row's state text is replaced")
+	assert.Contains(t, out, "reviewer", "non-hovered rows keep their name")
+	assert.NotContains(t, out, "reviewer (d4e5f)", "non-hovered rows do not show ids")
 	assert.Contains(t, out, "completed", "non-hovered rows keep their state")
 }
 
