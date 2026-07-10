@@ -311,6 +311,10 @@ type LocalRuntime struct {
 
 	subagents *subagentManager
 
+	// sessionDrivers owns per-session run/delivery/wake/attach state for
+	// actor-managed local sessions.
+	sessionDrivers *sessionDriverRegistry
+
 	// sessionEvents broadcasts each session's run events to attached viewers
 	// (e.g. a TUI tab following a subagent's sub-session live).
 	sessionEvents *sessionEventHub
@@ -320,26 +324,6 @@ type LocalRuntime struct {
 	// [subagent.Store] (the built-in SQLite store does), else in-memory.
 	// Embedders override it with [WithSubagentStore].
 	subagentStore subagent.Store
-
-	receiversMu sync.RWMutex
-	receivers   map[string]MessageReceiver
-
-	// sessionRuns counts live run-stream loops per session; sessionSteer
-	// buffers detached messages (notes from async subagents) targeted at a
-	// session whose loop is running. The loop drains its session's buffer at
-	// the same iteration boundaries as user steering, so the notes reach the
-	// model mid-turn instead of waiting for the turn to end.
-	// knownSessions remembers every session this runtime has run, so the
-	// session actor can wake one that receives a note while idle; sessionWaking
-	// marks sessions with a live runtime-owned waker (single-driver guard) and
-	// sessionWakeCancel holds its cancel for StopSession.
-	sessionRunsMu     sync.Mutex
-	sessionRuns       map[string]int
-	sessionSteer      map[string][]QueuedMessage
-	knownSessions     map[string]*session.Session
-	sessionWaking     map[string]bool
-	sessionReserved   map[string]bool
-	sessionWakeCancel map[string]context.CancelFunc
 
 	// dmrModelLister lists the models pulled locally in Docker Model Runner,
 	// used to populate DMR entries in the model picker. Defaults to
@@ -660,14 +644,8 @@ func NewLocalRuntime(ctx context.Context, agents *team.Team, opts ...Opt) (*Loca
 		dmrModelLister:         dmr.ListModels,
 	}
 	r.bgAgents = agenttool.NewHandler(r)
-	r.receivers = map[string]MessageReceiver{}
-	r.sessionRuns = map[string]int{}
-	r.sessionSteer = map[string][]QueuedMessage{}
-	r.knownSessions = map[string]*session.Session{}
-	r.sessionWaking = map[string]bool{}
-	r.sessionReserved = map[string]bool{}
-	r.sessionWakeCancel = map[string]context.CancelFunc{}
 	r.sessionEvents = newSessionEventHub()
+	r.sessionDrivers = newSessionDriverRegistry(r)
 	r.subagents = newSubagentManager(r)
 
 	// stripUnsupportedModalitiesTransform captures the runtime closure to
@@ -1447,6 +1425,9 @@ func (r *LocalRuntime) Close() error {
 	r.bgAgents.StopAll()
 	if r.subagents != nil {
 		r.subagents.Close()
+	}
+	if r.sessionDrivers != nil {
+		r.sessionDrivers.Close()
 	}
 	return nil
 }

@@ -68,9 +68,8 @@ type App struct {
 	suppressUserEcho atomic.Bool
 
 	// attachedSubagent marks this App as a live viewer of an async subagent's
-	// sub-session: the runtime's subagent manager stays the session's driver
-	// (receiver, runs); the App only observes its events and hands user input
-	// to the runtime for delivery.
+	// sub-session: the runtime's session driver owns runs and delivery; the
+	// App only observes events and hands user input to the runtime.
 	attachedSubagent *runtime.SubagentAttachInfo
 
 	startOnce  sync.Once

@@ -14,27 +14,10 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
-// subagentManager drives the async subagent (actor) model on top of the
-// runtime. Each spawned subagent runs concurrently on its own pinned
-// sub-session and stays alive after it responds: it idles awaiting further
-// input until its parent explicitly stops it (stop_subagent) or the runtime
-// shuts down. Every time a subagent finishes a turn (or fails), the manager
-// delivers a *short* turn report to the parent session via
-// [LocalRuntime.deliverMessage]: a session with a live run loop has the
-// report steered into it at the next iteration boundary (same timing as
-// user steering); an idle session's registered receiver starts a fresh turn
-// for it. The manager keeps no state in the runtime loop: from the loop's
-// point of view an agent that is waiting on subagents has simply ended its
-// turn.
-//
-// Receiver registration is uniform for every session that can own subagents:
-//   - a foreground session's receiver is registered by the TUI/app and routes
-//     the report through the normal user-message path;
-//   - a child sub-session's receiver is registered here and re-runs the child
-//     so descendant results reach it at any depth.
-//
-// The manager maintains a [subagent.Tree] of the swarm with correct
-// parent/child linkage at any depth.
+// subagentManager supervises async subagents above the per-session driver
+// layer. It owns tree metadata, parent/child linkage, latest results, and
+// reporting; each child session's run/wake/delivery lifecycle is owned by its
+// sessionDriver.
 type subagentManager struct {
 	r      *LocalRuntime
 	tree   *subagent.Tree
@@ -59,10 +42,9 @@ type sessionSubagents struct {
 	sess     *session.Session
 }
 
-// childRecord retains what read_subagent / send_message / re-run need about a
-// subagent. running/pending drive the re-run of a child sub-session when input
-// arrives while the child is idle or busy. ctx/cancel bound the child's runs so
-// an explicit stop can interrupt one in flight.
+// childRecord retains what read_subagent / send_message / reporting need about
+// a subagent. The sessionDriver owns run/wake/cancel state; unwatch releases
+// the manager's completion callback when the child is stopped.
 type childRecord struct {
 	name            string
 	parentSession   string
@@ -71,16 +53,11 @@ type childRecord struct {
 	session         *session.Session
 	parentSess      *session.Session
 	agent           *agent.Agent
-	unregister      func()
-	ctx             context.Context //nolint:containedctx // per-child run scope, cancelled by stop_subagent or Close.
-	cancel          context.CancelFunc
+	unwatch         func()
 
 	state  subagent.NodeState
 	result string
 	errMsg string
-
-	running bool
-	pending []string
 }
 
 func newSubagentManager(r *LocalRuntime) *subagentManager {
@@ -195,7 +172,6 @@ func (m *subagentManager) Spawn(parentSess *session.Session, parentAgentName str
 	// Register the child session under its own node so subagents it spawns are
 	// linked beneath it (correct deep-tree linkage).
 	m.ensureSessionLocked(childSess, ref.Agent, childID)
-	childCtx, childCancel := m.childRunScope()
 	rec := &childRecord{
 		name:            ref.DisplayName(),
 		parentSession:   parentSess.ID,
@@ -204,22 +180,19 @@ func (m *subagentManager) Spawn(parentSess *session.Session, parentAgentName str
 		session:         childSess,
 		parentSess:      parentSess,
 		agent:           childAgent,
-		ctx:             childCtx,
-		cancel:          childCancel,
 		state:           subagent.NodeRunning,
-		running:         true,
 	}
-	// The child session's own receiver delivers descendants' reports and
-	// parent messages: steered into a live child run, or re-running it when
-	// idle.
-	rec.unregister = m.r.RegisterMessageReceiver(childSess.ID, func(ctx context.Context, content string) {
-		m.deliverToChild(childID, content)
-	})
 	m.children[childID] = rec
 	m.mu.Unlock()
 
+	childDriver := m.r.sessionDrivers.Get(childSess)
+	rec.unwatch = childDriver.OnSettled(func() { m.reportChildSettled(childID) })
+
 	m.persistSnapshot()
-	m.wg.Go(func() { m.runChild(childID) })
+	m.wg.Go(func() {
+		for range childDriver.RunOrAttach(m.ctx, childSess) {
+		}
+	})
 
 	return childID
 }
@@ -250,86 +223,44 @@ func (m *subagentManager) generateChildTitle(childSess *session.Session, task st
 	})
 }
 
-// runChild runs a child sub-session to a stop, flushing any buffered input,
-// then reports the finished turn to its parent and idles. The child stays
-// alive: further input (parent messages, descendants' reports) re-runs it
-// until its parent explicitly stops it.
-func (m *subagentManager) runChild(childID subagent.NodeID) {
-	for {
-		m.mu.Lock()
-		rec := m.children[childID]
-		if rec == nil || rec.state == subagent.NodeStopped {
-			m.mu.Unlock()
-			return
-		}
-		rec.state = subagent.NodeRunning
-		pending := rec.pending
-		rec.pending = nil
-		parentSess, childSess, childAgent, runCtx := rec.parentSess, rec.session, rec.agent, rec.ctx
-		parentAgentName := rec.parentAgentName
-		m.mu.Unlock()
-
-		_ = m.tree.Update(childID, func(n *subagent.Node) { n.State = subagent.NodeRunning })
-
-		for _, msg := range pending {
-			pos := childSess.AddMessage(session.UserMessage(msg))
-			// A live run would emit this via steering; an idle child's input is
-			// appended directly, so mirror it to attached viewers explicitly.
-			// The position stamp lets viewers dedupe against a transcript
-			// snapshot.
-			m.r.sessionEvents.Publish(childSess.ID, UserMessage(msg, childSess.ID, nil, pos))
-		}
-
-		// The recorded spawning agent owns subagent_stop hooks: children run
-		// concurrently with the parent loop, so the runtime's currentAgent may
-		// be someone else entirely by the time this turn ends.
-		parentAgent, _ := m.r.team.Agent(parentAgentName)
-		res := m.r.runCollectingSession(runCtx, parentSess, childSess, childAgent, parentAgent, nil)
-
-		m.mu.Lock()
-		if rec.state == subagent.NodeStopped {
-			m.mu.Unlock()
-			return // stopped mid-run; the stop already reported and re-rendered
-		}
-		rec.result, rec.errMsg = res.Result, res.ErrMsg
-		if len(rec.pending) > 0 {
-			m.mu.Unlock()
-			continue // buffered input arrived during the run; process it now
-		}
-		rec.running = false
-		state := subagent.NodeIdle
-		if res.ErrMsg != "" {
-			state = subagent.NodeFailed
-		}
-		rec.state = state
-		m.mu.Unlock()
-		m.reportTurn(childID, state, res.ErrMsg)
-		return
-	}
-}
-
-// deliverToChild is the child session's message receiver: it buffers content
-// and re-runs the child when it is idle. Stopped children drop input.
-func (m *subagentManager) deliverToChild(childID subagent.NodeID, content string) {
+// reportChildSettled records a child driver's finished turn and notifies its
+// parent when the child has no pending input left. The child remains alive and
+// re-messageable until explicitly stopped.
+func (m *subagentManager) reportChildSettled(childID subagent.NodeID) {
 	m.mu.Lock()
 	rec := m.children[childID]
 	if rec == nil || rec.state == subagent.NodeStopped {
 		m.mu.Unlock()
 		return
 	}
-	rec.pending = append(rec.pending, content)
-	if rec.running {
-		m.mu.Unlock()
-		return // the in-flight run will pick up the buffered input
+	rec.result = rec.session.GetLastAssistantMessageContent()
+	rec.errMsg = ""
+	if d, ok := m.r.sessionDrivers.Lookup(rec.sessionID); ok {
+		rec.errMsg = d.LastError()
 	}
-	rec.running = true
+	parentSess, childSess, parentAgentName, childAgent := rec.parentSess, rec.session, rec.parentAgentName, rec.agent
+	state := subagent.NodeIdle
+	if rec.errMsg != "" {
+		state = subagent.NodeFailed
+	}
+	rec.state = state
 	m.mu.Unlock()
-	m.wg.Go(func() { m.runChild(childID) })
+
+	if parentSess != nil && childSess != nil {
+		parentSess.AddSubSession(childSess)
+		m.r.persistBackgroundSubSession(context.WithoutCancel(m.ctx), parentSess.ID, childSess)
+	}
+	if parentSess != nil && childSess != nil && childAgent != nil {
+		parentAgent, _ := m.r.team.Agent(parentAgentName)
+		m.r.executeSubagentStopHooks(context.WithoutCancel(m.ctx), parentSess, childSess, parentAgent, childAgent.Name(), childSess.GetLastAssistantMessageContent())
+	}
+
+	m.reportTurn(childID, state, rec.errMsg)
 }
 
 // reportTurn records a child's finished turn in the tree and delivers a short
 // report (with a response preview) to its parent. The child stays alive and
-// idle: it keeps its receiver so further input re-runs it.
+// idle: its session driver accepts future input until explicitly stopped.
 func (m *subagentManager) reportTurn(childID subagent.NodeID, state subagent.NodeState, errMsg string) {
 	m.mu.Lock()
 	rec := m.children[childID]
@@ -384,8 +315,8 @@ func (m *subagentManager) reportTurn(childID subagent.NodeID, state subagent.Nod
 }
 
 // stopChild explicitly finalizes a subagent of parentID: it cancels any
-// in-flight run, unregisters the receiver, stops its own subagents recursively,
-// and decrements the parent's live count. Stopped subagents keep their record
+// in-flight run, releases callbacks, stops its own subagents recursively, and
+// decrements the parent's live count. Stopped subagents keep their record
 // so read_subagent still works, but accept no further input.
 func (m *subagentManager) stopChild(parentID string, id subagent.NodeID) (string, error) {
 	m.mu.Lock()
@@ -409,19 +340,15 @@ func (m *subagentManager) stopChild(parentID string, id subagent.NodeID) (string
 	return rec.name, nil
 }
 
-// stopLocked marks rec stopped, cancels its run, releases its receiver, and
-// recursively stops its own subagents. Caller holds m.mu.
+// stopLocked marks rec stopped, cancels its driver run, releases callbacks,
+// and recursively stops its own subagents. Caller holds m.mu.
 func (m *subagentManager) stopLocked(rec *childRecord, id subagent.NodeID) {
 	rec.state = subagent.NodeStopped
-	rec.pending = nil
-	rec.running = false
-	if rec.cancel != nil {
-		rec.cancel()
+	if rec.unwatch != nil {
+		rec.unwatch()
+		rec.unwatch = nil
 	}
-	if rec.unregister != nil {
-		rec.unregister()
-		rec.unregister = nil
-	}
+	m.r.sessionDrivers.StopAll(rec.sessionID)
 	if st := m.sessions[rec.parentSession]; st != nil && st.live > 0 {
 		st.live--
 	}
@@ -460,13 +387,6 @@ func (m *subagentManager) Restore(ctx context.Context, sess *session.Session, sn
 	}
 	m.persistSnapshot()
 	return m.tree.Snapshot()
-}
-
-// childRunScope derives a per-child cancellable context from the manager's
-// lifetime, so stop_subagent can interrupt one child's runs without touching
-// the others.
-func (m *subagentManager) childRunScope() (context.Context, context.CancelFunc) {
-	return context.WithCancel(m.ctx)
 }
 
 // adoptChildren rebuilds child records (recursively) from persisted node
@@ -514,11 +434,6 @@ func (m *subagentManager) adoptChild(ctx context.Context, parentSess *session.Se
 
 	m.mu.Lock()
 	if state != subagent.NodeStopped && childSess != nil {
-		rec.ctx, rec.cancel = m.childRunScope()
-		childID := node.ID
-		rec.unregister = m.r.RegisterMessageReceiver(childSess.ID, func(_ context.Context, content string) {
-			m.deliverToChild(childID, content)
-		})
 		if st := m.sessions[parentSess.ID]; st != nil {
 			st.live++
 		}
@@ -528,6 +443,12 @@ func (m *subagentManager) adoptChild(ctx context.Context, parentSess *session.Se
 	}
 	m.children[node.ID] = rec
 	m.mu.Unlock()
+
+	if state != subagent.NodeStopped && childSess != nil {
+		childID := node.ID
+		driver := m.r.sessionDrivers.Get(childSess)
+		rec.unwatch = driver.OnSettled(func() { m.reportChildSettled(childID) })
+	}
 
 	if childSess != nil {
 		m.adoptChildren(ctx, childSess, snap.Children)
@@ -569,18 +490,16 @@ func (m *subagentManager) loadChild(ctx context.Context, node subagent.Node) (*s
 	return childSess, childAgent
 }
 
-// deliver routes input to a subagent's session: steered into its live run
-// loop when one is running, otherwise handed to its registered receiver to
-// start a fresh run. Returns false when the session is idle and has no
-// receiver — for a child that means it was stopped and will never run again.
+// deliver routes input to a subagent's session driver. The manager validates
+// stopped/ownership state before calling this, so a known idle child may wake.
 func (m *subagentManager) deliver(sessionID, content string) bool {
-	return m.r.deliverMessage(m.ctx, sessionID, content)
+	return m.r.DeliverMessage(m.ctx, sessionID, content)
 }
 
 // deliverToParent routes a runtime-authored note (turn report, child
 // message, spawn failure) up to a parent session. Notes must never be lost:
-// a parent that is idle in an embedder without a wake-up receiver (e.g. the
-// API server) keeps the note buffered until its next run.
+// when the parent driver has not been seen yet they remain buffered until the
+// session appears.
 func (m *subagentManager) deliverToParent(sessionID, content string) {
 	m.r.deliverOrBuffer(m.ctx, sessionID, content)
 }
@@ -623,7 +542,11 @@ func (m *subagentManager) sendToChild(parentID string, id subagent.NodeID, body 
 		return "", fmt.Errorf("subagent %q has been stopped; spawn a new one", id)
 	}
 	sessionID, name := rec.sessionID, rec.name
+	rec.state = subagent.NodeRunning
 	m.mu.Unlock()
+
+	_ = m.tree.Update(id, func(n *subagent.Node) { n.State = subagent.NodeRunning })
+	m.persistSnapshot()
 
 	if !m.deliver(sessionID, body) {
 		return "", fmt.Errorf("subagent %q is no longer reachable", id)

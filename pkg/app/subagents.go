@@ -27,10 +27,9 @@ type subagentRuntime interface {
 }
 
 // WithSubagentAttach marks the App as a live viewer of an async subagent's
-// sub-session. The App does not register a message receiver (the runtime's
-// subagent manager owns the session), mirrors the session's run events onto
-// its bus, and hands user input to the runtime for delivery so the subagent
-// processes it like any other input.
+// sub-session. The App mirrors the session's run events onto its bus, and
+// hands user input to the runtime for delivery so the subagent processes it
+// like any other input.
 func WithSubagentAttach(info runtime.SubagentAttachInfo) Opt {
 	return func(a *App) {
 		a.attachedSubagent = &info

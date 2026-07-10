@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"io"
 	"testing"
 	"time"
 
@@ -20,39 +21,55 @@ import (
 type multiRunProvider struct {
 	*mockProvider
 
-	build func() *mockStream
+	build func() chat.MessageStream
 }
 
 func (p *multiRunProvider) CreateChatCompletionStream(context.Context, []chat.Message, []tools.Tool) (chat.MessageStream, error) {
 	return p.build(), nil
 }
 
+type blockingMockStream struct {
+	responses []chat.MessageStreamResponse
+	idx       int
+	release   <-chan struct{}
+}
+
+func (s *blockingMockStream) Recv() (chat.MessageStreamResponse, error) {
+	if s.idx == len(s.responses) {
+		s.idx++
+		<-s.release
+		return chat.MessageStreamResponse{Choices: []chat.MessageStreamChoice{{Index: 0, FinishReason: chat.FinishReasonStop}}, Usage: &chat.Usage{InputTokens: 1, OutputTokens: 1}}, nil
+	}
+	if s.idx > len(s.responses) {
+		return chat.MessageStreamResponse{}, io.EOF
+	}
+	resp := s.responses[s.idx]
+	s.idx++
+	return resp, nil
+}
+
+func (s *blockingMockStream) Close() {}
+
 func newActorFixture(t *testing.T) (*LocalRuntime, *session.Session) {
 	t.Helper()
 	prov := &multiRunProvider{
 		mockProvider: &mockProvider{id: "test/mock-model"},
-		build: func() *mockStream {
+		build: func() chat.MessageStream {
 			return newStreamBuilder().AddContent("ok").AddStopWithUsage(1, 1).Build()
 		},
 	}
 	tm := team.New(team.WithAgents(agent.New("root", "prompt", agent.WithModel(prov))))
 	rt, err := NewLocalRuntime(t.Context(), tm)
 	require.NoError(t, err)
-	t.Cleanup(rt.subagents.Close)
+	t.Cleanup(func() { _ = rt.Close() })
 	return rt, session.New(session.WithID("actor-sess"))
 }
 
-// A note delivered to an idle session with no receiver wakes it: the actor
-// starts a runtime-owned run whose opening steer drain turns the note into a
-// regular user message, and every hub subscriber sees the turn. This is what
-// lets async subagents report to parents on RunStream-only hosts (API
-// server, adapters) with no embedder wiring at all.
 func TestActorWakesIdleSessionOnNote(t *testing.T) {
 	t.Parallel()
 
 	rt, sess := newActorFixture(t)
 
-	// First turn, embedder-driven: registers the session with the actor.
 	sess.AddMessage(session.UserMessage("hi"))
 	for range rt.RunStream(t.Context(), sess) {
 	}
@@ -73,8 +90,6 @@ func TestActorWakesIdleSessionOnNote(t *testing.T) {
 				last := sess.Messages[len(sess.Messages)-1]
 				require.NotNil(t, last.Message)
 				assert.Equal(t, chat.MessageRoleAssistant, last.Message.Message.Role)
-				// Cleanup (endSessionRun, waker exit) happens after the stop
-				// event is published; settle is therefore eventual.
 				assert.Eventually(t, func() bool { return rt.sessionSettled(sess.ID) },
 					2*time.Second, 10*time.Millisecond)
 				return
@@ -85,48 +100,24 @@ func TestActorWakesIdleSessionOnNote(t *testing.T) {
 	}
 }
 
-// A note for a session the actor has never seen stays buffered (nothing to
-// run — the next run's opening drain picks it up); a live receiver takes
-// precedence over waking; and once the receiver is gone the actor drives the
-// session itself — every session is an actor, receivers are just a delivery
-// override.
-func TestActorWakePrecedence(t *testing.T) {
+func TestActorBuffersUnknownSessionUntilSeen(t *testing.T) {
 	t.Parallel()
 
 	rt, sess := newActorFixture(t)
 
-	// Unknown session: buffered, no run.
-	rt.deliverOrBuffer(t.Context(), "never-ran", "note")
-	assert.False(t, rt.sessionSettled("never-ran"), "note must stay buffered")
-	rt.sessionRunsMu.Lock()
-	assert.False(t, rt.sessionWaking["never-ran"])
-	rt.sessionRunsMu.Unlock()
+	rt.deliverOrBuffer(t.Context(), sess.ID, "early note")
+	assert.False(t, rt.sessionSettled(sess.ID), "note must stay buffered")
 
 	sess.AddMessage(session.UserMessage("hi"))
 	for range rt.RunStream(t.Context(), sess) {
 	}
 
-	// Live receiver: delivery routes through it, no wake.
-	got := make(chan string, 1)
-	unregister := rt.RegisterMessageReceiver(sess.ID, func(_ context.Context, content string) { got <- content })
-	rt.deliverOrBuffer(t.Context(), sess.ID, "via-receiver")
-	assert.Equal(t, "via-receiver", <-got)
-	rt.sessionRunsMu.Lock()
-	assert.False(t, rt.sessionWaking[sess.ID], "receiver delivery must not also wake")
-	rt.sessionRunsMu.Unlock()
-
-	// Receiver gone: the actor wakes the session itself.
-	unregister()
-	turnOne := len(sess.Messages)
-	rt.deliverOrBuffer(t.Context(), sess.ID, "via-actor")
 	assert.Eventually(t, func() bool {
-		return rt.sessionSettled(sess.ID) && len(sess.Messages) > turnOne
-	}, 5*time.Second, 10*time.Millisecond, "the actor must run the note once no receiver exists")
+		return rt.sessionSettled(sess.ID) && len(sess.Messages) >= 3
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Contains(t, sess.Messages[1].Message.Message.Content, "early note")
 }
 
-// RunOrAttach on a free session is byte-for-byte the classic embedder turn:
-// messages staged on the session, the run's own stream returned, closing at
-// the end of the turn.
 func TestRunOrAttachDrivesFreeSession(t *testing.T) {
 	t.Parallel()
 
@@ -148,37 +139,49 @@ func TestRunOrAttachDrivesFreeSession(t *testing.T) {
 		2*time.Second, 10*time.Millisecond)
 }
 
-// RunOrAttach while a runtime-owned run is live does not start a second
-// driver: it mirrors the live run through the hub and, once the session
-// settles, becomes the driver and runs the staged turn to completion.
 func TestRunOrAttachMirrorsLiveRunThenDrives(t *testing.T) {
 	t.Parallel()
 
-	rt, sess := newActorFixture(t)
+	release := make(chan struct{})
+	first := true
+	prov := &multiRunProvider{
+		mockProvider: &mockProvider{id: "test/mock-model"},
+		build: func() chat.MessageStream {
+			if first {
+				first = false
+				return &blockingMockStream{
+					responses: []chat.MessageStreamResponse{{
+						Choices: []chat.MessageStreamChoice{{Index: 0, Delta: chat.MessageDelta{Content: "report handled"}}},
+					}},
+					release: release,
+				}
+			}
+			return newStreamBuilder().AddContent("queued answered").AddStopWithUsage(1, 1).Build()
+		},
+	}
+	tm := team.New(team.WithAgents(agent.New("root", "prompt", agent.WithModel(prov))))
+	rt, err := NewLocalRuntime(t.Context(), tm)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rt.Close() })
+	sess := session.New(session.WithID("attach-sess"))
 	rt.rememberSession(sess)
-	rt.sessionRunsMu.Lock()
-	rt.sessionWaking[sess.ID] = true // a wake loop owns the session
-	rt.sessionRunsMu.Unlock()
+
+	rt.deliverOrBuffer(t.Context(), sess.ID, "wake note")
+	require.Eventually(t, func() bool {
+		d, ok := rt.sessionDrivers.Lookup(sess.ID)
+		return ok && !d.Settled()
+	}, 2*time.Second, 5*time.Millisecond)
 
 	sess.AddMessage(session.UserMessage("queued"))
 	ch := rt.RunOrAttach(t.Context(), sess)
-
-	// Wait for the mirror's hub subscription before publishing, else the
-	// simulated events race past it.
 	require.Eventually(t, func() bool {
 		rt.sessionEvents.mu.Lock()
 		defer rt.sessionEvents.mu.Unlock()
 		return len(rt.sessionEvents.subs[sess.ID]) == 1
 	}, 2*time.Second, 5*time.Millisecond)
 
-	// Simulate the tail of the live wake run…
-	rt.sessionEvents.Publish(sess.ID, AgentChoice("root", sess.ID, "report handled"))
-	rt.sessionRunsMu.Lock()
-	delete(rt.sessionWaking, sess.ID)
-	rt.sessionRunsMu.Unlock()
-	rt.sessionEvents.Publish(sess.ID, StreamStopped(sess.ID, "root", ""))
+	close(release)
 
-	// …then the caller's own turn runs for real and the channel closes.
 	var mirrored bool
 	var stops int
 	for e := range ch {
@@ -195,13 +198,9 @@ func TestRunOrAttachMirrorsLiveRunThenDrives(t *testing.T) {
 	assert.Equal(t, 2, stops, "mirrored stop + the staged turn's own stop")
 	last := sess.Messages[len(sess.Messages)-1]
 	require.NotNil(t, last.Message)
-	assert.Equal(t, chat.MessageRoleAssistant, last.Message.Message.Role,
-		"the staged turn must be answered by the follow-up drive")
+	assert.Equal(t, chat.MessageRoleAssistant, last.Message.Message.Role)
 }
 
-// StopSession cancels a live wake run — the embedder's Esc for a run it
-// does not own. Runs the embedder started are untouched (it holds their
-// context).
 func TestStopSessionCancelsWakeRun(t *testing.T) {
 	t.Parallel()
 
@@ -210,7 +209,7 @@ func TestStopSessionCancelsWakeRun(t *testing.T) {
 	tm := team.New(team.WithAgents(agent.New("root", "prompt", agent.WithModel(prov))))
 	rt, err := NewLocalRuntime(t.Context(), tm)
 	require.NoError(t, err)
-	t.Cleanup(rt.subagents.Close)
+	t.Cleanup(func() { _ = rt.Close() })
 	t.Cleanup(func() { close(release) })
 
 	sess := session.New(session.WithID("stop-sess"))
@@ -218,17 +217,13 @@ func TestStopSessionCancelsWakeRun(t *testing.T) {
 
 	rt.deliverOrBuffer(t.Context(), sess.ID, "note")
 	require.Eventually(t, func() bool {
-		rt.sessionRunsMu.Lock()
-		defer rt.sessionRunsMu.Unlock()
-		return rt.sessionWaking[sess.ID]
+		d, ok := rt.sessionDrivers.Lookup(sess.ID)
+		return ok && !d.Settled()
 	}, 2*time.Second, 5*time.Millisecond, "the note must start a wake run")
 
 	require.True(t, rt.StopSession(sess.ID), "a live wake run must be stoppable")
-	assert.Eventually(t, func() bool {
-		rt.sessionRunsMu.Lock()
-		defer rt.sessionRunsMu.Unlock()
-		return !rt.sessionWaking[sess.ID] && rt.sessionRuns[sess.ID] == 0
-	}, 5*time.Second, 10*time.Millisecond, "the wake run must wind down after StopSession")
+	assert.Eventually(t, func() bool { return rt.sessionSettled(sess.ID) },
+		5*time.Second, 10*time.Millisecond, "the wake run must wind down after StopSession")
 
 	assert.False(t, rt.StopSession(sess.ID), "nothing left to stop")
 }

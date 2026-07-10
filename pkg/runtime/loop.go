@@ -136,6 +136,9 @@ func (r *LocalRuntime) appendSteerAndEmit(sess *session.Session, sm QueuedMessag
 func (r *LocalRuntime) drainAndEmitSteered(ctx context.Context, sess *session.Session, a *agent.Agent, events EventSink) steerResult {
 	steered := r.steerQueue.Drain(ctx)
 	steered = append(steered, r.drainSessionSteer(sess.ID)...)
+	steered = slices.DeleteFunc(steered, func(sm QueuedMessage) bool {
+		return sm.Content == "" && len(sm.MultiContent) == 0
+	})
 	if len(steered) == 0 {
 		return steerResult{}
 	}
@@ -268,18 +271,21 @@ func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.S
 // the response, executes any tool calls, and loops until the model signals stop
 // or the iteration limit is reached.
 func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-chan Event {
-	slog.DebugContext(ctx, "Starting runtime stream", "agent", r.currentAgentName(), "session_id", sess.ID)
-	r.rememberSession(sess)
-	events := make(chan Event, defaultEventChannelCapacity)
-	rootStream := !sess.IsSubSession()
-	if rootStream {
-		r.activeRootStreams.Add(1)
+	if r.sessionDrivers != nil {
+		return r.sessionDrivers.Get(sess).RunOrAttach(ctx, sess)
 	}
+	return r.runStreamRaw(ctx, sess)
+}
+
+// runStreamRaw drives one runtime loop without session-driver arbitration.
+func (r *LocalRuntime) runStreamRaw(ctx context.Context, sess *session.Session) <-chan Event {
+	slog.DebugContext(ctx, "Starting runtime stream", "agent", r.currentAgentName(), "session_id", sess.ID)
+	if r.sessionDrivers != nil {
+		r.sessionDrivers.Get(sess)
+	}
+	events := make(chan Event, defaultEventChannelCapacity)
 
 	go func() {
-		if rootStream {
-			defer r.activeRootStreams.Add(-1)
-		}
 		r.runStreamLoop(ctx, sess, events)
 	}()
 	return r.observe(ctx, sess, events)
@@ -291,13 +297,8 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session, events chan Event) {
 	sink := &channelSink{ch: events}
 
-	// Mark this session's loop as live for the whole stream so detached
-	// messages (notes from async subagents) are steered into it at iteration
-	// boundaries instead of being queued behind the turn. Registered first so
-	// it runs last (after finalizeEventChannel): a stranded message is then
-	// re-dispatched only once the stream has fully stopped.
-	r.beginSessionRun(sess.ID)
-	defer func() { r.endSessionRun(ctx, sess.ID) }()
+	// Marking session liveness is owned by sessionDriver; raw RunStream callers
+	// bypass that actor contract intentionally.
 
 	// Seed the cagent session ID at the run-loop boundary so any
 	// gateway-bound HTTP call originating from this loop can correlate
@@ -954,10 +955,8 @@ func (r *LocalRuntime) runTurn(
 		}
 
 		// Re-check steer queue: closes the race between the mid-loop drain and this stop.
-		// This drain also covers session-scoped steering (subagent reports
-		// routed by deliverMessage): the loop itself has no awareness of
-		// subagents — once it stops, their reports start fresh turns through
-		// the session's message receiver instead (see subagents.go).
+		// This drain also covers session-driver pending messages (subagent
+		// reports and other detached input) routed into the live run.
 		if sr := r.drainAndEmitSteered(ctx, sess, a, events); sr.drained {
 			if sr.stop {
 				slog.WarnContext(ctx, "user_steering_messages_submit hook signalled run termination",

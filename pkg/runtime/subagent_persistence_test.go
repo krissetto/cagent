@@ -38,7 +38,6 @@ func TestSubagentTranscriptSurvivesReload(t *testing.T) {
 		))
 		rt, err := NewLocalRuntime(t.Context(), tm, WithSessionStore(store))
 		require.NoError(t, err)
-		t.Cleanup(rt.subagents.Close)
 		return rt, store
 	}
 
@@ -61,9 +60,10 @@ func TestSubagentTranscriptSurvivesReload(t *testing.T) {
 	require.True(t, rtA.DeliverMessage(t.Context(), mustAttachSession(t, rtA, id), "keep going"))
 	require.Eventually(t, func() bool {
 		rec, ok := rtA.subagents.Read(id)
-		return ok && !rec.running
+		return ok && rec.state != subagent.NodeRunning && rtA.sessionSettled(rec.sessionID)
 	}, 10*time.Second, 10*time.Millisecond)
 	rtA.subagents.Close()
+	rtA.sessionDrivers.Close()
 	storeA.(*session.SQLiteSessionStore).Close()
 
 	// Process B: restore and attach.

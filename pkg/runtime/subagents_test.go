@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -17,13 +16,11 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
-// newTestSubagentManager builds a manager bound to a minimal LocalRuntime so
-// the receiver registry (r.receivers) is usable. It does not start any real
-// sub-sessions.
+// newTestSubagentManager builds a manager bound to a minimal LocalRuntime. It
+// does not start any real sub-sessions.
 func newTestSubagentManager(t *testing.T) *subagentManager {
 	t.Helper()
 	r := &LocalRuntime{
-		receivers:     map[string]MessageReceiver{},
 		subagentStore: subagent.NewInMemoryStore(),
 		sessionEvents: newSessionEventHub(),
 	}
@@ -35,6 +32,7 @@ func newTestSubagentManager(t *testing.T) *subagentManager {
 		children: map[subagent.NodeID]*childRecord{},
 	}
 	r.subagents = m
+	r.sessionDrivers = newSessionDriverRegistry(r)
 	return m
 }
 
@@ -47,6 +45,13 @@ func (m *subagentManager) registerChild(parent *session.Session, parentAgent str
 	st.live++
 	_ = m.tree.Add(subagent.Node{ID: id, Agent: name, Parent: st.node, State: subagent.NodeRunning})
 	m.ensureSessionLocked(childSess, name, id)
+	if m.r.sessionDrivers != nil {
+		d := m.r.sessionDrivers.Get(childSess)
+		d.mu.Lock()
+		d.running = true
+		d.openSettledLocked()
+		d.mu.Unlock()
+	}
 	m.children[id] = &childRecord{
 		name:          name,
 		parentSession: parent.ID,
@@ -56,32 +61,35 @@ func (m *subagentManager) registerChild(parent *session.Session, parentAgent str
 	}
 }
 
+func drainDriverMessages(r *LocalRuntime, sess *session.Session) []QueuedMessage {
+	return r.sessionDrivers.Get(sess).DrainPending()
+}
+
+func requireOneDriverMessage(t *testing.T, r *LocalRuntime, sess *session.Session) string {
+	t.Helper()
+	msgs := drainDriverMessages(r, sess)
+	require.Len(t, msgs, 1)
+	return msgs[0].Content
+}
+
 func TestSubagentManagerDeliversTurnReportToParentReceiver(t *testing.T) {
 	m := newTestSubagentManager(t)
 	parent := session.New(session.WithID("parent"))
 	child := session.New(session.WithID("child"))
 	m.registerChild(parent, "root", "aaaaa", "worker", child)
 
-	// The parent's receiver captures delivered reports (like the TUI would).
-	got := make(chan string, 1)
-	m.r.RegisterMessageReceiver("parent", func(_ context.Context, content string) { got <- content })
-
 	assert.True(t, m.HasLive("parent"))
 	m.children["aaaaa"].result = "the answer is 42"
 	m.children["aaaaa"].state = subagent.NodeIdle
 	m.reportTurn("aaaaa", subagent.NodeIdle, "")
 
-	select {
-	case env := <-got:
-		assert.Contains(t, env, "worker")
-		assert.Contains(t, env, "finished its turn")
-		// Short responses travel whole, explicitly marked as full.
-		assert.Contains(t, env, `Full response: "the answer is 42"`)
-		assert.NotContains(t, env, "[...]")
-		assert.True(t, strings.HasPrefix(env, "<system_info>"), "report wrapped in system_info")
-	case <-t.Context().Done():
-		t.Fatal("parent receiver did not receive the turn report")
-	}
+	env := requireOneDriverMessage(t, m.r, parent)
+	assert.Contains(t, env, "worker")
+	assert.Contains(t, env, "finished its turn")
+	// Short responses travel whole, explicitly marked as full.
+	assert.Contains(t, env, `Full response: "the answer is 42"`)
+	assert.NotContains(t, env, "[...]")
+	assert.True(t, strings.HasPrefix(env, "<system_info>"), "report wrapped in system_info")
 
 	assert.True(t, m.HasLive("parent"), "reporting a turn keeps the subagent alive")
 
@@ -111,18 +119,10 @@ func TestSubagentManagerSendToChildRoutesToChildReceiver(t *testing.T) {
 	child := session.New(session.WithID("child"))
 	m.registerChild(parent, "root", "bbbbb", "worker", child)
 
-	got := make(chan string, 1)
-	m.r.RegisterMessageReceiver("child", func(_ context.Context, content string) { got <- content })
-
 	name, err := m.sendToChild("parent", "bbbbb", "keep going")
 	require.NoError(t, err)
 	assert.Equal(t, "worker", name)
-	select {
-	case env := <-got:
-		assert.Equal(t, "keep going", env)
-	case <-t.Context().Done():
-		t.Fatal("child receiver did not receive the message")
-	}
+	assert.Equal(t, "keep going", requireOneDriverMessage(t, m.r, child))
 }
 
 func TestSubagentManagerSendToChildLifecycle(t *testing.T) {
@@ -130,8 +130,6 @@ func TestSubagentManagerSendToChildLifecycle(t *testing.T) {
 	parent := session.New(session.WithID("parent"))
 	child := session.New(session.WithID("child"))
 	m.registerChild(parent, "root", "ccccc", "worker", child)
-	m.r.RegisterMessageReceiver("child", func(context.Context, string) {})
-
 	_, err := m.sendToChild("parent", "zzzzz", "hi")
 	require.Error(t, err, "unknown id rejected")
 	_, err = m.sendToChild("someone-else", "ccccc", "hi")
@@ -233,18 +231,10 @@ func TestTurnReportPreviews(t *testing.T) {
 		parent := session.New(session.WithID("parent"))
 		child := session.New(session.WithID("child"))
 		m.registerChild(parent, "root", "aaaaa", "worker", child)
-		got := make(chan string, 1)
-		m.r.RegisterMessageReceiver("parent", func(_ context.Context, content string) { got <- content })
 		m.children["aaaaa"].result = result
 		m.children["aaaaa"].state = state
 		m.reportTurn("aaaaa", state, errMsg)
-		select {
-		case env := <-got:
-			return env
-		case <-t.Context().Done():
-			t.Fatal("no report delivered")
-			return ""
-		}
+		return requireOneDriverMessage(t, m.r, parent)
 	}
 
 	t.Run("long response is truncated with marker", func(t *testing.T) {
@@ -279,29 +269,23 @@ func TestTurnReportPreviews(t *testing.T) {
 // deep chain stays silent instead of waking every ancestor per leaf event.
 // Failures always report.
 func TestReportTurnQuiescenceGating(t *testing.T) {
-	setup := func() (*subagentManager, chan string) {
+	setup := func() (*subagentManager, *session.Session) {
 		m := newTestSubagentManager(t)
 		parent := session.New(session.WithID("parent"))
 		child := session.New(session.WithID("child-sess"))
 		grand := session.New(session.WithID("grand-sess"))
 		m.registerChild(parent, "root", "aaaaa", "worker", child)
 		m.registerChild(child, "worker", "bbbbb", "helper", grand)
-		got := make(chan string, 4)
-		m.r.RegisterMessageReceiver("parent", func(_ context.Context, content string) { got <- content })
-		return m, got
+		return m, parent
 	}
 
 	t.Run("suppressed while its own subagent is running", func(t *testing.T) {
-		m, got := setup()
+		m, parent := setup()
 		// helper (bbbbb) is running beneath worker; worker's turn end is
 		// bookkeeping, not news.
 		m.children["aaaaa"].state = subagent.NodeIdle
 		m.reportTurn("aaaaa", subagent.NodeIdle, "")
-		select {
-		case env := <-got:
-			t.Fatalf("parent must not be woken while the subtree works, got %q", env)
-		default:
-		}
+		assert.Empty(t, drainDriverMessages(m.r, parent))
 		// The tree still records the state change for the UI.
 		n, ok := m.tree.Node("aaaaa")
 		require.True(t, ok)
@@ -309,32 +293,24 @@ func TestReportTurnQuiescenceGating(t *testing.T) {
 	})
 
 	t.Run("delivered once the subtree is quiet", func(t *testing.T) {
-		m, got := setup()
+		m, parent := setup()
 		m.children["bbbbb"].state = subagent.NodeIdle // helper settled
 		m.children["aaaaa"].state = subagent.NodeIdle
 		m.children["aaaaa"].result = "all done"
 		m.reportTurn("aaaaa", subagent.NodeIdle, "")
-		select {
-		case env := <-got:
-			assert.Contains(t, env, "finished its turn")
-			assert.Contains(t, env, "all done")
-		default:
-			t.Fatal("quiet subtree must report to the parent")
-		}
+		env := requireOneDriverMessage(t, m.r, parent)
+		assert.Contains(t, env, "finished its turn")
+		assert.Contains(t, env, "all done")
 	})
 
 	t.Run("failures bypass the gate", func(t *testing.T) {
-		m, got := setup()
+		m, parent := setup()
 		// helper still running, but worker's failure is always news.
 		m.children["aaaaa"].state = subagent.NodeFailed
 		m.reportTurn("aaaaa", subagent.NodeFailed, "model exploded")
-		select {
-		case env := <-got:
-			assert.Contains(t, env, "failed")
-			assert.Contains(t, env, "model exploded")
-		default:
-			t.Fatal("failures must always report")
-		}
+		env := requireOneDriverMessage(t, m.r, parent)
+		assert.Contains(t, env, "failed")
+		assert.Contains(t, env, "model exploded")
 	})
 }
 
