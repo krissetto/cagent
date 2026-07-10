@@ -1717,9 +1717,9 @@ func (m *model) subagentsInfo(contentWidth int) string {
 	walk = func(nodes []subagent.NodeSnapshot, prefix string) {
 		for i := range nodes {
 			last := i == len(nodes)-1
-			connector, childPrefix := prefix+"├─ ", prefix+"│  "
+			connector, childPrefix := prefix+"├", prefix+"│"
 			if last {
-				connector, childPrefix = prefix+"└─ ", prefix+"   "
+				connector, childPrefix = prefix+"└", prefix+" "
 			}
 			lines = append(lines, m.subagentLine(nodes[i].Node, connector, contentWidth))
 			m.subagentLineNodes = append(m.subagentLineNodes, nodes[i].Node.ID)
@@ -1739,10 +1739,10 @@ func (m *model) subagentsInfo(contentWidth int) string {
 // subagent name's accent color.
 const subagentHoverBrighten = 0.25
 
-// subagentLine renders one swarm row: muted branch guides (├─/└─ with │
-// continuation rails from ancestor levels), the state glyph, the
-// agent-colored name, and a muted status (or spawn time when hovered)
-// right-aligned.
+// subagentLine renders one swarm row: compact muted branch guides, a state
+// glyph beside the agent name, and a muted status (or spawn time when hovered)
+// right-aligned. The name is always kept on the first line; it truncates with
+// an ellipsis before the row can wrap.
 func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) string {
 	hovered := m.hoveredSubagent == n.ID
 
@@ -1752,29 +1752,83 @@ func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) s
 			nameStyle = nameStyle.Foreground(styles.Brighten(fg, subagentHoverBrighten))
 		}
 	}
-	// Glyph column first so spinners align on every row; guides indent the
-	// name area, putting a child's elbow under its parent's name.
-	name := nameStyle.Render(n.DisplayName())
-	if hovered {
-		name += styles.MutedStyle.Render(fmt.Sprintf(" (%s)", n.ID))
-	}
-	left := m.subagentGlyph(n) + " " + styles.MutedStyle.Render(guides) + name
 
 	rightText := string(n.State)
 	if hovered {
 		rightText = timeAgo(n.CreatedAt)
 	}
 	right := styles.MutedStyle.Render(rightText)
+	rightWidth := lipgloss.Width(right)
 
-	gap := max(1, contentWidth-lipgloss.Width(left)-lipgloss.Width(right))
+	leftBudget := contentWidth - rightWidth - 1
+	if leftBudget < 2 {
+		right = ""
+		rightWidth = 0
+		leftBudget = contentWidth
+	}
+
+	glyph := m.subagentGlyph(n)
+	maxGuideWidth := max(0, leftBudget-lipgloss.Width(glyph)-2)
+	guides = subagentGuideTail(guides, maxGuideWidth)
+	prefix := styles.MutedStyle.Render(guides) + glyph
+	separator := " "
+	nameWidth := leftBudget - lipgloss.Width(prefix) - lipgloss.Width(separator)
+	if nameWidth <= 0 {
+		separator = ""
+		nameWidth = max(1, leftBudget-lipgloss.Width(prefix))
+	}
+
+	styledName := m.subagentName(n, nameStyle, nameWidth, hovered)
+	left := prefix + separator + styledName
+
+	if right == "" {
+		return left
+	}
+	gap := max(1, contentWidth-lipgloss.Width(left)-rightWidth)
 	return left + strings.Repeat(" ", gap) + right
 }
 
-// subagentGlyph picks the leading glyph for a swarm row: an animated spinner
-// (in the agent's accent color) while the subagent works, ✓/✗ once it
-// finished/failed, a blank cell while it idles awaiting input. Every glyph is
-// a single bare text cell (no emoji — those have unreliable widths and cannot
-// be colored) so state transitions never shift the row's text.
+func (m *model) subagentName(n subagent.Node, nameStyle lipgloss.Style, width int, hovered bool) string {
+	name := n.DisplayName()
+	if width <= 0 {
+		return ""
+	}
+	if !hovered {
+		return nameStyle.Render(toolcommon.TruncateText(name, width))
+	}
+
+	suffix := fmt.Sprintf(" (%s)", n.ID)
+	if width > lipgloss.Width(suffix)+1 {
+		nameWidth := width - lipgloss.Width(suffix)
+		return nameStyle.Render(toolcommon.TruncateText(name, nameWidth)) + styles.MutedStyle.Render(suffix)
+	}
+	return nameStyle.Render(toolcommon.TruncateText(name, width))
+}
+
+func subagentGuideTail(guides string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(guides) <= width {
+		return guides
+	}
+	runes := []rune(guides)
+	start := len(runes)
+	used := 0
+	for start > 0 {
+		w := lipgloss.Width(string(runes[start-1]))
+		if used+w > width {
+			break
+		}
+		start--
+		used += w
+	}
+	return string(runes[start:])
+}
+
+// subagentGlyph picks the inline glyph for a swarm row: an animated spinner
+// while the subagent works, ○ while it idles, ✓/✗ for terminal states. Every
+// glyph is a single text cell so state transitions never shift the row's text.
 func (m *model) subagentGlyph(n subagent.Node) string {
 	switch {
 	case isActiveSubagentState(n.State):
@@ -1782,7 +1836,7 @@ func (m *model) subagentGlyph(n subagent.Node) string {
 	case n.State == subagent.NodeFailed:
 		return styles.ErrorStyle.Render("✗")
 	case n.State == subagent.NodeIdle:
-		return " "
+		return styles.MutedStyle.Render("○")
 	default:
 		return styles.SuccessStyle.Render("✓")
 	}

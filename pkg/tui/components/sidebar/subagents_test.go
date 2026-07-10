@@ -131,7 +131,7 @@ func TestSubagentsInfo_HoverShowsTimeAgoAndID(t *testing.T) {
 	assert.Contains(t, out, "coder (a1b2c)", "hovered row shows node id next to the agent name")
 	assert.Contains(t, out, "10m ago", "hovered row shows spawn time instead of state")
 	assert.NotContains(t, out, "running", "hovered row's state text is replaced")
-	assert.Contains(t, out, "reviewer", "non-hovered rows keep their name")
+	assert.Contains(t, out, "✓ reviewer", "non-hovered rows keep their inline state glyph and name")
 	assert.NotContains(t, out, "reviewer (d4e5f)", "non-hovered rows do not show ids")
 	assert.Contains(t, out, "completed", "non-hovered rows keep their state")
 }
@@ -202,6 +202,7 @@ func TestSubagentGlyphsSameWidth(t *testing.T) {
 		glyph := m.subagentGlyph(subagent.Node{Agent: "coder", State: s})
 		assert.Equal(t, 1, lipgloss.Width(glyph), "state %s glyph must be a single cell", s)
 	}
+	assert.Equal(t, "○", ansi.Strip(m.subagentGlyph(subagent.Node{Agent: "coder", State: subagent.NodeIdle})))
 }
 
 func TestTimeAgo(t *testing.T) {
@@ -416,9 +417,8 @@ func TestSubagentsInfoRendersBranchGuides(t *testing.T) {
 			Children: []subagent.NodeSnapshot{{
 				Node: subagent.Node{ID: "aaaaa", Agent: "planner", Parent: "root:sess", State: subagent.NodeIdle, CreatedAt: base},
 				Children: []subagent.NodeSnapshot{
-					// Two children: the newer renders first with ├─, the
-					// older last with └─; the newer one's own child gets a │
-					// rail from its parent level.
+					// Two children: the newer renders first with ├, the older
+					// last with └; the newer one's own child keeps a │ rail.
 					{
 						Node: subagent.Node{ID: "bbbbb", Agent: "coder", Parent: "aaaaa", State: subagent.NodeIdle, CreatedAt: base.Add(2 * time.Minute)},
 						Children: []subagent.NodeSnapshot{
@@ -444,17 +444,44 @@ func TestSubagentsInfoRendersBranchGuides(t *testing.T) {
 	}
 
 	assert.NotContains(t, find("planner"), "─", "top-level rows are bare")
-	assert.Contains(t, find("coder"), "├─", "non-last sibling gets a tee")
-	assert.Contains(t, find("tester"), "│  └─", "nested child gets its parent's rail plus its own elbow")
-	assert.Contains(t, find("reviewer"), "└─", "last sibling gets an elbow")
+	assert.Contains(t, find("coder"), "├○ coder", "non-last sibling gets a compact tee and inline idle glyph")
+	assert.Contains(t, find("tester"), "│└○ tester", "nested child gets its parent's rail plus its own elbow")
+	assert.Contains(t, find("reviewer"), "└○ reviewer", "last sibling gets an elbow")
 
-	// Guides live in the name area, after the 2-cell glyph column: an idle
-	// row is "<blank glyph> <guides><name>", so the elbow sits under the
-	// parent's name, not under its spinner cell.
-	assert.True(t, strings.HasPrefix(find("reviewer"), "  └─ reviewer"),
-		"guides start after the glyph column: %q", find("reviewer"))
-	assert.True(t, strings.HasPrefix(find("tester"), "  │  └─ tester"),
-		"rails inherit the same origin: %q", find("tester"))
+	assert.True(t, strings.HasPrefix(find("planner"), "○ planner"),
+		"top-level glyph is next to the name: %q", find("planner"))
+	assert.True(t, strings.HasPrefix(find("reviewer"), "└○ reviewer"),
+		"guides are compact and the glyph stays beside the name: %q", find("reviewer"))
+	assert.True(t, strings.HasPrefix(find("tester"), "│└○ tester"),
+		"rails inherit the compact origin: %q", find("tester"))
+}
+
+func TestSubagentsInfoTruncatesDeepRowsWithoutWrapping(t *testing.T) {
+	t.Parallel()
+
+	m := newSubagentTestModel(t)
+	longName := "planner-with-a-very-long-name"
+	line := ansi.Strip(m.subagentLine(subagent.Node{
+		ID:        "long1",
+		Agent:     longName,
+		Name:      longName,
+		State:     subagent.NodeIdle,
+		CreatedAt: time.Now(),
+	}, "│││││││└", 24))
+
+	assert.LessOrEqual(t, lipgloss.Width(line), 24)
+	assert.NotContains(t, line, "\n")
+	assert.Contains(t, line, "○", "idle glyph remains visible next to the name")
+	assert.Contains(t, line, "…", "long agent names truncate instead of wrapping")
+	assert.Contains(t, line, "idle", "status still fits when possible")
+}
+
+func TestSubagentGuideTailKeepsDeepRowsReadable(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "│└", subagentGuideTail("││││└", 2))
+	assert.Empty(t, subagentGuideTail("│└", 0))
+	assert.Equal(t, "│└", subagentGuideTail("│└", 4))
 }
 
 // Animation-only frames (a subagent spinner tick) must not re-render the
