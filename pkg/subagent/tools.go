@@ -120,8 +120,9 @@ you hear nothing until that subtree settles. Previews ending in "[...]" are
 truncated; use read_subagent for the full text.
 
 To wait, first make sure work is running below you (spawn/message a subagent),
-then finish your response. If nothing below you is running, nothing will wake
-you. When all needed reports arrive, answer normally.
+then end your turn. If you say anything, keep it conversational; do not write
+bracketed status labels. If nothing below you is running, nothing will wake you.
+When all needed reports arrive, answer normally.
 
 If you were spawned, 'parent' addresses your parent. Your final response is
 reported automatically when you finish; use send_message(to: 'parent') only for
