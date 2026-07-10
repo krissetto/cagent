@@ -1717,9 +1717,9 @@ func (m *model) subagentsInfo(contentWidth int) string {
 	walk = func(nodes []subagent.NodeSnapshot, prefix string) {
 		for i := range nodes {
 			last := i == len(nodes)-1
-			connector, childPrefix := prefix+"├", prefix+"│"
+			connector, childPrefix := prefix+"├ ", prefix+"│   "
 			if last {
-				connector, childPrefix = prefix+"└", prefix+" "
+				connector, childPrefix = prefix+"└ ", prefix+"    "
 			}
 			lines = append(lines, m.subagentLine(nodes[i].Node, connector, contentWidth))
 			m.subagentLineNodes = append(m.subagentLineNodes, nodes[i].Node.ID)
@@ -1730,7 +1730,7 @@ func (m *model) subagentsInfo(contentWidth int) string {
 	for i := range m.subagentNodes {
 		lines = append(lines, m.subagentLine(m.subagentNodes[i].Node, "", contentWidth))
 		m.subagentLineNodes = append(m.subagentLineNodes, m.subagentNodes[i].Node.ID)
-		walk(m.subagentNodes[i].Children, "")
+		walk(m.subagentNodes[i].Children, "  ")
 	}
 	return m.renderTab("Subagents", strings.Join(lines, "\n"), contentWidth)
 }
@@ -1739,10 +1739,10 @@ func (m *model) subagentsInfo(contentWidth int) string {
 // subagent name's accent color.
 const subagentHoverBrighten = 0.25
 
-// subagentLine renders one swarm row: compact muted branch guides, a state
-// glyph beside the agent name, and a muted status (or spawn time when hovered)
-// right-aligned. The name is always kept on the first line; it truncates with
-// an ellipsis before the row can wrap.
+// subagentLine renders one swarm row: branch guides start under the parent's
+// agent name, the state glyph sits beside this row's name, and a muted status
+// (or spawn time when hovered) is right-aligned. The name is always kept on the
+// first line; it truncates with an ellipsis before the row can wrap.
 func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) string {
 	hovered := m.hoveredSubagent == n.ID
 
@@ -1768,18 +1768,18 @@ func (m *model) subagentLine(n subagent.Node, guides string, contentWidth int) s
 	}
 
 	glyph := m.subagentGlyph(n)
-	maxGuideWidth := max(0, leftBudget-lipgloss.Width(glyph)-2)
+	gapAfterGlyph := " "
+	maxGuideWidth := max(0, leftBudget-lipgloss.Width(glyph)-lipgloss.Width(gapAfterGlyph)-2)
 	guides = subagentGuideTail(guides, maxGuideWidth)
-	prefix := styles.MutedStyle.Render(guides) + glyph
-	separator := " "
-	nameWidth := leftBudget - lipgloss.Width(prefix) - lipgloss.Width(separator)
+	prefix := styles.MutedStyle.Render(guides) + glyph + gapAfterGlyph
+	nameWidth := leftBudget - lipgloss.Width(prefix)
 	if nameWidth <= 0 {
-		separator = ""
+		prefix = styles.MutedStyle.Render(guides) + glyph
 		nameWidth = max(1, leftBudget-lipgloss.Width(prefix))
 	}
 
 	styledName := m.subagentName(n, nameStyle, nameWidth, hovered)
-	left := prefix + separator + styledName
+	left := prefix + styledName
 
 	if right == "" {
 		return left

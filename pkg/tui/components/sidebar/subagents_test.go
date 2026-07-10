@@ -444,16 +444,16 @@ func TestSubagentsInfoRendersBranchGuides(t *testing.T) {
 	}
 
 	assert.NotContains(t, find("planner"), "─", "top-level rows are bare")
-	assert.Contains(t, find("coder"), "├○ coder", "non-last sibling gets a compact tee and inline idle glyph")
-	assert.Contains(t, find("tester"), "│└○ tester", "nested child gets its parent's rail plus its own elbow")
-	assert.Contains(t, find("reviewer"), "└○ reviewer", "last sibling gets an elbow")
+	assert.Contains(t, find("coder"), "  ├ ○ coder", "non-last sibling starts under the parent name and keeps space around the glyph")
+	assert.Contains(t, find("tester"), "  │   └ ○ tester", "nested child starts under its parent name")
+	assert.Contains(t, find("reviewer"), "  └ ○ reviewer", "last sibling starts under the parent name")
 
 	assert.True(t, strings.HasPrefix(find("planner"), "○ planner"),
 		"top-level glyph is next to the name: %q", find("planner"))
-	assert.True(t, strings.HasPrefix(find("reviewer"), "└○ reviewer"),
-		"guides are compact and the glyph stays beside the name: %q", find("reviewer"))
-	assert.True(t, strings.HasPrefix(find("tester"), "│└○ tester"),
-		"rails inherit the compact origin: %q", find("tester"))
+	assert.True(t, strings.HasPrefix(find("reviewer"), "  └ ○ reviewer"),
+		"guides start under the parent name and the glyph has breathing room: %q", find("reviewer"))
+	assert.True(t, strings.HasPrefix(find("tester"), "  │   └ ○ tester"),
+		"rails inherit the parent-name origin: %q", find("tester"))
 }
 
 func TestSubagentsInfoTruncatesDeepRowsWithoutWrapping(t *testing.T) {
@@ -479,9 +479,9 @@ func TestSubagentsInfoTruncatesDeepRowsWithoutWrapping(t *testing.T) {
 func TestSubagentGuideTailKeepsDeepRowsReadable(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "│└", subagentGuideTail("││││└", 2))
-	assert.Empty(t, subagentGuideTail("│└", 0))
-	assert.Equal(t, "│└", subagentGuideTail("│└", 4))
+	assert.Equal(t, "│   └ ", subagentGuideTail("│   │   │   │   └ ", 6))
+	assert.Empty(t, subagentGuideTail("│   └ ", 0))
+	assert.Equal(t, "│   └ ", subagentGuideTail("│   └ ", 8))
 }
 
 // Animation-only frames (a subagent spinner tick) must not re-render the
