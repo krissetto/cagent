@@ -25,7 +25,15 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/service/supervisor"
 )
 
-type closeTabRuntime struct{ id string }
+type closeTabRuntime struct {
+	liveSubagents atomic.Bool
+}
+
+func newCloseTabRuntime(_ string, liveSubagents bool) *closeTabRuntime {
+	r := &closeTabRuntime{}
+	r.liveSubagents.Store(liveSubagents)
+	return r
+}
 
 func (*closeTabRuntime) CurrentAgentInfo(context.Context) runtime.CurrentAgentInfo {
 	return runtime.CurrentAgentInfo{}
@@ -93,6 +101,7 @@ func (*closeTabRuntime) OnBackgroundEvent(func(runtime.Event))                 {
 func (*closeTabRuntime) QueueStatus() runtime.QueueStatus                      { return runtime.QueueStatus{} }
 func (*closeTabRuntime) TogglePause(context.Context) (bool, error)             { return false, nil }
 func (*closeTabRuntime) Close() error                                          { return nil }
+func (r *closeTabRuntime) HasLiveSubagents(string) bool                        { return r.liveSubagents.Load() }
 
 var _ runtime.Runtime = (*closeTabRuntime)(nil)
 
@@ -119,125 +128,97 @@ func newCloseTabTestModel(t *testing.T) *appModel {
 	return m
 }
 
-type cancelRecordingMockChatPage struct {
-	mockChatPage
-
-	working   bool
-	cancelled bool
-}
-
-func (p *cancelRecordingMockChatPage) IsWorking() bool { return p.working }
-func (p *cancelRecordingMockChatPage) CancelStream(bool) tea.Cmd {
-	p.cancelled = true
-	return nil
-}
-
-func TestCloseRootTabKeepsSubagentTabAndTransfersCleanup(t *testing.T) {
+func TestCloseRootWithLiveSubagentsRequiresConfirmation(t *testing.T) {
 	t.Parallel()
 
 	m := newCloseTabTestModel(t)
-	shared := &closeTabRuntime{id: "shared"}
-	other := &closeTabRuntime{id: "other"}
-	var cleanupCalls atomic.Int32
-
-	addCloseTabTestSession(t, m, "root", shared, func() { cleanupCalls.Add(1) })
-	addCloseTabTestSession(t, m, "child", shared, nil)
-	addCloseTabTestSession(t, m, "other", other, nil)
-	require.NotNil(t, m.supervisor.SwitchTo("other"))
-
-	_, cmd := m.handleCloseTab("root")
-	require.Nil(t, cmd)
-
-	assert.Nil(t, m.supervisor.GetRunner("root"))
-	assert.NotNil(t, m.supervisor.GetRunner("child"), "subagent tab should remain open")
-	assert.NotNil(t, m.supervisor.GetRunner("other"))
-	assert.Zero(t, cleanupCalls.Load(), "shared runtime cleanup must move to the remaining subagent tab")
-
-	_, cmd = m.handleCloseTab("child")
-	require.Nil(t, cmd)
-	require.Eventually(t, func() bool { return cleanupCalls.Load() == 1 }, time.Second, 10*time.Millisecond)
-	assert.NotNil(t, m.supervisor.GetRunner("other"))
-}
-
-func TestCloseRunningTabRequiresConfirmation(t *testing.T) {
-	t.Parallel()
-
-	m := newCloseTabTestModel(t)
-	addCloseTabTestSession(t, m, "root", &closeTabRuntime{id: "root"}, nil)
-	addCloseTabTestSession(t, m, "other", &closeTabRuntime{id: "other"}, nil)
-	m.supervisor.GetRunner("root").IsRunning = true
+	addCloseTabTestSession(t, m, "root", newCloseTabRuntime("root", true), nil)
+	addCloseTabTestSession(t, m, "other", newCloseTabRuntime("other", false), nil)
 
 	_, cmd := m.handleCloseTab("root")
 	require.NotNil(t, cmd)
 	open, ok := cmd().(dialog.OpenDialogMsg)
 	require.True(t, ok)
-	assert.NotNil(t, open.Model)
-	assert.NotNil(t, m.supervisor.GetRunner("root"), "running tab stays open until confirmed")
-}
-
-func TestCloseWorkingPageRequiresConfirmation(t *testing.T) {
-	t.Parallel()
-
-	m := newCloseTabTestModel(t)
-	addCloseTabTestSession(t, m, "root", &closeTabRuntime{id: "root"}, nil)
-	addCloseTabTestSession(t, m, "other", &closeTabRuntime{id: "other"}, nil)
-	page := &cancelRecordingMockChatPage{working: true}
-	m.chatPages["root"] = page
-
-	_, cmd := m.handleCloseTab("root")
-	require.NotNil(t, cmd)
-	_, ok := cmd().(dialog.OpenDialogMsg)
-	require.True(t, ok)
-	assert.NotNil(t, m.supervisor.GetRunner("root"), "working tab stays open until confirmed")
-	assert.False(t, page.cancelled, "close request must not cancel before confirmation")
-}
-
-func TestCloseRunningTabConfirmedClosesOnlyTarget(t *testing.T) {
-	t.Parallel()
-
-	m := newCloseTabTestModel(t)
-	shared := &closeTabRuntime{id: "shared"}
-	addCloseTabTestSession(t, m, "root", shared, nil)
-	addCloseTabTestSession(t, m, "child", shared, nil)
-	addCloseTabTestSession(t, m, "other", &closeTabRuntime{id: "other"}, nil)
-	m.supervisor.GetRunner("root").IsRunning = true
-	require.NotNil(t, m.supervisor.SwitchTo("other"))
-
-	_, cmd := m.Update(dialog.CloseRunningTabConfirmedMsg{SessionID: "root"})
-	require.Nil(t, cmd)
-
-	assert.Nil(t, m.supervisor.GetRunner("root"))
-	assert.NotNil(t, m.supervisor.GetRunner("child"), "confirming root close must not close subagent tabs")
+	_, _ = open.Model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := open.Model.View()
+	assert.Contains(t, view, "active subagents")
+	assert.Contains(t, view, "stop all")
+	assert.Contains(t, view, "close their tabs")
+	assert.NotNil(t, m.supervisor.GetRunner("root"), "root stays open until confirmed")
 	assert.NotNil(t, m.supervisor.GetRunner("other"))
 }
 
-func TestCloseAttachedSubagentTabSkipsConfirmAndCancel(t *testing.T) {
+func TestCloseRootWithoutLiveSubagentsClosesImmediately(t *testing.T) {
 	t.Parallel()
 
 	m := newCloseTabTestModel(t)
-	shared := &closeTabRuntime{id: "shared"}
+	addCloseTabTestSession(t, m, "root", newCloseTabRuntime("root", false), nil)
+	addCloseTabTestSession(t, m, "other", newCloseTabRuntime("other", false), nil)
+	require.NotNil(t, m.supervisor.SwitchTo("other"))
+
+	_, cmd := m.handleCloseTab("root")
+	require.Nil(t, cmd)
+	assert.Nil(t, m.supervisor.GetRunner("root"))
+	assert.NotNil(t, m.supervisor.GetRunner("other"))
+}
+
+func TestCloseRootWithLiveSubagentsConfirmedCascadesAttachedTabs(t *testing.T) {
+	t.Parallel()
+
+	m := newCloseTabTestModel(t)
+	shared := newCloseTabRuntime("shared", true)
+	other := newCloseTabRuntime("other", false)
+	var cleanupCalls atomic.Int32
+
+	addCloseTabTestSession(t, m, "root", shared, func() { cleanupCalls.Add(1) })
 	info := runtime.SubagentAttachInfo{NodeID: "node1", ParentSessionID: "root", ParentAgent: "root"}
 	addCloseTabTestSession(t, m, "child", shared, nil, app.WithSubagentAttach(info))
-	addCloseTabTestSession(t, m, "other", &closeTabRuntime{id: "other"}, nil)
-	page := &cancelRecordingMockChatPage{working: true}
-	m.chatPages["child"] = page
-	m.supervisor.GetRunner("child").IsRunning = true
+	addCloseTabTestSession(t, m, "other", other, nil)
+	require.NotNil(t, m.supervisor.SwitchTo("other"))
+
+	_, cmd := m.Update(dialog.CloseRootWithSubagentsConfirmedMsg{SessionID: "root"})
+	require.Nil(t, cmd)
+
+	assert.Nil(t, m.supervisor.GetRunner("root"))
+	assert.Nil(t, m.supervisor.GetRunner("child"), "confirming root close closes attached subagent tabs")
+	assert.NotNil(t, m.supervisor.GetRunner("other"))
+	require.Eventually(t, func() bool { return cleanupCalls.Load() == 1 }, time.Second, 10*time.Millisecond)
+}
+
+func TestCloseAttachedSubagentTabSkipsLiveSubagentConfirmation(t *testing.T) {
+	t.Parallel()
+
+	m := newCloseTabTestModel(t)
+	shared := newCloseTabRuntime("shared", true)
+	info := runtime.SubagentAttachInfo{NodeID: "node1", ParentSessionID: "root", ParentAgent: "root"}
+	addCloseTabTestSession(t, m, "child", shared, nil, app.WithSubagentAttach(info))
+	addCloseTabTestSession(t, m, "other", newCloseTabRuntime("other", false), nil)
 	require.NotNil(t, m.supervisor.SwitchTo("other"))
 
 	_, cmd := m.handleCloseTab("child")
 	require.Nil(t, cmd)
 	assert.Nil(t, m.supervisor.GetRunner("child"))
-	assert.False(t, page.cancelled, "closing an attached viewer must only detach the UI")
 	assert.NotNil(t, m.supervisor.GetRunner("other"))
 }
 
-func TestCloseRunningTabDialogCancelDoesNotConfirm(t *testing.T) {
+func TestCloseRootWithSubagentsDialogYesConfirms(t *testing.T) {
 	t.Parallel()
 
-	d := dialog.NewCloseRunningTabDialog("root")
-	_, cmd := d.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	d := dialog.NewCloseRootWithSubagentsDialog("root")
+	_, cmd := d.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	require.NotNil(t, cmd)
 	msgs := collectMsgs(cmd)
 	assert.True(t, hasMsg[dialog.CloseDialogMsg](msgs))
-	assert.False(t, hasMsg[dialog.CloseRunningTabConfirmedMsg](msgs))
+	assert.True(t, hasMsg[dialog.CloseRootWithSubagentsConfirmedMsg](msgs))
+}
+
+func TestCloseRootWithSubagentsDialogCancelDoesNotConfirm(t *testing.T) {
+	t.Parallel()
+
+	d := dialog.NewCloseRootWithSubagentsDialog("root")
+	_, cmd := d.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	require.NotNil(t, cmd)
+	msgs := collectMsgs(cmd)
+	assert.True(t, hasMsg[dialog.CloseDialogMsg](msgs))
+	assert.False(t, hasMsg[dialog.CloseRootWithSubagentsConfirmedMsg](msgs))
 }

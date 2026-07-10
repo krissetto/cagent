@@ -814,6 +814,12 @@ func (r *LocalRuntime) SubagentTree() *subagent.Tree {
 	return r.subagents.Tree()
 }
 
+// HasLiveSubagents reports whether sessionID owns any subagents that have not
+// been explicitly stopped.
+func (r *LocalRuntime) HasLiveSubagents(sessionID string) bool {
+	return r.subagents.HasLive(sessionID)
+}
+
 // SubagentAttachInfo describes what a UI needs to attach a live view to an
 // async subagent's sub-session.
 type SubagentAttachInfo struct {

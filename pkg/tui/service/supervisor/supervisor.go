@@ -402,43 +402,6 @@ func (s *Supervisor) Spawner() SessionSpawner {
 	return s.spawner
 }
 
-// TransferCleanup moves a runner's cleanup function to another runner. It is
-// used when closing a view that owns shared runtime resources while other tabs
-// still use that runtime.
-func (s *Supervisor) TransferCleanup(fromSessionID, toSessionID string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if fromSessionID == toSessionID {
-		return false
-	}
-	from := s.runners[fromSessionID]
-	to := s.runners[toSessionID]
-	if from == nil || to == nil || from.cleanup == nil {
-		return false
-	}
-	cleanup := from.cleanup
-	from.cleanup = nil
-	if to.cleanup == nil {
-		to.cleanup = cleanup
-	} else {
-		previous := to.cleanup
-		to.cleanup = func() {
-			previous()
-			cleanup()
-		}
-	}
-	return true
-}
-
-// IsRunning reports whether a session's top-level stream is active.
-func (s *Supervisor) IsRunning(sessionID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	runner := s.runners[sessionID]
-	return runner != nil && runner.IsRunning
-}
-
 // CloseSession closes a session and removes it from the supervisor.
 func (s *Supervisor) CloseSession(sessionID string) string {
 	s.mu.Lock()

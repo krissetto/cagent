@@ -126,8 +126,6 @@ type Page interface {
 	layout.Sizeable
 	layout.Help
 	CompactSession(additionalPrompt string) tea.Cmd
-	// CancelStream cancels the active stream for this page, if any.
-	CancelStream(showCancelMessage bool) tea.Cmd
 	// SetSessionStarred updates the sidebar star indicator
 	SetSessionStarred(starred bool)
 	// SetTitleRegenerating sets the title regenerating state on the sidebar
@@ -773,11 +771,6 @@ func (p *chatPage) Bindings() []key.Binding {
 // Help returns help information
 func (p *chatPage) Help() help.KeyMap {
 	return core.NewSimpleHelp(p.Bindings())
-}
-
-// CancelStream cancels the active stream for this page, if any.
-func (p *chatPage) CancelStream(showCancelMessage bool) tea.Cmd {
-	return p.cancelStream(showCancelMessage)
 }
 
 // cancelStream cancels the current stream and cleans up associated state.

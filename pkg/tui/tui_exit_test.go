@@ -36,7 +36,6 @@ func (m *mockChatPage) Update(tea.Msg) (layout.Model, tea.Cmd)   { return m, nil
 func (m *mockChatPage) View() string                             { return "" }
 func (m *mockChatPage) SetSize(int, int) tea.Cmd                 { return nil }
 func (m *mockChatPage) CompactSession(string) tea.Cmd            { return nil }
-func (m *mockChatPage) CancelStream(bool) tea.Cmd                { return nil }
 func (m *mockChatPage) SetSessionStarred(bool)                   {}
 func (m *mockChatPage) SetTitleRegenerating(bool) tea.Cmd        { return nil }
 func (m *mockChatPage) ScrollToBottom() tea.Cmd                  { return nil }
