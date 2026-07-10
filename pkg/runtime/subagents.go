@@ -320,7 +320,7 @@ func (m *subagentManager) reportTurn(childID subagent.NodeID, state subagent.Nod
 		return
 	}
 
-	verb := "finished its turn and is awaiting further input"
+	verb := "finished its turn and is idle; message it to continue"
 	label := "Full response"
 	if state == subagent.NodeFailed {
 		verb = "failed; you can message it again or stop it"
@@ -682,7 +682,7 @@ func (r *LocalRuntime) handleSpawnSubagent(_ context.Context, sess *session.Sess
 
 	id := r.subagents.Spawn(sess, a.Name(), ref, args.Task)
 	return tools.ResultSuccess(fmt.Sprintf(
-		"Spawned subagent %q (%s). It is running concurrently and stays available for follow-ups; when it settles, a status update with its response arrives as a message (a preview ending in [...] means read_subagent has the rest). Use send_message to continue its conversation, or stop_subagent when you are done with it. Continue working or finish your response — do not poll.",
+		"Spawned subagent %q (%s). It is running concurrently and keeps its session for follow-ups. You will get a status update when its subtree is quiet. Continue working or finish your response to wait; do not poll.",
 		ref.DisplayName(), id)), nil
 }
 

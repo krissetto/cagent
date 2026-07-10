@@ -92,6 +92,7 @@ func TestSubagentManagerDeliversTurnReportToParentReceiver(t *testing.T) {
 	env := requireOneDriverMessage(t, m.r, parent)
 	assert.Contains(t, env, "worker")
 	assert.Contains(t, env, "finished its turn")
+	assert.Contains(t, env, "is idle")
 	// Short responses travel whole, explicitly marked as full.
 	assert.Contains(t, env, `Full response: "the answer is 42"`)
 	assert.NotContains(t, env, "[...]")
@@ -307,6 +308,7 @@ func TestTurnReportPreviews(t *testing.T) {
 	t.Run("empty response omits the preview", func(t *testing.T) {
 		env := newEnv("", "", subagent.NodeIdle)
 		assert.Contains(t, env, "finished its turn")
+		assert.Contains(t, env, "is idle")
 		assert.NotContains(t, env, "response")
 	})
 }
@@ -347,6 +349,7 @@ func TestReportTurnQuiescenceGating(t *testing.T) {
 		m.reportTurn("aaaaa", subagent.NodeIdle, "")
 		env := requireOneDriverMessage(t, m.r, parent)
 		assert.Contains(t, env, "finished its turn")
+		assert.Contains(t, env, "is idle")
 		assert.Contains(t, env, "all done")
 	})
 
@@ -388,6 +391,8 @@ func TestSpawnToolNeedsNoReceiver(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, res.IsError, res.Output)
 	assert.Contains(t, res.Output, "Spawned subagent")
+	assert.Contains(t, res.Output, "finish your response to wait")
+	assert.Contains(t, res.Output, "do not poll")
 }
 
 func TestSpawnedSubagentInheritsSafetySettings(t *testing.T) {

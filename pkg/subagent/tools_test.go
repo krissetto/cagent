@@ -40,4 +40,7 @@ func TestInstructionsMentionCoreTools(t *testing.T) {
 	for _, name := range []string{ToolSpawnSubagent, ToolSendMessage, ToolReadSubagent} {
 		assert.Contains(t, instr, name, "instructions mention %s", name)
 	}
+	assert.Contains(t, instr, "Do not poll")
+	assert.Contains(t, instr, "To wait, first make sure work is running below you")
+	assert.Contains(t, instr, "Your final response is\nreported automatically")
 }
