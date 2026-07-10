@@ -297,12 +297,28 @@ func (d *sessionDriver) attachThenRun(ctx context.Context) <-chan Event {
 			}
 		}
 
+		drainEvents := func(events <-chan Event) bool {
+			for {
+				select {
+				case e, ok := <-events:
+					if !ok || !emit(e) {
+						return false
+					}
+				default:
+					return true
+				}
+			}
+		}
+
 		for {
 			d.mu.Lock()
 			running := d.running
 			settled := d.settled
 			d.mu.Unlock()
 			if !running {
+				if !drainEvents(events) {
+					return
+				}
 				if runCtx, ok := d.tryStart(ctx, false); ok {
 					d.driveToOutNoClose(runCtx, false, out)
 					return
@@ -318,17 +334,9 @@ func (d *sessionDriver) attachThenRun(ctx context.Context) <-chan Event {
 					return
 				}
 			case <-settled:
-				for {
-					select {
-					case e, ok := <-events:
-						if !ok || !emit(e) {
-							return
-						}
-					default:
-						goto drained
-					}
+				if !drainEvents(events) {
+					return
 				}
-			drained:
 				if runCtx, ok := d.tryStart(ctx, false); ok {
 					d.driveToOutNoClose(runCtx, false, out)
 					return
