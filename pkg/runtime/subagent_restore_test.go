@@ -47,6 +47,12 @@ func TestRestoreSubagentTreeResumesIdleSubagents(t *testing.T) {
 	childSess.ParentID = sess.ID
 	childSess.AddMessage(session.NewAgentMessage("planner", &chat.Message{Role: chat.MessageRoleAssistant, Content: "the plan"}))
 	require.NoError(t, store.AddSession(t.Context(), childSess))
+	stoppedSess := session.New(session.WithID("stopped-sess"))
+	stoppedSess.ParentID = sess.ID
+	require.NoError(t, store.AddSession(t.Context(), stoppedSess))
+	stoppedChildSess := session.New(session.WithID("stopped-child-sess"))
+	stoppedChildSess.ParentID = stoppedSess.ID
+	require.NoError(t, store.AddSession(t.Context(), stoppedChildSess))
 
 	rootID := subagent.SessionRootID(sess.ID)
 	stored := subagent.Snapshot{Root: rootID, Nodes: []subagent.NodeSnapshot{{
@@ -54,6 +60,12 @@ func TestRestoreSubagentTreeResumesIdleSubagents(t *testing.T) {
 		Children: []subagent.NodeSnapshot{
 			{Node: subagent.Node{ID: "77c88", Agent: "planner", Parent: rootID, SessionID: "child-sess", State: subagent.NodeRunning}},
 			{Node: subagent.Node{ID: "00bad", Agent: "planner", Parent: rootID, State: subagent.NodeIdle}}, // no session id: unresumable
+			{
+				Node: subagent.Node{ID: "55d0f", Agent: "planner", Parent: rootID, SessionID: "stopped-sess", State: subagent.NodeStopped},
+				Children: []subagent.NodeSnapshot{
+					{Node: subagent.Node{ID: "c001d", Agent: "planner", Parent: "55d0f", SessionID: "stopped-child-sess", State: subagent.NodeRunning}},
+				},
+			},
 		},
 	}}}
 	require.NoError(t, store.(*session.SQLiteSessionStore).SaveTree(t.Context(), sess.ID, stored))
@@ -75,11 +87,22 @@ func TestRestoreSubagentTreeResumesIdleSubagents(t *testing.T) {
 	dead, ok := rt.subagents.tree.Node("00bad")
 	require.True(t, ok)
 	assert.Equal(t, subagent.NodeStopped, dead.State)
+	stopped, ok := rt.subagents.tree.Node("55d0f")
+	require.True(t, ok)
+	assert.Equal(t, subagent.NodeStopped, stopped.State, "persisted stopped subagents stay stopped even if resumable")
+	stoppedRec, ok := rt.subagents.Read("55d0f")
+	require.True(t, ok)
+	assert.Equal(t, subagent.NodeStopped, stoppedRec.state)
+	stoppedDescendant, ok := rt.subagents.tree.Node("c001d")
+	require.True(t, ok)
+	assert.Equal(t, subagent.NodeStopped, stoppedDescendant.State, "descendants of stopped subagents stay stopped")
 
 	// Adopted subagents accept follow-ups; stopped ones don't.
 	_, err = rt.subagents.sendToChild(sess.ID, "77c88", "continue please")
 	require.NoError(t, err, "adopted subagents stay conversational")
 	_, err = rt.subagents.sendToChild(sess.ID, "00bad", "hello?")
+	require.Error(t, err)
+	_, err = rt.subagents.sendToChild(sess.ID, "55d0f", "hello?")
 	require.Error(t, err)
 
 	// Idempotent for a session already tracked in-process.

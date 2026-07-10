@@ -45,8 +45,8 @@ func (a *App) AttachedSubagent() *runtime.SubagentAttachInfo {
 // reloadSubagentTree rebuilds the loaded session's subagent swarm from the
 // subagent store (session stores don't carry the snapshot — it lives in its
 // own table/backend) and populates the session's view of it before the TUI
-// reads it. Restored subagents stay conversational: the runtime adopts them
-// as idle actors. No-op when the session already holds a (live) tree.
+// reads it. Restored resumable subagents stay conversational; stopped subagents
+// remain stopped. No-op when the session already holds a tree.
 func (a *App) reloadSubagentTree(ctx context.Context) {
 	if a.session == nil || a.session.GetSubagentTree() != nil {
 		return

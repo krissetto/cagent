@@ -41,8 +41,10 @@ func TestInstructionsMentionCoreTools(t *testing.T) {
 		assert.Contains(t, instr, name, "instructions mention %s", name)
 	}
 	assert.Contains(t, instr, "Do not poll")
-	assert.Contains(t, instr, "To wait, first make sure work is running below you")
+	assert.Contains(t, instr, "To wait, first make sure work is actually running below you")
+	assert.Contains(t, instr, "Do not send a follow-up just to nudge")
 	assert.Contains(t, instr, "keep it conversational")
-	assert.Contains(t, instr, "do not write\nbracketed status labels")
+	assert.Contains(t, instr, "do not write")
+	assert.Contains(t, instr, "bracketed status labels")
 	assert.Contains(t, instr, "Your final response is\nreported automatically")
 }

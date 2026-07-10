@@ -1989,9 +1989,9 @@ func (m *appModel) dependentAttachedTabs(sessionID string) []string {
 }
 
 // handleCloseTab closes a session tab, confirming first when the root owns
-// live subagents that will be stopped.
+// running subagents that will be stopped.
 func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
-	if m.tabHasLiveSubagents(sessionID) {
+	if m.tabHasRunningSubagents(sessionID) {
 		return m, core.CmdHandler(dialog.OpenDialogMsg{
 			Model: dialog.NewCloseRootWithSubagentsDialog(sessionID),
 		})
@@ -1999,13 +1999,13 @@ func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
 	return m.closeTabWithCascade(sessionID)
 }
 
-func (m *appModel) tabHasLiveSubagents(sessionID string) bool {
+func (m *appModel) tabHasRunningSubagents(sessionID string) bool {
 	runner := m.supervisor.GetRunner(sessionID)
 	if runner == nil || runner.App == nil || runner.App.AttachedSubagent() != nil {
 		return false
 	}
 	rt, ok := runner.App.Runtime().(interface {
-		HasLiveSubagents(sessionID string) bool
+		HasRunningSubagents(sessionID string) bool
 	})
 	if !ok {
 		return false
@@ -2014,7 +2014,7 @@ func (m *appModel) tabHasLiveSubagents(sessionID string) bool {
 	if sess := runner.App.Session(); sess != nil {
 		trackedSessionID = sess.ID
 	}
-	return rt.HasLiveSubagents(trackedSessionID)
+	return rt.HasRunningSubagents(trackedSessionID)
 }
 
 func (m *appModel) closeTabWithCascade(sessionID string) (tea.Model, tea.Cmd) {

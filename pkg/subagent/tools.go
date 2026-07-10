@@ -69,14 +69,14 @@ func Definitions() []tools.Tool {
 		{
 			Name:        ToolSpawnSubagent,
 			Category:    "subagent",
-			Description: "Start a subagent on a task. Returns its id immediately; it runs concurrently and keeps its session for follow-ups. The task is the subagent's entire starting context, so include all needed details. When its subtree is quiet, you receive a system_info status with its result or a truncated preview. You may continue working or end your turn to wait; do not poll.",
+			Description: "Start a subagent on a task. Returns its id immediately; it runs concurrently and keeps its session for follow-ups. The task is the subagent's entire starting context, so include all needed details. When it ends a turn and its subtree is quiet, you receive a system_info report. You may continue working or end your turn to wait; do not poll.",
 			Parameters:  tools.MustSchemaFor[SpawnArgs](),
 			Annotations: tools.ToolAnnotations{Title: "Spawn Subagent"},
 		},
 		{
 			Name:        ToolSendMessage,
 			Category:    "subagent",
-			Description: "Send a message to a subagent by id, or to 'parent'. Idle subagents start a new turn; busy subagents receive the message mid-run. Delivery is asynchronous and never blocks.",
+			Description: "Send a message to a subagent by id, or to 'parent'. Delivery is asynchronous and never blocks. Do not nudge idle subagents just to make progress; send follow-ups only when the user explicitly asks you to continue or redirect them.",
 			Parameters:  tools.MustSchemaFor[SendArgs](),
 			Annotations: tools.ToolAnnotations{Title: "Send Message"},
 		},
@@ -108,21 +108,25 @@ Use these tools for async delegation:
 - spawn_subagent(agent, task): start a subagent. It runs concurrently and keeps
   its session for follow-ups. The task is its entire starting context; include
   all details it needs.
-- send_message(to, message): message a subagent by id, or 'parent'. Idle
-  subagents start a new turn; busy subagents receive the message mid-run.
+- send_message(to, message): message a subagent by id, or 'parent'. Delivery
+  is asynchronous. Do not nudge idle subagents just to make progress; send
+  follow-ups only when the user explicitly asks you to continue or redirect them.
+  Busy subagents should receive only essential corrections or new information.
 - read_subagent(subagent_id): inspect status/result or transcript when needed.
   Do not poll.
 - stop_subagent(subagent_id): stop a subagent and its descendants permanently.
 
-Status updates arrive as <system_info> harness messages. A subagent reports only
-when its own subtree is quiet; if it ends a turn while its children still work,
-you hear nothing until that subtree settles. Previews ending in "[...]" are
-truncated; use read_subagent for the full text.
+Status updates arrive as <system_info> harness messages when a subagent ends a
+turn and its own subtree is quiet; if it ends a turn while its children still
+work, you hear nothing until that subtree settles. Previews ending in "[...]"
+are truncated; use read_subagent for the full text.
 
-To wait, first make sure work is running below you (spawn/message a subagent),
-then end your turn. If you say anything, keep it conversational; do not write
-bracketed status labels. If nothing below you is running, nothing will wake you.
-When all needed reports arrive, answer normally.
+To wait, first make sure work is actually running below you (usually by
+spawning a subagent), then end your turn. Do not send a follow-up just to nudge
+an idle subagent; async subagents report back when they finish. If you say
+anything, keep it conversational; do not write bracketed status labels. If
+nothing below you is running, nothing will wake you. When all needed reports
+arrive, answer normally.
 
 If you were spawned, 'parent' addresses your parent. Your final response is
 reported automatically when you finish; use send_message(to: 'parent') only for

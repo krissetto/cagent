@@ -43,7 +43,6 @@ func (m *subagentManager) registerChild(parent *session.Session, parentAgent str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	st := m.ensureSessionLocked(parent, parentAgent, "")
-	st.live++
 	_ = m.tree.Add(subagent.Node{ID: id, Agent: name, Parent: st.node, State: subagent.NodeRunning})
 	m.ensureSessionLocked(childSess, name, id)
 	var d *sessionDriver
@@ -84,7 +83,6 @@ func TestSubagentManagerDeliversTurnReportToParentReceiver(t *testing.T) {
 	child := session.New(session.WithID("child"))
 	m.registerChild(parent, "root", "aaaaa", "worker", child)
 
-	assert.True(t, m.HasLive("parent"))
 	m.children["aaaaa"].result = "the answer is 42"
 	m.children["aaaaa"].state = subagent.NodeIdle
 	m.reportTurn("aaaaa", subagent.NodeIdle, "")
@@ -92,13 +90,10 @@ func TestSubagentManagerDeliversTurnReportToParentReceiver(t *testing.T) {
 	env := requireOneDriverMessage(t, m.r, parent)
 	assert.Contains(t, env, "worker")
 	assert.Contains(t, env, "finished its turn")
-	assert.Contains(t, env, "is idle")
 	// Short responses travel whole, explicitly marked as full.
 	assert.Contains(t, env, `Full response: "the answer is 42"`)
 	assert.NotContains(t, env, "[...]")
 	assert.True(t, strings.HasPrefix(env, "<system_info>"), "report wrapped in system_info")
-
-	assert.True(t, m.HasLive("parent"), "reporting a turn keeps the subagent alive")
 
 	require.NotNil(t, parent.SubagentTree, "tree snapshot mirrored onto the top-level session for live access")
 	stored, err := m.r.subagentStore.LoadTree(t.Context(), "parent")
@@ -157,7 +152,6 @@ func TestSubagentManagerSendToChildLifecycle(t *testing.T) {
 	require.Error(t, err, "stopped subagent rejected")
 	_, err = m.stopChild("parent", "ccccc")
 	require.Error(t, err, "double stop rejected")
-	assert.False(t, m.HasLive("parent"), "stop decrements the live count")
 
 	// The record stays readable after the stop.
 	rec, ok := m.Read("ccccc")
@@ -305,31 +299,41 @@ func TestTurnReportPreviews(t *testing.T) {
 		assert.NotContains(t, env, "stale result")
 	})
 
-	t.Run("empty response omits the preview", func(t *testing.T) {
-		env := newEnv("", "", subagent.NodeIdle)
+	t.Run("failed turn without error detail still reports", func(t *testing.T) {
+		env := newEnv("", "", subagent.NodeFailed)
+		assert.Contains(t, env, "failed")
+		assert.NotContains(t, env, "Error:")
+	})
+
+	t.Run("empty successful response reports quiet turn", func(t *testing.T) {
+		m := newTestSubagentManager(t)
+		parent := session.New(session.WithID("parent"))
+		child := session.New(session.WithID("child"))
+		m.registerChild(parent, "root", "aaaaa", "worker", child)
+		m.children["aaaaa"].state = subagent.NodeIdle
+		m.reportTurn("aaaaa", subagent.NodeIdle, "")
+		env := requireOneDriverMessage(t, m.r, parent)
 		assert.Contains(t, env, "finished its turn")
-		assert.Contains(t, env, "is idle")
-		assert.NotContains(t, env, "response")
+		assert.NotContains(t, env, "Full response")
 	})
 }
 
 // Quiescence gating: a subagent's turn end is reported to its parent only
 // when no subagents of its own are still running — the delegation wave in a
 // deep chain stays silent instead of waking every ancestor per leaf event.
-// Failures always report.
 func TestReportTurnQuiescenceGating(t *testing.T) {
-	setup := func() (*subagentManager, *session.Session) {
+	setup := func() (*subagentManager, *session.Session, *session.Session) {
 		m := newTestSubagentManager(t)
 		parent := session.New(session.WithID("parent"))
 		child := session.New(session.WithID("child-sess"))
 		grand := session.New(session.WithID("grand-sess"))
 		m.registerChild(parent, "root", "aaaaa", "worker", child)
 		m.registerChild(child, "worker", "bbbbb", "helper", grand)
-		return m, parent
+		return m, parent, grand
 	}
 
 	t.Run("suppressed while its own subagent is running", func(t *testing.T) {
-		m, parent := setup()
+		m, parent, _ := setup()
 		// helper (bbbbb) is running beneath worker; worker's turn end is
 		// bookkeeping, not news.
 		m.children["aaaaa"].state = subagent.NodeIdle
@@ -341,21 +345,37 @@ func TestReportTurnQuiescenceGating(t *testing.T) {
 		assert.Equal(t, subagent.NodeIdle, n.State)
 	})
 
+	t.Run("suppressed while descendant subagent is running", func(t *testing.T) {
+		m, parent, grand := setup()
+		leaf := session.New(session.WithID("leaf-sess"))
+		m.registerChild(grand, "helper", "ccccc", "leaf", leaf)
+		m.children["bbbbb"].state = subagent.NodeIdle
+		m.children["aaaaa"].state = subagent.NodeIdle
+		m.reportTurn("aaaaa", subagent.NodeIdle, "")
+		assert.Empty(t, drainDriverMessages(m.r, parent))
+	})
+
 	t.Run("delivered once the subtree is quiet", func(t *testing.T) {
-		m, parent := setup()
+		m, parent, _ := setup()
 		m.children["bbbbb"].state = subagent.NodeIdle // helper settled
 		m.children["aaaaa"].state = subagent.NodeIdle
 		m.children["aaaaa"].result = "all done"
 		m.reportTurn("aaaaa", subagent.NodeIdle, "")
 		env := requireOneDriverMessage(t, m.r, parent)
 		assert.Contains(t, env, "finished its turn")
-		assert.Contains(t, env, "is idle")
 		assert.Contains(t, env, "all done")
 	})
 
-	t.Run("failures bypass the gate", func(t *testing.T) {
-		m, parent := setup()
-		// helper still running, but worker's failure is always news.
+	t.Run("failed turn waits for running subtree", func(t *testing.T) {
+		m, parent, _ := setup()
+		m.children["aaaaa"].state = subagent.NodeFailed
+		m.reportTurn("aaaaa", subagent.NodeFailed, "model exploded")
+		assert.Empty(t, drainDriverMessages(m.r, parent))
+	})
+
+	t.Run("failed turn reports once subtree is quiet", func(t *testing.T) {
+		m, parent, _ := setup()
+		m.children["bbbbb"].state = subagent.NodeIdle
 		m.children["aaaaa"].state = subagent.NodeFailed
 		m.reportTurn("aaaaa", subagent.NodeFailed, "model exploded")
 		env := requireOneDriverMessage(t, m.r, parent)

@@ -10,7 +10,7 @@ import (
 )
 
 // CloseRootWithSubagentsConfirmedMsg is sent when the user confirms closing a
-// root tab that owns live subagents.
+// root tab that owns running subagents.
 type CloseRootWithSubagentsConfirmedMsg struct {
 	SessionID string
 }
@@ -46,7 +46,7 @@ type closeRootWithSubagentsDialog struct {
 }
 
 // NewCloseRootWithSubagentsDialog creates a confirmation dialog for closing a
-// root session that owns live subagents.
+// root session that owns running subagents.
 func NewCloseRootWithSubagentsDialog(sessionID string) Dialog {
 	return &closeRootWithSubagentsDialog{
 		sessionID: sessionID,
@@ -95,7 +95,7 @@ func (d *closeRootWithSubagentsDialog) View() string {
 		AddTitle("Close session").
 		AddSeparator().
 		AddSpace().
-		AddQuestion("This session has active subagents. Closing it will stop all subagents and close their tabs. Continue?").
+		AddQuestion("This session has running subagents. Closing it will interrupt their current work and close their tabs. Continue?").
 		AddSpace().
 		AddHelpKeys("Y", "yes", "N", "no", "Esc", "cancel").
 		Build()

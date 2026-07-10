@@ -26,12 +26,12 @@ import (
 )
 
 type closeTabRuntime struct {
-	liveSubagents atomic.Bool
+	runningSubagents atomic.Bool
 }
 
-func newCloseTabRuntime(_ string, liveSubagents bool) *closeTabRuntime {
+func newCloseTabRuntime(_ string, runningSubagents bool) *closeTabRuntime {
 	r := &closeTabRuntime{}
-	r.liveSubagents.Store(liveSubagents)
+	r.runningSubagents.Store(runningSubagents)
 	return r
 }
 
@@ -101,7 +101,7 @@ func (*closeTabRuntime) OnBackgroundEvent(func(runtime.Event))                 {
 func (*closeTabRuntime) QueueStatus() runtime.QueueStatus                      { return runtime.QueueStatus{} }
 func (*closeTabRuntime) TogglePause(context.Context) (bool, error)             { return false, nil }
 func (*closeTabRuntime) Close() error                                          { return nil }
-func (r *closeTabRuntime) HasLiveSubagents(string) bool                        { return r.liveSubagents.Load() }
+func (r *closeTabRuntime) HasRunningSubagents(string) bool                     { return r.runningSubagents.Load() }
 
 var _ runtime.Runtime = (*closeTabRuntime)(nil)
 
@@ -128,7 +128,7 @@ func newCloseTabTestModel(t *testing.T) *appModel {
 	return m
 }
 
-func TestCloseRootWithLiveSubagentsRequiresConfirmation(t *testing.T) {
+func TestCloseRootWithRunningSubagentsRequiresConfirmation(t *testing.T) {
 	t.Parallel()
 
 	m := newCloseTabTestModel(t)
@@ -141,28 +141,33 @@ func TestCloseRootWithLiveSubagentsRequiresConfirmation(t *testing.T) {
 	require.True(t, ok)
 	_, _ = open.Model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := open.Model.View()
-	assert.Contains(t, view, "active subagents")
-	assert.Contains(t, view, "stop all")
+	assert.Contains(t, view, "running subagents")
+	assert.Contains(t, view, "interrupt")
+	assert.Contains(t, view, "current work")
 	assert.Contains(t, view, "close their tabs")
 	assert.NotNil(t, m.supervisor.GetRunner("root"), "root stays open until confirmed")
 	assert.NotNil(t, m.supervisor.GetRunner("other"))
 }
 
-func TestCloseRootWithoutLiveSubagentsClosesImmediately(t *testing.T) {
+func TestCloseRootWithoutRunningSubagentsClosesImmediately(t *testing.T) {
 	t.Parallel()
 
 	m := newCloseTabTestModel(t)
-	addCloseTabTestSession(t, m, "root", newCloseTabRuntime("root", false), nil)
+	shared := newCloseTabRuntime("shared", false)
+	addCloseTabTestSession(t, m, "root", shared, nil)
+	info := runtime.SubagentAttachInfo{NodeID: "node1", ParentSessionID: "root", ParentAgent: "root"}
+	addCloseTabTestSession(t, m, "child", shared, nil, app.WithSubagentAttach(info))
 	addCloseTabTestSession(t, m, "other", newCloseTabRuntime("other", false), nil)
 	require.NotNil(t, m.supervisor.SwitchTo("other"))
 
 	_, cmd := m.handleCloseTab("root")
 	require.Nil(t, cmd)
 	assert.Nil(t, m.supervisor.GetRunner("root"))
+	assert.Nil(t, m.supervisor.GetRunner("child"), "attached idle subagent tab closes with its root")
 	assert.NotNil(t, m.supervisor.GetRunner("other"))
 }
 
-func TestCloseRootWithLiveSubagentsConfirmedCascadesAttachedTabs(t *testing.T) {
+func TestCloseRootWithRunningSubagentsConfirmedCascadesAttachedTabs(t *testing.T) {
 	t.Parallel()
 
 	m := newCloseTabTestModel(t)
@@ -185,7 +190,7 @@ func TestCloseRootWithLiveSubagentsConfirmedCascadesAttachedTabs(t *testing.T) {
 	require.Eventually(t, func() bool { return cleanupCalls.Load() == 1 }, time.Second, 10*time.Millisecond)
 }
 
-func TestCloseAttachedSubagentTabSkipsLiveSubagentConfirmation(t *testing.T) {
+func TestCloseAttachedSubagentTabSkipsRunningSubagentConfirmation(t *testing.T) {
 	t.Parallel()
 
 	m := newCloseTabTestModel(t)

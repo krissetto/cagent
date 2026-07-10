@@ -46,6 +46,9 @@ func TestReplaceSessionHydratesSubagentTree(t *testing.T) {
 	childSess := session.New(session.WithID("child-sess-1"))
 	childSess.ParentID = sess.ID
 	require.NoError(t, store.AddSession(t.Context(), childSess))
+	stoppedSess := session.New(session.WithID("child-sess-stopped"))
+	stoppedSess.ParentID = sess.ID
+	require.NoError(t, store.AddSession(t.Context(), stoppedSess))
 
 	rootID := subagent.SessionRootID(sess.ID)
 	snap := subagent.Snapshot{
@@ -54,6 +57,7 @@ func TestReplaceSessionHydratesSubagentTree(t *testing.T) {
 			Node: subagent.Node{ID: rootID, Agent: "root", State: subagent.NodeRunning},
 			Children: []subagent.NodeSnapshot{
 				{Node: subagent.Node{ID: "77c88", Agent: "planner", Parent: rootID, SessionID: childSess.ID, State: subagent.NodeIdle}},
+				{Node: subagent.Node{ID: "55d0f", Agent: "planner", Parent: rootID, SessionID: stoppedSess.ID, State: subagent.NodeStopped}},
 			},
 		}},
 	}
@@ -76,14 +80,25 @@ func TestReplaceSessionHydratesSubagentTree(t *testing.T) {
 
 	got := loaded.GetSubagentTree()
 	require.NotNil(t, got, "ReplaceSession must hydrate the subagent tree from the store")
-	var child *subagent.NodeSnapshot
+	var idleChild, stoppedChild *subagent.NodeSnapshot
 	for i := range got.Nodes {
 		if got.Nodes[i].Node.ID == rootID {
-			require.Len(t, got.Nodes[i].Children, 1)
-			child = &got.Nodes[i].Children[0]
+			require.Len(t, got.Nodes[i].Children, 2)
+			for j := range got.Nodes[i].Children {
+				child := &got.Nodes[i].Children[j]
+				switch child.Node.ID {
+				case "77c88":
+					idleChild = child
+				case "55d0f":
+					stoppedChild = child
+				}
+			}
 		}
 	}
-	require.NotNil(t, child)
-	assert.Equal(t, "planner", child.Node.Agent)
-	assert.Equal(t, subagent.NodeIdle, child.Node.State, "resumable subagents are adopted as idle, not stopped")
+	require.NotNil(t, idleChild)
+	assert.Equal(t, "planner", idleChild.Node.Agent)
+	assert.Equal(t, subagent.NodeIdle, idleChild.Node.State, "resumable subagents are adopted as idle, not stopped")
+	require.NotNil(t, stoppedChild)
+	assert.Equal(t, "planner", stoppedChild.Node.Agent)
+	assert.Equal(t, subagent.NodeStopped, stoppedChild.Node.State, "stopped subagents remain stopped on reload")
 }

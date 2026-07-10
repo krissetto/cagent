@@ -32,12 +32,10 @@ type subagentManager struct {
 
 // sessionSubagents tracks the outstanding subagents of one session and the tree
 // node that represents it (so subagents it spawns are linked under the right
-// parent at any depth). live counts this session's own running subagents. For
-// top-level sessions (synthetic root node) the session object is retained so
-// tree snapshots can be mirrored onto it for persistence.
+// parent at any depth). For top-level sessions (synthetic root node) the session
+// object is retained so tree snapshots can be mirrored onto it for persistence.
 type sessionSubagents struct {
 	node     subagent.NodeID
-	live     int
 	topLevel bool
 	sess     *session.Session
 }
@@ -158,7 +156,6 @@ func (m *subagentManager) Spawn(parentSess *session.Session, parentAgentName str
 
 	m.mu.Lock()
 	parent := m.ensureSessionLocked(parentSess, parentAgentName, "")
-	parent.live++
 	_ = m.tree.Add(subagent.Node{
 		ID:          childID,
 		Agent:       ref.Agent,
@@ -286,8 +283,8 @@ func (m *subagentManager) reportChildSettled(childID subagent.NodeID) {
 }
 
 // reportTurn records a child's finished turn in the tree and delivers a short
-// report (with a response preview) to its parent. The child stays alive and
-// idle: its session driver accepts future input until explicitly stopped.
+// report once its subtree is quiet. The child stays alive and idle, accepting
+// future input until explicitly stopped.
 func (m *subagentManager) reportTurn(childID subagent.NodeID, state subagent.NodeState, errMsg string) {
 	m.mu.Lock()
 	rec := m.children[childID]
@@ -309,29 +306,30 @@ func (m *subagentManager) reportTurn(childID subagent.NodeID, state subagent.Nod
 	})
 	m.persistSnapshot()
 
-	// Wait for quiet: a turn that ends while the subagent's own subagents
-	// are still working is bookkeeping, not news — the parent can act on
-	// nothing yet, and in deep chains reporting it would wake every ancestor
-	// once per leaf event (a model turn each). Stay silent; the subagent is
-	// re-woken by its own children's reports, and its next turn end
-	// re-evaluates this check, so a report always bubbles up once the subtree
-	// settles. Failures always report; send_message(parent) never waits.
-	if state != subagent.NodeFailed && m.hasWorkingSubagents(childSessionID) {
+	// Wait for quiet: a turn that ends while the subagent's own subtree is
+	// still working is bookkeeping, not news — the parent can act on nothing
+	// yet, and in deep chains reporting it would wake every ancestor once per
+	// leaf event (a model turn each). Stay silent; the subagent is re-woken by
+	// its own children's reports, and its next turn end re-evaluates this
+	// check, so a report always bubbles up once the subtree settles.
+	// send_message(parent) never waits.
+	if m.hasRunningSubagents(childSessionID) {
 		return
 	}
 
-	verb := "finished its turn and is idle; message it to continue"
+	verb := "finished its turn"
 	label := "Full response"
 	if state == subagent.NodeFailed {
-		verb = "failed; you can message it again or stop it"
+		verb = "failed"
 		label = "Error"
 	}
+	preview, truncated := subagent.PreviewText(detail, subagent.PreviewLen)
 	msg := fmt.Sprintf("Subagent %q (%s) %s.", name, childID, verb)
 	// Embed the response (or its head) so the parent can often decide without
 	// a read_subagent round-trip. A trailing "[...]" marks truncation: the
 	// full text requires inspection. Without it, the report carries the
 	// ENTIRE response.
-	if preview, truncated := subagent.PreviewText(detail, subagent.PreviewLen); preview != "" {
+	if preview != "" {
 		if truncated {
 			msg += fmt.Sprintf(" %s preview: %q", label, preview+" [...]")
 		} else {
@@ -342,9 +340,9 @@ func (m *subagentManager) reportTurn(childID subagent.NodeID, state subagent.Nod
 }
 
 // stopChild explicitly finalizes a subagent of parentID: it cancels any
-// in-flight run, releases callbacks, stops its own subagents recursively, and
-// decrements the parent's live count. Stopped subagents keep their record
-// so read_subagent still works, but accept no further input.
+// in-flight run, releases callbacks, and stops its own subagents recursively.
+// Stopped subagents keep their record so read_subagent still works, but accept
+// no future input.
 func (m *subagentManager) stopChild(parentID string, id subagent.NodeID) (string, error) {
 	m.mu.Lock()
 	rec := m.children[id]
@@ -376,9 +374,6 @@ func (m *subagentManager) stopLocked(rec *childRecord, id subagent.NodeID) {
 		rec.unwatch = nil
 	}
 	m.r.sessionDrivers.StopAll(rec.sessionID)
-	if st := m.sessions[rec.parentSession]; st != nil && st.live > 0 {
-		st.live--
-	}
 	_ = m.tree.Update(id, func(n *subagent.Node) { n.State = subagent.NodeStopped })
 
 	for childID, child := range m.children {
@@ -461,9 +456,6 @@ func (m *subagentManager) adoptChild(ctx context.Context, parentSess *session.Se
 
 	m.mu.Lock()
 	if state != subagent.NodeStopped && childSess != nil {
-		if st := m.sessions[parentSess.ID]; st != nil {
-			st.live++
-		}
 		// Register the child session under its own node so subagents it
 		// spawns are linked beneath it.
 		m.ensureSessionLocked(childSess, node.Agent, node.ID)
@@ -482,9 +474,12 @@ func (m *subagentManager) adoptChild(ctx context.Context, parentSess *session.Se
 		}
 	}
 
-	if childSess != nil {
+	switch {
+	case state == subagent.NodeStopped:
+		m.adoptStopped(snap.Children)
+	case childSess != nil:
 		m.adoptChildren(ctx, childSess, snap.Children)
-	} else {
+	default:
 		m.adoptStopped(snap.Children)
 	}
 }
@@ -586,29 +581,29 @@ func (m *subagentManager) sendToChild(parentID string, id subagent.NodeID, body 
 	return name, nil
 }
 
-// hasWorkingSubagents reports whether a session has subagents actively
-// running a turn (running/starting) — work still in flight beneath it. Idle,
-// completed, failed, and stopped children don't count: they produce no
-// further reports on their own.
-func (m *subagentManager) hasWorkingSubagents(sessionID string) bool {
+// hasRunningSubagents reports whether a session has descendants actively
+// running a turn (running/starting) anywhere in its subagent subtree. Idle,
+// failed, and stopped children don't count.
+func (m *subagentManager) hasRunningSubagents(sessionID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.hasRunningSubagentsLocked(sessionID)
+}
+
+// hasRunningSubagentsLocked is recursive; caller holds m.mu.
+func (m *subagentManager) hasRunningSubagentsLocked(sessionID string) bool {
 	for _, rec := range m.children {
-		if rec.parentSession == sessionID &&
-			(rec.state == subagent.NodeRunning || rec.state == subagent.NodeStarting) {
+		if rec.parentSession != sessionID {
+			continue
+		}
+		if rec.state == subagent.NodeRunning || rec.state == subagent.NodeStarting {
+			return true
+		}
+		if rec.sessionID != "" && m.hasRunningSubagentsLocked(rec.sessionID) {
 			return true
 		}
 	}
 	return false
-}
-
-// HasLive reports whether a session still has subagents that were not
-// explicitly stopped.
-func (m *subagentManager) HasLive(sessionID string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	st := m.sessions[sessionID]
-	return st != nil && st.live > 0
 }
 
 // Read returns a snapshot of a subagent's record by id.
@@ -654,9 +649,9 @@ func (r *LocalRuntime) allowedFromAgent(a *agent.Agent) []subagent.AllowedSubage
 }
 
 // handleSpawnSubagent starts a declared subagent concurrently and returns
-// immediately. The subagent's settled turns arrive as status updates carrying
-// its response (or a truncated preview); the agent uses read_subagent to
-// inspect details on demand.
+// immediately. The subagent's settled turns are reported to the parent when
+// its subtree is quiet; the agent uses read_subagent to inspect details on
+// demand.
 func (r *LocalRuntime) handleSpawnSubagent(_ context.Context, sess *session.Session, tc tools.ToolCall, _ EventSink) (*tools.ToolCallResult, error) {
 	var args subagent.SpawnArgs
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
@@ -682,7 +677,7 @@ func (r *LocalRuntime) handleSpawnSubagent(_ context.Context, sess *session.Sess
 
 	id := r.subagents.Spawn(sess, a.Name(), ref, args.Task)
 	return tools.ResultSuccess(fmt.Sprintf(
-		"Spawned subagent %q (%s). It is running concurrently and keeps its session for follow-ups. You will get a status update when its subtree is quiet. Continue working or finish your response to wait; do not poll.",
+		"Spawned subagent %q (%s). It is running concurrently and keeps its session for follow-ups. You will get a status update when it finishes a turn and its subtree is quiet. Continue working or finish your response to wait; do not poll.",
 		ref.DisplayName(), id)), nil
 }
 
@@ -814,10 +809,10 @@ func (r *LocalRuntime) SubagentTree() *subagent.Tree {
 	return r.subagents.Tree()
 }
 
-// HasLiveSubagents reports whether sessionID owns any subagents that have not
-// been explicitly stopped.
-func (r *LocalRuntime) HasLiveSubagents(sessionID string) bool {
-	return r.subagents.HasLive(sessionID)
+// HasRunningSubagents reports whether sessionID owns any subagents that are
+// actively running a turn.
+func (r *LocalRuntime) HasRunningSubagents(sessionID string) bool {
+	return r.subagents.hasRunningSubagents(sessionID)
 }
 
 // SubagentAttachInfo describes what a UI needs to attach a live view to an
