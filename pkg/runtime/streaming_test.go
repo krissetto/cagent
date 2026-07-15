@@ -190,6 +190,33 @@ func TestHandleStream_WhitespaceOnlyContentStops(t *testing.T) {
 		"a whitespace-only, bare-EOF turn must stop so the empty-turn warning is followed by a turn exit, not an identical re-entry (#3145)")
 }
 
+// TestHandleStream_ContentOnlyBareEOFStops guards the loop that OpenAI-compatible
+// gateways (litellm/CBORG) trigger: they close the SSE stream with a bare EOF and
+// never send a per-choice finish_reason. A turn that produced real content but no
+// tool calls has nothing left for the run loop to execute, so it must report
+// Stopped=true. Keying the stop decision on empty content instead of "no tool
+// calls" left such a final message with Stopped=false, so runTurn re-entered the
+// model with identical messages and re-emitted the same completion text forever.
+func TestHandleStream_ContentOnlyBareEOFStops(t *testing.T) {
+	stream := newStreamBuilder().
+		AddContent("Frontmatter ingestion complete."). // real content, no tool calls
+		Build()                                        // no terminal chunk: bare EOF, no finish reason
+
+	a := agent.New("root", "test", agent.WithModel(&mockProvider{id: "test/mock-model", stream: stream}))
+	sess := session.New(session.WithUserMessage("go"))
+
+	evCh := make(chan Event, 64)
+	res, err := handleStream(
+		t.Context(), nil, stream, a, nil, sess, nil,
+		defaultTelemetry{}, NewChannelSink(evCh), defaultStreamIdleTimeout,
+	)
+	require.NoError(t, err)
+
+	assert.Empty(t, res.Calls)
+	assert.True(t, res.Stopped,
+		"a content-bearing, bare-EOF turn with no tool calls must stop so the run loop exits instead of re-entering with identical messages")
+}
+
 // stalledStream is a chat.MessageStream that blocks in Recv() until
 // either unblocked or the stream is closed. It is used to simulate a
 // half-open TCP connection where the remote side stops sending data.

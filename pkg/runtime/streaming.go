@@ -359,14 +359,19 @@ mainLoop:
 
 	applyXMLFallback()
 
-	// If the stream completed without producing any usable content or tool
-	// calls, likely because of a token limit, stop to avoid breaking the request
-	// loop. Whitespace-only content counts as no output: it carries no answer,
-	// and runTurn's empty-turn detection uses the same trimmed-empty test, so
-	// treating it as stopped here guarantees that an empty-turn warning is always
-	// followed by a turn exit rather than an identical-message re-entry (#3145).
+	// The stream ended with a bare EOF: the provider closed the SSE
+	// connection without ever sending a per-choice finish_reason (common with
+	// OpenAI-compatible gateways such as litellm/CBORG, which emit only a
+	// terminal [DONE] sentinel). In that case a turn is terminal whenever there
+	// are no tool calls left to execute: there is nothing for the outer run
+	// loop to continue on, so it must stop regardless of whether the assistant
+	// produced content. Keying only on "empty content" (the original #3145
+	// guard) leaves a non-empty final message with no tool calls reporting
+	// Stopped=false, which makes runTurn re-enter the loop and re-emit the same
+	// message forever. The empty-content case (token limit, whitespace-only
+	// reply) remains covered because it also has no tool calls.
 	// NOTE(krissetto): this can likely be removed once compaction works properly with all providers (aka dmr)
-	stoppedDueToNoOutput := strings.TrimSpace(fullContent.String()) == "" && len(toolCalls) == 0
+	stoppedDueToNoOutput := len(toolCalls) == 0
 
 	// Prefer the provider's explicit finish reason when available (e.g.
 	// tool_calls).  Only fall back to inference when no explicit reason was
