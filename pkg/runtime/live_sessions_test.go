@@ -328,9 +328,13 @@ func TestCompactLiveSession_ExecutesAtIterationBoundary(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	prov := &stepProvider{id: "test/mock-model", steps: []providerStep{
-		// Turn 1: content without a finish reason keeps the loop running,
-		// so the queued request executes at the next iteration boundary.
-		{stream: newStreamBuilder().AddContent("working on it").Build(), started: started, release: release},
+		// Turn 1: a tool call keeps the loop running (Stopped=false), so the
+		// queued request executes at the next iteration boundary.
+		{stream: newStreamBuilder().
+			AddToolCallName("call_1", "unknown_tool").
+			AddToolCallArguments("call_1", "{}").
+			AddToolCallStopWithUsage(1, 1).
+			Build(), started: started, release: release},
 		// The compaction summary call.
 		{stream: newStreamBuilder().AddContent("a compact summary").AddStopWithUsage(10, 5).Build()},
 		// Turn 2: natural stop ends the stream.
@@ -456,8 +460,14 @@ func TestCompactLiveSession_DuplicateSessionIDsCompactOnlyTargetEntry(t *testing
 			AddToolCallArguments("call_older", "{}").
 			AddToolCallStopWithUsage(1, 1).
 			Build(), started: startedA, release: releaseA},
-		// Newer stream turn 1, gated so it stays live throughout.
-		{stream: newStreamBuilder().AddContent("newer working").Build(), started: startedB, release: releaseB},
+		// Newer stream turn 1, gated so it stays live throughout. A tool-call
+		// turn is used (matching the older stream) so the newer stream reaches
+		// an iteration boundary where the pending compaction can run.
+		{stream: newStreamBuilder().
+			AddToolCallName("call_newer", "unknown_tool").
+			AddToolCallArguments("call_newer", "{}").
+			AddToolCallStopWithUsage(1, 1).
+			Build(), started: startedB, release: releaseB},
 		// Older stream turn 2: natural stop. With the request left alone this
 		// is the older stream's next model call (after the tool result feeds
 		// back in); stealing the request would consume this step as the
@@ -559,7 +569,14 @@ func TestCompactLiveSession_HookVetoSynthesizesSkipped(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	prov := &stepProvider{id: "test/mock-model", steps: []providerStep{
-		{stream: newStreamBuilder().AddContent("working on it").Build(), started: started, release: release},
+		// Turn 1: tool call keeps the loop running (Stopped=false) so the
+		// hook veto fires at the iteration boundary, not at teardown.
+		{stream: newStreamBuilder().
+			AddToolCallName("call_1", "unknown_tool").
+			AddToolCallArguments("call_1", "{}").
+			AddToolCallStopWithUsage(1, 1).
+			Build(), started: started, release: release},
+		// Turn 2: natural stop (model call after the tool result, compaction vetoed).
 		{stream: newStreamBuilder().AddStopWithUsage(1, 1).Build()},
 	}}
 	rt := newLiveSessionsRuntime(t, prov, mockModelStoreWithLimit{limit: 100_000},
