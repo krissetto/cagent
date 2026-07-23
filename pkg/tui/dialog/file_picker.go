@@ -144,7 +144,7 @@ func (d *filePickerDialog) loadDirectory() {
 	d.scrollview.SetScrollOffset(0)
 	d.err = nil
 
-	if d.currentDir != "/" {
+	if filepath.Dir(d.currentDir) != d.currentDir {
 		d.entries = append(d.entries, fileEntry{
 			name:  "..",
 			path:  filepath.Dir(d.currentDir),
