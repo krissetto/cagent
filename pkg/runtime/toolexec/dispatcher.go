@@ -1083,6 +1083,12 @@ func (c *call) translateError(ctx context.Context, span trace.Span, err error) *
 		span.SetStatus(codes.Ok, msg)
 		return tools.ResultError(msg)
 	}
+	if errors.Is(err, tools.ErrCallTimeout) {
+		// The call site (mcp.Toolset.callTool) already logged the WARN and
+		// span event for the timeout itself; avoid a duplicate RecordError.
+		span.SetStatus(codes.Error, "tool call timed out")
+		return tools.ResultError(err.Error())
+	}
 	span.RecordError(err)
 	span.SetStatus(codes.Error, "tool handler error")
 	slog.ErrorContext(ctx, "Error calling tool", "tool", c.tc.Function.Name, "error", err)

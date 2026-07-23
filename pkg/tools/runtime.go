@@ -40,6 +40,11 @@ type Runtime interface {
 // cannot steer an agent loop.
 var ErrRecallNotSupported = errors.New("recall is not supported by this host")
 
+// ErrCallTimeout is returned when a tool call exceeds its configured
+// call_timeout. Wrapped with the elapsed duration via fmt.Errorf("%w after
+// %s", ErrCallTimeout, ...) — use errors.Is to detect it.
+var ErrCallTimeout = errors.New("tool call timed out")
+
 // NopRuntime is the [Runtime] for hosts without an agent loop (slash-command
 // expansion, prompt templates, tests). EmitOutput is a no-op, Recall fails
 // with [ErrRecallNotSupported], and no capability is supported.

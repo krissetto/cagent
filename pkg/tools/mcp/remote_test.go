@@ -540,6 +540,49 @@ func TestRemoteClientUnixSocket(t *testing.T) {
 	assert.Equal(t, []string{"ping"}, names)
 }
 
+// TestRemoteClientCallToolAbortsOnContextDeadline verifies the transport-level
+// assumption the call_timeout design relies on: canceling the context passed
+// to a real remoteMCPClient.CallTool (streamable transport) aborts the
+// client's POST promptly, and the server observes that abort as its own
+// request context being canceled — rather than the tool call running to
+// completion in the background while the client just stops waiting.
+func TestRemoteClientCallToolAbortsOnContextDeadline(t *testing.T) {
+	t.Parallel()
+
+	serverSawCancel := make(chan struct{})
+	server := gomcp.NewServer(&gomcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	gomcp.AddTool(server, &gomcp.Tool{Name: "hang", Description: "hangs until canceled"},
+		func(ctx context.Context, _ *gomcp.CallToolRequest, _ struct{}) (*gomcp.CallToolResult, struct{}, error) {
+			<-ctx.Done()
+			close(serverSawCancel)
+			return nil, struct{}{}, ctx.Err()
+		})
+
+	httpServer := httptest.NewServer(gomcp.NewStreamableHTTPHandler(func(*http.Request) *gomcp.Server { return server }, nil))
+	defer httpServer.Close()
+
+	client := newRemoteClient(httpServer.URL, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+	_, err := client.Initialize(t.Context(), nil)
+	require.NoError(t, err)
+	defer func() { _ = client.Close(context.WithoutCancel(t.Context())) }()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = client.CallTool(ctx, &gomcp.CallToolParams{Name: "hang"})
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.Less(t, elapsed, 5*time.Second, "CallTool must abort promptly at the context deadline, not hang until the server responds")
+
+	select {
+	case <-serverSawCancel:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server-side tool handler never observed context cancellation; the client's POST was not aborted at the deadline")
+	}
+}
+
 // mutableEnvProvider is a context-aware, mutable environment.Provider for
 // tests that need to change a value between two requests on the same
 // connection.

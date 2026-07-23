@@ -278,7 +278,7 @@ toolsets:
 | `backoff.jitter` | number | Fraction (0..1) of the computed delay applied as a uniform random offset. `0` disables jitter (default). |
 | `required` | boolean | Marks the toolset as critical. Today this is informational; a future eager-startup phase will refuse to start the agent when a required toolset cannot reach Ready. Defaults to `true` under `strict`, `false` otherwise. |
 | `startup_timeout` | duration | Cap on the initial connect+initialize duration. Enforced since v1.94.0: on expiry the toolset stays stopped and the runtime retries on the next turn. |
-| `call_timeout` | duration | Documented per-call timeout. Informational; the runtime currently uses the caller's context for cancellation. |
+| `call_timeout` | duration | Cap on an individual tool call, including one reconnect-retry. Enforced: on expiry the call is cancelled and surfaced to the model as a tool error; cancellation is propagated to the server. `0`/unset means no timeout — opt-in only, no profile default. |
 
 > [!NOTE]
 > **`required` is not yet enforced**

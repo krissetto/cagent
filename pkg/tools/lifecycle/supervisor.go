@@ -116,6 +116,10 @@ type Policy struct {
 	// toolset stays in StateStopped so the caller can retry.
 	StartupTimeout time.Duration
 
+	// CallTimeout is carried through to the toolset for enforcement on
+	// individual tool calls; the Supervisor itself does not use it.
+	CallTimeout time.Duration
+
 	// OnDisconnect is called when the session ends, with Wait()'s result.
 	// Useful for cache invalidation.
 	OnDisconnect func(err error)
