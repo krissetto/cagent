@@ -15,6 +15,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/tui/components/scrollbar"
 	"github.com/docker/docker-agent/pkg/tui/messages"
+	"github.com/docker/docker-agent/pkg/tui/styles"
 )
 
 // ScrollKeyMap defines which keys trigger scroll actions.
@@ -52,6 +53,9 @@ func ReadOnlyScrollKeyMap() *ScrollKeyMap {
 
 type Option func(*Model)
 
+// WithGapWidth sets the space columns between content and scrollbar (default 1).
+func WithGapWidth(n int) Option { return func(m *Model) { m.gapWidth = max(0, n) } }
+
 // WithReserveScrollbarSpace always reserves gap+scrollbar columns, preventing layout shifts.
 func WithReserveScrollbarSpace(v bool) Option {
 	return func(m *Model) { m.reserveScrollbarSpace = v }
@@ -62,6 +66,28 @@ func WithWheelStep(n int) Option { return func(m *Model) { m.wheelStep = n } }
 
 // WithKeyMap sets keyboard bindings for scroll actions. Pass nil to disable.
 func WithKeyMap(km *ScrollKeyMap) Option { return func(m *Model) { m.keyMap = km } }
+
+// WithFadeEffect enables a fade-out gradient on edge lines when content
+// extends beyond the visible area. The number of faded lines scales
+// automatically with the viewport height.
+func WithFadeEffect() Option {
+	return func(m *Model) { m.fadeEffect = true }
+}
+
+// WithFadeEffectDisabled disables the edge fade effect for this scroll view.
+func WithFadeEffectDisabled() Option {
+	return func(m *Model) { m.fadeEffect = false }
+}
+
+// ScrollbarDecorator transforms only the rendered scrollbar view before it is
+// composed into the scrollview. It is opt-in so existing scrollviews retain
+// their current output and cache behavior.
+type ScrollbarDecorator func(string) string
+
+// WithScrollbarDecorator sets an optional rendered-scrollbar decorator.
+func WithScrollbarDecorator(decorator ScrollbarDecorator) Option {
+	return func(m *Model) { m.scrollbarDecorator = decorator }
+}
 
 // Model is a composable scrollable view that owns a scrollbar and ensures
 // fixed-width rendering.
@@ -80,10 +106,25 @@ type Model struct {
 	totalHeight int
 
 	// lineWidths lazily caches the display width of each content line. It is
-	// invalidated when SetContent receives a different slice. Width
-	// measurement (ansi.StringWidth) dominates per-frame compose cost for
-	// large viewports, and content lines are immutable between rebuilds.
+	// retained when SetContent receives the same backing slice and invalidated
+	// when content identity changes or explicit invalidation is requested.
 	lineWidths []int
+
+	// View output cache for pre-sliced/restyled callers. The copied input is a
+	// stable cache key: callers may reuse and mutate their viewport slice, so
+	// pointer identity alone is insufficient.
+	lastViewLines       []string
+	lastViewOutput      string
+	lastViewOffset      int
+	lastViewWidth       int
+	lastViewHeight      int
+	lastViewTotalHeight int
+	lastViewFade        bool
+	viewCacheDirty      bool
+
+	fadeEffect bool
+
+	scrollbarDecorator ScrollbarDecorator
 
 	// scrollOffset tracks the desired scroll position independently of the
 	// scrollbar, so EnsureLineVisible works before SetContent is called.
@@ -93,10 +134,11 @@ type Model struct {
 // New creates a new scrollview with the given options.
 func New(opts ...Option) *Model {
 	m := &Model{
-		sb:        scrollbar.New(),
-		gapWidth:  1,
-		wheelStep: 2,
-		keyMap:    DefaultScrollKeyMap(),
+		sb:         scrollbar.New(),
+		gapWidth:   1,
+		wheelStep:  2,
+		keyMap:     DefaultScrollKeyMap(),
+		fadeEffect: true,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -106,6 +148,9 @@ func New(opts ...Option) *Model {
 
 // SetSize sets the total width and height of the scrollable region.
 func (m *Model) SetSize(width, height int) {
+	if m.width != width || m.height != height {
+		m.viewCacheDirty = true
+	}
 	m.width = width
 	m.height = height
 	m.updateScrollbarPosition()
@@ -120,14 +165,17 @@ func (m *Model) SetPosition(x, y int) {
 
 // SetContent provides the full content buffer and total height.
 // totalHeight may be >= len(lines) for virtual blank lines (e.g. bottomSlack).
-// The lines slice must not be mutated in place after being passed here;
-// callers rebuild a fresh slice when content changes.
 func (m *Model) SetContent(lines []string, totalHeight int) {
+	nextTotalHeight := max(totalHeight, len(lines))
 	if len(lines) != len(m.lines) || (len(lines) > 0 && &lines[0] != &m.lines[0]) {
 		m.lineWidths = nil
+		m.viewCacheDirty = true
+	}
+	if nextTotalHeight != m.totalHeight {
+		m.viewCacheDirty = true
 	}
 	m.lines = lines
-	m.totalHeight = max(totalHeight, len(lines))
+	m.totalHeight = nextTotalHeight
 	m.sb.SetDimensions(m.height, m.totalHeight)
 }
 
@@ -158,23 +206,57 @@ func (m *Model) ContentWidth() int {
 	return max(1, m.width)
 }
 
+// InvalidateComposeCache invalidates memoized line measurements. Call it when
+// content passed to SetContent has changed in place.
+func (m *Model) InvalidateComposeCache() {
+	m.lineWidths = nil
+	m.viewCacheDirty = true
+}
+
+// SetScrollbarDecorator sets or clears the optional rendered-scrollbar
+// decorator.
+func (m *Model) SetScrollbarDecorator(decorator ScrollbarDecorator) {
+	m.scrollbarDecorator = decorator
+	m.viewCacheDirty = true
+}
+
 // ReservedCols returns columns reserved for gap + scrollbar.
 func (m *Model) ReservedCols() int { return m.gapWidth + scrollbar.Width }
 
 // VisibleHeight returns the viewport height in lines.
 func (m *Model) VisibleHeight() int { return m.height }
 
+// MaxScrollOffset returns the maximum valid scroll offset — 0 when the
+// content fits entirely within the viewport.
+func (m *Model) MaxScrollOffset() int {
+	if m.totalHeight <= m.height {
+		return 0
+	}
+	return m.totalHeight - m.height
+}
+
 // ScrollbarX returns the absolute screen X of the scrollbar column.
 func (m *Model) ScrollbarX() int { return m.xPos + m.width - scrollbar.Width }
+
+// IsMouseOnScrollbar reports whether screen coordinates hit the scrollbar column.
+func (m *Model) IsMouseOnScrollbar(x, y int) bool {
+	m.updateScrollbarPosition()
+	return x >= m.ScrollbarX() && x < m.ScrollbarX()+scrollbar.Width &&
+		y >= m.yPos && y < m.yPos+m.height
+}
 
 // ScrollOffset returns the current scroll offset.
 func (m *Model) ScrollOffset() int { return m.scrollOffset }
 
 // SetScrollOffset sets the scroll offset, clamped when content dimensions are known.
 func (m *Model) SetScrollOffset(offset int) {
+	previous := m.scrollOffset
 	m.scrollOffset = max(0, offset)
 	if m.totalHeight > 0 && m.height > 0 {
 		m.scrollOffset = min(m.scrollOffset, max(0, m.totalHeight-m.height))
+	}
+	if m.scrollOffset != previous {
+		m.viewCacheDirty = true
 	}
 	m.sb.SetScrollOffset(m.scrollOffset)
 }
@@ -187,6 +269,15 @@ func (m *Model) PageUp()            { m.ScrollBy(-m.height) }
 func (m *Model) PageDown()          { m.ScrollBy(m.height) }
 func (m *Model) ScrollToTop()       { m.SetScrollOffset(0) }
 func (m *Model) ScrollToBottom()    { m.SetScrollOffset(m.totalHeight) }
+
+// IsAtBottom returns true when the viewport is scrolled to the bottom of the
+// content, or when the content fits entirely within the viewport.
+func (m *Model) IsAtBottom() bool {
+	if m.totalHeight <= m.height {
+		return true
+	}
+	return m.scrollOffset >= m.totalHeight-m.height
+}
 
 // EnsureLineVisible scrolls minimally to bring a line into the viewport.
 // Works before [SetContent] — only needs [SetSize].
@@ -222,11 +313,11 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		}
 
 	case tea.MouseWheelMsg:
-		switch msg.Button.String() {
-		case "wheelup":
+		switch msg.Button {
+		case tea.MouseWheelUp:
 			m.ScrollBy(-m.wheelStep)
 			return true, nil
-		case "wheeldown":
+		case tea.MouseWheelDown:
 			m.ScrollBy(m.wheelStep)
 			return true, nil
 		}
@@ -272,79 +363,33 @@ func (m *Model) UpdateMouse(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 func (m *Model) IsDragging() bool { return m.sb.IsDragging() }
 
 // View renders the scrollable region with automatic content slicing.
+// The output always has exactly m.height lines to ensure consistent layout.
 func (m *Model) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
 	m.syncScrollbar()
 
-	nLines := m.height
-	if !m.NeedsScrollbar() {
-		nLines = min(m.height, max(0, len(m.lines)-m.scrollOffset))
-	}
-	visible := make([]string, nLines)
-	for i := range nLines {
+	// Always produce exactly m.height lines for consistent layout.
+	// This ensures the status bar stays at the bottom of the screen.
+	visible := make([]string, m.height)
+	for i := range m.height {
 		if idx := m.scrollOffset + i; idx < len(m.lines) {
 			visible[i] = m.lines[idx]
 		}
+		// Empty lines are left as empty strings (zero value)
 	}
+
 	return m.compose(visible, m.scrollOffset)
 }
 
 // ViewWithLines renders pre-sliced visible lines with the scrollbar.
+// The output always has exactly m.height lines to ensure consistent layout.
+// Note: This method does NOT use the compose cache because the caller provides
+// different visible lines each time. If callers need caching, they should
+// implement it at their level (like allSessionsTab does).
 func (m *Model) ViewWithLines(visibleLines []string) string {
 	return m.viewWithLines(visibleLines, -1)
-}
-
-// ViewWithPaddedLines renders pre-sliced lines that are already exactly
-// ContentWidth columns wide. It skips ANSI/grapheme measurement and wrapping;
-// callers must uphold the width contract.
-func (m *Model) ViewWithPaddedLines(visibleLines []string) string {
-	if m.width <= 0 || m.height <= 0 {
-		return ""
-	}
-	m.syncScrollbar()
-	if m.NeedsScrollbar() && len(visibleLines) < m.height {
-		result := make([]string, m.height)
-		copy(result, visibleLines)
-		visibleLines = result
-	}
-	return m.composePadded(visibleLines)
-}
-
-func (m *Model) composePadded(lines []string) string {
-	switch {
-	case m.NeedsScrollbar():
-		sbLines := m.sb.ViewLines()
-		gap := strings.Repeat(" ", m.gapWidth)
-		var b strings.Builder
-		for i, line := range lines {
-			if i > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(line)
-			b.WriteString(gap)
-			if i < len(sbLines) {
-				b.WriteString(sbLines[i])
-			} else {
-				b.WriteString(strings.Repeat(" ", scrollbar.Width))
-			}
-		}
-		return b.String()
-	case m.reserveScrollbarSpace:
-		blank := strings.Repeat(" ", m.gapWidth+scrollbar.Width)
-		var b strings.Builder
-		for i, line := range lines {
-			if i > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(line)
-			b.WriteString(blank)
-		}
-		return b.String()
-	default:
-		return strings.Join(lines, "\n")
-	}
 }
 
 // ViewWithRestyledLines is like [Model.ViewWithLines] for callers whose
@@ -353,7 +398,34 @@ func (m *Model) composePadded(lines []string) string {
 // highlights). Unchanged lines reuse memoized width lookups in compose;
 // restyled lines are re-measured.
 func (m *Model) ViewWithRestyledLines(visibleLines []string) string {
-	return m.viewWithLines(visibleLines, m.scrollOffset)
+	if m.cachedViewMatches(visibleLines) {
+		return m.lastViewOutput
+	}
+	result := m.viewWithLines(visibleLines, m.scrollOffset)
+	m.lastViewLines = append(m.lastViewLines[:0], visibleLines...)
+	m.lastViewOutput = result
+	m.lastViewOffset = m.scrollOffset
+	m.lastViewWidth = m.width
+	m.lastViewHeight = m.height
+	m.lastViewTotalHeight = m.totalHeight
+	m.lastViewFade = m.fadeEffect
+	m.viewCacheDirty = false
+	return result
+}
+
+func (m *Model) cachedViewMatches(lines []string) bool {
+	if m.viewCacheDirty || m.lastViewOutput == "" ||
+		m.lastViewOffset != m.scrollOffset || m.lastViewWidth != m.width ||
+		m.lastViewHeight != m.height || m.lastViewTotalHeight != m.totalHeight ||
+		m.lastViewFade != m.fadeEffect || len(m.lastViewLines) != len(lines) {
+		return false
+	}
+	for i := range lines {
+		if lines[i] != m.lastViewLines[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Model) viewWithLines(visibleLines []string, baseLine int) string {
@@ -362,12 +434,119 @@ func (m *Model) viewWithLines(visibleLines []string, baseLine int) string {
 	}
 	m.syncScrollbar()
 
-	if m.NeedsScrollbar() && len(visibleLines) < m.height {
-		result := make([]string, m.height)
-		copy(result, visibleLines)
-		return m.compose(result, baseLine)
+	result := make([]string, m.height)
+	copy(result, visibleLines[:min(len(visibleLines), m.height)])
+	return m.compose(result, baseLine)
+}
+
+// ViewWithPaddedLines renders pre-sliced lines that are already padded/truncated
+// to the scrollview content width. This avoids re-measuring ANSI-heavy content
+// on callers' hot paths while preserving scrollbar composition.
+func (m *Model) ViewWithPaddedLines(visibleLines []string) string {
+	if m.width <= 0 || m.height <= 0 {
+		return ""
 	}
-	return m.compose(visibleLines, baseLine)
+	m.syncScrollbar()
+
+	result := make([]string, m.height)
+	copy(result, visibleLines[:min(len(visibleLines), m.height)])
+	return m.composePadded(result)
+}
+
+// ViewWithPaddedLinesAndOuterPadding renders lines with symmetric app-level
+// horizontal padding around the scrollview.
+func (m *Model) ViewWithPaddedLinesAndOuterPadding(visibleLines []string, outerPadding int) string {
+	return m.ViewWithPaddedLinesAndPadding(visibleLines, outerPadding, outerPadding)
+}
+
+// ViewWithPaddedLinesAndPadding renders pre-sliced viewport lines with the
+// scrollbar and explicit left/right horizontal padding in one pass. Each
+// visible row is padded/truncated before appending the scrollbar column.
+func (m *Model) ViewWithPaddedLinesAndPadding(visibleLines []string, leftPadding, rightPadding int) string {
+	return m.viewWithPaddedLinesAndPadding(visibleLines, 0, leftPadding, rightPadding)
+}
+
+// ViewWithPaddedContentAndPadding renders a full padded content buffer with the
+// scrollbar and explicit left/right horizontal padding. The buffer is sliced
+// from the current scroll offset before rendering.
+func (m *Model) ViewWithPaddedContentAndPadding(contentLines []string, leftPadding, rightPadding int) string {
+	return m.viewWithPaddedLinesAndPadding(contentLines, m.scrollOffset, leftPadding, rightPadding)
+}
+
+func (m *Model) viewWithPaddedLinesAndPadding(lines []string, start, leftPadding, rightPadding int) string {
+	if m.width <= 0 || m.height <= 0 {
+		return ""
+	}
+	m.syncScrollbar()
+
+	totalWidth := m.ContentWidth()
+	needsScrollbar := m.NeedsScrollbar()
+	needsReserved := !needsScrollbar && m.reserveScrollbarSpace
+	rightWidth := 0
+	if needsScrollbar {
+		rightWidth = m.gapWidth + scrollbar.Width
+	} else if needsReserved {
+		rightWidth = m.gapWidth + scrollbar.Width
+	}
+
+	leftPad := strings.Repeat(" ", max(0, leftPadding))
+	rightPad := strings.Repeat(" ", max(0, rightPadding))
+	var rightLines []string
+	gap := ""
+	if needsScrollbar {
+		gap = strings.Repeat(" ", m.gapWidth)
+		rightLines = strings.Split(m.decoratedScrollbarView(), "\n")
+	} else if needsReserved {
+		gap = strings.Repeat(" ", rightWidth)
+	}
+
+	fadeLines := fadeLinesForHeight(m.height)
+	fadeN := min(fadeLines, m.height/2)
+	hasAbove := m.fadeEffect && m.scrollOffset > 0
+	hasBelow := m.fadeEffect && m.scrollOffset+m.height < m.totalHeight
+	var fc styles.FadeContext
+	if fadeN > 0 && (hasAbove || hasBelow) {
+		fc = styles.NewFadeContext()
+	}
+
+	lineWidth := totalWidth + rightWidth + max(0, leftPadding) + max(0, rightPadding) + 1
+	var sb strings.Builder
+	sb.Grow(m.height * lineWidth)
+	for i := range m.height {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		line := ""
+		idx := start + i
+		if idx >= 0 && idx < len(lines) {
+			line = lines[idx]
+		}
+		line = padOrTruncateANSI(line, totalWidth)
+		if fadeN > 0 {
+			switch {
+			case hasAbove && i < fadeN:
+				line = styles.FadeLineCtx(line, fadeAlpha(i, fadeN), &fc)
+			case hasBelow && i >= m.height-fadeN:
+				line = styles.FadeLineCtx(line, fadeAlpha(m.height-1-i, fadeN), &fc)
+			}
+			line = padOrTruncateANSI(line, totalWidth)
+		}
+		sb.WriteString(leftPad)
+		sb.WriteString(line)
+		if needsScrollbar {
+			sb.WriteString(gap)
+			if i < len(rightLines) {
+				sb.WriteString(rightLines[i])
+			} else {
+				sb.WriteString(strings.Repeat(" ", scrollbar.Width))
+			}
+		} else if needsReserved {
+			sb.WriteString(gap)
+		}
+		sb.WriteString(rightPad)
+	}
+
+	return sb.String()
 }
 
 // syncScrollbar syncs the local scroll offset to the scrollbar and reads back the clamped value.
@@ -377,19 +556,20 @@ func (m *Model) syncScrollbar() {
 	m.scrollOffset = m.sb.GetScrollOffset()
 }
 
-// compose pads/truncates lines to contentWidth and joins with the scrollbar
-// column. When baseLine >= 0, lines[i] that are unchanged from content line
-// baseLine+i take their display width from the memoized cache; restyled lines
-// are re-measured since restyling may not be exactly width-preserving for
-// complex grapheme clusters (ZWJ emoji, flags).
+// compose pads/truncates lines to contentWidth and joins with the scrollbar column.
+//
+// Instead of using lipgloss.JoinHorizontal (which re-parses every ANSI
+// sequence to measure column widths), we compose manually in a single pass
+// since all column widths are known. This avoids O(totalANSI) re-parsing
+// per frame.
 func (m *Model) compose(lines []string, baseLine int) string {
 	contentWidth := m.ContentWidth()
+	result := make([]string, len(lines))
 
-	// Pad or truncate each line to exact content width
+	// Pad or truncate each line to exact content width without mutating the
+	// caller's slice. Widths from SetContent are reused when possible.
 	for i, line := range lines {
 		var w int
-		// The equality check is O(1) for unchanged lines: they share the same
-		// string backing, so it short-circuits on pointer identity.
 		if gi := baseLine + i; baseLine >= 0 && gi < len(m.lines) && line == m.lines[gi] {
 			w = m.lineWidth(gi)
 		} else {
@@ -397,53 +577,88 @@ func (m *Model) compose(lines []string, baseLine int) string {
 		}
 		switch {
 		case w > contentWidth:
-			lines[i] = ansi.Truncate(line, contentWidth, "")
+			result[i] = ansi.Truncate(line, contentWidth, "")
 		case w < contentWidth:
-			lines[i] = line + strings.Repeat(" ", contentWidth-w)
+			result[i] = line + strings.Repeat(" ", contentWidth-w)
+		default:
+			result[i] = line
 		}
 	}
 
-	contentView := strings.Join(lines, "\n")
+	return m.composePadded(result)
+}
 
-	// Zip the right-side column (scrollbar or placeholder) directly: every
-	// line is exactly contentWidth wide at this point, so JoinHorizontal's
-	// per-line re-measuring would be pure overhead.
+func padOrTruncateANSI(line string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	w := ansi.StringWidth(line)
 	switch {
-	case m.NeedsScrollbar():
-		sbLines := m.sb.ViewLines()
-		gap := strings.Repeat(" ", m.gapWidth)
-		var b strings.Builder
-		b.Grow(len(contentView) + len(lines)*(m.gapWidth+scrollbar.Width*4))
-		for i, line := range lines {
-			if i > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(line)
-			b.WriteString(gap)
-			if i < len(sbLines) {
-				b.WriteString(sbLines[i])
-			} else {
-				b.WriteString(strings.Repeat(" ", scrollbar.Width))
-			}
-		}
-		return b.String()
-	case m.reserveScrollbarSpace:
-		blank := strings.Repeat(" ", m.gapWidth+scrollbar.Width)
-		var b strings.Builder
-		b.Grow(len(contentView) + len(lines)*len(blank))
-		for i, line := range lines {
-			if i > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(line)
-			b.WriteString(blank)
-		}
-		return b.String()
+	case w > width:
+		return ansi.Truncate(line, width, "")
+	case w < width:
+		return line + strings.Repeat(" ", width-w)
 	default:
-		return contentView
+		return line
 	}
+}
+
+func (m *Model) composePadded(lines []string) string {
+	contentWidth := m.ContentWidth()
+	result := append([]string(nil), lines...)
+
+	if m.fadeEffect {
+		m.applyFade(result)
+	}
+
+	// Determine what goes in the right margin.
+	needsScrollbar := m.NeedsScrollbar()
+	needsReserved := !needsScrollbar && m.reserveScrollbarSpace
+
+	if !needsScrollbar && !needsReserved {
+		// No right column — just join content lines.
+		return strings.Join(result, "\n")
+	}
+
+	// Pre-split the scrollbar or build a placeholder column.
+	// Scrollbar.View() returns m.height lines joined by '\n'.
+	var rightLines []string
+	var gap string
+	if needsScrollbar {
+		gap = strings.Repeat(" ", m.gapWidth)
+		rightLines = strings.Split(m.decoratedScrollbarView(), "\n")
+	} else {
+		// Reserve space: gap + scrollbar width filled with spaces.
+		gap = strings.Repeat(" ", m.gapWidth+scrollbar.Width)
+	}
+
+	// Estimate: each line ≈ contentWidth + gapWidth + scrollbarWidth + 1 (newline)
+	lineWidth := contentWidth + m.gapWidth + scrollbar.Width + 1
+	var sb strings.Builder
+	sb.Grow(len(result) * lineWidth)
+
+	for i, line := range result {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(line)
+		sb.WriteString(gap)
+		if needsScrollbar && i < len(rightLines) {
+			sb.WriteString(rightLines[i])
+		}
+	}
+
+	return sb.String()
 }
 
 func (m *Model) updateScrollbarPosition() {
 	m.sb.SetPosition(m.ScrollbarX(), m.yPos)
+}
+
+func (m *Model) decoratedScrollbarView() string {
+	view := m.sb.View()
+	if m.scrollbarDecorator == nil {
+		return view
+	}
+	return m.scrollbarDecorator(view)
 }
