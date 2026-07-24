@@ -97,6 +97,8 @@ type pickerCore struct {
 	keyMap     pickerKeyMap
 	layout     pickerLayout
 
+	listHeight func(int) int
+
 	selected int
 
 	// Double-click detection
@@ -145,7 +147,10 @@ func (p *pickerCore) regionWidth(contentWidth int) int {
 // Position returns the centred (row, col) of the dialog on screen.
 func (p *pickerCore) Position() (row, col int) {
 	dialogWidth, maxHeight, _ := p.dialogSize()
-	return CenterPosition(p.Width(), p.Height(), dialogWidth, maxHeight)
+	listHeight := p.visibleListHeight(max(1, maxHeight-p.layout.ListOverhead))
+	contentHeight := min(maxHeight, p.layout.ListOverhead+listHeight)
+	renderedHeight := min(p.Height(), contentHeight+styles.DialogStyle.GetVerticalFrameSize())
+	return CenterPosition(p.Width(), p.Height(), dialogWidth, renderedHeight)
 }
 
 // SetSize updates dialog dimensions and reconfigures the scrollview region.
@@ -155,6 +160,13 @@ func (p *pickerCore) SetSize(width, height int) tea.Cmd {
 	visLines := max(1, maxHeight-p.layout.ListOverhead)
 	p.scrollview.SetSize(p.regionWidth(contentWidth), visLines)
 	return cmd
+}
+
+func (p *pickerCore) visibleListHeight(maxListHeight int) int {
+	if p.listHeight != nil {
+		return p.listHeight(maxListHeight)
+	}
+	return maxListHeight
 }
 
 // updateScrollviewPosition repositions the scrollview for accurate mouse

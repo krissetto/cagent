@@ -247,7 +247,7 @@ func newTestModel(tb testing.TB) (*appModel, *mockEditor) {
 		editor:                  ed,
 		transcriber:             &fakeTranscriber{},
 		notification:            notification.New(),
-		dialogMgr:               dialog.New(),
+		dialogMgr:               dialog.New(animation.NewRuntime()),
 		completions:             completion.New(),
 		tour:                    tour.New(),
 	}

@@ -342,7 +342,7 @@ func (d *settingsDialog) View() string {
 		d.renderAppearanceTab(content, inner)
 	}
 	content.AddSpace().AddHelpKeys("↑/↓", "navigate", "←/→", "change", "tab", "switch tab", "enter", "apply")
-	return styles.DialogStyle.Width(width).Render(content.Build())
+	return styles.DialogStyle.Width(width).MaxHeight(max(1, d.Height())).Render(content.Build())
 }
 
 func (d *settingsDialog) renderTabBar(width int) string {

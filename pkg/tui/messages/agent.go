@@ -17,6 +17,12 @@ type (
 	// OpenModelPickerMsg opens the model picker dialog.
 	OpenModelPickerMsg struct{}
 
+	// ModelPickerLoadedMsg carries choices discovered off the Update path.
+	ModelPickerLoadedMsg struct {
+		Models []runtime.ModelChoice
+		Err    error
+	}
+
 	// RefreshModelPickerMsg forces a refresh of model discovery and reopens
 	// the model picker with the updated choices.
 	RefreshModelPickerMsg struct{ Query string }

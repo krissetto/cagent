@@ -18,7 +18,7 @@ func TestAppDialogCloseHoverDoesNotCrossOpenLifecycle(t *testing.T) {
 	m, _ := newTestModel(t)
 	m.animationRuntime = animation.NewRuntime()
 	m.tabBar = tabbar.New(m.animationRuntime, 0)
-	mgr := dialog.New()
+	mgr := dialog.New(m.animationRuntime)
 	mgr.SetSize(80, 24)
 	m.dialogMgr = mgr
 
@@ -64,7 +64,7 @@ func TestAppDialogCloseHoverDoesNotCrossOpenLifecycle(t *testing.T) {
 	layers = m.dialogMgr.GetLayers()
 	require.Len(t, layers, 1)
 	freshRuntime := animation.NewRuntime()
-	fresh := dialog.New()
+	fresh := dialog.New(freshRuntime)
 	fresh.SetSize(80, 24)
 	freshB := dialog.NewHelpDialog(nil)
 	_, cmd := fresh.Update(dialog.OpenDialogMsg{Model: freshB})

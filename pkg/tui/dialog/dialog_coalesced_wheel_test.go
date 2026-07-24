@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
 	"github.com/docker/docker-agent/pkg/tui/messages"
 )
@@ -23,7 +24,7 @@ func (d *wheelRecordingDialog) SetSize(int, int) tea.Cmd { return nil }
 
 func TestManagerAdjustsCoalescedWheelForDraggedDialog(t *testing.T) {
 	d := &wheelRecordingDialog{}
-	mgr := New().(*manager)
+	mgr := New(animation.NewRuntime()).(*manager)
 	_, _ = mgr.Update(OpenDialogMsg{Model: d})
 	mgr.stack[0].offsetX, mgr.stack[0].offsetY = 3, 4
 	_, _ = mgr.Update(messages.WheelCoalescedMsg{Delta: 2, X: 20, Y: 30})

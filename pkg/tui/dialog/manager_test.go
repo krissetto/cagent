@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/docker/docker-agent/pkg/tui/animation"
 )
 
 // TestManagerBackgroundDialog verifies that opening a dialog with a non-nil
@@ -12,7 +14,7 @@ import (
 func TestManagerBackgroundDialog(t *testing.T) {
 	t.Parallel()
 
-	mgr := New().(*manager)
+	mgr := New(animation.NewRuntime()).(*manager)
 
 	assert.False(t, mgr.Open(), "manager starts empty")
 	assert.False(t, mgr.TopIsBackground(), "empty manager has no background dialog")
@@ -41,15 +43,19 @@ func TestManagerBackgroundDialog(t *testing.T) {
 	assert.Same(t, event, mgr.TopBackgroundEvent(), "TopBackgroundEvent returns the originating event")
 	assert.Same(t, bg, mgr.TopDialog(), "TopDialog returns the background instance")
 
-	// Closing the top reveals the modal dialog underneath.
+	// Closing completes through the animated lifecycle, then reveals the modal.
 	mgr.handleClose()
+	mgr.stack[len(mgr.stack)-1].anim.Cancel()
+	mgr.handleTick(animation.TickMsg{})
 	assert.True(t, mgr.Open(), "manager still has the modal dialog underneath")
 	assert.False(t, mgr.TopIsBackground(), "underneath is the modal dialog, not background")
 	assert.Nil(t, mgr.TopBackgroundEvent())
 	assert.Same(t, modal, mgr.TopDialog())
 
-	// Closing again empties the stack.
+	// Closing again empties the stack after its lifecycle completes.
 	mgr.handleClose()
+	mgr.stack[len(mgr.stack)-1].anim.Cancel()
+	mgr.handleTick(animation.TickMsg{})
 	assert.False(t, mgr.Open())
 	assert.False(t, mgr.TopIsBackground())
 	assert.Nil(t, mgr.TopBackgroundEvent())

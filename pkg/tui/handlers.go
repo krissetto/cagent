@@ -90,7 +90,7 @@ func (m *appModel) handleBranchFromEdit(msg messages.BranchFromEditMsg) (tea.Mod
 	// Replace the session in the app and rebuild all per-session components.
 	m.application.ReplaceSession(ctx, newSess)
 	m.initSessionComponents(activeID, m.application, newSess)
-	m.dialogMgr = dialog.New()
+	m.dialogMgr = dialog.New(m.animationRuntime)
 
 	// Restore sidebar settings
 	m.chatPage.SetSidebarSettings(sidebarSettings)
@@ -615,25 +615,28 @@ func (m *appModel) handleMCPPrompt(promptName string, arguments map[string]strin
 // --- Model picker ---
 
 func (m *appModel) handleOpenModelPicker() (tea.Model, tea.Cmd) {
-	start := time.Now()
-	defer func() {
-		slog.Debug("TUI model picker open handled", "duration", time.Since(start))
-	}()
 	if !m.application.SupportsModelSwitching() {
 		return m, notification.InfoCmd("Model switching is not supported with remote runtimes")
 	}
-	loadStart := time.Now()
-	models := m.application.AvailableModels(m.ctx())
-	slog.Debug("TUI model picker available models loaded", "duration", time.Since(loadStart), "models", len(models))
-	if len(models) == 0 {
+	appRef := m.application
+	ctx := m.ctx()
+	return m, func() tea.Msg {
+		start := time.Now()
+		models := appRef.AvailableModels(ctx)
+		slog.Debug("TUI model picker choices loaded asynchronously", "duration", time.Since(start), "models", len(models))
+		return messages.ModelPickerLoadedMsg{Models: models}
+	}
+}
+
+//nolint:unused // Retained async message compatibility.
+func (m *appModel) handleModelPickerLoaded(msg messages.ModelPickerLoadedMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		return m, notification.ErrorCmd(fmt.Sprintf("Failed to load models: %v", msg.Err))
+	}
+	if len(msg.Models) == 0 {
 		return m, notification.InfoCmd("No models available for selection")
 	}
-	dialogStart := time.Now()
-	modelDialog := dialog.NewModelPickerDialog(models)
-	slog.Debug("TUI model picker dialog built", "duration", time.Since(dialogStart), "models", len(models))
-	return m, core.CmdHandler(dialog.OpenDialogMsg{
-		Model: modelDialog,
-	})
+	return m, core.CmdHandler(dialog.OpenDialogMsg{Model: dialog.NewModelPickerDialog(msg.Models)})
 }
 
 func (m *appModel) handleRefreshModelPicker(query string) (tea.Model, tea.Cmd) {

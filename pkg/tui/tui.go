@@ -476,7 +476,7 @@ func New(ctx context.Context, spawner SessionSpawner, initialApp *app.App, initi
 		pendingSidebarCollapsed:       make(map[string]bool),
 		stashedDialogs:                make(map[string]stashedDialog),
 		notification:                  notification.New(),
-		dialogMgr:                     dialog.New(),
+		dialogMgr:                     dialog.New(animRuntime),
 		completions:                   completion.New(),
 		tour:                          tour.New(),
 		transcriber:                   transcribe.New(os.Getenv("OPENAI_API_KEY")),
@@ -1656,7 +1656,7 @@ func (m *appModel) handleClearSession() (tea.Model, tea.Cmd) {
 
 	// Rebuild all per-session UI components.
 	m.initSessionComponents(activeID, m.application, newSess)
-	m.dialogMgr = dialog.New()
+	m.dialogMgr = dialog.New(m.animationRuntime)
 	m.supervisor.SetRunnerTitle(activeID, "")
 	m.sessionState.SetSessionTitle("")
 	m.sessionState.SetPreviousMessage(nil)
