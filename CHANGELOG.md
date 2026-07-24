@@ -3,6 +3,76 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.116.0] - 2026-07-24
+
+This release adds sandbox authentication improvements, compaction-model context visibility in the TUI, MCP lifecycle enforcement, and a range of bug fixes across the TUI, CLI, and OpenAI integration.
+
+## What's New
+
+- Adds `sbx-login` injection for gateway authentication in sandbox environments, replacing the previous file-based token-forwarding mechanism
+- Defaults sandbox creation to the `docker/docker-agent-sbx-templates:latest` template
+- Creates sandboxes under the canonical `docker-agent` name
+- Makes `oauth clientId` optional for remote MCP toolsets, supporting Dynamic Client Registration and interactive credential flows
+- Surfaces the compaction-model context-limit cap explicitly in the `/context` dialog and sidebar, so users can see when a dedicated compaction model is imposing a smaller context window than the primary model
+- Adds segment-aware click detection on the sidebar Token Usage reading: clicking the token count/percentage opens `/context`, clicking the cost/`⚠ capped` area opens `/cost`; the "Token Usage" title is no longer clickable
+- Enforces `lifecycle.call_timeout` for MCP tool calls, which was previously parsed but never acted on
+- Exposes spawned TUI tabs (opened with ctrl+t) on the `--listen` control plane so control-plane clients can observe all active sessions
+- Adds GitHub Copilot to `docker agent setup` and `doctor`, recognizing both `GITHUB_TOKEN` and `GH_TOKEN`
+
+## Bug Fixes
+
+- Fixes copy buttons rendering in contexts where they were never wired up for hit-testing (reasoning blocks, elicitation dialogs, lean TUI, shell output, welcome messages)
+- Fixes the "copied" flash background on user-message copy labels, which previously rendered with a transparent background
+- Fixes mouse hit-testing falling out of sync when layout shifts without a terminal resize (e.g., after loading a past session with `/session`)
+- Fixes an infinite loop in `backgroundAt` when encountering invalid UTF-8 bytes
+- Fixes capability handlers (OAuth elicitation, etc.) not being forwarded to inner toolsets when `code_mode_tools: true` is set
+- Fixes data races in deferred tools and the BM25 RAG strategy, and prevents a TUI editor panic
+- Fixes wrapped URLs losing their clickability in tool output
+- Fixes the `⚠ capped` marker on the sidebar opening `/cost` instead of `/context`
+- Fixes `docker agent debug` not appearing in the root help output
+- Fixes `docker agent setup` provider path labels to clarify built-in cloud providers vs. custom OpenAI-compatible endpoints
+- Fixes OpenAI Responses API function arguments not being recovered when providers omit `response.function_call_arguments.delta`
+
+## Technical Changes
+
+- Refactors sandbox integration to assume the modern CLI surface shared by both backends
+- Removes all references to the discontinued `agentcatalog` Docker Hub namespace, replacing examples with neutral `myorg/agent` placeholders
+- Freezes config schema v14 and advances `latest` to v15
+- Refactors board internals: deduplicates column lookup with a `columnIndexLocked` helper, deduplicates stored-project access with a `projectsLocked` helper, and consolidates per-card controller state into a single `cardState` map
+### Pull Requests
+
+- [#3767](https://github.com/docker/docker-agent/pull/3767) - fix(permissions): keep colons in argument values from truncating patterns
+- [#3782](https://github.com/docker/docker-agent/pull/3782) - feat(server): resolve agent-switch slash commands in RunSession
+- [#3789](https://github.com/docker/docker-agent/pull/3789) - fix(tui): never render dead code-block copy buttons
+- [#3790](https://github.com/docker/docker-agent/pull/3790) - docs: update CHANGELOG.md for v1.115.0
+- [#3791](https://github.com/docker/docker-agent/pull/3791) - sandbox: rely on sbx-login injection for gateway auth, modern sandbox CLI surface
+- [#3793](https://github.com/docker/docker-agent/pull/3793) - fix(cli): add GitHub Copilot to setup and doctor
+- [#3794](https://github.com/docker/docker-agent/pull/3794) - docs: update slash command and permission pattern docs for recent changes
+- [#3796](https://github.com/docker/docker-agent/pull/3796) - feat(config): make oauth clientId optional for remote MCP toolsets
+- [#3797](https://github.com/docker/docker-agent/pull/3797) - fix(tui): keep copy label background under "copied" flash
+- [#3798](https://github.com/docker/docker-agent/pull/3798) - fix(tui): keep mouse hit-testing in sync when the layout shifts without a resize
+- [#3799](https://github.com/docker/docker-agent/pull/3799) - fix(tui): guard backgroundAt against infinite loop on invalid UTF-8
+- [#3801](https://github.com/docker/docker-agent/pull/3801) - chore: bump direct Go dependencies
+- [#3804](https://github.com/docker/docker-agent/pull/3804) - chore: remove every trace of the discontinued agent catalog
+- [#3807](https://github.com/docker/docker-agent/pull/3807) - feat(config): freeze config v14 and start v15 as latest
+- [#3809](https://github.com/docker/docker-agent/pull/3809) - fix(codemode): forward capability handlers to inner toolsets
+- [#3810](https://github.com/docker/docker-agent/pull/3810) - docs: improve Ollama and local models discoverability
+- [#3811](https://github.com/docker/docker-agent/pull/3811) - feat(tui): surface compaction-model context-limit cap in the TUI
+- [#3812](https://github.com/docker/docker-agent/pull/3812) - docs: auto-update for merged PRs (2026-07-23)
+- [#3813](https://github.com/docker/docker-agent/pull/3813) - feat(tui): open /context or /cost from the sidebar token-usage reading
+- [#3814](https://github.com/docker/docker-agent/pull/3814) - feat: enforce lifecycle.call_timeout for MCP tool calls
+- [#3815](https://github.com/docker/docker-agent/pull/3815) - docs: auto-update for merged PRs (2026-07-24)
+- [#3816](https://github.com/docker/docker-agent/pull/3816) - chore: bump direct Go dependencies
+- [#3817](https://github.com/docker/docker-agent/pull/3817) - refactor(board): simplify app and controller internals
+- [#3819](https://github.com/docker/docker-agent/pull/3819) - feat(run): expose spawned TUI tabs on the --listen control plane
+- [#3822](https://github.com/docker/docker-agent/pull/3822) - fix: resolve data races in deferred tools and BM25 strategy, prevent TUI editor panic
+- [#3823](https://github.com/docker/docker-agent/pull/3823) - fix(tui): keep wrapped URLs clickable
+- [#3824](https://github.com/docker/docker-agent/pull/3824) - fix(setup): clarify model provider paths
+- [#3825](https://github.com/docker/docker-agent/pull/3825) - fix(openai): recover final response tool arguments
+- [#3826](https://github.com/docker/docker-agent/pull/3826) - fix(tui): open /context (not /cost) when clicking the ⚠ capped marker
+- [#3827](https://github.com/docker/docker-agent/pull/3827) - fix(cli): show debug command in help
+
+
 ## [Unreleased]
 
 ## What's New
@@ -5072,3 +5142,5 @@ This release improves the terminal user interface with better error handling and
 [v1.114.0]: https://github.com/docker/docker-agent/releases/tag/v1.114.0
 
 [v1.115.0]: https://github.com/docker/docker-agent/releases/tag/v1.115.0
+
+[v1.116.0]: https://github.com/docker/docker-agent/releases/tag/v1.116.0
