@@ -18,7 +18,7 @@ import (
 	"github.com/docker/docker-agent/pkg/telemetry"
 )
 
-const defaultJudgeModel = "anthropic/claude-opus-4-5-20251101"
+const defaultJudgeModel = "anthropic/claude-opus-5"
 
 type evalFlags struct {
 	evaluation.Config
