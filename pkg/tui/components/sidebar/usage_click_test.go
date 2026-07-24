@@ -90,6 +90,41 @@ func TestSidebar_HandleClickType_Usage_Vertical_Compacting(t *testing.T) {
 	assert.Equal(t, ClickUsageContext, result, "a click on the compacting marker should report ClickUsageContext")
 }
 
+// TestSidebar_HandleClickType_Usage_Vertical_Capped verifies that a click on
+// the "⚠ capped" marker reports ClickUsageContext: a compaction-model cap
+// on the effective context window is context-related, not cost-related.
+func TestSidebar_HandleClickType_Usage_Vertical_Capped(t *testing.T) {
+	t.Parallel()
+
+	sess := session.New()
+	sessionState := service.NewSessionState(sess)
+	sb := New(t.Context(), sessionState)
+
+	m := sb.(*model)
+	m.sessionHasContent = true
+	m.titleGenerated = true
+	m.sessionTitle = "Test"
+	m.width = 40
+	m.height = 50
+	m.agentCompactionModel = "some/model"
+
+	_ = sb.View()
+
+	require.GreaterOrEqual(t, m.usageReadingLine, 0)
+	line := ansi.Strip(m.cachedLines[m.usageReadingLine])
+	require.Contains(t, line, "⚠ capped")
+
+	paddingLeft := m.layoutCfg.PaddingLeft
+	cappedX := strings.Index(line, "⚠")
+	require.GreaterOrEqual(t, cappedX, 0)
+	result, _ := sb.HandleClickType(paddingLeft+cappedX, m.usageReadingLine)
+	assert.Equal(t, ClickUsageContext, result, "a click on the ⚠ capped marker should report ClickUsageContext")
+
+	dollarX := dollarOffset(t, m.cachedLines[m.usageReadingLine])
+	result, _ = sb.HandleClickType(paddingLeft+dollarX, m.usageReadingLine)
+	assert.Equal(t, ClickUsage, result, "a click on the cost segment should still report ClickUsage when capped")
+}
+
 // TestSidebar_HandleClickType_Usage_Vertical_Hidden verifies a hidden usage
 // section leaves no stale click zone behind.
 func TestSidebar_HandleClickType_Usage_Vertical_Hidden(t *testing.T) {
@@ -211,6 +246,42 @@ func TestSidebar_HandleClickType_Usage_Collapsed_OwnLine(t *testing.T) {
 	dollarX := dollarOffset(t, vm.UsageSummary)
 	result, _ = sb.HandleClickType(paddingLeft+dollarX, rowY)
 	assert.Equal(t, ClickUsage, result, "click on the cost segment should report ClickUsage")
+}
+
+// TestSidebar_HandleClickType_Usage_Collapsed_Capped verifies the collapsed
+// band's own-line usage reading also puts the "⚠ capped" marker on the
+// context side, inheriting the fix through the shared usageContextSegWidth.
+func TestSidebar_HandleClickType_Usage_Collapsed_Capped(t *testing.T) {
+	t.Parallel()
+
+	sess := session.New()
+	sessionState := service.NewSessionState(sess)
+	sb := New(t.Context(), sessionState)
+
+	m := sb.(*model)
+	m.sessionHasContent = true
+	m.titleGenerated = true
+	m.mode = ModeCollapsed
+	m.width = 50
+	m.sessionTitle = "Hi"
+	m.workingDirectory = ""
+	m.agentCompactionModel = "some/model"
+
+	vm := m.computeCollapsedViewModel(m.contentWidth(false))
+	require.NotEmpty(t, vm.UsageSummary)
+	require.Contains(t, vm.UsageSummary, "⚠ capped")
+
+	paddingLeft := m.layoutCfg.PaddingLeft
+	rowY := vm.titleSectionLines()
+
+	cappedX := strings.Index(ansi.Strip(vm.UsageSummary), "⚠")
+	require.GreaterOrEqual(t, cappedX, 0)
+	result, _ := sb.HandleClickType(paddingLeft+cappedX, rowY)
+	assert.Equal(t, ClickUsageContext, result, "click on the ⚠ capped marker should report ClickUsageContext")
+
+	dollarX := dollarOffset(t, vm.UsageSummary)
+	result, _ = sb.HandleClickType(paddingLeft+dollarX, rowY)
+	assert.Equal(t, ClickUsage, result, "click on the cost segment should still report ClickUsage when capped")
 }
 
 // TestSidebar_HandleClickType_Usage_Collapsed_Hidden verifies a hidden usage
