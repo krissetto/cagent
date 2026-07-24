@@ -353,9 +353,10 @@ type model struct {
 	usageReadingLine int
 	usageSectionEnd  int
 	// usageContextSegWidth is the lipgloss.Width of the reading line's context
-	// segment (glyph + token count + context %/compacting marker), recorded by
-	// tokenUsageLine while rendering. HandleClickType uses it to split a click
-	// on the reading line between the context dialog and the cost dialog.
+	// segment (glyph + token count + context %/compacting marker + ⚠ capped
+	// marker), recorded by tokenUsageLine while rendering. HandleClickType uses
+	// it to split a click on the reading line between the context dialog and
+	// the cost dialog.
 	usageContextSegWidth int
 	// agentLineOwners records, per rendered agent-section body line, which agent
 	// emitted it (empty for blank separators). It is produced during agentInfo
@@ -786,7 +787,7 @@ const (
 	ClickTitle        // Click on the title area (use double-click to edit)
 	ClickWorkingDir   // Click on the working directory line
 	ClickAgent        // Click on an agent name in the sidebar
-	ClickUsageContext // Click on the token/context part of the usage reading (glyph, tokens, context %/compacting)
+	ClickUsageContext // Click on the token/context part of the usage reading (glyph, tokens, context %/compacting, ⚠ capped)
 	ClickUsage        // Click on the cost part of the usage reading, or a budget line
 )
 
@@ -808,8 +809,8 @@ func (m *model) HandleClickType(x, y int) (ClickResult, string) {
 	}
 
 	// segmentClickResult splits a click at flat offset into the usage reading
-	// line between the context segment (glyph, tokens, context %/compacting —
-	// offset < usageContextSegWidth) and the cost segment (⚠ capped, cost,
+	// line between the context segment (glyph, tokens, context %/compacting,
+	// ⚠ capped — offset < usageContextSegWidth) and the cost segment (cost,
 	// sub-sessions — everything from there on).
 	segmentClickResult := func(offset int) ClickResult {
 		if offset < m.usageContextSegWidth {
@@ -1846,9 +1847,9 @@ func (m *model) tokenUsage(contentWidth int) string {
 // sub-session count, all with the same styling. The context reading warns as
 // it nears the compaction threshold and reads "compacting…" while a
 // compaction runs. It also records usageContextSegWidth, the rendered width
-// of the context segment (glyph through the %/compacting marker), so
-// HandleClickType can split a click on the reading line between the context
-// and cost dialogs.
+// of the context segment (glyph through the %/compacting marker and the ⚠
+// capped marker), so HandleClickType can split a click on the reading line
+// between the context and cost dialogs.
 func (m *model) tokenUsageLine() string {
 	s := m.computeUsageStats()
 
@@ -1859,11 +1860,12 @@ func (m *model) tokenUsageLine() string {
 	case s.contextPct != "":
 		line += " " + contextGaugeStyle(s.contextLevel, styles.NoStyle).Render("("+s.contextPct+")")
 	}
-	m.usageContextSegWidth = lipgloss.Width(line)
 
 	if m.agentCompactionModel != "" {
 		line += " " + styles.WarningStyle.Render("⚠ capped")
 	}
+	m.usageContextSegWidth = lipgloss.Width(line)
+
 	line += " " + styles.TabAccentStyle.Render(toolcommon.FormatCostUSD(s.totalCost))
 	if s.sessionCount > 1 {
 		line += " " + styles.MutedStyle.Render(fmt.Sprintf("(%d sub-sessions)", s.sessionCount-1))

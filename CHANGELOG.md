@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 
 ## What's New
 
-- Splits the sidebar's Token Usage click target in two: clicking the token/context part (glyph, token count, context `%`, or the "compacting…" marker) opens the `/context` dialog, while clicking the cost part (`$` figure, `⚠ capped` marker, sub-session count) keeps opening `/cost`; the "Token Usage" section title is no longer clickable
+- Splits the sidebar's Token Usage click target in two: clicking the token/context part (glyph, token count, context `%`, the "compacting…" marker, or the `⚠ capped` marker) opens the `/context` dialog, while clicking the cost part (`$` figure, sub-session count) keeps opening `/cost`; the "Token Usage" section title is no longer clickable
 
 
 ## [v1.115.0] - 2026-07-22
