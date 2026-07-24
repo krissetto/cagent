@@ -3027,18 +3027,16 @@ func (m *appModel) openExternalEditor() (tea.Model, tea.Cmd) {
 	}
 	_ = tmpFile.Close()
 
-	// Get the editor command (VISUAL, EDITOR, or platform default)
 	editorCmd := cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR"))
-	if editorCmd == "" {
+	parts := strings.Fields(editorCmd)
+	if len(parts) == 0 {
 		if goruntime.GOOS == "windows" {
-			editorCmd = "notepad"
+			parts = []string{"notepad"}
 		} else {
-			editorCmd = "vi"
+			parts = []string{"vi"}
 		}
 	}
 
-	// Parse editor command (may include arguments like "code --wait")
-	parts := strings.Fields(editorCmd)
 	args := append(parts[1:], tmpPath)
 	// External editor is owned by tea.ExecProcess, so exec.Command is intentional.
 	cmd := exec.Command(parts[0], args...) //nolint:noctx // owned by tea.ExecProcess
