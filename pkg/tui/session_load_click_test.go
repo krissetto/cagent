@@ -24,10 +24,17 @@ import (
 type storeRuntime struct {
 	stubRuntime
 
-	store session.Store
+	store           session.Store
+	startupSessions chan<- *session.Session
 }
 
 func (r storeRuntime) SessionStore() session.Store { return r.store }
+
+func (r storeRuntime) EmitStartupInfo(_ context.Context, sess *session.Session, _ runtime.EventSink) {
+	if r.startupSessions != nil {
+		r.startupSessions <- sess
+	}
+}
 
 // feedCmds executes cmd trees and feeds the resulting msgs back into the
 // model, mimicking the bubbletea loop, up to a few rounds.
@@ -92,9 +99,15 @@ func testLoadSessionThenClickEditLabel(t *testing.T, newTab bool, width int) {
 	}
 	application := app.New(ctx, rt, initialSess)
 
+	var startupSessions chan *session.Session
 	spawner := func(ctx context.Context, workingDir string) (*app.App, *session.Session, func(), error) {
 		sess := session.New()
-		return app.New(ctx, rt, sess), sess, func() {}, nil
+		spawnRT := rt
+		if newTab {
+			startupSessions = make(chan *session.Session, 1)
+			spawnRT.startupSessions = startupSessions
+		}
+		return app.New(ctx, spawnRT, sess), sess, func() {}, nil
 	}
 
 	model := New(ctx, spawner, application, dir, func() {})
@@ -108,6 +121,16 @@ func testLoadSessionThenClickEditLabel(t *testing.T, newTab bool, width int) {
 	// Load the past session (what the /sessions browser emits).
 	mm, cmd = mm.Update(messages.LoadSessionMsg{SessionID: past.ID})
 	mm = feedCmds(t, mm, cmd)
+
+	if newTab {
+		select {
+		case startupSession := <-startupSessions:
+			require.Same(t, past, startupSession,
+				"the new app's first startup producer must see the loaded session, not its placeholder")
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for new-tab startup info")
+		}
+	}
 
 	// Simulate the async startup info that App.ReplaceSession re-emits after
 	// the load completed: it changes the collapsed sidebar band's height.

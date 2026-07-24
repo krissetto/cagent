@@ -64,7 +64,7 @@ func TestSaveSettingsToUserConfig_RoundTrip(t *testing.T) {
 		HideSessionPath: true,
 		HideTools:       true,
 	}
-	require.NoError(t, saveSettingsToUserConfig(saved, messages.SendModeQueue))
+	require.NoError(t, savePreferences(messages.Preferences{Layout: saved, SendMode: messages.SendModeQueue, SplitDiffView: true, RenderImages: true, TabTitleMaxLength: userconfig.DefaultTabTitleMaxLength, SoundThreshold: userconfig.DefaultSoundThreshold}))
 
 	assert.Equal(t, saved, layoutSettingsFromConfig(userconfig.Get().GetLayout()))
 	assert.Equal(t, messages.SendModeQueue, messages.ParseSendMode(userconfig.Get().GetBusySendMode()))
@@ -73,13 +73,13 @@ func TestSaveSettingsToUserConfig_RoundTrip(t *testing.T) {
 func TestSaveSettingsToUserConfig_DefaultsClearEntry(t *testing.T) {
 	setupSettingsConfigTest(t)
 
-	require.NoError(t, saveSettingsToUserConfig(messages.LayoutSettings{
+	require.NoError(t, savePreferences(messages.Preferences{Layout: messages.LayoutSettings{
 		SidebarPosition: messages.SidebarTop,
-	}, messages.SendModeQueue))
-	require.NoError(t, saveSettingsToUserConfig(messages.LayoutSettings{
+	}, SendMode: messages.SendModeQueue, SplitDiffView: true, RenderImages: true, TabTitleMaxLength: userconfig.DefaultTabTitleMaxLength, SoundThreshold: userconfig.DefaultSoundThreshold}))
+	require.NoError(t, savePreferences(messages.Preferences{Layout: messages.LayoutSettings{
 		SidebarPosition: messages.SidebarRight,
 		SectionSpacing:  messages.SpacingNormal,
-	}, messages.SendModeSteer))
+	}, SendMode: messages.SendModeSteer, SplitDiffView: true, RenderImages: true, TabTitleMaxLength: userconfig.DefaultTabTitleMaxLength, SoundThreshold: userconfig.DefaultSoundThreshold}))
 
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
@@ -90,11 +90,11 @@ func TestSaveSettingsToUserConfig_DefaultsClearEntry(t *testing.T) {
 func TestSaveSettingsToUserConfig_OmitsDefaultPosition(t *testing.T) {
 	setupSettingsConfigTest(t)
 
-	require.NoError(t, saveSettingsToUserConfig(messages.LayoutSettings{
+	require.NoError(t, savePreferences(messages.Preferences{Layout: messages.LayoutSettings{
 		SidebarPosition: messages.SidebarRight,
 		SectionSpacing:  messages.SpacingNormal,
 		HideUsage:       true,
-	}, messages.SendModeSteer))
+	}, SendMode: messages.SendModeSteer, SplitDiffView: true, RenderImages: true, TabTitleMaxLength: userconfig.DefaultTabTitleMaxLength, SoundThreshold: userconfig.DefaultSoundThreshold}))
 
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
@@ -202,7 +202,7 @@ func TestSaveSettingsToUserConfig_HideSessionPathKeepsEntry(t *testing.T) {
 		SidebarInfoMode: messages.InfoModeCompact,
 		HideSessionPath: true,
 	}
-	require.NoError(t, saveSettingsToUserConfig(saved, messages.SendModeSteer))
+	require.NoError(t, savePreferences(messages.Preferences{Layout: saved, SendMode: messages.SendModeSteer, SplitDiffView: true, RenderImages: true, TabTitleMaxLength: userconfig.DefaultTabTitleMaxLength, SoundThreshold: userconfig.DefaultSoundThreshold}))
 
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
@@ -220,7 +220,7 @@ func TestSavePreferences_DetailedInfoModeKeepsEntry(t *testing.T) {
 		SectionSpacing:  messages.SpacingNormal,
 		SidebarInfoMode: messages.InfoModeDetailed,
 	}
-	require.NoError(t, saveSettingsToUserConfig(saved, messages.SendModeSteer))
+	require.NoError(t, savePreferences(messages.Preferences{Layout: saved, SendMode: messages.SendModeSteer, SplitDiffView: true, RenderImages: true, TabTitleMaxLength: userconfig.DefaultTabTitleMaxLength, SoundThreshold: userconfig.DefaultSoundThreshold}))
 
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
@@ -235,16 +235,16 @@ func TestSavePreferences_DetailedInfoModeKeepsEntry(t *testing.T) {
 func TestSavePreferences_CompactInfoModeClearsEntry(t *testing.T) {
 	setupSettingsConfigTest(t)
 
-	require.NoError(t, saveSettingsToUserConfig(messages.LayoutSettings{
+	require.NoError(t, savePreferences(messages.Preferences{Layout: messages.LayoutSettings{
 		SidebarPosition: messages.SidebarRight,
 		SectionSpacing:  messages.SpacingNormal,
 		SidebarInfoMode: messages.InfoModeDetailed,
-	}, messages.SendModeSteer))
-	require.NoError(t, saveSettingsToUserConfig(messages.LayoutSettings{
+	}, SendMode: messages.SendModeSteer, SplitDiffView: true, RenderImages: true, TabTitleMaxLength: userconfig.DefaultTabTitleMaxLength, SoundThreshold: userconfig.DefaultSoundThreshold}))
+	require.NoError(t, savePreferences(messages.Preferences{Layout: messages.LayoutSettings{
 		SidebarPosition: messages.SidebarRight,
 		SectionSpacing:  messages.SpacingNormal,
 		SidebarInfoMode: messages.InfoModeCompact,
-	}, messages.SendModeSteer))
+	}, SendMode: messages.SendModeSteer, SplitDiffView: true, RenderImages: true, TabTitleMaxLength: userconfig.DefaultTabTitleMaxLength, SoundThreshold: userconfig.DefaultSoundThreshold}))
 
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)

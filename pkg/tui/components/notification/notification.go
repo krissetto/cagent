@@ -291,6 +291,15 @@ func (n *Manager) GetLayer() *lipgloss.Layer {
 	return lipgloss.NewLayer(view).X(col).Y(row)
 }
 
+func (n *Manager) GetLayerInfo() *styles.LayerInfo {
+	layer := n.GetLayer()
+	if layer == nil {
+		return nil
+	}
+	row, col := n.position()
+	return &styles.LayerInfo{Content: n.View(), X: col, Y: row}
+}
+
 func (n *Manager) position() (row, col int) {
 	bounds := n.itemBounds()
 	if len(bounds) == 0 {

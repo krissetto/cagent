@@ -89,11 +89,6 @@ type Editor interface {
 	Cleanup()
 	GetSize() (width, height int)
 	BannerHeight() int
-	BannerView(totalWidth int) string
-	ToggleContextBar()
-	SetContextBarFocused(focused bool)
-	IsContextBarFocused() bool
-	HasContextBar() bool
 	// ContentLineCount reports visual rows, including wraps and explicit newlines.
 	ContentLineCount() int
 	AttachmentAt(x int) (AttachmentPreview, bool)

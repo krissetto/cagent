@@ -250,7 +250,6 @@ func (m *Model) footer(contentWidth int) string {
 
 	keyStyle := styles.HighlightWhiteStyle
 	descStyle := styles.MutedStyle
-	line := keyStyle.Render("↵") + descStyle.Render(" "+enterHint+"  ") +
-		keyStyle.Render("Esc") + descStyle.Render(" quit tour")
+	line := keyStyle.Render("↵") + descStyle.Render(" "+enterHint)
 	return lipgloss.PlaceHorizontal(max(1, contentWidth), lipgloss.Right, line)
 }

@@ -119,7 +119,6 @@ func defaultCompletionKeyMap() completionKeyMap {
 		),
 		Escape: key.NewBinding(
 			key.WithKeys("esc"),
-			key.WithHelp("esc", "cancel"),
 		),
 	}
 }
@@ -129,6 +128,7 @@ type Manager interface {
 	layout.Model
 
 	GetLayers() []*lipgloss.Layer
+	GetLayerInfos() []styles.LayerInfo
 	Open() bool
 	// SetEditorBottom sets the height from the bottom of the screen where the editor ends.
 	// This is used to position the completion popup above the editor.
@@ -404,6 +404,15 @@ func (c *manager) GetLayers() []*lipgloss.Layer {
 	return []*lipgloss.Layer{
 		lipgloss.NewLayer(view).X(styles.AppPadding).Y(yPos),
 	}
+}
+
+func (c *manager) GetLayerInfos() []styles.LayerInfo {
+	if !c.visible {
+		return nil
+	}
+	view := c.View()
+	yPos := max(c.height-lipgloss.Height(view)-cmp.Or(c.editorBottom, 4)-1, 0)
+	return []styles.LayerInfo{{Content: view, X: styles.AppPadding, Y: yPos}}
 }
 
 // notifySelectionChanged sends a SelectionChangedMsg with the currently selected item's value.

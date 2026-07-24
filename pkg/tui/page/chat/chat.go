@@ -364,7 +364,6 @@ func defaultKeyMap() KeyMap {
 	return KeyMap{
 		Cancel: key.NewBinding(
 			key.WithKeys("esc"),
-			key.WithHelp("Esc", "interrupt"),
 		),
 		ToggleSplitDiff: splitDiff,
 		ToggleSidebar: key.NewBinding(

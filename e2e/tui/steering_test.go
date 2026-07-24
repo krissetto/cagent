@@ -45,8 +45,9 @@ func TestChat_SteerWhileStreaming(t *testing.T) {
 	// one per keystroke (keystrokes are expensive under -race and would eat
 	// into the streaming window). Submission waits until chunks are visibly
 	// streaming.
-	d.Type("What's 2+2?").
+	d.Send(tea.PasteMsg{Content: "What's 2+2?"}).
 		Enter().
+		WaitFor(tuitest.Contains("What's 2+2?")).
 		Send(tea.PasteMsg{Content: "Also, what's 3+3?"}).
 		WaitFor(tuitest.Contains("What's 2+2?")).
 		// First chunks visible: the model call is in flight, the stream is live.
@@ -83,17 +84,20 @@ func TestChat_QueueSendModeWhileStreaming(t *testing.T) {
 		Press(tea.KeyRight).
 		WaitFor(tuitest.Contains("● Queue")).
 		Enter().
-		WaitFor(tuitest.Contains("Settings updated"))
+		WaitFor(tuitest.Contains("Settings updated")).
+		WaitFor(tuitest.Absent("While agent is working")).
+		WaitForStable(200 * time.Millisecond)
 
 	// The choice is persisted for future sessions.
 	cfg, err := os.ReadFile(userconfig.Path())
 	require.NoError(t, err)
 	assert.Contains(t, string(cfg), "busy_send_mode: queue")
 
-	d.Type("What's 2+2?").
-		Enter().
-		Send(tea.PasteMsg{Content: "Also, what's 3+3?"}).
+	d.Send(tea.PasteMsg{Content: "What's 2+2?"}).
 		WaitFor(tuitest.Contains("What's 2+2?")).
+		Enter().
+		WaitFor(tuitest.Contains("What's 2+2?")).
+		Send(tea.PasteMsg{Content: "Also, what's 3+3?"}).
 		WaitFor(tuitest.Contains("2 +"))
 
 	// With the queue send mode, a plain Enter queues instead of steering.

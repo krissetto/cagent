@@ -183,7 +183,7 @@ func LongRunningWarning(msg *types.Message) string {
 	if time.Since(*msg.StartedAt) < LongRunningThreshold {
 		return ""
 	}
-	return "⚠ Tool call running for over 60s. The tool may be waiting for external input. Press Esc to cancel."
+	return "⚠ Tool call running for over 60s. The tool may be waiting for external input."
 }
 
 // formatDuration formats a duration as a human-readable string like "5s", "1m30s", "2m15s".

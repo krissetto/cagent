@@ -32,7 +32,7 @@ func buildSteps() []step {
 		{
 			title:     "One menu for everything",
 			body:      "The command palette holds every feature: searchable, nothing to memorize.",
-			action:    "Press Ctrl+k and look around. (Esc closes it)",
+			action:    "Press Ctrl+k and look around.",
 			check:     checkPaletteOpened,
 			celebrate: "You found the control room.",
 		},

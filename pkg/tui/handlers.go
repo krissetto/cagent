@@ -1050,21 +1050,6 @@ func boolPreference(value, defaultValue bool) *bool {
 	return &value
 }
 
-// saveSettingsToUserConfig remains as a narrow compatibility helper for callers
-// that only update layout and send mode.
-func saveSettingsToUserConfig(layout messages.LayoutSettings, mode messages.SendMode) error {
-	settings := userconfig.Get()
-	return savePreferences(messages.Preferences{
-		Layout: layout, SendMode: mode, SplitDiffView: settings.GetSplitDiffView(),
-		ExpandThinking: settings.GetExpandThinking(), HideToolResults: settings.HideToolResults,
-		RenderImages: settings.GetRenderImages(), YOLO: settings.YOLO, RestoreTabs: settings.GetRestoreTabs(), Snapshot: settings.SnapshotsEnabled(),
-		CacheStablePrompts: settings.CacheStablePromptsEnabled(),
-		WarnOnCacheMiss:    settings.CacheMissWarningsEnabled(),
-		Lean:               settings.Lean, TabTitleMaxLength: settings.GetTabTitleMaxLength(),
-		Sound: settings.GetSound(), SoundThreshold: settings.GetSoundThreshold(),
-	})
-}
-
 // handleColorSchemeChange reacts to a terminal light/dark report (a DEC mode
 // 2031 event or an OSC 11 response). The polarity is always recorded so a
 // later switch to the auto theme starts from the freshest value; the theme
@@ -1212,7 +1197,7 @@ func (m *appModel) handleStartSpeak() (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(
-		notification.InfoCmd("🎤 Listening... (ENTER to send or ESC to cancel)"),
+		notification.InfoCmd("🎤 Listening... (ENTER to send)"),
 		m.editor.SetRecording(true),
 		m.waitForTranscript(),
 	)

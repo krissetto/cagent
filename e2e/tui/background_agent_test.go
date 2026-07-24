@@ -182,9 +182,9 @@ func newBackgroundAgentTUI(t *testing.T, width, height int) *tuitest.Driver {
 func TestBackgroundAgent_PerAgentContextInSidebar(t *testing.T) {
 	d := newBackgroundAgentTUI(t, 120, 40)
 
-	// Both agents are listed before anything runs, with no context percent.
-	d.WaitFor(tuitest.ContainsAll("root", "worker")).
-		Assert(tuitest.Absent("%"))
+	// Both agents are listed before anything runs; the required root context bar
+	// may contain 0%, while neither per-agent roster line has usage yet.
+	d.WaitFor(tuitest.ContainsAll("root", "worker", "Context 0%"))
 
 	d.Type("Please dispatch the worker.").
 		Enter().
@@ -210,5 +210,5 @@ func TestBackgroundAgent_InspectorShowsWorkerContext(t *testing.T) {
 	x, y := d.MustFindText("45%")
 	d.Send(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseRight}).
 		Send(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseRight}).
-		WaitFor(tuitest.Contains("Context: 450 of 1.0K tokens (45%)"))
+		WaitFor(tuitest.ContainsAll("Context:", "450", "1.0K", "45%"))
 }

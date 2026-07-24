@@ -14,7 +14,7 @@ func speakCommand() *Item {
 		ID:           "session.speak",
 		Label:        "Speak",
 		SlashCommand: "/speak",
-		Description:  "Start speech-to-text transcription (press Enter or Escape to stop)",
+		Description:  "Start speech-to-text transcription",
 		Category:     "Session",
 		Immediate:    true,
 		Execute: func(string) tea.Cmd {
