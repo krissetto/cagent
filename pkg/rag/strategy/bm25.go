@@ -91,6 +91,7 @@ type BM25Strategy struct {
 	db           *bm25DB
 	docProcessor chunk.DocumentProcessor
 	fileHashes   map[string]string
+	fileHashesMu sync.Mutex
 	watcher      *fsnotify.Watcher
 	watcherMu    sync.Mutex
 	events       chan<- types.Event
@@ -525,6 +526,9 @@ func (s *BM25Strategy) loadExistingHashes(ctx context.Context) error {
 		return fmt.Errorf("failed to get file metadata: %w", err)
 	}
 
+	s.fileHashesMu.Lock()
+	defer s.fileHashesMu.Unlock()
+
 	for _, meta := range metadata {
 		s.fileHashes[meta.SourcePath] = meta.FileHash
 	}
@@ -538,7 +542,10 @@ func (s *BM25Strategy) needsIndexing(_ context.Context, filePath string) (bool, 
 		return false, fmt.Errorf("failed to hash file: %w", err)
 	}
 
+	s.fileHashesMu.Lock()
 	storedHash, exists := s.fileHashes[filePath]
+	s.fileHashesMu.Unlock()
+
 	if !exists {
 		return true, nil
 	}
@@ -598,7 +605,10 @@ func (s *BM25Strategy) indexFile(ctx context.Context, filePath string) error {
 		return fmt.Errorf("failed to update file metadata: %w", err)
 	}
 
+	s.fileHashesMu.Lock()
 	s.fileHashes[filePath] = fileHash
+	s.fileHashesMu.Unlock()
+
 	slog.DebugContext(ctx, "Indexed file with BM25", "path", filePath, "chunks", storedChunks)
 	return nil
 }
@@ -628,7 +638,9 @@ func (s *BM25Strategy) cleanupOrphanedDocuments(ctx context.Context, seenFiles m
 				continue
 			}
 
+			s.fileHashesMu.Lock()
 			delete(s.fileHashes, meta.SourcePath)
+			s.fileHashesMu.Unlock()
 		}
 	}
 
