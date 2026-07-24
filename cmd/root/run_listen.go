@@ -26,13 +26,39 @@ import (
 // (Run/Retry/RunWithMessage) hold the same lock RunSession/AddMessage/
 // UpdateMessage use to detect an active stream, closing the gap where a
 // concurrent REST mutation could slip in during an attached/TUI stream (#3590).
+//
+// When the run serves a control plane (--listen), the session attaches to the
+// serving manager (f.listenSM) instead of a private one, and its events are
+// registered as a source. Sessions spawned after startup — TUI tabs — thereby
+// become first-class control-plane sessions: clients can snapshot them, tail
+// their events and send follow-ups, exactly like the initial session. Without
+// this, a board watching the run sees a green card while a tab is mid-turn.
 func (f *runExecFlags) recallCoordinatorOpt(ctx context.Context, rt runtime.Runtime, sess *session.Session) app.Opt {
-	sm := server.NewSessionManager(ctx, nil, rt.SessionStore(), 0, &f.runConfig)
+	sm := f.listenSM
+	exposed := sm != nil
+	if !exposed {
+		sm = server.NewSessionManager(ctx, nil, rt.SessionStore(), 0, &f.runConfig)
+	}
 	guard := sm.AttachRuntime(ctx, sess.ID, rt, sess)
 	return func(a *app.App) {
 		app.WithStreamGuard(guard)(a)
+		if exposed {
+			registerAppEventSource(sm, sess.ID, a)
+		}
 		sm.RegisterFollowUpInjector(sess.ID, a.InjectUserMessage)
 	}
+}
+
+// registerAppEventSource exposes an App's runtime events on the control
+// plane's per-session event log (GET /api/sessions/:id/events).
+func registerAppEventSource(sm *server.SessionManager, sessionID string, a *app.App) {
+	sm.RegisterEventSource(sessionID, func(ctx context.Context, send func(any)) {
+		a.SubscribeWith(ctx, func(msg tea.Msg) {
+			if ev, ok := msg.(runtime.Event); ok {
+				send(ev)
+			}
+		})
+	})
 }
 
 // startSessionCoordinator wires local recall delivery for the in-process
@@ -47,6 +73,10 @@ func (f *runExecFlags) startSessionCoordinator(ctx context.Context, out *cli.Pri
 
 	sm := server.NewSessionManager(ctx, nil, rt.SessionStore(), 0, &f.runConfig)
 	guard := sm.AttachRuntime(ctx, sess.ID, rt, sess)
+	// Publish the serving manager so sessions spawned later (TUI tabs) attach
+	// to it too (see recallCoordinatorOpt). Set before the TUI starts, so no
+	// spawn can race it.
+	f.listenSM = sm
 
 	ln, err := server.Listen(ctx, f.listenAddr)
 	if err != nil {
@@ -79,13 +109,7 @@ func (f *runExecFlags) startSessionCoordinator(ctx context.Context, out *cli.Pri
 
 	return func(a *app.App) {
 		app.WithStreamGuard(guard)(a)
-		sm.RegisterEventSource(sess.ID, func(ctx context.Context, send func(any)) {
-			a.SubscribeWith(ctx, func(msg tea.Msg) {
-				if ev, ok := msg.(runtime.Event); ok {
-					send(ev)
-				}
-			})
-		})
+		registerAppEventSource(sm, sess.ID, a)
 		// Route control-plane follow-ups and idle recalls into the TUI App so
 		// each starts a real turn and streams events to every subscriber.
 		sm.RegisterFollowUpInjector(sess.ID, a.InjectUserMessage)
