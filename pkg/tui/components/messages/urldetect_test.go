@@ -6,6 +6,12 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"gotest.tools/v3/assert"
+
+	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tools/builtin/fetch"
+	"github.com/docker/docker-agent/pkg/tui/components/tool"
+	"github.com/docker/docker-agent/pkg/tui/service"
+	"github.com/docker/docker-agent/pkg/tui/types"
 )
 
 func TestFindURLSpans(t *testing.T) {
@@ -272,6 +278,81 @@ func TestUnderlineLine(t *testing.T) {
 			} else {
 				// No change expected
 				assert.Equal(t, tt.line, result)
+			}
+		})
+	}
+}
+
+// TestFetchToolWrappedURLFragmentsResolveFullURL is a regression test for
+// issue #3821: the fetch/api tool renderer wraps a long URL argument like
+// "(<url> (+1 more))" across lines at a fixed width, and only the first
+// fragment (starting with "https://") was clickable — resolving to a
+// truncated URL. Every visible fragment on every rendered line must resolve
+// to the complete URL via OSC 8 detection.
+func TestFetchToolWrappedURLFragmentsResolveFullURL(t *testing.T) {
+	t.Parallel()
+	const longURL = "https://web.archive.org/web/2024/https://www.gnu.org/software/coreutils/manual/html_node/Directories-and-the-Set_002dUser_002dID-and-Set_002dGroup_002dID-Bits.html"
+
+	tests := []struct {
+		name       string
+		args       string
+		status     types.ToolStatus
+		wantLinked string
+	}{
+		{
+			name:       "multiple urls with +1 more suffix",
+			args:       `{"urls": ["` + longURL + `", "https://example.com/other"]}`,
+			status:     types.ToolStatusCompleted,
+			wantLinked: longURL,
+		},
+		{
+			name:       "single url",
+			args:       `{"urls": ["` + longURL + `"]}`,
+			status:     types.ToolStatusCompleted,
+			wantLinked: longURL,
+		},
+		{
+			// While running, the endpoint is shown twice: "(<url>): Calling <url>".
+			name:       "running endpoint",
+			args:       `{"url": "` + longURL + `"}`,
+			status:     types.ToolStatusRunning,
+			wantLinked: longURL + longURL,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			msg := types.ToolCallMessage("agent", tools.ToolCall{
+				ID:       "call-1",
+				Function: tools.FunctionCall{Name: fetch.ToolNameFetch, Arguments: tt.args},
+			}, tools.Tool{Name: fetch.ToolNameFetch}, tt.status)
+
+			view := tool.New(msg, service.StaticSessionState{})
+			_ = view.SetSize(80, 0)
+			lines := strings.Split(view.View(), "\n")
+			assert.Assert(t, len(lines) > 1, "long URL argument should wrap onto multiple lines")
+
+			// Concatenating every cell that resolves to the full URL must
+			// rebuild it exactly: each wrapped fragment is clickable with the
+			// complete destination, and nothing around it (parens, "(+1 more)",
+			// tool badge, result summary) links to it.
+			var linked strings.Builder
+			for _, line := range lines {
+				for col, r := range []rune(ansi.Strip(line)) {
+					if urlAtPosition(line, col) == longURL {
+						linked.WriteRune(r)
+					}
+				}
+			}
+			assert.Equal(t, tt.wantLinked, linked.String())
+
+			// The "(+1 more)" suffix must not be part of any link.
+			for _, line := range lines {
+				plain := ansi.Strip(line)
+				if idx := strings.Index(plain, "(+1 more)"); idx >= 0 {
+					assert.Equal(t, "", urlAtPosition(line, idx+1))
+				}
 			}
 		})
 	}
