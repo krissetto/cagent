@@ -12,6 +12,7 @@ func PolicyFromConfig(name string, cfg *latest.LifecycleConfig) Policy {
 	policy := profilePolicy(profileName(cfg))
 	policy.Logger = slog.With("component", "supervisor", "toolset", name)
 	policy.StartupTimeout = cfg.EffectiveStartupTimeout()
+	policy.CallTimeout = cfg.EffectiveCallTimeout()
 
 	if cfg == nil {
 		return policy

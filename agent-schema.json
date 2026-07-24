@@ -158,11 +158,11 @@
         },
         "startup_timeout": {
           "type": "string",
-          "description": "Cap on the initial Connect+initialize duration. NOTE: not yet enforced; documented for forward compatibility. Go duration format (e.g. '30s', '2m'). 0 means no timeout."
+          "description": "Cap on the initial Connect+initialize duration. Enforced since v1.94.0: on expiry the toolset stays stopped and the runtime retries on the next turn. Go duration format (e.g. '30s', '2m'). 0 means no timeout."
         },
         "call_timeout": {
           "type": "string",
-          "description": "Default per-call timeout. Informational today; the runtime currently uses the caller's context for cancellation."
+          "description": "Cap on an individual tool call, including one reconnect-retry. Enforced: on expiry the call is cancelled and surfaced to the model as a tool error; cancellation is propagated to the server. The budget includes any nested sampling/elicitation time. Go duration format (e.g. '30s', '2m'). 0/unset means no timeout (opt-in; no profile default)."
         },
         "restart": {
           "type": "string",

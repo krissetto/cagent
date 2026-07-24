@@ -36,7 +36,7 @@ import (
 //	  profile: resilient        # strict | resilient | best-effort
 //	  required: false           # block agent startup if not Ready in startup_timeout
 //	  startup_timeout: 30s      # max wait for initial Connect+initialize
-//	  call_timeout: 60s         # default per-call timeout (informational)
+//	  call_timeout: 60s         # enforced per-call timeout; 0/unset = none
 //	  restart: on_failure       # never | on_failure | always
 //	  max_restarts: 5           # consecutive attempts; 0 = profile default; -1 = unlimited
 //	  backoff:
@@ -71,9 +71,15 @@ type LifecycleConfig struct {
 	// profiles default to 0.
 	StartupTimeout Duration `json:"startup_timeout,omitzero" yaml:"startup_timeout,omitempty"`
 
-	// CallTimeout is informational; it documents the user's expectation
-	// for individual tool calls. The runtime currently uses the caller's
-	// context for cancellation.
+	// CallTimeout caps the duration of an individual tool call, including
+	// the one reconnect-retry the toolset may perform on a dropped
+	// session. Enforced by the toolset: on expiry the call is cancelled
+	// and surfaced to the model as a tool error; the shared connection is
+	// not torn down.
+	//
+	// Zero means "no timeout" (use the caller's context, i.e. bounded
+	// only by the session/run deadline). There is no profile default —
+	// call_timeout is opt-in only.
 	CallTimeout Duration `json:"call_timeout,omitzero" yaml:"call_timeout,omitempty"`
 
 	// Restart controls how the supervisor reacts to an unexpected
@@ -172,6 +178,15 @@ func (l *LifecycleConfig) EffectiveStartupTimeout() time.Duration {
 		return l.StartupTimeout.Duration
 	}
 	return profileStartupTimeout(l.Profile)
+}
+
+// EffectiveCallTimeout returns CallTimeout. Zero means "no timeout" — there
+// is no profile default; call_timeout is opt-in only.
+func (l *LifecycleConfig) EffectiveCallTimeout() time.Duration {
+	if l == nil {
+		return 0
+	}
+	return l.CallTimeout.Duration
 }
 
 // profileRequired returns the Required default for the given profile.
