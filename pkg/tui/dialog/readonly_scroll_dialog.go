@@ -54,10 +54,10 @@ func newReadOnlyScrollDialog(
 			scrollview.WithKeyMap(scrollview.ReadOnlyScrollKeyMap()),
 			scrollview.WithReserveScrollbarSpace(true),
 		),
-		closeKey: key.NewBinding(key.WithKeys("esc", "enter", "q"), key.WithHelp("Esc", "close")),
+		closeKey: key.NewBinding(key.WithKeys("esc", "enter", "q")),
 		size:     size,
 		render:   render,
-		helpKeys: []string{"↑↓", "scroll", "Esc", "close"},
+		helpKeys: []string{"↑↓", "scroll"},
 	}
 }
 
@@ -97,7 +97,7 @@ func (d *readOnlyScrollDialog) maxViewport() int {
 	return max(1, maxHeight-fixedLines-dialogChrome)
 }
 
-// dialogHeight computes the actual dialog height based on content and viewport.
+// dialogHeight computes the actual total rendered height based on content and viewport.
 func (d *readOnlyScrollDialog) dialogHeight(contentLineCount int) int {
 	s := d.size
 	maxHeight := min(d.Height()*s.heightPercent/100, s.heightMax)
@@ -105,12 +105,16 @@ func (d *readOnlyScrollDialog) dialogHeight(contentLineCount int) int {
 	return min(needed, maxHeight)
 }
 
+func (d *readOnlyScrollDialog) intrinsicHeight() int {
+	_, contentWidth := d.dialogWidth()
+	allLines := d.render(contentWidth, d.maxViewport())
+	const headerLines = 3
+	return d.dialogHeight(max(0, len(allLines)-headerLines))
+}
+
 func (d *readOnlyScrollDialog) Position() (row, col int) {
 	dw, _ := d.dialogWidth()
-	// Use max possible height for stable centering.
-	s := d.size
-	maxHeight := min(d.Height()*s.heightPercent/100, s.heightMax)
-	return CenterPosition(d.Width(), d.Height(), dw, maxHeight)
+	return CenterPosition(d.Width(), d.Height(), dw, d.intrinsicHeight())
 }
 
 func (d *readOnlyScrollDialog) View() string {

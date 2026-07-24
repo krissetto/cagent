@@ -27,6 +27,37 @@ func newConfirmationEvent(metadata map[string]string) *runtime.ToolCallConfirmat
 	}
 }
 
+func realShellLSConfirmationEvent() *runtime.ToolCallConfirmationEvent {
+	return &runtime.ToolCallConfirmationEvent{
+		Type: "tool_call_confirmation",
+		ToolCall: tools.ToolCall{
+			ID: "call_ls",
+			Function: tools.FunctionCall{
+				Name:      "shell",
+				Arguments: `{"cmd":"ls"}`,
+			},
+		},
+		ToolDefinition: tools.Tool{Name: "shell"},
+	}
+}
+
+func TestToolConfirmationDialog_CompactRealShellLSGeometry(t *testing.T) {
+	const width, height = 165, 47
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(), realShellLSConfirmationEvent(), &service.SessionState{})
+	_, _ = dialog.Update(tea.WindowSizeMsg{Width: width, Height: height})
+
+	view := dialog.View()
+	plain := ansi.Strip(view)
+	assert.Contains(t, plain, "shell  ls")
+	assert.Equal(t, 1, dialog.(*toolConfirmationDialog).scrollView.RenderedContentHeight(),
+		"decoded shell ls renders one intrinsic tool row")
+	assert.Equal(t, 12, lipgloss.Height(view),
+		"one-row content uses content height plus fixed prompt chrome, not the 80% viewport cap")
+	row, col := dialog.Position()
+	assert.Equal(t, (height-lipgloss.Height(view))/2, row)
+	assert.Equal(t, (width-lipgloss.Width(view))/2, col)
+}
+
 func TestToolConfirmationDialog_RendersMetadata(t *testing.T) {
 	t.Parallel()
 

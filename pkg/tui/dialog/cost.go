@@ -65,7 +65,7 @@ func NewCostDialog(sess *session.Session) Dialog {
 			scrollview.WithReserveScrollbarSpace(true),
 		),
 		keyMap: costDialogKeyMap{
-			Close: key.NewBinding(key.WithKeys("esc", "enter", "q"), key.WithHelp("Esc", "close")),
+			Close: key.NewBinding(key.WithKeys("esc", "enter", "q")),
 			Copy:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy")),
 		},
 	}
@@ -551,7 +551,7 @@ func (d *costDialog) applyScrolling(allLines []string, contentWidth, maxHeight i
 
 	// Build final output. Use slices.Clone to avoid mutating allLines.
 	parts := slices.Clone(allLines[:headerLines])
-	parts = append(parts, d.scrollview.View(), "", RenderHelpKeys(regionWidth, "↑↓", "scroll", "c", "copy", "Esc", "close"))
+	parts = append(parts, d.scrollview.View(), "", RenderHelpKeys(regionWidth, "↑↓", "scroll", "c", "copy"))
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 

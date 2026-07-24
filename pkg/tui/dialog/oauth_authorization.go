@@ -1,3 +1,4 @@
+//nolint:gocritic // Dialog command returns intentionally preserve Bubble Tea evaluation shape.
 package dialog
 
 import (
@@ -8,7 +9,6 @@ import (
 
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/tools"
-	"github.com/docker/docker-agent/pkg/tui/core"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
 	"github.com/docker/docker-agent/pkg/tui/styles"
 )
@@ -25,14 +25,11 @@ type oauthAuthorizationDialog struct {
 }
 
 // NewOAuthAuthorizationDialog creates a new OAuth authorization confirmation dialog.
-// elicitationID is variadic for the same backward-compatibility reason as
-// NewElicitationDialog (see firstElicitationID); at most the first value is
-// meaningful.
-func NewOAuthAuthorizationDialog(ctx context.Context, serverURL string, appInstance *app.App, elicitationID ...string) Dialog {
+func NewOAuthAuthorizationDialog(ctx context.Context, serverURL string, appInstance *app.App, elicitationID string) Dialog {
 	return &oauthAuthorizationDialog{
 		ctx:           func() context.Context { return context.WithoutCancel(ctx) },
 		serverURL:     serverURL,
-		elicitationID: firstElicitationID(elicitationID),
+		elicitationID: elicitationID,
 		app:           appInstance,
 		keyMap:        DefaultConfirmKeyMap(),
 	}
@@ -43,12 +40,41 @@ func (d *oauthAuthorizationDialog) Init() tea.Cmd {
 	return nil
 }
 
+// CancelDialogCmd declines exactly like the No key, atomically closing
+// the dialog and answering the runtime waiter.
+func (d *oauthAuthorizationDialog) CancelDialogCmd() tea.Cmd {
+	return d.respond(tools.ElicitationActionDecline)
+}
+
+func (d *oauthAuthorizationDialog) OutsideClickDismissCmd() tea.Cmd {
+	return d.CancelDialogCmd()
+}
+
+func (d *oauthAuthorizationDialog) respond(action tools.ElicitationAction) tea.Cmd {
+	return CloseWithElicitationResponse(action, nil, d.elicitationID)
+}
+
+func (d *oauthAuthorizationDialog) layout() DialogLayout {
+	view := d.View()
+	row, col := d.CenterDialog(view)
+	return NewDialogLayout(view, row, col)
+}
+
 // Update handles messages for the OAuth authorization confirmation dialog
 func (d *oauthAuthorizationDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		cmd := d.SetSize(msg.Width, msg.Height)
 		return d, cmd
+
+	case tea.MouseClickMsg:
+		if msg.Button == tea.MouseLeft && d.CloseButtonHit(msg, d.layout()) {
+			return d, d.respond(tools.ElicitationActionDecline)
+		}
+
+	case tea.MouseMotionMsg:
+		d.HandleMouseMotion(msg.X, msg.Y, d.layout())
+		return d, nil
 
 	case tea.KeyPressMsg:
 		if cmd := HandleQuit(msg); cmd != nil {
@@ -57,12 +83,10 @@ func (d *oauthAuthorizationDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 
 		model, cmd, handled := HandleConfirmKeys(msg, d.keyMap,
 			func() (layout.Model, tea.Cmd) {
-				_ = d.app.ResumeElicitation(d.ctx(), tools.ElicitationActionAccept, nil, d.elicitationID)
-				return d, core.CmdHandler(CloseDialogMsg{})
+				return d, d.respond(tools.ElicitationActionAccept)
 			},
 			func() (layout.Model, tea.Cmd) {
-				_ = d.app.ResumeElicitation(d.ctx(), tools.ElicitationActionDecline, nil, d.elicitationID)
-				return d, core.CmdHandler(CloseDialogMsg{})
+				return d, d.respond(tools.ElicitationActionDecline)
 			},
 		)
 		if handled {
@@ -105,8 +129,5 @@ func (d *oauthAuthorizationDialog) View() string {
 		AddHelpKeys("Y", "authorize", "N", "decline").
 		Build()
 
-	return styles.DialogWarningStyle.
-		Padding(1, 2).
-		Width(dialogWidth).
-		Render(content)
+	return d.RenderCard(styles.DialogWarningStyle, dialogWidth, content)
 }

@@ -38,7 +38,7 @@ func defaultPickerKeyMap() pickerKeyMap {
 		Up:     key.NewBinding(key.WithKeys("up", "ctrl+k"), key.WithHelp("↑/ctrl+k", "up")),
 		Down:   key.NewBinding(key.WithKeys("down", "ctrl+j"), key.WithHelp("↓/ctrl+j", "down")),
 		Enter:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "execute")),
-		Escape: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close")),
+		Escape: key.NewBinding(key.WithKeys("esc")),
 	}
 }
 
@@ -131,9 +131,9 @@ func newPickerCore(layout pickerLayout, placeholder string) pickerCore {
 // Content width subtracts horizontal chrome and reserved scrollbar columns.
 func (p *pickerCore) dialogSize() (dialogWidth, maxHeight, contentWidth int) {
 	l := p.layout
-	dialogWidth = max(min(p.Width()*l.WidthPercent/100, l.MaxWidth), l.MinWidth)
-	maxHeight = min(p.Height()*l.HeightPercent/100, l.MaxHeight)
-	contentWidth = dialogWidth - pickerHorizontalChrome - p.scrollview.ReservedCols()
+	dialogWidth = min(max(min(p.Width()*l.WidthPercent/100, l.MaxWidth), l.MinWidth), max(1, p.Width()))
+	maxHeight = min(min(p.Height()*l.HeightPercent/100, l.MaxHeight), max(1, p.Height()))
+	contentWidth = max(1, dialogWidth-pickerHorizontalChrome-p.scrollview.ReservedCols())
 	return dialogWidth, maxHeight, contentWidth
 }
 

@@ -1,3 +1,4 @@
+//nolint:gocritic // Dialog command returns intentionally preserve Bubble Tea evaluation shape.
 package dialog
 
 import (
@@ -43,6 +44,26 @@ func (d *maxIterationsDialog) Init() tea.Cmd {
 	return nil
 }
 
+func (d *maxIterationsDialog) layout() DialogLayout {
+	view := d.View()
+	row, col := d.CenterDialog(view)
+	return NewDialogLayout(view, row, col)
+}
+
+// OutsideClickDismissCmd keeps this runtime decision open until explicitly answered.
+func (d *maxIterationsDialog) OutsideClickDismissCmd() tea.Cmd { return nil }
+
+func (d *maxIterationsDialog) approveCmd() tea.Cmd {
+	return core.CmdHandler(RuntimeResumeMsg{Request: runtime.ResumeApprove()})
+}
+
+func (d *maxIterationsDialog) rejectCmd() tea.Cmd {
+	return tea.Sequence(
+		core.CmdHandler(CloseDialogMsg{}),
+		core.CmdHandler(RuntimeResumeMsg{Request: runtime.ResumeReject("")}),
+	)
+}
+
 // Update handles messages for the max iterations confirmation dialog
 func (d *maxIterationsDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -50,27 +71,37 @@ func (d *maxIterationsDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		cmd := d.SetSize(msg.Width, msg.Height)
 		return d, cmd
 
+	case tea.MouseClickMsg:
+		if msg.Button == tea.MouseLeft {
+			dl := d.layout()
+			if d.CloseButtonHit(msg, dl) {
+				return d, d.rejectCmd()
+			}
+			if cmd := d.HandleConfirmButtonsClick(msg, dl, styles.DialogWarningStyle, d.approveCmd()); cmd != nil {
+				// No normally only closes; this dialog must preserve its existing reject response.
+				contentLeft := dl.Col + styles.DialogWarningStyle.GetBorderLeftSize() + styles.DialogWarningStyle.GetPaddingLeft()
+				if msg.X >= contentLeft+d.confirmBtnNoX && msg.X < contentLeft+d.confirmBtnNoX+d.confirmBtnNoW {
+					return d, d.rejectCmd()
+				}
+				return d, cmd
+			}
+		}
+
+	case tea.MouseMotionMsg:
+		d.HandleMouseMotion(msg.X, msg.Y, d.layout())
+		return d, nil
+
 	case tea.KeyPressMsg:
 		if cmd := HandleQuit(msg); cmd != nil {
 			return d, cmd
 		}
-
-		model, cmd, handled := HandleConfirmKeys(msg, d.keyMap,
-			func() (layout.Model, tea.Cmd) {
-				return d, tea.Sequence(
-					core.CmdHandler(CloseDialogMsg{}),
-					core.CmdHandler(RuntimeResumeMsg{Request: runtime.ResumeApprove()}),
-				)
-			},
-			func() (layout.Model, tea.Cmd) {
-				return d, tea.Sequence(
-					core.CmdHandler(CloseDialogMsg{}),
-					core.CmdHandler(RuntimeResumeMsg{Request: runtime.ResumeReject("")}),
-				)
-			},
-		)
-		if handled {
-			return model, cmd
+		switch d.HandleConfirmKey(msg, d.keyMap) {
+		case ConfirmKeyConfirmed:
+			return d, ConfirmAndClose(d.approveCmd())
+		case ConfirmKeyCancelled:
+			return d, d.rejectCmd()
+		case ConfirmKeyFocusToggled:
+			return d, nil
 		}
 	}
 
@@ -100,13 +131,10 @@ func (d *maxIterationsDialog) View() string {
 		AddSpace().
 		AddContent(styles.DialogQuestionStyle.Width(contentWidth).Render(wrapDisplayText(questionText, contentWidth))).
 		AddSpace().
-		AddHelpKeys("Y", "yes", "N", "no").
+		AddContent(d.RenderConfirmButtons(contentWidth)).
 		Build()
 
-	// DialogWarningStyle already includes Padding(1, 2)
-	return styles.DialogWarningStyle.
-		Width(dialogWidth).
-		Render(content)
+	return d.RenderCard(styles.DialogWarningStyle, dialogWidth, content)
 }
 
 // wrapDisplayText wraps text based on display cell width.
@@ -137,3 +165,6 @@ func wrapDisplayText(text string, maxWidth int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// DialogClosable keeps this mandatory decision free of dismiss chrome.
+func (d *maxIterationsDialog) DialogClosable() bool { return false }

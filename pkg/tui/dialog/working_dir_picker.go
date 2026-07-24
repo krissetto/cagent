@@ -745,7 +745,7 @@ func (d *workingDirPickerDialog) helpKeys() []string {
 	if label := d.pinHelpLabel(); label != "" {
 		keys = append(keys, "ctrl+p", label)
 	}
-	return append(keys, "esc", "cancel")
+	return keys
 }
 
 func (d *workingDirPickerDialog) renderTabs(width int) string {

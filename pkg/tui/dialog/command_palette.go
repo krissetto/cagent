@@ -276,7 +276,7 @@ func (d *commandPaletteDialog) View() string {
 		AddSeparator().
 		AddContent(scrollableContent).
 		AddSpace().
-		AddHelpKeys("↑/↓", "navigate", "enter", "execute", "esc", "close").
+		AddHelpKeys("↑/↓", "navigate", "enter", "execute").
 		Build()
 
 	return styles.DialogStyle.Width(dialogWidth).Render(content)

@@ -588,7 +588,6 @@ func (d *sessionBrowserDialog) View() string {
 		}
 		secondHelpLine = append(secondHelpLine, "ctrl+g", workspaceDesc)
 	}
-	secondHelpLine = append(secondHelpLine, "esc", "close")
 
 	content := NewContent(regionWidth).
 		AddTitle(title).

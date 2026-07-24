@@ -1,11 +1,18 @@
+//nolint:gocritic // Dialog command returns intentionally preserve Bubble Tea evaluation shape.
 package dialog
 
 import (
+	"strings"
+
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
+	"github.com/docker/docker-agent/pkg/tui/core"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
 	"github.com/docker/docker-agent/pkg/tui/messages"
+	"github.com/docker/docker-agent/pkg/tui/styles"
 )
 
 // OpenDialogMsg is sent to open a new dialog.
@@ -34,6 +41,26 @@ type Dialog interface {
 	Position() (int, int) // Returns (row, col) for dialog placement
 }
 
+// OutsideClickDismisser allows mandatory dialogs to explicitly ignore the
+// default outside-left-click cancellation policy. Returning nil keeps the
+// dialog open. Outside clicks must never perform an affirmative action.
+type OutsideClickDismisser interface {
+	OutsideClickDismissCmd() tea.Cmd
+}
+
+// SemanticCloser defines the cancellation transaction for shared close chrome
+// and outside-click dismissal. It must be identical to the dialog's Escape
+// path, including protocol responses and preview rollback.
+type SemanticCloser interface {
+	CancelDialogCmd() tea.Cmd
+}
+
+// ClosePolicy explicitly disables shared close chrome for decisions that must
+// be answered in-dialog. Dialogs are closable by default.
+type ClosePolicy interface {
+	DialogClosable() bool
+}
+
 // Manager manages the dialog stack and rendering
 type Manager interface {
 	layout.Model
@@ -54,13 +81,16 @@ type Manager interface {
 	// so the same instance (with any in-progress input) can be re-opened on
 	// return.
 	TopDialog() Dialog
+	// TakeVisualDirty reports and clears an explicit pointer-driven visible mutation.
+	TakeVisualDirty() bool
 }
 
 // dialogEntry pairs a dialog with its drag offset so the two stay in sync.
 type dialogEntry struct {
-	dialog  Dialog
-	offsetX int // accumulated horizontal drag displacement
-	offsetY int // accumulated vertical drag displacement
+	dialog       Dialog
+	closeHovered bool // hover belongs to this stack entry's open lifecycle
+	offsetX      int  // accumulated horizontal drag displacement
+	offsetY      int  // accumulated vertical drag displacement
 	// originatingEvent is the runtime event that caused this dialog to open,
 	// when applicable. A non-nil value marks the dialog as a background
 	// dialog (see OpenDialogMsg.OriginatingEvent).
@@ -81,6 +111,7 @@ type manager struct {
 	width, height int
 	stack         []dialogEntry
 	drag          dragState
+	visualDirty   bool
 }
 
 // New creates a new dialog component manager
@@ -115,19 +146,47 @@ func (d *manager) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	case CloseAllDialogsMsg:
 		return d.handleCloseAll()
 
-	case tea.MouseClickMsg:
-		if msg.Button == tea.MouseLeft && d.handleDragStart(msg.X, msg.Y) {
-			return d, nil
+	case tea.KeyPressMsg:
+		// Ctrl-C is a cancellation gesture while a dialog is open. The root
+		// decides whether to open exit confirmation only when no dialog exists;
+		// there is no special case for an exit-confirmation dialog here.
+		if key.Matches(msg, core.GetKeys().Quit) {
+			return d, d.semanticCloseTop()
 		}
-		cmd := d.forwardToTop(d.adjustMouseMsg(msg))
+
+	case tea.MouseClickMsg:
+		adjusted := d.adjustMouseMsg(msg)
+		if msg.Button == tea.MouseLeft {
+			if cmd := d.handleOutsideClickDismiss(msg); cmd != nil {
+				return d, cmd
+			}
+			// Only the narrow close control gets first refusal in the title
+			// zone. All other title clicks start dragging before ordinary
+			// dialog body hit testing (for example a broad URL click handler).
+			if d.closeButtonHit(msg.X, msg.Y) {
+				return d, d.semanticCloseTop()
+			}
+			if d.handleDragStart(msg.X, msg.Y) {
+				return d, nil
+			}
+			return d, d.forwardToTop(adjusted)
+		}
+		cmd := d.forwardToTop(adjusted)
 		return d, cmd
 
 	case tea.MouseMotionMsg:
+		if len(d.stack) > 0 {
+			top := len(d.stack) - 1
+			hovered := d.closeButtonHit(msg.X, msg.Y)
+			d.visualDirty = d.visualDirty || hovered != d.stack[top].closeHovered
+			d.stack[top].closeHovered = hovered
+		}
 		if d.drag.active {
-			d.handleDragMotion(msg.X, msg.Y)
+			d.visualDirty = d.handleDragMotion(msg.X, msg.Y) || d.visualDirty
 			return d, nil
 		}
 		cmd := d.forwardToTop(d.adjustMouseMsg(msg))
+		d.takeTopVisualDirty()
 		return d, cmd
 
 	case tea.MouseReleaseMsg:
@@ -140,10 +199,12 @@ func (d *manager) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		cmd := d.forwardToTop(d.adjustMouseMsg(msg))
+		d.takeTopVisualDirty()
 		return d, cmd
 
 	case messages.WheelCoalescedMsg:
 		cmd := d.forwardToTop(d.adjustMouseMsg(msg))
+		d.takeTopVisualDirty()
 		return d, cmd
 	}
 
@@ -157,7 +218,7 @@ func (d *manager) View() string {
 	if len(d.stack) == 0 {
 		return ""
 	}
-	return d.stack[len(d.stack)-1].dialog.View()
+	return d.entryView(&d.stack[len(d.stack)-1])
 }
 
 // broadcastToAll sends a message to every dialog in the stack and batches the resulting commands.
@@ -221,13 +282,24 @@ func (d *manager) handleDragStart(x, y int) bool {
 }
 
 // handleDragMotion updates the drag offset during a drag operation.
-func (d *manager) handleDragMotion(x, y int) {
+func (d *manager) handleDragMotion(x, y int) bool {
 	if len(d.stack) == 0 {
-		return
+		return false
 	}
 	e := &d.stack[len(d.stack)-1]
-	e.offsetX = d.drag.origDX + (x - d.drag.startX)
-	e.offsetY = d.drag.origDY + (y - d.drag.startY)
+	oldX, oldY := e.offsetX, e.offsetY
+	row, col := e.dialog.Position()
+	view := e.dialog.View()
+	w, h := lipgloss.Width(view), lipgloss.Height(view)
+	proposedX := d.drag.origDX + (x - d.drag.startX)
+	proposedY := d.drag.origDY + (y - d.drag.startY)
+	// Keep the complete dialog in the terminal viewport when it fits; for an
+	// oversized dialog, keep its top-left reachable.
+	maxCol := max(0, d.width-w)
+	maxRow := max(0, d.height-h)
+	e.offsetX = min(max(proposedX, -col), maxCol-col)
+	e.offsetY = min(max(proposedY, -row), maxRow-row)
+	return oldX != e.offsetX || oldY != e.offsetY
 }
 
 // adjustMouseMsg adjusts mouse coordinates in a message to account for the drag offset
@@ -266,8 +338,92 @@ func (d *manager) adjustMouseMsg(msg tea.Msg) tea.Msg {
 	return msg
 }
 
+// closeButtonHit reports whether screen coordinates hit the one-cell close
+// control on the top border of the topmost dialog.
+func (d *manager) closeButtonHit(x, y int) bool {
+	if len(d.stack) == 0 || !dialogClosable(d.stack[len(d.stack)-1].dialog) {
+		return false
+	}
+	e := d.stack[len(d.stack)-1]
+	row, col := e.dialog.Position()
+	row += e.offsetY
+	col += e.offsetX
+	width := lipgloss.Width(e.dialog.View())
+	return y == row+styles.DialogStyle.GetBorderTopSize() &&
+		x == col+width-styles.DialogStyle.GetBorderRightSize()-1-dialogCloseInset
+}
+
+func dialogClosable(dialog Dialog) bool {
+	if policy, ok := dialog.(ClosePolicy); ok && !policy.DialogClosable() {
+		return false
+	}
+	_, ok := dialog.(SemanticCloser)
+	return ok
+}
+
+func (d *manager) semanticCloseTop() tea.Cmd {
+	if len(d.stack) == 0 {
+		return nil
+	}
+	closer, ok := d.stack[len(d.stack)-1].dialog.(SemanticCloser)
+	if !ok {
+		return nil
+	}
+	return closer.CancelDialogCmd()
+}
+
+func (d *manager) entryView(e *dialogEntry) string {
+	view := e.dialog.View()
+	if dialogClosable(e.dialog) {
+		view = renderCloseControl(view, e.closeHovered)
+	}
+	return clampRenderedFrame(view, d.width, d.height)
+}
+
+func clampRenderedFrame(view string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i := range lines {
+		lines[i] = ansi.Truncate(lines[i], width, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// handleOutsideClickDismiss applies cancellation on an outside left click
+// while preserving each entry's drag offset. Mandatory dialogs may opt out;
+// no outside click is allowed to select an affirmative action.
+func (d *manager) handleOutsideClickDismiss(msg tea.MouseClickMsg) tea.Cmd {
+	if len(d.stack) == 0 {
+		return nil
+	}
+	e := d.stack[len(d.stack)-1]
+	row, col := e.dialog.Position()
+	row += e.offsetY
+	col += e.offsetX
+	view := e.dialog.View()
+	if msg.X >= col && msg.X < col+lipgloss.Width(view) && msg.Y >= row && msg.Y < row+lipgloss.Height(view) {
+		return nil
+	}
+	if dismisser, ok := e.dialog.(OutsideClickDismisser); ok {
+		return dismisser.OutsideClickDismissCmd()
+	}
+	return d.semanticCloseTop()
+}
+
+func resetDialogCloseHover(dialog Dialog) {
+	if resetter, ok := dialog.(interface{ ResetCloseHover() }); ok {
+		resetter.ResetCloseHover()
+	}
+}
+
 // handleOpen processes dialog opening requests and adds to stack
 func (d *manager) handleOpen(msg OpenDialogMsg) (layout.Model, tea.Cmd) {
+	resetDialogCloseHover(msg.Model)
 	d.stack = append(d.stack, dialogEntry{
 		dialog:           msg.Model,
 		originatingEvent: msg.OriginatingEvent,
@@ -292,6 +448,11 @@ func (d *manager) handleClose() (layout.Model, tea.Cmd) {
 		d.stack = d.stack[:len(d.stack)-1]
 	}
 	d.drag.active = false
+	if len(d.stack) > 0 {
+		top := len(d.stack) - 1
+		d.stack[top].closeHovered = false
+		resetDialogCloseHover(d.stack[top].dialog)
+	}
 	return d, nil
 }
 
@@ -347,6 +508,21 @@ func (d *manager) TopDialog() Dialog {
 	return d.stack[len(d.stack)-1].dialog
 }
 
+func (d *manager) takeTopVisualDirty() {
+	if len(d.stack) == 0 {
+		return
+	}
+	if dirty, ok := d.stack[len(d.stack)-1].dialog.(interface{ TakeVisualDirty() bool }); ok {
+		d.visualDirty = dirty.TakeVisualDirty() || d.visualDirty
+	}
+}
+
+func (d *manager) TakeVisualDirty() bool {
+	dirty := d.visualDirty
+	d.visualDirty = false
+	return dirty
+}
+
 func (d *manager) SetSize(width, height int) tea.Cmd {
 	d.width = width
 	d.height = height
@@ -375,7 +551,7 @@ func (d *manager) GetLayers() []*lipgloss.Layer {
 
 	layers := make([]*lipgloss.Layer, 0, len(d.stack))
 	for _, e := range d.stack {
-		view := e.dialog.View()
+		view := d.entryView(&e)
 		row, col := e.dialog.Position()
 		layers = append(layers, lipgloss.NewLayer(view).X(col+e.offsetX).Y(row+e.offsetY))
 	}

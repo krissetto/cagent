@@ -95,6 +95,9 @@ type Model interface {
 	AddAgentReturn(fromAgent, toAgent string) tea.Cmd
 	LoadFromSession(sess *session.Session) tea.Cmd
 
+	// RenderedContentHeight returns intrinsic rendered rows before clipping/slack.
+	RenderedContentHeight() int
+
 	// StopAnimations unregisters every view from the animation coordinator.
 	// Call it when the list is discarded or its host view goes away, so
 	// abandoned spinners do not keep the tick stream alive.
@@ -2229,6 +2232,12 @@ func (m *model) AdjustBottomSlack(delta int) {
 // Always reserves space for scrollbar (gap + bar) to prevent layout shifts.
 func (m *model) contentWidth() int {
 	return m.scrollview.ContentWidth()
+}
+
+// RenderedContentHeight returns intrinsic rendered rows before clipping/slack.
+func (m *model) RenderedContentHeight() int {
+	m.ensureAllItemsRendered()
+	return m.totalHeight
 }
 
 func (m *model) totalScrollableHeight() int {

@@ -201,9 +201,7 @@ func (d *multiChoiceDialog) computeHelpAndButtonsWidth() int {
 		numOptions++
 	}
 
-	helpParts := []string{
-		keyStyle.Render("Esc") + " " + helpStyle.Render("cancel"),
-	}
+	helpParts := []string{}
 	if numOptions > 0 {
 		helpParts = append(helpParts, keyStyle.Render("↑/↓ "+formatKeyRange(numOptions))+" "+helpStyle.Render("select"))
 	} else {
@@ -557,6 +555,10 @@ func (d *multiChoiceDialog) handleMouseClick(x, y int) (layout.Model, tea.Cmd) {
 	return d, nil
 }
 
+func (d *multiChoiceDialog) CancelDialogCmd() tea.Cmd {
+	return d.sendResult(MultiChoiceResult{IsCancelled: true})
+}
+
 // sendResult creates the command to close dialog and send result.
 func (d *multiChoiceDialog) sendResult(result MultiChoiceResult) tea.Cmd {
 	return tea.Sequence(
@@ -769,9 +771,7 @@ func (d *multiChoiceDialog) renderHelpAndButtons(contentWidth int) string {
 		numOptions++
 	}
 
-	helpParts := []string{
-		keyStyle.Render("Esc") + " " + helpStyle.Render("cancel"),
-	}
+	helpParts := []string{}
 	if numOptions > 0 {
 		helpParts = append(helpParts, keyStyle.Render("↑/↓ "+formatKeyRange(numOptions))+" "+helpStyle.Render("select"))
 	} else {

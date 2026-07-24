@@ -193,6 +193,12 @@ func (d *ElicitationDialog) Init() tea.Cmd {
 	return nil
 }
 
+// OutsideClickDismissCmd cancels exactly like Escape, atomically closing the
+// dialog and answering the runtime waiter.
+func (d *ElicitationDialog) OutsideClickDismissCmd() tea.Cmd {
+	return d.close(tools.ElicitationActionCancel, nil)
+}
+
 func (d *ElicitationDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// Let the scrollview consume mouse wheel/scrollbar drag and the
 	// PgUp/PgDn/Home/End keys before falling through to dialog handling.
@@ -399,6 +405,10 @@ func (d *ElicitationDialog) isTextInputField() bool {
 	}
 	ft := d.fields[d.currentField].Type
 	return ft != "boolean" && ft != "enum"
+}
+
+func (d *ElicitationDialog) CancelDialogCmd() tea.Cmd {
+	return d.close(tools.ElicitationActionCancel, nil)
 }
 
 func (d *ElicitationDialog) close(action tools.ElicitationAction, content map[string]any) tea.Cmd {
@@ -643,7 +653,7 @@ func (d *ElicitationDialog) helpPairs() []string {
 	if len(d.fields) > 0 {
 		pairs = append(pairs, "tab", "next field")
 	}
-	pairs = append(pairs, "enter", "submit", "esc", "cancel")
+	pairs = append(pairs, "enter", "submit")
 	if d.scrollview.NeedsScrollbar() {
 		pairs = append(pairs, "pgup/pgdn", "scroll")
 	}

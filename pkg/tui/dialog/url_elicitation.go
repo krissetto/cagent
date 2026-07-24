@@ -1,3 +1,4 @@
+//nolint:gocritic // Dialog command returns intentionally preserve Bubble Tea evaluation shape.
 package dialog
 
 import (
@@ -28,16 +29,13 @@ type URLElicitationDialog struct {
 	openBrowser   key.Binding
 }
 
-// NewURLElicitationDialog creates a new URL elicitation dialog. elicitationID
-// is variadic for the same backward-compatibility reason as
-// NewElicitationDialog (see firstElicitationID); at most the first value is
-// meaningful.
-func NewURLElicitationDialog(ctx context.Context, message, url string, elicitationID ...string) Dialog {
+// NewURLElicitationDialog creates a new URL elicitation dialog.
+func NewURLElicitationDialog(ctx context.Context, message, url, elicitationID string) Dialog {
 	return &URLElicitationDialog{
 		ctx:           func() context.Context { return context.WithoutCancel(ctx) },
 		message:       message,
 		url:           url,
-		elicitationID: firstElicitationID(elicitationID),
+		elicitationID: elicitationID,
 		keyMap:        DefaultConfirmKeyMap(),
 		escape:        key.NewBinding(key.WithKeys("esc")),
 		openBrowser: key.NewBinding(
@@ -49,6 +47,16 @@ func NewURLElicitationDialog(ctx context.Context, message, url string, elicitati
 
 func (d *URLElicitationDialog) Init() tea.Cmd {
 	return nil
+}
+
+func (d *URLElicitationDialog) CancelDialogCmd() tea.Cmd {
+	return d.respond(tools.ElicitationActionCancel)
+}
+
+// OutsideClickDismissCmd cancels exactly like Escape, atomically closing the
+// dialog and answering the runtime waiter.
+func (d *URLElicitationDialog) OutsideClickDismissCmd() tea.Cmd {
+	return d.respond(tools.ElicitationActionCancel)
 }
 
 func (d *URLElicitationDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
@@ -75,10 +83,22 @@ func (d *URLElicitationDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 			return d, cmd
 		}
 	case tea.MouseClickMsg:
+		if msg.Button != tea.MouseLeft {
+			return d, nil
+		}
+		view := d.View()
+		row, col := d.CenterDialog(view)
+		if d.CloseButtonHit(msg, NewDialogLayout(view, row, col)) {
+			return d, d.respond(tools.ElicitationActionCancel)
+		}
 		if d.url != "" {
 			cmd := d.openURLInBrowser()
 			return d, cmd
 		}
+	case tea.MouseMotionMsg:
+		view := d.View()
+		row, col := d.CenterDialog(view)
+		d.HandleMouseMotion(msg.X, msg.Y, NewDialogLayout(view, row, col))
 	}
 	return d, nil
 }
@@ -124,7 +144,7 @@ func (d *URLElicitationDialog) View() string {
 
 	content.AddHelp("Press Y when you have completed the action, or N to decline.")
 	content.AddSpace()
-	content.AddHelpKeys("Y", "confirm", "N", "decline", "o", "open", "esc", "cancel")
+	content.AddHelpKeys("Y", "confirm", "N", "decline", "o", "open")
 
-	return styles.DialogStyle.Width(dialogWidth).Render(content.Build())
+	return d.RenderCard(styles.DialogStyle, dialogWidth, content.Build())
 }
