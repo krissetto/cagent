@@ -248,7 +248,11 @@ func (t *ScriptToolSet) execute(ctx context.Context, rt tools.Runtime, toolConfi
 	// stay literal because env values may legitimately contain $ (issue
 	// #2615).
 	for _, key := range slices.Sorted(maps.Keys(toolConfig.Env)) {
-		envCopy = append(envCopy, key+"="+path.ExpandEnvRefs(toolConfig.Env[key]))
+		val := path.ExpandEnvRefs(toolConfig.Env[key])
+		if strings.ContainsRune(val, 0) {
+			return tools.ResultError(fmt.Sprintf("configured environment variable %q contains a NUL byte", key)), nil
+		}
+		envCopy = append(envCopy, key+"="+val)
 	}
 	for key, value := range params {
 		if value == nil {

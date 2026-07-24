@@ -49,6 +49,8 @@ type ToolSet struct {
 	manager       *rag.Manager
 	toolName      string
 	eventCallback EventCallback
+	cancelWatcher context.CancelFunc
+	watcherDone   chan struct{}
 }
 
 // Verify interface compliance.
@@ -84,9 +86,15 @@ func (t *ToolSet) Start(ctx context.Context) error {
 		return nil
 	}
 
+	// We create a child context so we can explicitly cancel the watcher and event goroutines
+	// when Stop() is called, preventing goroutine leaks if the parent context outlives this toolset.
+	watchCtx, cancel := context.WithCancel(ctx)
+	t.cancelWatcher = cancel
+	t.watcherDone = make(chan struct{})
+
 	// Forward RAG manager events if a callback is set.
 	if t.eventCallback != nil {
-		go t.forwardEvents(ctx)
+		go t.forwardEvents(watchCtx)
 	}
 
 	if err := t.manager.Initialize(ctx); err != nil {
@@ -94,8 +102,9 @@ func (t *ToolSet) Start(ctx context.Context) error {
 	}
 
 	go func() {
-		if err := t.manager.StartFileWatcher(ctx); err != nil {
-			slog.ErrorContext(ctx, "Failed to start RAG file watcher", "tool", t.toolName, "error", err)
+		defer close(t.watcherDone)
+		if err := t.manager.StartFileWatcher(watchCtx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.ErrorContext(watchCtx, "Failed to start RAG file watcher", "tool", t.toolName, "error", err)
 		}
 	}()
 	return nil
@@ -105,6 +114,10 @@ func (t *ToolSet) Start(ctx context.Context) error {
 func (t *ToolSet) Stop(_ context.Context) error {
 	if t.manager == nil {
 		return nil
+	}
+	if t.cancelWatcher != nil {
+		t.cancelWatcher()
+		<-t.watcherDone
 	}
 	return t.manager.Close()
 }

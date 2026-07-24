@@ -31,13 +31,13 @@ func createProcessGroup(proc *os.Process) (*processGroup, error) {
 	if _, err := windows.SetInformationJobObject(
 		job,
 		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&info)),
+		uintptr(unsafe.Pointer(&info)), //nolint:gosec // Windows API requires unsafe.Pointer
 		uint32(unsafe.Sizeof(info))); err != nil {
 		_ = windows.CloseHandle(job)
 		return nil, err
 	}
 
-	handle, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(proc.Pid))
+	handle, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(proc.Pid)) //nolint:gosec // proc.Pid fits in uint32 on Windows
 	if err != nil {
 		_ = windows.CloseHandle(job)
 		return nil, err

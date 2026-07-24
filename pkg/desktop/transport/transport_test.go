@@ -243,7 +243,10 @@ func TestFallbackTransport_NonSocketErrorDoesNotDisableProxy(t *testing.T) {
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.invalid/", http.NoBody)
 	require.NoError(t, err)
 
-	resp, err := ft.RoundTrip(req) //nolint:bodyclose // resp is nil on error, checked below
+	resp, err := ft.RoundTrip(req)
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+	}
 	require.Error(t, err)
 	require.Nil(t, resp)
 	assert.True(t, errors.Is(err, upstreamErr) || err.Error() == upstreamErr.Error())

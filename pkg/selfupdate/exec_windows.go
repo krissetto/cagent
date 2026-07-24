@@ -3,6 +3,8 @@
 package selfupdate
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,9 +29,9 @@ func swapBinary(dst, src string) error {
 		if cpErr := atomicWriteFromFile(dst, src); cpErr != nil {
 			// Roll back so we never leave the install without a binary.
 			if rbErr := os.Rename(old, dst); rbErr != nil {
-				return fmt.Errorf("installing new binary: %w (copy fallback failed: %v; rollback also failed: %v)", err, cpErr, rbErr)
+				return fmt.Errorf("installing new binary: %w (copy fallback failed: %w; rollback also failed: %w)", err, cpErr, rbErr)
 			}
-			return fmt.Errorf("installing new binary: %w (copy fallback failed: %v)", err, cpErr)
+			return fmt.Errorf("installing new binary: %w (copy fallback failed: %w)", err, cpErr)
 		}
 		_ = os.Remove(src)
 	}
@@ -48,7 +50,7 @@ func reExecProcess(path string, args, env []string) error {
 		childArgs = args[1:]
 	}
 
-	cmd := exec.Command(path, childArgs...) //nolint:gosec // path is our own freshly installed binary
+	cmd := exec.CommandContext(context.Background(), path, childArgs...)
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -69,9 +71,5 @@ func reExecProcess(path string, args, env []string) error {
 // asExitError is a tiny helper kept separate so exec_unix.go does not need to
 // import errors solely for this Windows branch.
 func asExitError(err error, target **exec.ExitError) bool {
-	if e, ok := err.(*exec.ExitError); ok { //nolint:errorlint // direct type assertion is intentional here
-		*target = e
-		return true
-	}
-	return false
+	return errors.As(err, target)
 }
