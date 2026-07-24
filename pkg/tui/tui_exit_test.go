@@ -171,6 +171,12 @@ func (m *mockEditor) AttachFile(string) error                { return nil }
 func (m *mockEditor) Cleanup()                               { m.cleanupCalled = true }
 func (m *mockEditor) GetSize() (int, int)                    { return 0, 0 }
 func (m *mockEditor) BannerHeight() int                      { return 0 }
+func (m *mockEditor) BannerView(int) string                  { return "" }
+func (m *mockEditor) ToggleContextBar()                      {}
+func (m *mockEditor) SetContextBarFocused(bool)              {}
+func (m *mockEditor) IsContextBarFocused() bool              { return false }
+func (m *mockEditor) HasContextBar() bool                    { return false }
+func (m *mockEditor) ContentLineCount() int                  { return 0 }
 func (m *mockEditor) AttachmentAt(int) (editor.AttachmentPreview, bool) {
 	return editor.AttachmentPreview{}, false
 }
