@@ -230,7 +230,14 @@ $ docker agent toolsets --format json | jq             # machine-readable (type,
 
 ### `docker agent setup`
 
-Set up a model interactively. Four paths: pick a cloud provider, paste its API key, and store it in the Docker Agent env file `~/.config/cagent/.env`; check Docker Model Runner and pull a local model (no API key needed); register a custom OpenAI-compatible provider (endpoint URL, API format, and API key variable) saved to your [user configuration](../../providers/custom/index.md#global-providers-user-configuration) so its models work everywhere via `--model <name>/<model>`; or set up the [Claude Code harness](../harnesses/index.md) to use a Claude subscription through the official `claude` CLI — the wizard checks that the CLI is installed and logged in, offers to run `claude auth login --claudeai` (only after you confirm), and writes a ready-to-run `claude-code-agent.yaml`. Ends with the exact command to start chatting. Secret values are never printed, and Docker Agent never reads or copies the Claude CLI's credentials.
+Set up a model interactively. Four paths:
+
+- **Built-in cloud provider**: pick a provider Docker Agent already knows (Anthropic, OpenAI, Google, Groq, Hugging Face, ...) and connect it. Credentials vary by provider: most take an API key or token, stored in the Docker Agent env file `~/.config/cagent/.env`, while `chatgpt` signs in with your ChatGPT account in the browser.
+- **Local model**: check Docker Model Runner and pull a model. No API key needed.
+- **Custom OpenAI-compatible endpoint**: register an endpoint that is not built in (vLLM, LiteLLM, a corporate gateway, ...) with its base URL, API format, and API key variable, saved to your [user configuration](../../providers/custom/index.md#global-providers-user-configuration) so its models work everywhere via `--model <name>/<model>`.
+- **Claude Code harness**: use a Claude subscription through the official `claude` CLI. The wizard checks that the CLI is installed and logged in, offers to run `claude auth login --claudeai` (only after you confirm), and writes a ready-to-run `claude-code-agent.yaml`. See [Coding Harnesses](../harnesses/index.md).
+
+Ends with the exact command to start chatting. Secret values are never printed, and Docker Agent never reads or copies the Claude CLI's credentials.
 
 The wizard is also offered automatically when an interactive run finds no usable model (decline-able; set `DOCKER_AGENT_NO_SETUP=1` to suppress the offer).
 

@@ -57,7 +57,9 @@ func newTestWizard(answers string, keys []string, stores []environment.SecretSto
 	wizard := &setupWizard{
 		in:  bufio.NewReader(strings.NewReader(answers)),
 		out: &out,
-		readSecret: func(string) (string, error) {
+		readSecret: func(prompt string) (string, error) {
+			// Echo the prompt like the terminal readSecret so tests can assert on it.
+			fmt.Fprintln(&out, prompt)
 			if secretCalls >= len(keys) {
 				return "", errors.New("no scripted key left")
 			}
@@ -98,6 +100,8 @@ func TestSetupWizard_CloudPathStoresKey(t *testing.T) {
 
 	output := out.String()
 	assert.NotContains(t, output, "Where should", "a single store must not prompt for a location")
+	assert.Contains(t, output, "anthropic credential", "the built-in prompt asks for a credential")
+	assert.NotContains(t, output, "anthropic API key", "not every built-in credential is an API key (docker/docker-agent#3805)")
 	assert.Contains(t, output, "Stored ANTHROPIC_API_KEY in the config-env-file (fake).")
 	assert.Contains(t, output, "docker agent run")
 	assert.Contains(t, output, "--model anthropic/claude-sonnet-4-6")
@@ -293,6 +297,30 @@ func TestSetupWizard_InvalidChoiceReasks(t *testing.T) {
 
 	assert.Contains(t, out.String(), "Enter a number between 1 and 4.")
 	assert.Empty(t, *pulled)
+}
+
+// The top-level menu must make the built-in vs custom distinction obvious:
+// Groq and Hugging Face are built into option 1, and option 3 is only for a
+// custom endpoint reached through its base URL (docker/docker-agent#3805).
+func TestSetupWizard_MenuDistinguishesBuiltInFromCustomEndpoint(t *testing.T) {
+	t.Parallel()
+
+	wizard, out, _ := newTestWizard("2\n", nil, nil, []string{"ai/smollm2"}, nil)
+
+	_, err := wizard.run(t.Context())
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "1. Built-in cloud provider (Anthropic, OpenAI, Groq, Hugging Face, ...)")
+	assert.Contains(t, output, "3. Custom OpenAI-compatible endpoint (your own base URL, e.g. vLLM, LiteLLM)")
+	assert.NotContains(t, output, "needs an API key", "not every built-in provider uses a plain API key")
+
+	// The menu names Groq and Hugging Face as built-in; keep that honest.
+	providers := config.CloudProviderEnvVars()
+	for _, name := range []string{"groq", "huggingface"} {
+		contains := slices.ContainsFunc(providers, func(p config.ProviderEnvVars) bool { return p.Provider == name })
+		assert.True(t, contains, "%s must be a built-in cloud provider", name)
+	}
 }
 
 func TestSetupWizard_EOFCancels(t *testing.T) {

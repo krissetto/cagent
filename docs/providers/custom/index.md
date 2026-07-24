@@ -280,7 +280,7 @@ The easiest way to register one is the interactive wizard:
 
 ```bash
 docker agent setup
-# pick "3. OpenAI-compatible provider", then enter the endpoint,
+# pick "3. Custom OpenAI-compatible endpoint", then enter the base URL,
 # API format, and the environment variable holding the API key
 ```
 

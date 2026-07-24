@@ -1,32 +1,34 @@
 ---
 title: "Set Up a Model"
-description: "Make a model available to Docker Agent: bring a cloud provider API key or run a local model with Docker Model Runner."
-keywords: docker agent, ai agents, getting started, set up a model, api key, local model, docker model runner
+description: "Make a model available to Docker Agent: connect a cloud provider, run a local model with Docker Model Runner, or register a custom OpenAI-compatible endpoint."
+keywords: docker agent, ai agents, getting started, set up a model, api key, local model, docker model runner, custom endpoint
 weight: 25
 canonical: https://docs.docker.com/ai/docker-agent/getting-started/set-up-a-model/
 ---
 
-_Most agents need a model to think with: bring an API key for a cloud provider, or run a model locally with Docker Model Runner. This page walks through both paths end to end — plus the exception: agents that delegate to the Claude Code CLI on a Claude subscription, which need no model at all._
+_Most agents need a model to think with: connect a built-in cloud provider, run a model locally with Docker Model Runner, or register a custom OpenAI-compatible endpoint. This page walks through each path end to end — plus the exception: agents that delegate to the Claude Code CLI on a Claude subscription, which need no model at all._
 
 ## Pick a Path
 
-|              | Cloud provider (Path A)                 | Local model (Path B)                        |
-| ------------ | ---------------------------------------- | ------------------------------------------- |
-| You need     | An account and an API key                | Docker Desktop with Model Runner enabled    |
-| Cost         | Pay per token                            | Free once the model is downloaded           |
-| Your data    | Sent to the provider                     | Never leaves your machine                   |
-| Model quality| Frontier models (Claude, GPT-5, Gemini)  | Open models sized to your hardware          |
+|               | Built-in cloud provider (Path A)                 | Local model (Path B)                     |
+| ------------- | ------------------------------------------------ | ---------------------------------------- |
+| You need      | An account and a credential (usually an API key) | Docker Desktop with Model Runner enabled |
+| Cost          | Pay per token                                    | Free once the model is downloaded        |
+| Your data     | Sent to the provider                             | Never leaves your machine                |
+| Model quality | Frontier models (Claude, GPT-5, Gemini)          | Open models sized to your hardware       |
 
-You can set up both. When you don't name a model, Docker Agent's `auto` selection picks the first cloud provider with a configured key and falls back to a locally pulled Docker Model Runner model.
+You can set up both. When you don't name a model, Docker Agent's `auto` selection picks the first cloud provider with a configured credential and falls back to a locally pulled Docker Model Runner model.
 
-There is also a third path that is neither: if you have a **Claude subscription**, the [Claude Code harness](#path-c-claude-code-harness-claude-subscription) runs the official `claude` CLI as the agent — no API key and no local model required.
+Two more paths cover the remaining cases: if your models sit behind your own OpenAI-compatible endpoint (vLLM, LiteLLM, a corporate gateway), register it with its base URL as a [custom endpoint](#path-c-custom-openai-compatible-endpoint) (Path C); and if you have a **Claude subscription**, the [Claude Code harness](#path-d-claude-code-harness-claude-subscription) (Path D) runs the official `claude` CLI as the agent, with no API key and no local model required.
 
 > [!TIP]
 > **Prefer a wizard?**
 >
-> `docker agent setup` walks through the same choices interactively: pick a provider and store its key, check Docker Model Runner and pull a local model, or set up the Claude Code harness. This page is the manual version. See the [CLI reference](../../features/cli/index.md#docker-agent-setup).
+> `docker agent setup` walks through the same choices interactively: pick a built-in provider and store its credential, check Docker Model Runner and pull a local model, register a custom OpenAI-compatible endpoint, or set up the Claude Code harness. This page is the manual version. See the [CLI reference](../../features/cli/index.md#docker-agent-setup).
 
-## Path A: Cloud Provider (API Key)
+## Path A: Built-in Cloud Provider
+
+Docker Agent ships built-in support for many cloud providers: Anthropic, OpenAI, Google Gemini, Groq, Hugging Face, AWS Bedrock, GitHub Copilot, and more. You pick these by name instead of registering a custom provider. The providers `docker agent setup` lists — Groq and Hugging Face among them — come with a predefined endpoint, so setting the provider's credential is enough; some other built-in aliases need manual configuration, such as Azure OpenAI with your resource endpoint as `base_url`. The credential is usually an API key, but not always: Hugging Face uses the `HF_TOKEN` token, GitHub Copilot a `GITHUB_TOKEN`, AWS Bedrock your AWS credentials, and `chatgpt` signs in with your ChatGPT account in the browser via `docker agent setup`, with no key to paste. The steps below show the API-key flow that most providers follow.
 
 ### 1. Get an API key
 
@@ -38,7 +40,7 @@ Create a key in your provider's console:
 | OpenAI        | `OPENAI_API_KEY`     | [platform.openai.com](https://platform.openai.com/api-keys)          |
 | Google Gemini | `GOOGLE_API_KEY`     | [aistudio.google.com](https://aistudio.google.com/apikey)            |
 
-Every other provider works the same way. See [Model Providers](../../providers/overview/index.md) for the full list and each provider's environment variable.
+Every other provider with an API key works the same way. See [Model Providers](../../providers/overview/index.md) for the full list, each provider's credential variable, and the exceptions noted above.
 
 ### 2. Store the key
 
@@ -182,7 +184,36 @@ agents:
 
 When no cloud key is configured, bare `docker agent run` auto-selects a pulled local model, so after `docker model pull` you can run with no flags at all. The [Docker Model Runner provider page](../../providers/dmr/index.md) covers context size, runtime flags, and other tuning options.
 
-## Path C: Claude Code Harness (Claude Subscription)
+## Path C: Custom OpenAI-compatible Endpoint
+
+If your models are served from your own endpoint (vLLM, LiteLLM, a corporate gateway, an API proxy), register it as a custom provider: you supply its base URL, the API format, and the environment variable holding its API key, if it needs one. Built-in providers such as Groq or Hugging Face don't need this; use [Path A](#path-a-built-in-cloud-provider) and set their credential instead.
+
+The interactive wizard is the quickest way:
+
+```bash
+$ docker agent setup   # pick "Custom OpenAI-compatible endpoint"
+```
+
+Or define the provider once in your user configuration (`~/.config/cagent/config.yaml`):
+
+```yaml
+providers:
+  myprovider:
+    base_url: https://llm.corp.example.com/v1
+    api_type: openai_chatcompletions
+    token_key: MYPROVIDER_API_KEY
+```
+
+Its models then work with every command:
+
+```bash
+$ docker agent models --provider myprovider
+$ docker agent run --model myprovider/<model>
+```
+
+See [Provider Definitions](../../providers/custom/index.md#global-providers-user-configuration) for the full reference, including per-agent-file providers and gateway behavior.
+
+## Path D: Claude Code Harness (Claude Subscription)
 
 If you already pay for a Claude subscription, an agent can delegate its work to
 the official Claude Code CLI instead of calling a model API. This is an
