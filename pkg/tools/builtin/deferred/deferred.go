@@ -252,8 +252,8 @@ func (d *ToolSet) Tools(context.Context) ([]tools.Tool, error) {
 
 func (d *ToolSet) Start(ctx context.Context) error {
 	// Note: we are not responsible for starting the underlying toolsets here
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
 	for _, source := range d.sources {
 		allTools, err := source.toolset.Tools(ctx)
