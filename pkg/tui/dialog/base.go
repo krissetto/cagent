@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -195,8 +196,8 @@ func (b *BaseDialog) TakeVisualDirty() bool {
 func (b *BaseDialog) HandleConfirmButtonsClick(msg tea.MouseClickMsg, dl DialogLayout, style lipgloss.Style, onYes tea.Cmd) tea.Cmd {
 	lines := strings.Split(ansi.Strip(dl.View), "\n")
 	buttonRow := -1
-	for i := len(lines) - 1; i >= 0; i-- { //nolint:modernize // Index is returned to the caller.
-		if strings.Contains(lines[i], "No") && strings.Contains(lines[i], "Yes") {
+	for i, v := range slices.Backward(lines) {
+		if strings.Contains(v, "No") && strings.Contains(v, "Yes") {
 			buttonRow = dl.Row + i
 			break
 		}

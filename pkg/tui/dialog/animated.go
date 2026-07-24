@@ -24,7 +24,7 @@ const (
 // DialogLifecycleException is an explicit, reviewable opt-out from the shared
 // visual lifecycle. It is reserved for dialogs that cannot be safely cropped.
 //
-//nolint:revive // Explicit name distinguishes lifecycle exceptions.
+//nolint:revive // Explicit name distinguishes lifecycle exceptions from other dialog exceptions.
 type DialogLifecycleException interface {
 	DisableDialogLifecycleAnimation() bool
 }
@@ -166,7 +166,7 @@ func (a *animatedDialog) startClose(hiding bool) tea.Cmd {
 	return a.anim.Start(dialogCloseDuration, animation.EaseOutCubic)
 }
 
-//nolint:unparam // Command result retained for transition protocol symmetry.
+//nolint:unparam // Command result is retained for transition protocol symmetry.
 func (a *animatedDialog) tick(_ string, _, _ int) (finished bool, cmd tea.Cmd) {
 	a.sample()
 	return a.closing && !a.anim.Running(), nil

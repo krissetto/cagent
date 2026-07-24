@@ -115,7 +115,7 @@ type manager struct {
 	width, height int
 	stack         []dialogEntry
 	drag          dragState
-	closeHovered  bool //nolint:unused // Retained lifecycle hover state.
+	closeHovered  bool //nolint:unused // Retained as lifecycle hover state for concrete dialogs.
 	visualDirty   bool
 }
 
@@ -475,7 +475,7 @@ func (d *manager) handleOpen(msg OpenDialogMsg) (layout.Model, tea.Cmd) {
 	// A hidden dialog can be reopened before its close completes. Reuse the
 	// existing wrapper so there is one rendered layer and the fade reverses
 	// smoothly while preserving offsets and originating metadata.
-	for i := len(d.stack) - 1; i >= 0; i-- { //nolint:modernize // Index is required.
+	for i := len(d.stack) - 1; i >= 0; i-- { //nolint:modernize // Index is required to mutate the entry.
 		entry := &d.stack[i]
 		if entry.dialog == msg.Model && entry.closing && entry.hiding {
 			entry.originatingEvent = msg.OriginatingEvent

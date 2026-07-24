@@ -628,7 +628,7 @@ func (m *appModel) handleOpenModelPicker() (tea.Model, tea.Cmd) {
 	}
 }
 
-//nolint:unused // Retained async message compatibility.
+//nolint:unused // Retained for asynchronous model-picker message compatibility.
 func (m *appModel) handleModelPickerLoaded(msg messages.ModelPickerLoadedMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
 		return m, notification.ErrorCmd(fmt.Sprintf("Failed to load models: %v", msg.Err))
