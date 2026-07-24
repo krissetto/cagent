@@ -98,7 +98,8 @@ models:
 
 | Model ID            | Description                                         |
 | ------------------- | --------------------------------------------------- |
-| `claude-opus-4-7`   | Highest-capability Opus model; supports task budget |
+| `claude-opus-5`     | Highest-capability Opus model; full effort ladder (low–max) |
+| `claude-opus-4-7`   | Previous Opus flagship; supports task budget        |
 | `claude-sonnet-4-5` | Most capable Sonnet; supports extended thinking     |
 | `claude-sonnet-4-0` | Previous Sonnet generation, still supported         |
 | `claude-haiku-4-5`  | Fast and inexpensive, good for tight loops          |
