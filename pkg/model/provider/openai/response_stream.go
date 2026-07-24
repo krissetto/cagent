@@ -23,7 +23,15 @@ type ResponseStreamAdapter struct {
 	trackUsage     bool
 	itemCallIDMap  map[string]string
 	itemHasContent map[string]bool
+	itemHasArgs    map[string]bool
 	pendingArgs    map[string]string
+	// itemArgsFinal marks items whose complete final arguments were already
+	// received: emitted (function_call_arguments.done, output_item.done
+	// snapshot), buffered in pendingArgs, or streamed as deltas and confirmed
+	// by a non-empty function_call_arguments.done. Distinct from itemHasArgs,
+	// which only means some argument bytes were emitted: any later arguments
+	// delta for such an item is stale and must be dropped.
+	itemArgsFinal map[string]bool
 }
 
 func newResponseStreamAdapter(stream responseEventStream, trackUsage bool) *ResponseStreamAdapter {
@@ -32,7 +40,9 @@ func newResponseStreamAdapter(stream responseEventStream, trackUsage bool) *Resp
 		trackUsage:     trackUsage,
 		itemCallIDMap:  make(map[string]string),
 		itemHasContent: make(map[string]bool),
+		itemHasArgs:    make(map[string]bool),
 		pendingArgs:    make(map[string]string),
+		itemArgsFinal:  make(map[string]bool),
 	}
 }
 
@@ -119,8 +129,13 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 			// bytes with the first named tool-call delta so the runtime can still
 			// reconstruct the call.
 			if funcName != "" {
+				// itemArgsFinal is intentionally kept: if the flushed buffer
+				// held the final arguments, later deltas must stay ignored.
 				args := a.pendingArgs[itemID]
 				delete(a.pendingArgs, itemID)
+				if args != "" {
+					a.itemHasArgs[itemID] = true
+				}
 
 				slog.Debug("Emitting tool call with name", "item_id", event.ItemID, "call_id", callID, "name", funcName)
 				response.Choices = []chat.MessageStreamChoice{
@@ -144,12 +159,17 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 	case "response.function_call_arguments.delta":
 		// Handle function call arguments delta
 		slog.Debug("Function call arguments delta received", "item_id", event.ItemID)
-		if callID, ok := a.itemCallIDMap[event.ItemID]; ok {
+		if a.itemArgsFinal[event.ItemID] {
+			// The complete arguments were already emitted or buffered;
+			// appending a late delta would corrupt that JSON.
+			slog.Debug("Ignoring arguments delta after final arguments", "item_id", event.ItemID)
+		} else if callID, ok := a.itemCallIDMap[event.ItemID]; ok {
 			args := cmp.Or(event.Delta, event.Arguments)
 
 			slog.Debug("Emitting arguments delta", "item_id", event.ItemID, "call_id", callID, "delta_length", len(args), "delta_preview", args[:min(len(args), 20)])
 
 			if args != "" {
+				a.itemHasArgs[event.ItemID] = true
 				response.Choices = []chat.MessageStreamChoice{
 					{
 						Delta: chat.MessageDelta{
@@ -174,8 +194,44 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 			}
 		}
 	case "response.function_call_arguments.done":
-		// Function call arguments are complete - we already streamed them
+		// Arguments normally arrive via delta events, making this event
+		// redundant. Some Responses API implementations skip the deltas and
+		// only deliver the complete arguments here, so emit them once in that
+		// case.
 		slog.Debug("Function call arguments done", "item_id", event.ItemID, "call_id", a.itemCallIDMap[event.ItemID])
+		if args := event.Arguments; args != "" {
+			// A non-empty payload is by definition the complete final
+			// arguments, so any later delta for this item is stale and must
+			// be dropped, even when deltas already streamed the arguments.
+			a.itemArgsFinal[event.ItemID] = true
+			if !a.itemHasArgs[event.ItemID] {
+				if callID, ok := a.itemCallIDMap[event.ItemID]; ok {
+					slog.Debug("Emitting final arguments from arguments done event", "item_id", event.ItemID, "call_id", callID, "args_length", len(args))
+					a.itemHasArgs[event.ItemID] = true
+					response.Choices = []chat.MessageStreamChoice{
+						{
+							Delta: chat.MessageDelta{
+								ToolCalls: []tools.ToolCall{
+									{
+										ID:   callID,
+										Type: "function",
+										Function: tools.FunctionCall{
+											Arguments: args,
+										},
+									},
+								},
+							},
+						},
+					}
+				} else {
+					// The function item was not announced yet. This payload is
+					// the authoritative final snapshot: replace any partially
+					// buffered deltas with it.
+					a.pendingArgs[event.ItemID] = args
+					slog.Debug("Buffered final arguments before output item", "item_id", event.ItemID, "args_length", len(args))
+				}
+			}
+		}
 
 	case "response.reasoning_text.delta":
 		// Handle reasoning text deltas (thinking traces from reasoning models)
@@ -232,6 +288,30 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 					})
 					a.itemHasContent[itemID] = true
 				}
+			}
+		}
+		// Last-resort fallback for function calls whose arguments were neither
+		// streamed via deltas nor delivered by function_call_arguments.done:
+		// recover them from the completed item snapshot.
+		if event.Item.Type == "function_call" && !a.itemHasArgs[itemID] {
+			if args := event.Item.Arguments.OfString; args != "" {
+				callID := cmp.Or(a.itemCallIDMap[itemID], event.Item.CallID, itemID)
+				slog.Debug("Emitting final arguments from output item snapshot", "item_id", itemID, "call_id", callID, "args_length", len(args))
+				a.itemHasArgs[itemID] = true
+				a.itemArgsFinal[itemID] = true
+				response.Choices = append(response.Choices, chat.MessageStreamChoice{
+					Delta: chat.MessageDelta{
+						ToolCalls: []tools.ToolCall{
+							{
+								ID:   callID,
+								Type: "function",
+								Function: tools.FunctionCall{
+									Arguments: args,
+								},
+							},
+						},
+					},
+				})
 			}
 		}
 
