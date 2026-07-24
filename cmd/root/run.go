@@ -29,6 +29,7 @@ import (
 	"github.com/docker/docker-agent/pkg/permissions"
 	"github.com/docker/docker-agent/pkg/profiling"
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/server"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/teamloader"
@@ -111,6 +112,13 @@ type runExecFlags struct {
 	// session has independent snapshot state; that controller is local
 	// to the spawner closure and never reaches this field.
 	snapshotController builtins.SnapshotController
+
+	// listenSM is the SessionManager behind the --listen control plane, set
+	// by startSessionCoordinator. When present, sessions spawned later (TUI
+	// tabs) attach to it instead of a private manager, so control-plane
+	// clients can observe and drive every tab of the run — not just the
+	// initial session. Nil when --listen is off.
+	listenSM *server.SessionManager
 }
 
 func newRunCmd() *cobra.Command {
