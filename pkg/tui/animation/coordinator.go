@@ -8,6 +8,7 @@ package animation
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -16,95 +17,296 @@ import (
 // TickMsg is broadcast to all animated components on each animation frame.
 // Components should handle this message to update their animation state.
 type TickMsg struct {
+	// Frame is retained for compatibility with components that have not yet
+	// adopted elapsed-time animation. Program runtimes use their accepted tick
+	// count; legacy standalone ticks use the compatibility coordinator count.
 	Frame int
+
+	runtimeIdentity *runtimeIdentity
+	generation      int // identifies the current tick chain so stale or parallel chains are rejected
+
+	// deliveredAt is the timestamp tea.Tick supplies when this timer fires.
+	deliveredAt time.Time
+	// timerStartedAt records when the animation runtime created this tick's timer. It is
+	// the first tick's elapsed-time baseline; later ticks use lastDeliveredAt.
+	timerStartedAt    time.Time
+	dirty             *atomic.Bool
+	elapsedBeforeTick time.Duration
+	elapsedAfterTick  time.Duration
 }
 
-// Coordinator manages a single tick stream for all animations.
-// It tracks active animations and only generates ticks when at least one is active.
-type Coordinator struct {
-	// mu guards all fields. While Bubble Tea's Update loop is single-threaded,
-	// the mutex protects against accidental misuse from Cmd goroutines and
-	// ensures StartTickIfFirst is atomic (no race between check and register).
-	mu     sync.Mutex
-	frame  int
-	active int32
-}
-
-// Register increments the active animation count.
-// Call this when an animation starts.
-func (c *Coordinator) Register() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.active++
-}
-
-// Unregister decrements the active animation count.
-// Call this when an animation stops.
-func (c *Coordinator) Unregister() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.active > 0 {
-		c.active--
+// MarkDirty records that this accepted tick changed visible output. TickMsg
+// copies share the marker, so root can decide after complete fanout whether a
+// new view must be composed.
+func (m TickMsg) MarkDirty() {
+	if m.dirty != nil {
+		m.dirty.Store(true)
 	}
 }
 
-// HasActive returns true if any animations are currently active.
-func (c *Coordinator) HasActive() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.active > 0
+// Dirty reports whether any visible component marked this accepted tick dirty.
+func (m TickMsg) Dirty() bool { return m.dirty != nil && m.dirty.Load() }
+
+// ElapsedBounds returns the animation clock immediately before and after this
+// accepted tick.
+func (m TickMsg) ElapsedBounds() (time.Duration, time.Duration) {
+	return m.elapsedBeforeTick, m.elapsedAfterTick
 }
 
-// StartTick starts the animation tick if any animations are active.
-// Call this after processing a TickMsg to continue the tick stream.
-func (c *Coordinator) StartTick() tea.Cmd {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.active <= 0 {
+// Runtime owns one program's animation clock, subscriptions, transitions, and
+// single outstanding tick lease. It must not be shared by concurrently running
+// Bubble Tea programs.
+type Runtime struct {
+	mu              sync.Mutex
+	runtimeIdentity *runtimeIdentity
+	elapsed         time.Duration
+	active          int32
+	generation      int
+
+	tickScheduled   bool
+	lastDeliveredAt time.Time
+	acceptedTicks   uint64
+}
+
+type runtimeIdentity struct{ _ byte }
+
+// NewRuntime creates an isolated program-scoped animation runtime.
+func NewRuntime() *Runtime { return &Runtime{runtimeIdentity: &runtimeIdentity{}} }
+
+// Register increments this animation runtime's active animation count.
+func (r *Runtime) Register() {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active++
+}
+
+// Unregister decrements this animation runtime's active animation count.
+func (r *Runtime) Unregister() {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active > 0 {
+		r.active--
+	}
+	if r.active == 0 {
+		r.abandonLeaseLocked()
+	}
+}
+
+// HasActive reports whether this animation runtime has active animations.
+func (r *Runtime) HasActive() bool { return r.ActiveCount() > 0 }
+
+// ActiveCount returns this animation runtime's active animation count.
+func (r *Runtime) ActiveCount() int32 {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.active
+}
+
+// Continue schedules the next tick when animations remain active. The root calls
+// it exactly once after fanout of an accepted TickMsg.
+func (r *Runtime) Continue() tea.Cmd {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active == 0 {
+		r.abandonLeaseLocked()
+		r.lastDeliveredAt = time.Time{}
 		return nil
 	}
-	return c.tickLocked()
+	return r.tickLocked()
 }
 
-// StartTickIfFirst registers an animation and starts the tick if this is the first.
-// This is atomic: no race between checking and registering.
-// Returns the tick command if the tick stream was started, nil otherwise.
-func (c *Coordinator) StartTickIfFirst() tea.Cmd {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	wasEmpty := c.active == 0
-	c.active++
+// Accept consumes this animation runtime's current tick lease and advances its clock.
+func (r *Runtime) Accept(msg TickMsg) (TickMsg, bool) {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if msg.runtimeIdentity != r.runtimeIdentity || msg.generation != r.generation || !r.tickScheduled {
+		return msg, false
+	}
+	r.acceptedTicks++
+	// Frame is the legacy int representation of the monotonically increasing tick count.
+	msg.Frame = int(r.acceptedTicks) //nolint:gosec // Compatibility field is intentionally int.
+	r.tickScheduled = false
+	delta := msg.deliveredAt.Sub(r.lastDeliveredAt)
+	if r.lastDeliveredAt.IsZero() {
+		delta = msg.deliveredAt.Sub(msg.timerStartedAt)
+	}
+	if delta <= 0 {
+		delta = TickRate
+	}
+	r.lastDeliveredAt = msg.deliveredAt
+	msg.elapsedBeforeTick = r.elapsed
+	r.elapsed += delta
+	msg.elapsedAfterTick = r.elapsed
+	msg.dirty = &atomic.Bool{}
+	return msg, true
+}
+
+// Now returns elapsed time accepted by this animation runtime.
+func (r *Runtime) Now() time.Duration {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.elapsed
+}
+
+// EnsureRunning replaces a potentially lost outstanding tick command.
+func (r *Runtime) EnsureRunning() tea.Cmd {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active == 0 {
+		r.abandonLeaseLocked()
+		r.lastDeliveredAt = time.Time{}
+		return nil
+	}
+	r.generation++
+	r.tickScheduled = false
+	return r.tickLocked()
+}
+
+// Stop invalidates all queued ticks and releases every registration owned by
+// this program. Program teardown calls it after component cleanup as a final
+// ownership boundary; a late queued TickMsg can then never revive the chain.
+func (r *Runtime) Stop() {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active = 0
+	r.abandonLeaseLocked()
+	r.lastDeliveredAt = time.Time{}
+}
+
+// Subscribe creates an inactive subscription owned by this animation runtime.
+func (r *Runtime) Subscribe() Subscription { return NewSubscription(r) }
+
+// Transition creates an idle transition owned by this animation runtime.
+func (r *Runtime) Transition() Transition { return NewTransition(r) }
+
+func (r *Runtime) start() tea.Cmd {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	wasEmpty := r.active == 0
+	r.active++
 	if wasEmpty {
-		return c.tickLocked()
+		return r.tickLocked()
 	}
 	return nil
 }
 
-// tickLocked returns a tick command. Must be called with mu held.
-// 14 FPS - smooth enough for most animations without being too CPU-intensive.
-func (c *Coordinator) tickLocked() tea.Cmd {
-	return tea.Tick(time.Second/14, func(time.Time) tea.Msg {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.frame++
-		frame := c.frame
-		return TickMsg{Frame: frame}
+func (r *Runtime) mustExist() {
+	if r == nil || r.runtimeIdentity == nil {
+		panic("animation: nil or zero Runtime")
+	}
+}
+
+func (r *Runtime) abandonLeaseLocked() {
+	if r.tickScheduled {
+		r.generation++
+		r.tickScheduled = false
+	}
+}
+
+func (r *Runtime) tickLocked() tea.Cmd {
+	if r.tickScheduled {
+		return nil
+	}
+	r.tickScheduled = true
+	runtimeIdentity, generation, timerStartedAt := r.runtimeIdentity, r.generation, time.Now()
+	return tea.Tick(TickRate, func(t time.Time) tea.Msg {
+		return TickMsg{runtimeIdentity: runtimeIdentity, generation: generation, deliveredAt: t, timerStartedAt: timerStartedAt}
 	})
 }
 
-// globalCoordinator is the singleton coordinator instance shared by all
-// animated components in the running TUI.
-var globalCoordinator = &Coordinator{}
+// legacyContinue preserves the facade contract in which delivery itself
+// consumes the outstanding lease; legacy callers do not call Runtime.Accept.
+func (r *Runtime) legacyContinue() tea.Cmd {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active == 0 {
+		r.abandonLeaseLocked()
+		return nil
+	}
+	return r.legacyTickLocked()
+}
 
-// Unregister decrements the active animation count on the global coordinator.
-func Unregister() { globalCoordinator.Unregister() }
+func (r *Runtime) legacyStart() tea.Cmd {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	wasEmpty := r.active == 0
+	r.active++
+	if wasEmpty {
+		return r.legacyTickLocked()
+	}
+	return nil
+}
 
-// HasActive reports whether any animations are active on the global coordinator.
-func HasActive() bool { return globalCoordinator.HasActive() }
+func (r *Runtime) legacyTickLocked() tea.Cmd {
+	if r.tickScheduled {
+		return nil
+	}
+	r.tickScheduled = true
+	runtimeIdentity, generation := r.runtimeIdentity, r.generation
+	return tea.Tick(TickRate, func(time.Time) tea.Msg {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		msg := TickMsg{runtimeIdentity: runtimeIdentity, generation: generation}
+		if runtimeIdentity == r.runtimeIdentity && generation == r.generation && r.tickScheduled {
+			r.acceptedTicks++
+			// Frame is the legacy int representation of the monotonically increasing tick count.
+			msg.Frame = int(r.acceptedTicks) //nolint:gosec // Compatibility field is intentionally int.
+			r.tickScheduled = false
+		}
+		return msg
+	})
+}
 
-// StartTick starts the global animation tick if any animations are active.
-func StartTick() tea.Cmd { return globalCoordinator.StartTick() }
+func (r *Runtime) isCurrent(msg TickMsg) bool {
+	r.mustExist()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return msg.runtimeIdentity == r.runtimeIdentity && msg.generation == r.generation
+}
 
-// StartTickIfFirst registers an animation on the global coordinator and starts
-// the tick if it is the first.
-func StartTickIfFirst() tea.Cmd { return globalCoordinator.StartTickIfFirst() }
+// legacyRuntime retains the pre-animation-runtime package API for incremental adoption.
+// New programs should own an animation Runtime and pass it to components explicitly.
+var legacyRuntime = NewRuntime()
+
+// Coordinator is retained as a compatibility facade for callers that own an
+// isolated coordinator. New code should use the animation Runtime.
+type Coordinator struct{ runtime *Runtime }
+
+func (c *Coordinator) boundRuntime() *Runtime {
+	if c.runtime == nil {
+		c.runtime = NewRuntime()
+	}
+	return c.runtime
+}
+func (c *Coordinator) Register()                 { c.boundRuntime().Register() }
+func (c *Coordinator) Unregister()               { c.boundRuntime().Unregister() }
+func (c *Coordinator) HasActive() bool           { return c.boundRuntime().HasActive() }
+func (c *Coordinator) StartTick() tea.Cmd        { return c.boundRuntime().legacyContinue() }
+func (c *Coordinator) StartTickIfFirst() tea.Cmd { return c.boundRuntime().legacyStart() }
+
+// Register, Unregister, HasActive, StartTick, and StartTickIfFirst preserve the
+// original package-level API while components migrate to program ownership.
+func Register()                 { legacyRuntime.Register() }
+func Unregister()               { legacyRuntime.Unregister() }
+func HasActive() bool           { return legacyRuntime.HasActive() }
+func StartTick() tea.Cmd        { return legacyRuntime.legacyContinue() }
+func StartTickIfFirst() tea.Cmd { return legacyRuntime.legacyStart() }
+
+// IsCurrentGen reports whether msg belongs to the package facade's current tick
+// chain. It is a side-effect-free compatibility check; facade tick delivery,
+// not this predicate, consumes the outstanding lease.
+func IsCurrentGen(msg TickMsg) bool { return legacyRuntime.isCurrent(msg) }
+
+// TickRate is the shared interval between animation ticks.
+const TickRate = time.Second / 14
