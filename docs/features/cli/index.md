@@ -210,6 +210,8 @@ $ docker agent models --provider openai
 $ docker agent models --format json | jq
 ```
 
+When a models gateway is configured (`--models-gateway`, `DOCKER_AGENT_MODELS_GATEWAY`, or the user config), the command first queries the gateway's `/v1/models` endpoint. A non-empty response is authoritative for the models routed through the gateway: the listing shows the models the gateway serves (`--provider` filters within it), alongside any custom providers you have configured, which serve their models from their own endpoints rather than through the gateway. If the gateway cannot be queried or serves no usable model (endpoint not implemented, empty list, invalid response, timeout, missing authentication), the command falls back to the providers you have configured directly — provider API keys, provider aliases, and custom providers — plus the model catalog; a failure of one source never prevents the others from being listed. The Docker Desktop token is only sent (and required) when the gateway targets a trusted Docker URL.
+
 ### `docker agent toolsets`
 
 List the built-in toolset types available for use in an agent configuration. Each type can be referenced under `toolsets:` in an agent YAML file. Use this to discover what's available without leaving the terminal.

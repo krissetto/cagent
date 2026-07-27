@@ -7,11 +7,10 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/docker/docker-agent/pkg/agent"
-	"github.com/docker/docker-agent/pkg/concurrent"
+	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/effort"
 	"github.com/docker/docker-agent/pkg/environment"
@@ -827,81 +826,18 @@ func isEmbeddingModel(family, name string) bool {
 	return strings.Contains(familyLower, "embed") || strings.Contains(nameLower, "embed")
 }
 
-// aliasBaseURLResolvable reports whether every environment variable referenced
-// by a (possibly templated) alias base URL is set. Aliases like Cloudflare's
-// account/gateway-scoped endpoints need extra vars beyond their token; without
-// them the alias would resolve to a broken URL, so it must not be advertised as
-// an available provider (mirrors the preflight check in config.gather).
-func aliasBaseURLResolvable(ctx context.Context, baseURL string, env environment.Provider) bool {
-	for _, name := range environment.Refs(baseURL) {
-		if v, _ := env.Get(ctx, name); v == "" {
-			return false
-		}
-	}
-	return true
-}
-
-// getAvailableProviders returns a map of provider names that the user has credentials for.
+// getAvailableProviders returns the providers that model discovery/listing
+// may surface for this runtime. Availability is credential-based (shared
+// with the CLI models-listing fallback via
+// [config.DiscoveryAvailableProviders]): a configured models gateway no
+// longer replaces it with a hardcoded provider list, so when gateway
+// discovery fails — or the gateway is a generic one without a Docker token —
+// the catalog fallback still reflects the providers the user can actually
+// reach directly.
 func (r *LocalRuntime) getAvailableProviders(ctx context.Context) map[string]bool {
-	available := make(map[string]bool)
 	env := r.modelSwitcherCfg.EnvProvider
 
-	// If using a models gateway, check for Docker token
-	if r.modelSwitcherCfg.ModelsGateway != "" {
-		if token, _ := env.Get(ctx, environment.DockerDesktopTokenEnv); token != "" {
-			// Gateway supports all providers
-			available["openai"] = true
-			available["anthropic"] = true
-			available["google"] = true
-			available["mistral"] = true
-			available["xai"] = true
-		}
-		return available
-	}
-
-	aliases := provider.EachAlias()
-	credentialNames := []string{
-		"OPENAI_API_KEY",
-		"ANTHROPIC_API_KEY",
-		"GOOGLE_API_KEY",
-		"AWS_ACCESS_KEY_ID",
-		"AWS_PROFILE",
-		"AWS_DEFAULT_PROFILE",
-		"AWS_WEB_IDENTITY_TOKEN_FILE",
-		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-		"AWS_ROLE_ARN",
-	}
-	for _, alias := range aliases {
-		if alias.TokenEnvVar != "" {
-			credentialNames = append(credentialNames, alias.TokenEnvVar)
-		}
-	}
-	credentials := lookupEnvironmentValues(ctx, env, credentialNames)
-
-	// Check credentials for each alias provider.
-	for name, alias := range aliases {
-		if credentials[alias.TokenEnvVar] == "" {
-			continue
-		}
-		// A templated base URL (e.g. Cloudflare's account/gateway-scoped
-		// endpoint) also needs the vars it references; without them the alias
-		// resolves to a broken URL, so don't advertise its catalog models.
-		if !aliasBaseURLResolvable(ctx, alias.BaseURL, env) {
-			continue
-		}
-		available[name] = true
-	}
-
-	// Check core providers with well-known env vars.
-	if credentials["OPENAI_API_KEY"] != "" {
-		available["openai"] = true
-	}
-	if credentials["ANTHROPIC_API_KEY"] != "" {
-		available["anthropic"] = true
-	}
-	if credentials["GOOGLE_API_KEY"] != "" {
-		available["google"] = true
-	}
+	available := config.DiscoveryAvailableProviders(ctx, env)
 
 	// Mark anthropic available when any model or referenced provider in the
 	// workspace has a non-API-key auth scheme configured (e.g. Workload
@@ -921,59 +857,7 @@ func (r *LocalRuntime) getAvailableProviders(ctx context.Context) map[string]boo
 	available["dmr"] = true
 	available["ollama"] = true
 
-	// Amazon Bedrock uses AWS credentials which can come from many sources.
-	// We do a quick heuristic check for common indicators without blocking:
-	// - AWS_ACCESS_KEY_ID: explicit access key
-	// - AWS_PROFILE / AWS_DEFAULT_PROFILE: named profile (credentials in ~/.aws/)
-	// - AWS_WEB_IDENTITY_TOKEN_FILE: EKS/IRSA web identity
-	// - AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: ECS task role
-	// - AWS_ROLE_ARN: assumed role
-	// Note: This won't catch all cases (e.g., EC2 instance profiles, SSO) but
-	// those require network calls which would block the UI.
-	awsCredentialIndicators := []string{
-		"AWS_ACCESS_KEY_ID",
-		"AWS_PROFILE",
-		"AWS_DEFAULT_PROFILE",
-		"AWS_WEB_IDENTITY_TOKEN_FILE",
-		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-		"AWS_ROLE_ARN",
-	}
-	for _, indicator := range awsCredentialIndicators {
-		if credentials[indicator] != "" {
-			available["amazon-bedrock"] = true
-			break
-		}
-	}
-
 	return available
-}
-
-func lookupEnvironmentValues(ctx context.Context, env environment.Provider, names []string) map[string]string {
-	values := concurrent.NewMap[string, string]()
-	unique := make(map[string]struct{}, len(names))
-	var wg sync.WaitGroup
-	for _, name := range names {
-		if name == "" {
-			continue
-		}
-		if _, ok := unique[name]; ok {
-			continue
-		}
-		unique[name] = struct{}{}
-		wg.Go(func() {
-			if value, _ := env.Get(ctx, name); value != "" {
-				values.Store(name, value)
-			}
-		})
-	}
-	wg.Wait()
-
-	result := make(map[string]string, values.Length())
-	values.Range(func(name, value string) bool {
-		result[name] = value
-		return true
-	})
-	return result
 }
 
 // modelHasAnthropicAuth reports whether the model (or its referenced
