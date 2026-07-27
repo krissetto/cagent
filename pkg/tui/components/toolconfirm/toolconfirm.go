@@ -36,8 +36,12 @@ const (
 	// ApproveTool runs the call and always allows the tool, scoped by the
 	// permission pattern from BuildPermissionPattern.
 	ApproveTool
-	// ApproveSession runs the call and approves all tools for the rest of
-	// the session.
+	// ApproveBalanced runs the call and switches the session to the
+	// Balanced safety mode: classifier-safe calls auto-approve,
+	// destructive and unknown calls keep asking.
+	ApproveBalanced
+	// ApproveSession runs the call and switches the session to the
+	// Autonomous safety mode (approve everything).
 	ApproveSession
 	// Reject rejects the call with an optional reason shown to the model.
 	Reject
@@ -51,8 +55,10 @@ func (d Decision) Resume(pattern, reason string) runtime.ResumeRequest {
 	switch d {
 	case ApproveTool:
 		return runtime.ResumeApproveTool(pattern)
+	case ApproveBalanced:
+		return runtime.ResumeApproveBalanced()
 	case ApproveSession:
-		return runtime.ResumeApproveSession()
+		return runtime.ResumeApproveAutonomous()
 	case Reject:
 		return runtime.ResumeReject(reason)
 	default:
@@ -85,18 +91,21 @@ func BuildPermissionPattern(toolCall tools.ToolCall) string {
 
 // AlwaysAllowLabel is the descriptive label of the "always allow" option
 // for a pattern from BuildPermissionPattern: the command pattern for shell
-// ("always allow ls*"), the tool name otherwise.
+// ("always allow ls*"), the tool name otherwise. Whitespace runs are
+// collapsed: the label feeds a single-line help row whose click
+// hit-testing treats "  " as the segment separator, so an interior
+// double space (or newline) would corrupt the segment walk.
 func AlwaysAllowLabel(pattern string) string {
 	if _, cmdPattern, ok := strings.Cut(pattern, ":cmd="); ok {
-		return "always allow " + cmdPattern
+		pattern = cmdPattern
 	}
-	return "always allow " + pattern
+	return "always allow " + strings.Join(strings.Fields(pattern), " ")
 }
 
 // ActionKeys are the uppercase action letters of the decision row, in
 // display order. Click hit-testing on the rendered options walks these
 // letters; map a hit back to its decision with DecisionForAction.
-const ActionKeys = "YNTA"
+const ActionKeys = "YNTBA"
 
 // DecisionForAction maps an action letter from ActionKeys ("Y", "N", "T",
 // "A") to its decision. ok is false for any other string.
@@ -108,6 +117,8 @@ func DecisionForAction(action string) (decision Decision, ok bool) {
 		return Reject, true
 	case "T":
 		return ApproveTool, true
+	case "B":
+		return ApproveBalanced, true
 	case "A":
 		return ApproveSession, true
 	}
@@ -115,12 +126,16 @@ func DecisionForAction(action string) (decision Decision, ok bool) {
 }
 
 // OptionsHelp returns the key/label pairs of the decision row, in display
-// order, ready for a help-keys renderer (e.g. dialog.RenderHelpKeys).
+// order, ready for a help-keys renderer (e.g. dialog.RenderHelpKeys). The
+// Balanced label is deliberately the short mode name: the confirmation
+// dialog is ~70% of the terminal wide and a longer label makes the row
+// wrap, which breaks row-based click hit-testing.
 func OptionsHelp(pattern string) []string {
 	return []string{
 		"Y", "yes",
 		"N", "no",
 		"T", AlwaysAllowLabel(pattern),
+		"B", "balanced",
 		"A", "all tools",
 	}
 }
@@ -130,6 +145,7 @@ type KeyMap struct {
 	Yes      key.Binding
 	No       key.Binding
 	All      key.Binding
+	Balanced key.Binding
 	ThisTool key.Binding
 }
 
@@ -145,6 +161,8 @@ func (k KeyMap) DecisionFor(msg tea.KeyPressMsg) (decision Decision, ok bool) {
 		return Reject, true
 	case key.Matches(msg, k.ThisTool):
 		return ApproveTool, true
+	case key.Matches(msg, k.Balanced):
+		return ApproveBalanced, true
 	case key.Matches(msg, k.All):
 		return ApproveSession, true
 	}
@@ -165,6 +183,10 @@ func DefaultKeyMap() KeyMap {
 		All: key.NewBinding(
 			key.WithKeys("a", "A"),
 			key.WithHelp("A", "approve all"),
+		),
+		Balanced: key.NewBinding(
+			key.WithKeys("b", "B"),
+			key.WithHelp("B", "auto-approve safe"),
 		),
 		ThisTool: key.NewBinding(
 			key.WithKeys("t", "T"),

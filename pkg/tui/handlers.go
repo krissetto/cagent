@@ -57,13 +57,20 @@ func (m *appModel) handleBranchFromEdit(msg messages.BranchFromEditMsg) (tea.Mod
 		return m, notification.ErrorCmd(fmt.Sprintf("Failed to branch session: %v", err))
 	}
 
-	if err := store.AddSession(ctx, newSess); err != nil {
-		return m, notification.ErrorCmd(fmt.Sprintf("Failed to save branched session: %v", err))
-	}
-
+	// Apply live-session state before the store write so mid-session
+	// changes the store copy lacks (e.g. a mode downgrade) are persisted
+	// with the branch, not just patched in memory.
 	if current := m.application.Session(); current != nil {
 		newSess.HideToolResults = current.HideToolResults
-		newSess.ToolsApproved = current.ToolsApproved
+		newSess.SetSafetyPolicy(current.GetSafetyPolicy())
+		// SetSafetyPolicy clears the toggle memory; restore the live one
+		// so a branch taken while escalated keeps its toggle-back
+		// destination. newSess is not yet shared — direct write is safe.
+		newSess.PriorSafetyPolicy = current.GetPriorSafetyPolicy()
+	}
+
+	if err := store.AddSession(ctx, newSess); err != nil {
+		return m, notification.ErrorCmd(fmt.Sprintf("Failed to save branched session: %v", err))
 	}
 
 	// Preserve sidebar settings across branch
@@ -415,10 +422,13 @@ func (m *appModel) handleSwitchToAgentByIndex(index int) (tea.Model, tea.Cmd) {
 
 // --- Toggles ---
 
+// handleToggleYolo goes through the safety mode, not the raw ToolsApproved
+// flag, so toggle-off genuinely revokes an autonomous mode. Same contract
+// as the server's ToggleToolApproval.
 func (m *appModel) handleToggleYolo() (tea.Model, tea.Cmd) {
 	sess := m.application.Session()
-	sess.ToolsApproved = !sess.ToolsApproved
-	m.sessionState.SetYoloMode(sess.ToolsApproved)
+	sess.ToggleYolo()
+	m.sessionState.SetYoloMode(sess.IsToolsApproved())
 	return m.forwardChat(messages.SessionToggleChangedMsg{})
 }
 
@@ -530,7 +540,7 @@ func (m *appModel) handleDropAttachedFile(path string) (tea.Model, tea.Cmd) {
 func (m *appModel) handleShowPermissionsDialog() (tea.Model, tea.Cmd) {
 	perms := m.application.PermissionsInfo()
 	sess := m.application.Session()
-	yoloEnabled := sess != nil && sess.ToolsApproved
+	yoloEnabled := sess != nil && sess.IsToolsApproved()
 	return m, core.CmdHandler(dialog.OpenDialogMsg{
 		Model: dialog.NewPermissionsDialog(perms, yoloEnabled),
 	})
