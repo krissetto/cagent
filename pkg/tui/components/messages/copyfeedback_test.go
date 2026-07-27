@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/markdown"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
@@ -45,7 +46,7 @@ func TestCopiedFlashKeepsUserMessageBackground(t *testing.T) {
 func TestCopiedFlashKeepsCodeBlockBackground(t *testing.T) {
 	t.Parallel()
 
-	m := NewScrollableView(80, 40, &service.SessionState{}).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 40, &service.SessionState{}).(*model)
 	m.SetSize(80, 40)
 	m.AddShellOutputMessage("total 0")
 	m.renderDirty = true

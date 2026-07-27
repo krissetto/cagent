@@ -6,6 +6,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/components/toolcommon"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
@@ -14,8 +15,8 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
 
-func New(msg *types.Message, sessionState service.SessionStateReader) layout.Model {
-	return toolcommon.NewBase(msg, sessionState, render)
+func New(ar *animation.Runtime, msg *types.Message, sessionState service.SessionStateReader) layout.Model {
+	return toolcommon.NewBase(ar, msg, sessionState, render)
 }
 
 func render(msg *types.Message, s spinner.Spinner, sessionState service.SessionStateReader, width, _ int) string {

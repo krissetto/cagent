@@ -21,6 +21,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	skillstool "github.com/docker/docker-agent/pkg/tools/builtin/skills"
 	mcptools "github.com/docker/docker-agent/pkg/tools/mcp"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/commands"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
 	"github.com/docker/docker-agent/pkg/tui/core"
@@ -37,7 +38,7 @@ func newTestChatPage(t *testing.T) *chatPage {
 	sessionState := &service.SessionState{}
 
 	return &chatPage{
-		sidebar:      sidebar.New(t.Context(), sessionState),
+		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
 		sessionState: sessionState,
 		working:      true, // Start busy so messages get queued
 	}
@@ -213,7 +214,7 @@ func TestQueueFlow_BusyAgent_BangCommandBypassesQueue(t *testing.T) {
 	t.Parallel()
 
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
 	p.working = true
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -245,7 +246,7 @@ func TestQueueFlow_SkillCommand_DispatchesOnceWithoutLooping(t *testing.T) {
 	t.Parallel()
 
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
 
 	calls := 0
 	p.commandParser = commands.NewParser(commands.Category{
@@ -407,7 +408,7 @@ func TestReadOnly_RejectsMessages(t *testing.T) {
 	a := app.New(t.Context(), queueTestRuntime{}, sess, app.WithReadOnly())
 	require.True(t, a.IsReadOnly())
 
-	p := New(t.Context(), a, service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), a, service.NewSessionState(sess)).(*chatPage)
 
 	_, cmd := p.handleSendMsg(messages.SendMsg{Content: "hello"})
 
@@ -420,7 +421,7 @@ func TestReadOnly_AllowsSlashCommands(t *testing.T) {
 
 	sess := session.New()
 	a := app.New(t.Context(), queueTestRuntime{}, sess, app.WithReadOnly())
-	p := New(t.Context(), a, service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), a, service.NewSessionState(sess)).(*chatPage)
 	p.commandParser = commands.NewParser(commands.Category{
 		Name: "Test",
 		Commands: []commands.Item{
@@ -497,7 +498,7 @@ func TestHandleSendMsg_ForkSkillRunsViaFork(t *testing.T) {
 	}}, t.TempDir())
 	rt := &skillDispatchRuntime{skillset: skillSet}
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
 	p.commandParser = skillCommandParser("services")
 
 	dispatchTypedSkill(t, p, "/services please")
@@ -522,7 +523,7 @@ func TestHandleSendMsg_InlineSkillRunsViaResolveInput(t *testing.T) {
 	}}, t.TempDir())
 	rt := &skillDispatchRuntime{skillset: skillSet}
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
 	p.commandParser = skillCommandParser("services")
 
 	dispatchTypedSkill(t, p, "/services please")
@@ -544,7 +545,7 @@ func TestReadOnly_RejectsBypassQueueCommands(t *testing.T) {
 
 	sess := session.New()
 	a := app.New(t.Context(), queueTestRuntime{}, sess, app.WithReadOnly())
-	p := New(t.Context(), a, service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), a, service.NewSessionState(sess)).(*chatPage)
 
 	_, cmd := p.handleSendMsg(messages.SendMsg{Content: "/myskill", BypassQueue: true})
 
@@ -588,7 +589,7 @@ func TestSteerFlow_BusyAgent_SteersMessage(t *testing.T) {
 
 	rt := &steerRecordingRuntime{}
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
 	p.working = true
 
 	_, cmd := p.handleSendMsg(messages.SendMsg{Content: "extra context"})
@@ -613,7 +614,7 @@ func TestSteerFlow_ExplicitQueue_SkipsSteering(t *testing.T) {
 
 	rt := &steerRecordingRuntime{}
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
 	p.working = true
 
 	_, cmd := p.handleSendMsg(messages.SendMsg{Content: "for later", Queue: true})
@@ -632,7 +633,7 @@ func TestSteerFlow_QueueSendMode_QueuesPlainSend(t *testing.T) {
 
 	rt := &steerRecordingRuntime{}
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess), WithSendMode(messages.SendModeQueue)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess), WithSendMode(messages.SendModeQueue)).(*chatPage)
 	p.working = true
 
 	_, cmd := p.handleSendMsg(messages.SendMsg{Content: "for later"})
@@ -659,7 +660,7 @@ func TestSteerFlow_SteerRejected_FallsBackToQueue(t *testing.T) {
 
 	rt := &steerRecordingRuntime{steerErr: errors.New("steer queue full")}
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
 	p.working = true
 
 	_, cmd := p.handleSendMsg(messages.SendMsg{Content: "extra context"})
@@ -689,7 +690,7 @@ func TestSteerFlow_ForkSkillWhileBusy_Queues(t *testing.T) {
 	}}, t.TempDir())
 	rt := &skillDispatchRuntime{skillset: skillSet}
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
 	p.working = true
 
 	_, cmd := p.handleSendMsg(messages.SendMsg{Content: "/services please"})

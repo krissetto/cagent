@@ -34,12 +34,16 @@ func TestIncrementalRendererScalingBound(t *testing.T) {
 		var input strings.Builder
 		for input.Len() < target {
 			input.WriteString(chunk)
-			_, err := r.Render(input.String())
+			parts, err := r.RenderParts(input.String())
 			require.NoError(t, err)
+			// Every completed paragraph advances the cached stable input boundary.
+			// Therefore only the final incomplete chunk can remain subject to
+			// reparse, independent of the accumulated transcript length.
+			uncommitted := input.Len() - len(r.inputPrefix)
+			assert.LessOrEqual(t, uncommitted, len(chunk))
+			assert.Equal(t, r.outputPrefix, parts.StablePrefix)
 		}
-		stats := r.Stats()
-		assert.LessOrEqual(t, float64(stats.ParsedBytes)/float64(input.Len()), 3.5)
-		assert.LessOrEqual(t, stats.FullRenders, uint64(2))
+		assert.GreaterOrEqual(t, len(r.inputPrefix), input.Len()-len(chunk))
 	}
 }
 

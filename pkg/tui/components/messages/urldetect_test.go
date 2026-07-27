@@ -9,6 +9,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/fetch"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/tool"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
@@ -328,7 +329,7 @@ func TestFetchToolWrappedURLFragmentsResolveFullURL(t *testing.T) {
 				Function: tools.FunctionCall{Name: fetch.ToolNameFetch, Arguments: tt.args},
 			}, tools.Tool{Name: fetch.ToolNameFetch}, tt.status)
 
-			view := tool.New(msg, service.StaticSessionState{})
+			view := tool.New(animation.NewRuntime(), msg, service.StaticSessionState{})
 			_ = view.SetSize(80, 0)
 			lines := strings.Split(view.View(), "\n")
 			assert.Assert(t, len(lines) > 1, "long URL argument should wrap onto multiple lines")

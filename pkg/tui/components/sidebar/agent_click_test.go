@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/tab"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
@@ -20,7 +21,7 @@ func TestSidebar_HandleClickType_Agent(t *testing.T) {
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
 	sessionState.SetCurrentAgentName("agent1")
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -67,7 +68,7 @@ func TestSidebar_AgentClickZones_EveryRenderedLineMapped(t *testing.T) {
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
 	sessionState.SetCurrentAgentName("agent1")
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -118,7 +119,7 @@ func TestSidebar_BuildAgentClickZones_NoBlankSeparators(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	// Simulate a compact roster: three agents, one rendered line each, no
 	// blank separators (the future layout this refactor unblocks).
@@ -142,7 +143,7 @@ func TestSidebar_BuildAgentClickZones_SkipsBlankOwners(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	// agent1 spans two lines, a blank separator follows, then agent2.
 	m.agentLineOwners = []string{"agent1", "agent1", "", "agent2"}

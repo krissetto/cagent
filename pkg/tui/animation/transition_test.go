@@ -34,15 +34,15 @@ func tickAnimationClock(t *testing.T, cmd *tea.Cmd, tr *Transition) {
 func TestTransition_BasicLifecycle(t *testing.T) {
 	runTransitionSynctest(t, func(t *testing.T) {
 		t.Helper()
-		runtime := NewRuntime()
-		tr := runtime.Transition()
+		ar := NewRuntime()
+		tr := ar.Transition()
 
 		assert.False(t, tr.Running())
 		assert.InDelta(t, 0.0, tr.Value(), 1e-9)
 
 		cmd := tr.Start(10*TickRate, Linear)
 		assert.True(t, tr.Running())
-		assert.Equal(t, int32(1), runtime.ActiveCount())
+		assert.Equal(t, int32(1), ar.ActiveCount())
 
 		for range 10 {
 			tickTransition(t, &cmd, &tr)
@@ -50,15 +50,15 @@ func TestTransition_BasicLifecycle(t *testing.T) {
 
 		assert.False(t, tr.Running(), "should stop after all ticks")
 		assert.InDelta(t, 1.0, tr.Value(), 1e-9)
-		assert.Equal(t, int32(0), runtime.ActiveCount(), "should unregister on completion")
+		assert.Equal(t, int32(0), ar.ActiveCount(), "should unregister on completion")
 	})
 }
 
 func TestTransition_Cancel(t *testing.T) {
 	runTransitionSynctest(t, func(t *testing.T) {
 		t.Helper()
-		runtime := NewRuntime()
-		tr := runtime.Transition()
+		ar := NewRuntime()
+		tr := ar.Transition()
 		cmd := tr.Start(20*TickRate, Linear)
 		require.True(t, tr.Running())
 
@@ -68,25 +68,25 @@ func TestTransition_Cancel(t *testing.T) {
 		tr.Cancel()
 
 		assert.False(t, tr.Running())
-		assert.Equal(t, int32(0), runtime.ActiveCount())
+		assert.Equal(t, int32(0), ar.ActiveCount())
 	})
 }
 
 func TestTransition_CancelWhenNotRunning(t *testing.T) {
 	runTransitionSynctest(t, func(t *testing.T) {
 		t.Helper()
-		runtime := NewRuntime()
-		tr := runtime.Transition()
+		ar := NewRuntime()
+		tr := ar.Transition()
 		tr.Cancel()
-		assert.Equal(t, int32(0), runtime.ActiveCount())
+		assert.Equal(t, int32(0), ar.ActiveCount())
 	})
 }
 
 func TestTransition_Restart(t *testing.T) {
 	runTransitionSynctest(t, func(t *testing.T) {
 		t.Helper()
-		runtime := NewRuntime()
-		tr := runtime.Transition()
+		ar := NewRuntime()
+		tr := ar.Transition()
 		cmd := tr.Start(10*TickRate, Linear)
 		for range 5 {
 			tickTransition(t, &cmd, &tr)
@@ -96,7 +96,7 @@ func TestTransition_Restart(t *testing.T) {
 		restartCmd := tr.Start(10*TickRate, Linear)
 		assert.Nil(t, restartCmd)
 		assert.True(t, tr.Running())
-		assert.Equal(t, int32(1), runtime.ActiveCount())
+		assert.Equal(t, int32(1), ar.ActiveCount())
 		assert.InDelta(t, 0.0, tr.Value(), 1e-9, "should reset to 0")
 	})
 }
@@ -104,8 +104,8 @@ func TestTransition_Restart(t *testing.T) {
 func TestTransition_Lerp(t *testing.T) {
 	runTransitionSynctest(t, func(t *testing.T) {
 		t.Helper()
-		runtime := NewRuntime()
-		tr := runtime.Transition()
+		ar := NewRuntime()
+		tr := ar.Transition()
 		cmd := tr.Start(4*TickRate, Linear)
 
 		assert.Equal(t, 0, tr.Lerp(0, 100))
@@ -127,8 +127,8 @@ func TestTransition_Lerp(t *testing.T) {
 func TestTransition_LerpReverse(t *testing.T) {
 	runTransitionSynctest(t, func(t *testing.T) {
 		t.Helper()
-		runtime := NewRuntime()
-		tr := runtime.Transition()
+		ar := NewRuntime()
+		tr := ar.Transition()
 		cmd := tr.Start(2*TickRate, Linear)
 
 		assert.Equal(t, 200, tr.Lerp(200, 0))
@@ -180,8 +180,8 @@ func TestEaseInOutCubic_BoundsAndSymmetry(t *testing.T) {
 func TestTransition_EaseOutCubic_Integration(t *testing.T) {
 	runTransitionSynctest(t, func(t *testing.T) {
 		t.Helper()
-		runtime := NewRuntime()
-		tr := runtime.Transition()
+		ar := NewRuntime()
+		tr := ar.Transition()
 		cmd := tr.Start(10*TickRate, EaseOutCubic)
 
 		// Values should increase monotonically and ease out.
@@ -199,18 +199,18 @@ func TestTransition_EaseOutCubic_Integration(t *testing.T) {
 func TestTransition_TickWhenNotRunning(t *testing.T) {
 	runTransitionSynctest(t, func(t *testing.T) {
 		t.Helper()
-		runtime := NewRuntime()
-		tr := runtime.Transition()
+		ar := NewRuntime()
+		tr := ar.Transition()
 		tr.Tick()
-		assert.Equal(t, int32(0), runtime.ActiveCount())
+		assert.Equal(t, int32(0), ar.ActiveCount())
 	})
 }
 
 func TestTransition_ZeroTicks(t *testing.T) {
 	runTransitionSynctest(t, func(t *testing.T) {
 		t.Helper()
-		runtime := NewRuntime()
-		tr := runtime.Transition()
+		ar := NewRuntime()
+		tr := ar.Transition()
 		cmd := tr.Start(0*TickRate, Linear)
 		assert.True(t, tr.Running())
 
@@ -220,4 +220,4 @@ func TestTransition_ZeroTicks(t *testing.T) {
 	})
 }
 
-func transitionRuntime(tr *Transition) *Runtime { return tr.runtime }
+func transitionRuntime(tr *Transition) *Runtime { return tr.ar }

@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
@@ -84,7 +85,7 @@ func TestRendererKeepsLastArgsWhenJSONTemporarilyInvalid(t *testing.T) {
 		},
 	}, tools.Tool{Name: "Write"}, types.ToolStatusPending)
 
-	view := New(msg, service.StaticSessionState{})
+	view := New(animation.NewRuntime(), msg, service.StaticSessionState{})
 	_ = view.SetSize(80, 0)
 
 	first := ansi.Strip(view.View())

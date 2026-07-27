@@ -23,20 +23,32 @@ type Spinner interface {
 	layout.Model
 	Reset() Spinner
 	Stop()
-	// RawFrame returns the current spinner character without any styling applied.
+	SetMessage(msg string)
 	RawFrame() string
 }
+
 type spinner struct {
-	animSub             *animation.Subscription // manages animation tick subscription
+	ar                  *animation.Runtime
+	animSub             animation.Subscription // manages animation tick subscription
 	dotsStyle           lipgloss.Style
+	spinnerAnim         animation.Spinner
+	spinnerFrames       animation.Frames
 	styledSpinnerFrames []string // pre-rendered spinner frames
 	mode                Mode
 	currentMessage      string
 	lightPosition       int
-	frame               int
 	direction           int // 1 for forward, -1 for backward
-	pauseFrames         int
+	pauseStepsRemaining int
+	lastLightStep       int
+	lightStepInit       bool
+	lightPauseSteps     int
 }
+
+const (
+	spinnerFrameDuration = animation.ChatSpinnerFrameDuration
+	lightStepDuration    = animation.SpinnerLightStepDuration
+	lightPauseDuration   = animation.SpinnerLightPauseDuration
+)
 
 // Default messages for the spinner
 var defaultMessages = []string{
@@ -69,46 +81,104 @@ var defaultMessages = []string{
 	"Calibrating the thrusters",
 }
 
-func New(mode Mode, dotsStyle lipgloss.Style) Spinner {
-	// Pre-render all spinner frames for fast lookup during render
+func New(ar *animation.Runtime, mode Mode, dotsStyle lipgloss.Style) Spinner {
+	return NewWithAnimation(ar, mode, dotsStyle, animation.Chat)
+}
+
+// NewWithFrames creates a spinner that animates using the provided frame set.
+// If frames is empty, animation.Chat is used.
+func NewWithFrames(ar *animation.Runtime, mode Mode, dotsStyle lipgloss.Style, frames animation.Frames) Spinner {
+	if len(frames) == 0 {
+		return NewWithAnimation(ar, mode, dotsStyle, animation.Chat)
+	}
+	return NewWithAnimation(ar, mode, dotsStyle, animation.NewSpinner(frames, spinnerFrameDuration))
+}
+
+// NewWithAnimation creates a spinner that uses the provided duration-aware
+// animation. If anim is empty, animation.Chat is used.
+func NewWithAnimation(ar *animation.Runtime, mode Mode, dotsStyle lipgloss.Style, anim animation.Spinner) Spinner {
+	if ar == nil {
+		panic("spinner: nil animation runtime")
+	}
+	if anim.Len() == 0 {
+		anim = animation.Chat
+	}
+	spinnerFrames := anim.Frames()
+
+	// Pre-render all spinner frames for fast lookup during render.
 	styledFrames := make([]string, len(spinnerFrames))
 	for i, char := range spinnerFrames {
 		styledFrames[i] = dotsStyle.Render(char)
 	}
 
-	sub := &animation.Subscription{}
 	return &spinner{
-		animSub:             sub,
+		ar:                  ar,
+		animSub:             ar.Subscribe(),
 		dotsStyle:           dotsStyle,
+		spinnerAnim:         anim,
+		spinnerFrames:       spinnerFrames,
 		styledSpinnerFrames: styledFrames,
 		mode:                mode,
 		currentMessage:      defaultMessages[rand.IntN(len(defaultMessages))],
 		lightPosition:       -3,
 		direction:           1,
+		lightPauseSteps:     max(1, int(lightPauseDuration/lightStepDuration)),
 	}
 }
 
 func (s *spinner) Reset() Spinner {
-	return New(s.mode, s.dotsStyle)
+	return NewWithAnimation(s.ar, s.mode, s.dotsStyle, s.spinnerAnim)
+}
+
+// SetMessage replaces the current spinner text.
+func (s *spinner) SetMessage(msg string) {
+	s.currentMessage = msg
+	s.lightPosition = -3
+	s.direction = 1
+	s.pauseStepsRemaining = 0
+	s.lastLightStep = animation.TimedStep(s.ar.Now(), lightStepDuration)
+	s.lightStepInit = true
+}
+
+func (s *spinner) advanceLightStep() {
+	if s.pauseStepsRemaining > 0 {
+		s.pauseStepsRemaining--
+		if s.pauseStepsRemaining == 0 {
+			s.direction = -1
+		}
+		return
+	}
+
+	s.lightPosition += s.direction
+	if s.direction == 1 && s.lightPosition > len([]rune(s.currentMessage))+2 {
+		s.pauseStepsRemaining = s.lightPauseSteps
+	} else if s.direction == -1 && s.lightPosition < -3 {
+		s.direction = 1
+	}
 }
 
 func (s *spinner) Update(message tea.Msg) (layout.Model, tea.Cmd) {
-	if msg, ok := message.(animation.TickMsg); ok {
-		// Respond to global animation tick (all spinners advance together)
-		s.frame = msg.Frame
-		// Light animation for ModeBoth spinners
+	if tick, ok := message.(animation.TickMsg); ok {
+		before, after := tick.ElapsedBounds()
+		if s.spinnerAnim.FrameIndexAt(before) != s.spinnerAnim.FrameIndexAt(after) {
+			tick.MarkDirty()
+		}
 		if s.mode == ModeBoth {
-			if s.pauseFrames > 0 {
-				s.pauseFrames--
-				if s.pauseFrames == 0 {
-					s.direction = -1
-				}
+			targetStep := animation.TimedStep(s.ar.Now(), lightStepDuration)
+			beforeStep := animation.TimedStep(before, lightStepDuration)
+			if beforeStep != targetStep {
+				tick.MarkDirty()
+			}
+			if !s.lightStepInit {
+				s.lastLightStep = targetStep
+				s.lightStepInit = true
 			} else {
-				s.lightPosition += s.direction
-				if s.direction == 1 && s.lightPosition > len([]rune(s.currentMessage))+2 {
-					s.pauseFrames = 6
-				} else if s.direction == -1 && s.lightPosition < -3 {
-					s.direction = 1
+				for s.lastLightStep < targetStep {
+					s.lastLightStep++
+					s.advanceLightStep()
+				}
+				if targetStep < s.lastLightStep {
+					s.lastLightStep = targetStep
 				}
 			}
 		}
@@ -116,8 +186,13 @@ func (s *spinner) Update(message tea.Msg) (layout.Model, tea.Cmd) {
 	return s, nil
 }
 
+func (s *spinner) RawFrame() string {
+	return s.spinnerFrames[s.spinnerAnim.FrameIndexAt(s.ar.Now())]
+}
+
 func (s *spinner) View() string {
-	spinner := s.styledSpinnerFrames[s.frame%len(s.styledSpinnerFrames)]
+	frame := s.spinnerAnim.FrameIndexAt(s.ar.Now())
+	spinner := s.styledSpinnerFrames[frame]
 	if s.mode == ModeSpinnerOnly {
 		return spinner
 	}
@@ -136,19 +211,6 @@ func (s *spinner) Init() tea.Cmd {
 // Call this when the spinner is no longer active/visible.
 func (s *spinner) Stop() {
 	s.animSub.Stop()
-}
-
-// RawFrame returns the current spinner character without any styling applied.
-func (s *spinner) RawFrame() string {
-	return spinnerFrames[s.frame%len(spinnerFrames)]
-}
-
-// spinnerFrames holds the animation frames for the current terminal.
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-// Frame returns the spinner character for the given animation frame.
-func Frame(index int) string {
-	return spinnerFrames[index%len(spinnerFrames)]
 }
 
 // lightStyles maps distance from light position to style (0=brightest, 1=bright, 2=dim, 3+=dimmest).

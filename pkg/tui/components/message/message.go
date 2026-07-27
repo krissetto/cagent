@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/markdown"
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
@@ -117,14 +118,14 @@ type renderCache struct {
 }
 
 // New creates a new message view
-func New(msg, previous *types.Message) *messageModel {
+func New(ar *animation.Runtime, msg, previous *types.Message) *messageModel {
 	return &messageModel{
 		message:  msg,
 		previous: previous,
 		width:    80, // Default width
 		height:   1,  // Will be calculated
 		focused:  false,
-		spinner:  spinner.New(spinner.ModeBoth, styles.SpinnerDotsAccentStyle),
+		spinner:  spinner.New(ar, spinner.ModeBoth, styles.SpinnerDotsAccentStyle),
 	}
 }
 

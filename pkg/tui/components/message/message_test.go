@@ -15,8 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/markdown"
-	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	tuiimage "github.com/docker/docker-agent/pkg/tui/image"
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
@@ -36,7 +36,7 @@ func TestAssistantMarkdownImageRendersInline(t *testing.T) {
 	require.NoError(t, png.Encode(&data, img))
 	uri := "data:image/png;base64," + base64.StdEncoding.EncodeToString(data.Bytes())
 	msg := types.Agent(types.MessageTypeAssistant, "assistant", "Here it is:\n\n![chart]("+uri+")")
-	mv := New(msg, nil)
+	mv := New(animation.NewRuntime(), msg, nil)
 	mv.SetSize(80, 0)
 
 	cmd := mv.loadMarkdownImages(msg)
@@ -56,7 +56,7 @@ func TestFailedMarkdownImageLoadCanRetry(t *testing.T) {
 
 	source := "https://example.com/missing.png"
 	msg := types.Agent(types.MessageTypeAssistant, "assistant", "![img]("+source+")")
-	mv := New(msg, nil)
+	mv := New(animation.NewRuntime(), msg, nil)
 	mv.loadingImages = map[string]bool{source: true}
 
 	_, _ = mv.Update(markdownImagesLoadedMsg{
@@ -95,7 +95,7 @@ func TestErrorMessageWrapping(t *testing.T) {
 		"It contains enough text to exceed typical terminal widths and demonstrate the wrapping behavior."
 
 	msg := types.Error(longError)
-	mv := New(msg, nil)
+	mv := New(animation.NewRuntime(), msg, nil)
 
 	// Set a narrow width to force wrapping
 	width := 50
@@ -124,7 +124,7 @@ func TestErrorMessageShowsRetryAffordance(t *testing.T) {
 	t.Parallel()
 
 	msg := types.Error("Something went wrong")
-	mv := New(msg, nil)
+	mv := New(animation.NewRuntime(), msg, nil)
 	mv.SetSize(80, 0)
 
 	plainRendered := stripANSI(mv.View())
@@ -137,7 +137,7 @@ func TestErrorMessageWithShortContent(t *testing.T) {
 
 	shortError := "Short error"
 	msg := types.Error(shortError)
-	mv := New(msg, nil)
+	mv := New(animation.NewRuntime(), msg, nil)
 
 	width := 80
 	mv.SetSize(width, 0)
@@ -157,7 +157,7 @@ func TestErrorMessagePreservesContent(t *testing.T) {
 
 	errorContent := "Error: Failed to connect to database\nConnection timeout after 30 seconds"
 	msg := types.Error(errorContent)
-	mv := New(msg, nil)
+	mv := New(animation.NewRuntime(), msg, nil)
 
 	width := 80
 	mv.SetSize(width, 0)
@@ -286,7 +286,7 @@ func TestWelcomeMessagePreservesLineBreaks(t *testing.T) {
 	// Simulate YAML multiline content with | syntax
 	welcomeContent := "Welcome!\n   indented line\nregular line"
 	msg := types.Welcome(welcomeContent)
-	mv := New(msg, nil)
+	mv := New(animation.NewRuntime(), msg, nil)
 
 	width := 80
 	mv.SetSize(width, 0)
@@ -317,7 +317,7 @@ func TestUserMessageCollapsible(t *testing.T) {
 		Type:    types.MessageTypeUser,
 		Content: content,
 	}
-	mv := New(msg, nil)
+	mv := New(animation.NewRuntime(), msg, nil)
 	mv.SetSize(80, 0)
 
 	// Initially, it should not be expanded.
@@ -362,7 +362,7 @@ func TestUserMessageNotCollapsible(t *testing.T) {
 		Type:    types.MessageTypeUser,
 		Content: strings.Join(lines, "\n"),
 	}
-	mv := New(msg, nil)
+	mv := New(animation.NewRuntime(), msg, nil)
 	mv.SetSize(80, 0)
 
 	renderedPlain := stripANSI(mv.View())
@@ -383,14 +383,14 @@ func TestLabeledSpinnerRendersDelegationContext(t *testing.T) {
 
 	// Sender drives the accent color (child); Content holds the label.
 	msg := types.SpinnerLabeled("researcher", "root → researcher")
-	mv := New(msg, nil)
+	mv := New(animation.NewRuntime(), msg, nil)
 	mv.SetSize(80, 0)
 
 	assert.True(t, mv.isSpinnerDriven(), "labeled spinner must stay uncached/animated")
 
 	out := stripANSI(mv.View())
 	assert.Contains(t, out, "root → researcher", "label should read parent → child")
-	assert.Contains(t, out, spinner.Frame(0), "animated glyph should lead the label")
+	assert.Contains(t, out, animation.Chat.Frames()[0], "animated glyph should lead the label")
 }
 
 // TestBareSpinnerKeepsPlayfulView ensures the normal top-level turn (empty
@@ -398,7 +398,7 @@ func TestLabeledSpinnerRendersDelegationContext(t *testing.T) {
 func TestBareSpinnerKeepsPlayfulView(t *testing.T) {
 	t.Parallel()
 
-	mv := New(types.Spinner(), nil)
+	mv := New(animation.NewRuntime(), types.Spinner(), nil)
 	mv.SetSize(80, 0)
 
 	assert.True(t, mv.isSpinnerDriven())
@@ -419,7 +419,7 @@ func TestUserMessageHoverKeepsHeightAtNarrowWidth(t *testing.T) {
 	// dropped/truncated rather than wrapped, so hovering never changes the
 	// message height (which would invalidate click hit-testing).
 	for _, width := range []int{4, 8, 12} {
-		mv := New(msg, nil)
+		mv := New(animation.NewRuntime(), msg, nil)
 		mv.SetSize(width, 0)
 		h := mv.Height(width)
 		mv.SetHovered(true)
@@ -434,7 +434,7 @@ func TestUserMessageHoverKeepsHeightAtNarrowWidth(t *testing.T) {
 func TestAgentReturnRendersBadgesAndLabel(t *testing.T) {
 	t.Parallel()
 
-	mv := New(types.AgentReturn("researcher", "root"), nil)
+	mv := New(animation.NewRuntime(), types.AgentReturn("researcher", "root"), nil)
 	mv.SetSize(80, 0)
 
 	assert.False(t, mv.isSpinnerDriven(), "the transition is static")
@@ -456,7 +456,7 @@ func TestAgentReturnRespectsNarrowWidths(t *testing.T) {
 
 	msg := types.AgentReturn("delegation-orchestrator", "implementation-reviewer")
 	for _, width := range []int{10, 16, 24, 40} {
-		mv := New(msg, nil)
+		mv := New(animation.NewRuntime(), msg, nil)
 		mv.SetSize(width, 0)
 		for i, line := range strings.Split(mv.View(), "\n") {
 			assert.LessOrEqualf(t, ansi.StringWidth(line), width,

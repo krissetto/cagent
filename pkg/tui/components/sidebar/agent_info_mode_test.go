@@ -9,6 +9,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/styles"
 )
@@ -20,7 +21,7 @@ func newCompactPanelSidebar(t *testing.T, width int, agents ...runtime.AgentDeta
 	sess := session.New()
 	ss := service.NewSessionState(sess)
 	ss.SetCurrentAgentName("root")
-	m := New(t.Context(), ss).(*model)
+	m := New(animation.NewRuntime(), t.Context(), ss).(*model)
 	m.sessionHasContent = true
 	m.titleGenerated = true
 	m.sessionTitle = "Test"
@@ -250,7 +251,7 @@ func TestCompactClickZonesEveryLine(t *testing.T) {
 	sess := session.New()
 	ss := service.NewSessionState(sess)
 	ss.SetCurrentAgentName("root")
-	sb := New(t.Context(), ss)
+	sb := New(animation.NewRuntime(), t.Context(), ss)
 	m := sb.(*model)
 	m.sessionHasContent = true
 	m.titleGenerated = true

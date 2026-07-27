@@ -2,9 +2,11 @@ package tabbar
 
 import (
 	"image/color"
+	"time"
 
 	"charm.land/lipgloss/v2"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/messages"
 	"github.com/docker/docker-agent/pkg/tui/styles"
 )
@@ -32,10 +34,6 @@ const (
 	// their background during drag-and-drop.
 	dragBystanderDimAmount = 0.65
 )
-
-// runningFrames are the braille spinner characters used to animate the
-// running indicator in a streaming tab.
-var runningFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // Tab represents a single rendered tab in the tab bar.
 type Tab struct {
@@ -83,7 +81,7 @@ func blendColors(a, b color.Color, ratio float64) color.Color {
 //
 // When role is dragRoleBystander, all foreground colors are faded toward the
 // background to visually de-emphasize tabs that aren't being dragged.
-func renderTab(info messages.TabInfo, maxTitleLen, animFrame int, role dragRole) Tab {
+func renderTab(info messages.TabInfo, maxTitleLen int, role dragRole, elapsed time.Duration) Tab {
 	title := info.Title
 	if title == "" {
 		title = defaultTabTitle
@@ -147,7 +145,7 @@ func renderTab(info messages.TabInfo, maxTitleLen, animFrame int, role dragRole)
 		if role == dragRoleBystander {
 			runFg = blendColors(runFg, bgColor, dragBystanderDimAmount)
 		}
-		frame := runningFrames[animFrame%len(runningFrames)]
+		frame := animation.Card.FrameAt(elapsed)
 		content += lipgloss.NewStyle().Foreground(runFg).Background(bgColor).Render(frame + " ")
 	default:
 		content += pad.Render(" ")

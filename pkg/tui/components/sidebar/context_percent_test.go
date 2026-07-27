@@ -7,6 +7,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -54,7 +55,7 @@ func TestContextPercent_EmptyUsage(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	assert.Empty(t, m.contextPercent())
 }
@@ -64,7 +65,7 @@ func TestContextPercent_FallbackToSingleSession(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	// Session with no active stream (e.g., restored from persistence)
 	m.sessionUsage["session-1"] = &runtime.Usage{
@@ -145,7 +146,7 @@ func newTestSidebar(tb testing.TB) *testSidebar {
 	tb.Helper()
 	sess := session.New()
 	return &testSidebar{
-		model: New(testContext(tb), service.NewSessionState(sess)).(*model),
+		model: New(animation.NewRuntime(), testContext(tb), service.NewSessionState(sess)).(*model),
 	}
 }
 

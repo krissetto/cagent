@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/markdown"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
@@ -48,7 +49,7 @@ func TestCodeBlockCopyIconsAreNeverDead(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			m := NewScrollableView(80, 40, &service.SessionState{}).(*model)
+			m := NewScrollableView(animation.NewRuntime(), 80, 40, &service.SessionState{}).(*model)
 			m.SetSize(80, 40)
 			tc.setup(m)
 			m.renderDirty = true

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
@@ -34,7 +35,7 @@ func planMessage(status types.ToolStatus, args, result string) *types.Message {
 
 func render(t *testing.T, msg *types.Message) string {
 	t.Helper()
-	view := New(msg, service.StaticSessionState{})
+	view := New(animation.NewRuntime(), msg, service.StaticSessionState{})
 	view.SetSize(120, 1)
 	return stripANSI(view.View())
 }

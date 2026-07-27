@@ -14,6 +14,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/chat"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/commands"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
@@ -169,9 +170,14 @@ type Page interface {
 	// background pages — whose regular commands are discarded — so
 	// presentation deadlines keep running while a tab is hidden.
 	TakeRoutedTimers() tea.Cmd
+	VisualGeneration() uint64
 }
 
-// queuedMessage represents a message waiting to be sent to the agent
+func (p *chatPage) VisualGeneration() uint64 { return p.messages.VisualGeneration() }
+func (p *chatPage) SidebarVisualGeneration() uint64 {
+	return p.sidebar.VisualGeneration()
+}
+
 type queuedMessage struct {
 	content     string
 	attachments []msgtypes.Attachment
@@ -181,7 +187,10 @@ type queuedMessage struct {
 const maxQueuedMessages = 5
 
 // chatPage implements Page
+//
+//nolint:gocritic // Kept near its supporting queued-message declarations.
 type chatPage struct {
+	ar            *animation.Runtime
 	width, height int
 
 	// Components
@@ -349,11 +358,12 @@ func defaultKeyMap() KeyMap {
 }
 
 // New creates a new chat page
-func New(ctx context.Context, a *app.App, sessionState *service.SessionState, opts ...PageOption) Page {
+func New(ar *animation.Runtime, ctx context.Context, a *app.App, sessionState *service.SessionState, opts ...PageOption) Page {
 	p := &chatPage{
+		ar:            ar,
 		ctx:           func() context.Context { return context.WithoutCancel(ctx) },
-		sidebar:       sidebar.New(ctx, sessionState),
-		messages:      messages.New(sessionState),
+		sidebar:       sidebar.New(ar, ctx, sessionState),
+		messages:      messages.New(ar, sessionState),
 		app:           a,
 		keyMap:        defaultKeyMap(),
 		commandParser: commands.NewParser(),
@@ -1330,6 +1340,11 @@ func (p *chatPage) routedTimerCmd(timer sidebar.TransferTimer) tea.Cmd {
 	return tea.Tick(timer.Duration, func(time.Time) tea.Msg {
 		return msgtypes.RoutedMsg{SessionID: routingID, Inner: timer.Msg}
 	})
+}
+
+func (p *chatPage) PointerTargetsMessages(x, _ int) bool {
+	sl := p.computeSidebarLayout()
+	return sl.mode != sidebarVertical || p.sidebar.IsCollapsed() || !sl.isInSidebar(x-styles.AppPadding)
 }
 
 // handleSidebarClickType checks what was clicked in the sidebar area.

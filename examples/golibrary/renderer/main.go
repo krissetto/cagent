@@ -48,6 +48,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	mcptools "github.com/docker/docker-agent/pkg/tools/mcp"
 	"github.com/docker/docker-agent/pkg/tui"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/components/tool"
 	"github.com/docker/docker-agent/pkg/tui/components/toolcommon"
@@ -194,8 +195,8 @@ func run(ctx context.Context) error {
 
 // --- the custom renderer -------------------------------------------------------
 
-func newRepoRenderer(msg *types.Message, ss service.SessionStateReader) layout.Model {
-	return toolcommon.NewBase(msg, ss, renderRepoSearch)
+func newRepoRenderer(ar *animation.Runtime, msg *types.Message, ss service.SessionStateReader) layout.Model {
+	return toolcommon.NewBase(ar, msg, ss, renderRepoSearch)
 }
 
 func renderRepoSearch(msg *types.Message, _ spinner.Spinner, _ service.SessionStateReader, width, _ int) string {

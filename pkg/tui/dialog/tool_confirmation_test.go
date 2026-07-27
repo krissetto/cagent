@@ -12,6 +12,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -29,7 +30,7 @@ func newConfirmationEvent(metadata map[string]string) *runtime.ToolCallConfirmat
 func TestToolConfirmationDialog_RendersMetadata(t *testing.T) {
 	t.Parallel()
 
-	dialog := NewToolConfirmationDialog(
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(),
 		newConfirmationEvent(map[string]string{"danger": "high", "reason": "policy-x"}),
 		&service.SessionState{},
 	)
@@ -44,7 +45,7 @@ func TestToolConfirmationDialog_RendersMetadata(t *testing.T) {
 func TestToolConfirmationDialog_NoMetadataSection_WhenEmpty(t *testing.T) {
 	t.Parallel()
 
-	dialog := NewToolConfirmationDialog(newConfirmationEvent(nil), &service.SessionState{})
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(), newConfirmationEvent(nil), &service.SessionState{})
 	_, _ = dialog.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	view := ansi.Strip(dialog.View())
@@ -54,7 +55,7 @@ func TestToolConfirmationDialog_NoMetadataSection_WhenEmpty(t *testing.T) {
 func TestToolConfirmationDialog_MetadataKeysSorted(t *testing.T) {
 	t.Parallel()
 
-	dialog := NewToolConfirmationDialog(
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(),
 		newConfirmationEvent(map[string]string{"zebra": "1", "apple": "2", "mango": "3"}),
 		&service.SessionState{},
 	)
@@ -80,7 +81,7 @@ func TestToolConfirmationDialog_MetadataKeysSorted(t *testing.T) {
 func TestToolConfirmationDialog_RendersSafetyWarning(t *testing.T) {
 	t.Parallel()
 
-	dialog := NewToolConfirmationDialog(
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(),
 		newConfirmationEvent(map[string]string{
 			"blast_radius": "high",
 			"category":     "fs-delete",
@@ -108,7 +109,7 @@ func TestToolConfirmationDialog_RendersSafetyWarning(t *testing.T) {
 func TestToolConfirmationDialog_SafetyLabelNeverRendersRaw(t *testing.T) {
 	t.Parallel()
 
-	dialog := NewToolConfirmationDialog(
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(),
 		newConfirmationEvent(map[string]string{
 			"safety_label": "destructive",
 			"blast_radius": "high",
@@ -129,7 +130,7 @@ func TestToolConfirmationDialog_SafetyLabelNeverRendersRaw(t *testing.T) {
 func TestToolConfirmationDialog_UnknownRadiusIsNotDestructive(t *testing.T) {
 	t.Parallel()
 
-	dialog := NewToolConfirmationDialog(
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(),
 		newConfirmationEvent(map[string]string{
 			"safety_label": "unknown",
 			"blast_radius": "unknown",
@@ -152,7 +153,7 @@ func TestToolConfirmationDialog_UnknownRadiusIsNotDestructive(t *testing.T) {
 func TestToolConfirmationDialog_RendersSafetyWarningPlusExtraMetadata(t *testing.T) {
 	t.Parallel()
 
-	dialog := NewToolConfirmationDialog(
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(),
 		newConfirmationEvent(map[string]string{
 			"blast_radius": "medium",
 			"reason":       "rm without recursion flag",
@@ -179,7 +180,7 @@ func TestToolConfirmationDialog_RendersSafetyWarningPlusExtraMetadata(t *testing
 func TestToolConfirmationDialog_ReasonOutsideSafetyVerdictRendersPlain(t *testing.T) {
 	t.Parallel()
 
-	dialog := NewToolConfirmationDialog(
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(),
 		newConfirmationEvent(map[string]string{"reason": "policy-x"}),
 		&service.SessionState{},
 	)
@@ -200,7 +201,7 @@ func TestToolConfirmationDialog_EmbeddedSessionState(t *testing.T) {
 	t.Parallel()
 
 	state := &service.EmbeddedSessionState{}
-	dialog := NewToolConfirmationDialog(newConfirmationEvent(nil), state)
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(), newConfirmationEvent(nil), state)
 	_, _ = dialog.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	view := ansi.Strip(dialog.View())
@@ -242,7 +243,7 @@ func TestToolConfirmationDialog_ClickOnYFiresAtEveryWidth(t *testing.T) {
 	t.Parallel()
 
 	for width := 60; width <= 130; width++ {
-		dialog := NewToolConfirmationDialog(newConfirmationEvent(nil), &service.SessionState{})
+		dialog := NewToolConfirmationDialog(animation.NewRuntime(), newConfirmationEvent(nil), &service.SessionState{})
 		_, _ = dialog.Update(tea.WindowSizeMsg{Width: width, Height: 30})
 
 		d, ok := dialog.(*toolConfirmationDialog)
@@ -265,7 +266,7 @@ func TestToolConfirmationDialog_WrappedLayoutClicksDispatch(t *testing.T) {
 	t.Parallel()
 
 	state := &service.EmbeddedSessionState{}
-	dialog := NewToolConfirmationDialog(newConfirmationEvent(nil), state)
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(), newConfirmationEvent(nil), state)
 	_, _ = dialog.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 
 	d, ok := dialog.(*toolConfirmationDialog)
@@ -306,7 +307,7 @@ func TestToolConfirmationDialog_WrappedLayoutClicksDispatch(t *testing.T) {
 func TestToolConfirmationDialog_MiddleRowClickInNarrowSplitPane(t *testing.T) {
 	t.Parallel()
 
-	dialog := NewToolConfirmationDialog(newConfirmationEvent(nil), &service.SessionState{})
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(), newConfirmationEvent(nil), &service.SessionState{})
 	_, _ = dialog.Update(tea.WindowSizeMsg{Width: 45, Height: 30})
 
 	d, ok := dialog.(*toolConfirmationDialog)
@@ -367,7 +368,7 @@ func TestToolConfirmationDialog_TinyWidthsKeepRowsAlignedAndClickable(t *testing
 	t.Parallel()
 
 	for width := range 60 {
-		dialog := NewToolConfirmationDialog(newConfirmationEvent(nil), &service.SessionState{})
+		dialog := NewToolConfirmationDialog(animation.NewRuntime(), newConfirmationEvent(nil), &service.SessionState{})
 		_, _ = dialog.Update(tea.WindowSizeMsg{Width: width, Height: 30})
 
 		d, ok := dialog.(*toolConfirmationDialog)
@@ -424,7 +425,7 @@ func TestToolConfirmationDialog_OversizeSegmentTruncatesLabel(t *testing.T) {
 	event := newConfirmationEvent(nil)
 	event.ToolCall.Function.Arguments = `{"cmd":"` + longWord + ` --flag"}`
 
-	dialog := NewToolConfirmationDialog(event, &service.SessionState{})
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(), event, &service.SessionState{})
 	_, _ = dialog.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 
 	d, ok := dialog.(*toolConfirmationDialog)
@@ -460,7 +461,7 @@ func TestToolConfirmationDialog_OversizeSegmentTruncatesLabel(t *testing.T) {
 func TestToolConfirmationDialog_GapClicksAreDeadZones(t *testing.T) {
 	t.Parallel()
 
-	dialog := NewToolConfirmationDialog(newConfirmationEvent(nil), &service.SessionState{})
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(), newConfirmationEvent(nil), &service.SessionState{})
 	_, _ = dialog.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 
 	d, ok := dialog.(*toolConfirmationDialog)
@@ -499,7 +500,7 @@ func TestToolConfirmationDialog_BalancedClearsYoloMode(t *testing.T) {
 
 	state := &service.EmbeddedSessionState{}
 	state.SetYoloMode(true)
-	dialog := NewToolConfirmationDialog(newConfirmationEvent(nil), state)
+	dialog := NewToolConfirmationDialog(animation.NewRuntime(), newConfirmationEvent(nil), state)
 	_, _ = dialog.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	_, cmd := dialog.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})

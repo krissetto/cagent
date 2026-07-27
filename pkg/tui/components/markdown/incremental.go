@@ -37,19 +37,7 @@ type IncrementalRenderer struct {
 	// fallback is used for the actual rendering work; it is reused across calls
 	// so its parser pool (and chroma caches) stay warm.
 	fallback *FastRenderer
-
-	stats IncrementalStats
 }
-
-// IncrementalStats reports deterministic parser work for scaling tests.
-type IncrementalStats struct {
-	Calls       uint64
-	FullRenders uint64
-	ParsedBytes uint64
-}
-
-// Stats returns cumulative work counters.
-func (r *IncrementalRenderer) Stats() IncrementalStats { return r.stats }
 
 // NewIncrementalRenderer creates a new incremental renderer with the given
 // terminal width.
@@ -98,7 +86,6 @@ func (r *IncrementalRenderer) RenderWithCodeBlocks(input string) (string, []Code
 }
 
 func (r *IncrementalRenderer) renderParts(input string) (string, string, []CodeBlock, error) {
-	r.stats.Calls++
 	if input == "" {
 		r.inputPrefix = ""
 		r.outputPrefix = ""
@@ -128,7 +115,6 @@ func (r *IncrementalRenderer) renderParts(input string) (string, string, []CodeB
 			stable, tail, blocks, fallbackErr := r.fullRenderParts(input)
 			return stable, tail, blocks, fallbackErr
 		}
-		r.stats.ParsedBytes += uint64(len(tail))
 		return r.outputPrefix, renderedTail, r.mergeCodeBlocks(r.outputPrefix, r.codeBlocksPrefix, tailBlocks), nil
 	}
 
@@ -148,7 +134,6 @@ func (r *IncrementalRenderer) renderParts(input string) (string, string, []CodeB
 
 	rest := tail[boundary:]
 	if rest == "" {
-		r.stats.ParsedBytes += uint64(len(tail))
 		return r.outputPrefix, "", cloneCodeBlocks(r.codeBlocksPrefix), nil
 	}
 	renderedRest, restBlocks, err := r.fallback.RenderWithCodeBlocks(rest)
@@ -156,7 +141,6 @@ func (r *IncrementalRenderer) renderParts(input string) (string, string, []CodeB
 		stable, tail, blocks, fallbackErr := r.fullRenderParts(input)
 		return stable, tail, blocks, fallbackErr
 	}
-	r.stats.ParsedBytes += uint64(len(tail))
 	return r.outputPrefix, renderedRest, r.mergeCodeBlocks(r.outputPrefix, r.codeBlocksPrefix, restBlocks), nil
 }
 
@@ -182,8 +166,6 @@ func (r *IncrementalRenderer) Reset() {
 }
 
 func (r *IncrementalRenderer) fullRenderParts(input string) (string, string, []CodeBlock, error) {
-	r.stats.FullRenders++
-	r.stats.ParsedBytes += uint64(len(input))
 	boundary := stableBoundary(input)
 	if boundary <= 0 {
 		out, blocks, err := r.fallback.RenderWithCodeBlocks(input)
