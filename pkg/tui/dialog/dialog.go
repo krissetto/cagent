@@ -28,6 +28,14 @@ type CloseDialogMsg struct{}
 // CloseAllDialogsMsg is sent to close all dialogs in the stack
 type CloseAllDialogsMsg struct{}
 
+// Broadcastable marks messages the manager delivers to every dialog in the
+// stack instead of only the topmost one. Data-refresh messages implement it
+// so dialogs buried under another dialog (e.g. the plan browser under its
+// detail dialog) stay fresh.
+type Broadcastable interface {
+	BroadcastToDialogs()
+}
+
 // Dialog defines the interface that all dialogs must implement
 type Dialog interface {
 	layout.Model
@@ -140,6 +148,11 @@ func (d *manager) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		cmd := d.forwardToTop(d.adjustMouseMsg(msg))
+		return d, cmd
+	}
+
+	if _, ok := msg.(Broadcastable); ok {
+		cmd := d.broadcastToAll(msg)
 		return d, cmd
 	}
 

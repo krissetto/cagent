@@ -23,6 +23,7 @@ import (
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/audio/transcribe"
 	"github.com/docker/docker-agent/pkg/history"
+	"github.com/docker/docker-agent/pkg/plans"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tui/animation"
@@ -91,6 +92,11 @@ type appModel struct {
 	supervisor *supervisor.Supervisor
 	tabBar     *tabbar.TabBar
 	tuiStore   *tuistate.Store
+
+	// plansSvc is the host-facing plan service behind /plans. Built lazily
+	// by plansService() so plan.SharedStorage() only resolves its directory
+	// after path configuration; tests inject one via WithPlansService.
+	plansSvc plans.Service
 
 	// Per-session chat pages (kept alive for streaming continuity)
 	chatPages     map[string]chat.Page
@@ -818,7 +824,8 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.(type) {
 		case messages.SpawnSessionMsg, messages.SwitchTabMsg,
 			messages.CloseTabMsg, messages.ReorderTabMsg,
-			messages.ToggleSidebarMsg, messages.OpenSettingsDialogMsg:
+			messages.ToggleSidebarMsg, messages.OpenSettingsDialogMsg,
+			messages.ShowPlanBrowserMsg:
 			return m, nil
 		}
 	}
@@ -1117,6 +1124,12 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionState.SetSessionTitle(msg.Title)
 		return m.forwardChat(msg)
 
+	case *runtime.SessionPlanUpdatedEvent:
+		return m.handleSessionPlanUpdatedEvent(msg)
+
+	case *runtime.PlanChangedEvent:
+		return m.handlePlanChangedEvent(msg)
+
 	// --- New session (slash command /new) ---
 
 	case messages.NewSessionMsg:
@@ -1262,6 +1275,38 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.ShowSkillsDialogMsg:
 		return m.handleShowSkillsDialog()
+
+	// --- Plan browser (/plans) ---
+
+	case messages.ShowPlanBrowserMsg:
+		return m.handleShowPlanBrowser()
+
+	case messages.RefreshPlansMsg:
+		return m.handleRefreshPlans()
+
+	case messages.OpenPlanDetailMsg:
+		return m.handleOpenPlanDetail(msg.Ref)
+
+	case messages.ExportPlanMsg:
+		return m.handleExportPlan(msg.Ref)
+
+	case messages.SetPlanStatusMsg:
+		return m.handleSetPlanStatus(msg)
+
+	case messages.DeletePlanMsg:
+		return m.handleDeletePlan(msg)
+
+	case messages.CreatePlanMsg:
+		return m.handleCreatePlan(msg.Name)
+
+	case messages.EditPlanMsg:
+		return m.handleEditPlan(msg)
+
+	case planEditorClosedMsg:
+		return m.handlePlanEditorClosed(msg)
+
+	case dialog.PlanBrowserDataMsg, dialog.PlanDetailDataMsg:
+		return m.forwardDialog(msg)
 
 	case messages.RestartToolsetMsg:
 		return m.handleRestartToolset(msg.Name)
@@ -1435,6 +1480,12 @@ func (m *appModel) handleRoutedMsg(msg messages.RoutedMsg) (tea.Model, tea.Cmd) 
 	updated, _ := chatPage.Update(msg.Inner)
 	page := updated.(chat.Page)
 	m.chatPages[msg.SessionID] = page
+
+	// Shared plans are scope-global: a mutation from a background tab's agent
+	// must still live-refresh the plan dialogs open on the active tab.
+	if _, isPlanChange := msg.Inner.(*runtime.PlanChangedEvent); isPlanChange && m.planDialogOpen() {
+		return m, tea.Batch(page.TakeRoutedTimers(), tea.Sequence(m.planRefreshCmds(false)...))
+	}
 	return m, page.TakeRoutedTimers()
 }
 
