@@ -1,0 +1,80 @@
+package plans
+
+import "fmt"
+
+// NotFoundError reports that the addressed plan does not exist in its scope.
+type NotFoundError struct {
+	Scope Scope
+	// Name is the plan name or the session ID, matching Scope.
+	Name string
+}
+
+func (e *NotFoundError) Error() string {
+	return fmt.Sprintf("%s plan %q not found", e.Scope, e.Name)
+}
+
+// ValidationError reports invalid caller input: a malformed plan name or
+// session ID, an unknown scope, empty content, or an empty status.
+type ValidationError struct {
+	Message string
+}
+
+func (e *ValidationError) Error() string { return e.Message }
+
+// CorruptError reports a plan that exists but cannot be read or decoded, so a
+// caller never mistakes a damaged plan for a missing one and recreates it.
+type CorruptError struct {
+	Scope Scope
+	Name  string
+	Err   error
+}
+
+func (e *CorruptError) Error() string {
+	return fmt.Sprintf("%s plan %q: %v", e.Scope, e.Name, e.Err)
+}
+
+func (e *CorruptError) Unwrap() error { return e.Err }
+
+// StorageError reports a backend failure (I/O, permissions, ...) that is
+// neither a missing nor a corrupt plan.
+type StorageError struct {
+	Scope Scope
+	Op    string
+	Err   error
+}
+
+func (e *StorageError) Error() string {
+	return fmt.Sprintf("%s plan storage failure during %s: %v", e.Scope, e.Op, e.Err)
+}
+
+func (e *StorageError) Unwrap() error { return e.Err }
+
+// ConflictError reports a mutation rejected because the caller's expected
+// version no longer matches the plan's current one. Current carries the
+// version the plan is actually at, so a frontend can offer "re-read and
+// retry" or a deliberate force.
+type ConflictError struct {
+	Name     string
+	Expected int
+	Current  int
+}
+
+func (e *ConflictError) Error() string {
+	return fmt.Sprintf("version conflict on plan %q: expected version %d does not match current version %d; re-read the plan and retry, or force to overwrite", e.Name, e.Expected, e.Current)
+}
+
+// UnsupportedError reports an operation the plan's scope does not support,
+// with Reason telling the caller what to do instead.
+type UnsupportedError struct {
+	Scope  Scope
+	Op     string
+	Reason string
+}
+
+func (e *UnsupportedError) Error() string {
+	msg := fmt.Sprintf("%s is not supported for %s plans", e.Op, e.Scope)
+	if e.Reason != "" {
+		msg += ": " + e.Reason
+	}
+	return msg
+}
