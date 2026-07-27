@@ -165,6 +165,38 @@ $ docker agent eval <agent-file>|<registry-ref> [<eval-dir>|./evals]
 | `-e, --env`         | (none)                      | Environment variables to pass to container (`KEY` or `KEY=VALUE`) |
 | `--repeat`          | `1`                         | Number of times to repeat each evaluation (useful for computing baselines) |
 
+### Provider Credentials
+
+Eval containers are isolated from your host environment. Dedicated model
+provider API keys (for example `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) are
+forwarded into eval containers automatically, so most provider setups work
+without extra flags.
+
+> [!WARNING]
+> **`GITHUB_TOKEN` and `GH_TOKEN` are not forwarded automatically**
+>
+> GitHub tokens are broad credentials (git, `gh`, CI, packages), not dedicated
+> model API keys, so for security reasons Docker Agent does not forward them
+> into eval containers — even when they are set in your shell or in
+> `~/.config/cagent/.env`. If your agent uses the `github-copilot` provider,
+> pass the token explicitly by name:
+>
+> ```bash
+> docker agent eval agent.yaml ./evals -e GITHUB_TOKEN
+> ```
+>
+> When using a custom env file, both flags are required:
+>
+> ```bash
+> docker agent eval agent.yaml ./evals \
+>   --env-from-file /path/to/secrets.env \
+>   -e GITHUB_TOKEN
+> ```
+
+Note that the LLM judge runs on the host, not inside the eval container. If
+the token is not forwarded, judge validation can succeed while every
+evaluated agent run fails to authenticate.
+
 ### Custom Base Images
 
 When `--base-image` is set, the eval harness builds a derived image on top of your base image at evaluation time. Two things happen automatically:
