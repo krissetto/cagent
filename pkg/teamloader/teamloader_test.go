@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -1442,4 +1443,75 @@ agents:
 	}
 
 	assert.Positive(t, counter.calls.Load(), "transport wrapper supplied via WithModelOptions should have been invoked when the agent's model made a request")
+}
+
+// Concurrent loads that share one *RuntimeConfig — the shape the API server
+// uses, one config for every session — must each see their own working
+// directory. Toolsets read it off runConfig, so a load that mutates the
+// shared value hands the wrong directory to another session's shell,
+// filesystem and git tools.
+func TestLoadWithConfig_WithWorkingDirIsConcurrencySafe(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "dummy")
+
+	data := []byte(`agents:
+  root:
+    model: openai/gpt-4o
+    instruction: test
+    toolsets:
+      - type: recorder
+`)
+
+	var mu sync.Mutex
+	seen := map[string]string{}
+	recorder := NewToolsetRegistry(map[string]ToolsetCreator{
+		"recorder": func(_ context.Context, _ latest.Toolset, _ string, runConfig *config.RuntimeConfig, agentName string) (tools.ToolSet, error) {
+			// Hold the observed value across a scheduling point to widen
+			// the window in which a competing load could clobber it.
+			observed := runConfig.WorkingDir
+			runtime.Gosched()
+			mu.Lock()
+			defer mu.Unlock()
+			seen[observed] = agentName
+			return &mockToolSet{}, nil
+		},
+	})
+
+	callerDir := t.TempDir()
+	runConfig := &config.RuntimeConfig{}
+	runConfig.WorkingDir = callerDir
+
+	const loads = 8
+	sessionDirs := make([]string, loads)
+	for i := range sessionDirs {
+		sessionDirs[i] = t.TempDir()
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, loads)
+	for i, dir := range sessionDirs {
+		wg.Go(func() {
+			_, errs[i] = Load(
+				t.Context(),
+				config.NewBytesSource("t.yaml", data),
+				runConfig,
+				WithProviderRegistry(providerdefaults.NewDefaultRegistry()),
+				WithToolsetRegistry(recorder),
+				WithWorkingDir(dir),
+			)
+		})
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "load %d", i)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, dir := range sessionDirs {
+		assert.Contains(t, seen, dir,
+			"each session's toolsets must be built with that session's working directory")
+	}
+	assert.Equal(t, callerDir, runConfig.WorkingDir,
+		"the shared RuntimeConfig must never be mutated")
 }
