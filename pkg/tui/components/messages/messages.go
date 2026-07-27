@@ -102,8 +102,17 @@ type Model interface {
 
 	RemoveSpinner()
 	ScrollToBottom() tea.Cmd
+	// FinalizeStream materializes any offscreen active tail before stream
+	// completion/cancellation makes message content externally observable.
+	FinalizeStream()
 	AdjustBottomSlack(delta int)
+	// VisualGeneration increments only when Update changes rendered output.
 	VisualGeneration() uint64
+	WorkCountersForTest() WorkCounters
+	ResetWorkCountersForTest()
+	GeometryForTest() GeometryForTest
+	LastMessageContentForTest() string
+	LastMessageRenderedForTest() (string, []markdown.CodeBlock)
 
 	// IsScrollbarDragging returns true when the scrollbar thumb is being dragged.
 	IsScrollbarDragging() bool
@@ -126,8 +135,35 @@ type Model interface {
 
 // renderedItem represents a cached rendered message with position information
 type renderedItem struct {
-	lines  []string // Pre-split rendered lines (shared with the joined renderedLines slice)
-	height int      // Height in lines
+	lines    []string // Pre-split rendered lines (shared with the joined renderedLines slice)
+	segments *message.AssistantSegments
+	height   int // Height in lines
+}
+
+type activeTranscriptSegments struct {
+	index  int
+	start  int
+	header []string
+	stable []string
+	tail   []string
+}
+
+func (s *activeTranscriptSegments) height() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.header) + len(s.stable) + len(s.tail)
+}
+
+func (s *activeTranscriptSegments) line(local int) string {
+	if local < len(s.header) {
+		return s.header[local]
+	}
+	local -= len(s.header)
+	if local < len(s.stable) {
+		return s.stable[local]
+	}
+	return s.tail[local-len(s.stable)]
 }
 
 // renderedItemsCacheSize is the initial bound on the number of message
@@ -159,12 +195,22 @@ type model struct {
 	scrollOffset      int                              // Current scroll position in lines
 	bottomSlack       int                              // Extra blank lines added after content shrinks
 	slackAnimationSub animation.Subscription           // Subscription to animation ticks while slack > 0
-	renderedLines     []string                         // Cached rendered content as lines (avoids split/join per frame)
+	renderedLines     []string                         // Cached flattened content excluding a segmented active suffix
+	activeSegments    *activeTranscriptSegments        // Segmented final assistant item while visibly streaming
 	renderedItems     *lrucache.LRU[int, renderedItem] // LRU cache of rendered items (bounded to renderedItemsCacheSize)
 	urlSpans          *urlSpanCache                    // Cached URL spans per rendered line
 	lineOffsets       []int                            // Prefix-sum: lineOffsets[i] = starting global line of view i
 	totalHeight       int                              // Total height of all content in lines
 	renderDirty       bool                             // True when rendered content needs rebuild
+
+	// Test-only work counters. They remain unexported and add one cheap integer
+	// increment at the exact render/traversal seams used by performance gates.
+	renderItemCalls   uint64
+	renderItemViews   uint64
+	historyTraversals uint64
+	stableLinesCopied uint64
+	mutableLinesBuilt uint64
+	materializations  uint64
 	visualGeneration  uint64
 
 	selection selectionState
@@ -175,7 +221,9 @@ type model struct {
 	xPos, yPos int
 
 	// User scroll state
-	userHasScrolled bool // True when user manually scrolls away from bottom
+	userHasScrolled   bool // True when user manually scrolls away from bottom
+	deferredTailIndex int
+	deferredTail      []string
 
 	// Message selection state
 	selectedMessageIndex int  // Index of selected message (-1 = no selection)
@@ -200,27 +248,27 @@ type model struct {
 }
 
 // New creates a new message list component
-func New(animationRuntime *animation.Runtime, sessionState SessionState) Model {
-	return newModel(animationRuntime, 120, 24, sessionState)
+func New(animRuntime *animation.Runtime, sessionState SessionState) Model {
+	return newModel(animRuntime, 120, 24, sessionState)
 }
 
 // NewScrollableView creates a simple scrollable view for displaying messages in dialogs
 // This is a lightweight version that doesn't require app or session state management
-func NewScrollableView(animationRuntime *animation.Runtime, width, height int, sessionState SessionState) Model {
-	return newModel(animationRuntime, width, height, sessionState)
+func NewScrollableView(animRuntime *animation.Runtime, width, height int, sessionState SessionState) Model {
+	return newModel(animRuntime, width, height, sessionState)
 }
 
-func newModel(animationRuntime *animation.Runtime, width, height int, sessionState SessionState) *model {
+func newModel(animRuntime *animation.Runtime, width, height int, sessionState SessionState) *model {
 	sv := scrollview.New(
 		scrollview.WithReserveScrollbarSpace(true),
 	)
 	sv.SetSize(width, height)
-	if animationRuntime == nil {
+	if animRuntime == nil {
 		panic("messages: nil animation runtime")
 	}
 	return &model{
-		runtime:              animationRuntime,
-		slackAnimationSub:    animationRuntime.Subscribe(),
+		runtime:              animRuntime,
+		slackAnimationSub:    animRuntime.Subscribe(),
 		width:                width,
 		height:               height,
 		renderedItems:        lrucache.New[int, renderedItem](renderedItemsCacheSize),
@@ -251,6 +299,7 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case messages.StreamCancelledMsg:
+		m.FinalizeStream()
 		m.removeSpinner()
 		m.removePendingToolCallMessages()
 		m.stopReasoningBlockAnimations()
@@ -350,7 +399,10 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// subscription is registered when the next tick is scheduled.
 	if tick, ok := msg.(animation.TickMsg); ok {
 		cmds = append(cmds, m.handleAnimationTick(tick))
-		if tick.Dirty() {
+		// Tick dirtiness is program-wide. Do not rebuild the entire transcript
+		// merely because the root/sidebar spinner advanced; only message-owned
+		// animated content can change this component's lines.
+		if tick.Dirty() && m.hasAnimatedContent() {
 			m.renderDirty = true
 		}
 	}
@@ -359,6 +411,12 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 }
 
 func (m *model) handleMouseClick(msg tea.MouseClickMsg) (layout.Model, tea.Cmd) {
+	// Scrollbar hit-testing and thumb geometry must use the exact tail height.
+	// Checking the column first avoids materializing for ordinary transcript
+	// clicks that cannot reach the stale final item.
+	if msg.X == m.scrollview.ScrollbarX() && msg.Y >= m.yPos && msg.Y < m.yPos+m.height {
+		m.materializeDeferredTailForInteraction()
+	}
 	if m.isMouseOnScrollbar(msg.X, msg.Y) {
 		return m.handleScrollviewUpdate(msg)
 	}
@@ -449,6 +507,7 @@ func (m *model) handleMouseClick(msg tea.MouseClickMsg) (layout.Model, tea.Cmd) 
 // globalLineToMessageLine maps a global line index to (message index, local line within message).
 // Returns (-1, -1) if the line doesn't correspond to any message.
 func (m *model) globalLineToMessageLine(globalLine int) (msgIdx, localLine int) {
+	m.materializeDeferredTailForRange(globalLine, globalLine+1)
 	m.ensureAllItemsRendered()
 
 	if len(m.lineOffsets) == 0 || globalLine < 0 || globalLine >= m.totalHeight {
@@ -464,9 +523,16 @@ func (m *model) globalLineToMessageLine(globalLine int) (msgIdx, localLine int) 
 		return -1, -1
 	}
 
-	item := m.renderItem(i, m.views[i])
-	local := globalLine - m.lineOffsets[i]
-	if local < item.height {
+	start := m.lineOffsets[i]
+	end := m.totalHeight
+	if i+1 < len(m.lineOffsets) {
+		end = m.lineOffsets[i+1]
+	}
+	if m.needsSeparator(i) && end > start && end <= len(m.renderedLines) && m.renderedLines[end-1] == "" {
+		end--
+	}
+	local := globalLine - start
+	if local >= 0 && globalLine < end {
 		return i, local
 	}
 
@@ -476,6 +542,7 @@ func (m *model) globalLineToMessageLine(globalLine int) (msgIdx, localLine int) 
 
 func (m *model) handleMouseMotion(msg tea.MouseMotionMsg) (layout.Model, tea.Cmd) {
 	if m.scrollview.IsDragging() {
+		m.materializeDeferredTailForInteraction()
 		return m.handleScrollviewUpdate(msg)
 	}
 
@@ -504,13 +571,8 @@ func (m *model) handleMouseMotion(msg tea.MouseMotionMsg) (layout.Model, tea.Cmd
 	if newHovered != m.hoveredMessageIndex {
 		oldHovered := m.hoveredMessageIndex
 		m.hoveredMessageIndex = newHovered
-		if oldHovered >= 0 {
-			m.invalidateItem(oldHovered)
-		}
-		if newHovered >= 0 {
-			m.invalidateItem(newHovered)
-		}
-		m.renderDirty = true
+		m.refreshHoverItems(oldHovered, newHovered)
+		m.visualGeneration++
 	}
 
 	// Track hovered URL for underline effect
@@ -667,8 +729,9 @@ func (m *model) View() string {
 		return ""
 	}
 
-	// Use cached lines directly - O(1) instead of O(totalHeight) split
-	totalLines := len(m.renderedLines) + m.bottomSlack
+	// Use virtual total height; a segmented active suffix is intentionally not
+	// flattened into renderedLines.
+	totalLines := m.totalHeight + m.bottomSlack
 	if totalLines == 0 {
 		return ""
 	}
@@ -684,10 +747,7 @@ func (m *model) View() string {
 	// This is O(viewportHeight) instead of O(totalHeight)
 	visibleLines := make([]string, endLine-startLine)
 	for i := startLine; i < endLine; i++ {
-		if i < len(m.renderedLines) {
-			visibleLines[i-startLine] = m.renderedLines[i]
-		}
-		// Lines beyond renderedLines are bottom slack (empty strings), already zero-valued
+		visibleLines[i-startLine] = m.renderedLine(i)
 	}
 
 	if m.selection.active {
@@ -703,7 +763,35 @@ func (m *model) View() string {
 	// memoized line widths instead of re-measuring every visible line.
 	m.scrollview.SetContent(m.renderedLines, m.totalScrollableHeight())
 	m.scrollview.SetScrollOffset(m.scrollOffset)
+	// Segmented active lines are not in scrollview's flattened content buffer,
+	// so use its pre-sliced path. Selection/URL restyling already requires the
+	// same viewport-local width work.
+	if m.activeSegments != nil && !m.selection.active && m.hoveredURL == nil && m.copiedFlash == nil {
+		contentWidth := m.contentWidth()
+		for i, line := range visibleLines {
+			switch width := ansi.StringWidth(line); {
+			case width > contentWidth:
+				visibleLines[i] = ansi.Truncate(line, contentWidth, "")
+			case width < contentWidth:
+				visibleLines[i] = line + strings.Repeat(" ", contentWidth-width)
+			}
+		}
+		return m.scrollview.ViewWithPaddedLines(visibleLines)
+	}
 	return m.scrollview.ViewWithRestyledLines(visibleLines)
+}
+
+func (m *model) renderedLine(global int) string {
+	if global < 0 {
+		return ""
+	}
+	if s := m.activeSegments; s != nil && global >= s.start && global < s.start+s.height() {
+		return s.line(global - s.start)
+	}
+	if global < len(m.renderedLines) {
+		return m.renderedLines[global]
+	}
+	return ""
 }
 
 // updateScrollState recomputes rendered content, bottom slack and scroll
@@ -779,13 +867,18 @@ func (m *model) SetSize(width, height int) tea.Cmd {
 	}
 
 	m.invalidateAllItems()
+	m.visualGeneration++
 	return nil
 }
 
 func (m *model) SetPosition(x, y int) tea.Cmd {
+	if m.xPos == x && m.yPos == y {
+		return nil
+	}
 	m.xPos = x
 	m.yPos = y
 	m.scrollview.SetPosition(x, y)
+	m.visualGeneration++
 	return nil
 }
 
@@ -899,7 +992,6 @@ func (m *model) Help() help.KeyMap {
 	return core.NewSimpleHelp(m.Bindings())
 }
 
-// Scrolling methods
 func (m *model) VisualGeneration() uint64 { return m.visualGeneration }
 
 const (
@@ -916,6 +1008,7 @@ func (m *model) scrollUp() {
 }
 
 func (m *model) scrollDown() {
+	m.materializeDeferredTailForRange(m.scrollOffset, m.scrollOffset+m.height+defaultScrollAmount)
 	m.setScrollOffset(m.scrollOffset + defaultScrollAmount)
 	if m.isAtBottom() {
 		m.userHasScrolled = false
@@ -929,6 +1022,7 @@ func (m *model) scrollPageUp() {
 }
 
 func (m *model) scrollPageDown() {
+	m.materializeDeferredTailForRange(m.scrollOffset, m.scrollOffset+m.height*2)
 	m.setScrollOffset(m.scrollOffset + m.height)
 	if m.isAtBottom() {
 		m.userHasScrolled = false
@@ -941,14 +1035,85 @@ func (m *model) scrollToTop() {
 	m.setScrollOffset(0)
 }
 
+func (m *model) materializeDeferredTail() {
+	if len(m.deferredTail) == 0 || m.deferredTailIndex < 0 || m.deferredTailIndex >= len(m.messages) {
+		return
+	}
+	m.materializations++
+	msg := m.messages[m.deferredTailIndex]
+	var b strings.Builder
+	b.Grow(len(msg.Content) + deferredBytes(m.deferredTail))
+	b.WriteString(msg.Content)
+	for _, chunk := range m.deferredTail {
+		b.WriteString(chunk)
+	}
+	msg.Content = b.String()
+	index := m.deferredTailIndex
+	_ = m.views[index].(message.Model).SetMessage(msg)
+	m.deferredTail = nil
+	m.deferredTailIndex = -1
+	m.refreshRenderedItem(index)
+	m.visualGeneration++
+}
+
+// materializeDeferredTailForRange reconciles stale geometry only when a
+// requested viewport/overscan range can reach the deferred final item. The
+// cached line offset is the start of that item and remains valid while chunks
+// are deferred; if geometry has not been built yet, materialize conservatively.
+//
+//nolint:unparam // Range shape is kept explicit for viewport callers.
+func (m *model) materializeDeferredTailForRange(start, end int) {
+	if len(m.deferredTail) == 0 {
+		return
+	}
+	if m.deferredTailIndex < 0 || m.deferredTailIndex >= len(m.lineOffsets) || end > m.lineOffsets[m.deferredTailIndex] {
+		m.materializeDeferredTail()
+	}
+}
+
+func (m *model) materializeDeferredTailForInteraction() {
+	if len(m.deferredTail) != 0 {
+		m.materializeDeferredTail()
+		m.updateScrollState()
+		m.scrollview.SetContent(m.renderedLines, m.totalScrollableHeight())
+		m.scrollview.SetScrollOffset(m.scrollOffset)
+	}
+}
+
+// FinalizeStream establishes the exact externally visible content boundary
+// even when the user remains scrolled above the active response.
+func (m *model) FinalizeStream() {
+	m.materializeDeferredTailForInteraction()
+}
+
+func deferredBytes(chunks []string) int {
+	n := 0
+	for _, chunk := range chunks {
+		n += len(chunk)
+	}
+	return n
+}
+
 func (m *model) scrollToBottom() {
+	hadDeferredTail := len(m.deferredTail) != 0
+	m.materializeDeferredTail()
 	m.userHasScrolled = false
+	// A non-deferred final item may still be stale (for example after a hover
+	// transition). Materialization already refreshed a deferred item, so never
+	// render it a second time at this re-entry boundary.
+	if !hadDeferredTail && len(m.views) > 0 {
+		m.refreshRenderedItem(len(m.views) - 1)
+	}
 	m.setScrollOffset(9_999_999) // Will be clamped in View()
 }
 
 func (m *model) scrollByWheel(delta int) {
 	if delta == 0 {
 		return
+	}
+	if delta > 0 {
+		requestedEnd := m.scrollOffset + m.height + delta*wheelScrollAmount*defaultScrollAmount
+		m.materializeDeferredTailForRange(m.scrollOffset, requestedEnd)
 	}
 
 	prevOffset := m.scrollOffset
@@ -1151,6 +1316,7 @@ func (m *model) shouldCacheMessage(index int) bool {
 }
 
 func (m *model) renderItem(index int, view layout.Model) renderedItem {
+	m.renderItemCalls++
 	// If this message is being inline edited, render the textarea instead
 	if index == m.inlineEditMsgIndex {
 		rendered := m.renderInlineEditTextarea()
@@ -1179,6 +1345,16 @@ func (m *model) renderItem(index int, view layout.Model) renderedItem {
 		}
 	}
 
+	m.renderItemViews++
+	if v, ok := view.(message.Model); ok {
+		if segments, ok := v.RenderedSegments(m.contentWidth()); ok {
+			item := renderedItem{segments: &segments, height: len(segments.Header) + len(segments.Stable) + len(segments.Tail)}
+			if shouldCache {
+				m.renderedItems.Put(index, item)
+			}
+			return item
+		}
+	}
 	rendered := view.View()
 	var lines []string
 	if rendered != "" {
@@ -1252,8 +1428,69 @@ func (m *model) needsSeparator(index int) bool {
 	return !currentIsToolCall || !nextIsToolCall
 }
 
+type GeometryForTest struct {
+	Width, Height, ContentWidth, TotalHeight, ScrollOffset, MaxOffset, ScrollbarX int
+	UserHasScrolled, RenderDirty, ActiveSegments                                  bool
+	DeferredChunks, RenderedLineCount                                             int
+}
+
+func (m *model) GeometryForTest() GeometryForTest {
+	return GeometryForTest{
+		Width:             m.width,
+		Height:            m.height,
+		ContentWidth:      m.contentWidth(),
+		TotalHeight:       m.totalHeight,
+		ScrollOffset:      m.scrollOffset,
+		MaxOffset:         max(0, m.totalScrollableHeight()-m.height),
+		ScrollbarX:        m.scrollview.ScrollbarX(),
+		UserHasScrolled:   m.userHasScrolled,
+		RenderDirty:       m.renderDirty,
+		ActiveSegments:    m.activeSegments != nil,
+		DeferredChunks:    len(m.deferredTail),
+		RenderedLineCount: len(m.renderedLines),
+	}
+}
+
+type WorkCounters struct {
+	RenderItems       uint64
+	RenderedViews     uint64
+	HistoryTraversals uint64
+	StableLinesCopied uint64
+	MutableLinesBuilt uint64
+	Materializations  uint64
+}
+
+func (m *model) WorkCountersForTest() WorkCounters {
+	return WorkCounters{RenderItems: m.renderItemCalls, RenderedViews: m.renderItemViews, HistoryTraversals: m.historyTraversals, StableLinesCopied: m.stableLinesCopied, MutableLinesBuilt: m.mutableLinesBuilt, Materializations: m.materializations}
+}
+
+func (m *model) ResetWorkCountersForTest() {
+	m.renderItemCalls, m.renderItemViews, m.historyTraversals = 0, 0, 0
+	m.stableLinesCopied, m.mutableLinesBuilt, m.materializations = 0, 0, 0
+}
+
+func (m *model) LastMessageContentForTest() string {
+	if len(m.messages) == 0 {
+		return ""
+	}
+	return m.messages[len(m.messages)-1].Content
+}
+
+func (m *model) LastMessageRenderedForTest() (string, []markdown.CodeBlock) {
+	if len(m.views) == 0 {
+		return "", nil
+	}
+	rendered := m.views[len(m.views)-1].View()
+	blocks := []markdown.CodeBlock(nil)
+	if view, ok := m.views[len(m.views)-1].(message.Model); ok {
+		blocks = view.CodeBlocks()
+	}
+	return rendered, blocks
+}
+
 func (m *model) ensureAllItemsRendered() {
-	if !m.renderDirty && len(m.renderedLines) > 0 {
+	m.historyTraversals++
+	if !m.renderDirty && (len(m.renderedLines) > 0 || m.activeSegments != nil) {
 		return
 	}
 
@@ -1269,28 +1506,129 @@ func (m *model) ensureAllItemsRendered() {
 	}
 
 	var allLines []string
+	m.activeSegments = nil
 	offsets := make([]int, len(m.views))
+	virtualHeight := 0
 
 	for i, view := range m.views {
-		offsets[i] = len(allLines)
+		offsets[i] = virtualHeight
 		item := m.renderItem(i, view)
-		if len(item.lines) == 0 {
+		if item.height == 0 {
 			continue
 		}
-
-		allLines = append(allLines, item.lines...)
+		if item.segments != nil && i == len(m.views)-1 {
+			m.activeSegments = &activeTranscriptSegments{index: i, start: virtualHeight, header: item.segments.Header, stable: item.segments.Stable, tail: item.segments.Tail}
+			virtualHeight += item.height
+		} else {
+			if item.segments != nil {
+				allLines = append(allLines, item.segments.Header...)
+				allLines = append(allLines, item.segments.Stable...)
+				allLines = append(allLines, item.segments.Tail...)
+			} else {
+				allLines = append(allLines, item.lines...)
+			}
+			virtualHeight += item.height
+		}
 
 		if m.needsSeparator(i) {
 			allLines = append(allLines, "")
+			virtualHeight++
 		}
 	}
 
-	// Store lines directly - avoid join/split on every View() call
 	m.renderedLines = allLines
 	m.lineOffsets = offsets
-	m.totalHeight = len(allLines)
+	m.totalHeight = virtualHeight
 	m.urlSpans.clear()
 	m.renderDirty = false
+}
+
+//nolint:unparam // Boolean result is retained for cache-refresh callers.
+func (m *model) refreshRenderedItem(index int) bool {
+	wasAtBottom := m.isAtBottom()
+	if m.renderDirty || (len(m.renderedLines) == 0 && m.activeSegments == nil) || len(m.lineOffsets) != len(m.views) || index < 0 || index >= len(m.views) {
+		m.invalidateItem(index)
+		return false
+	}
+	start := m.lineOffsets[index]
+	end := m.totalHeight
+	if index+1 < len(m.lineOffsets) {
+		end = m.lineOffsets[index+1]
+	}
+	if m.needsSeparator(index) && end > start && m.renderedLine(end-1) == "" {
+		end--
+	}
+	m.renderedItems.Delete(index)
+	item := m.renderItem(index, m.views[index])
+	if item.segments != nil && index == len(m.views)-1 {
+		oldHeight := end - start
+		if m.activeSegments != nil && m.activeSegments.index == index {
+			oldHeight = m.activeSegments.height()
+		}
+		m.activeSegments = &activeTranscriptSegments{index: index, start: start, header: item.segments.Header, stable: item.segments.Stable, tail: item.segments.Tail}
+		m.mutableLinesBuilt += uint64(len(item.segments.Tail))
+		delta := item.height - oldHeight
+		m.totalHeight += delta
+		if wasAtBottom && !m.userHasScrolled {
+			m.scrollOffset = max(0, m.totalScrollableHeight()-m.height)
+		} else {
+			m.scrollOffset = min(m.scrollOffset, max(0, m.totalScrollableHeight()-m.height))
+		}
+		m.scrollview.SetScrollOffset(m.scrollOffset)
+		m.hoveredURL = nil
+		m.urlSpans.clear()
+		return true
+	}
+	if start < 0 || end < start || end > len(m.renderedLines) {
+		m.renderDirty = true
+		return false
+	}
+	// A fallback/full rendering replaces any segmented suffix.
+	if m.activeSegments != nil && m.activeSegments.index == index {
+		prefix := make([]string, 0, len(m.renderedLines)+m.activeSegments.height())
+		prefix = append(prefix, m.renderedLines...)
+		prefix = append(prefix, m.activeSegments.header...)
+		prefix = append(prefix, m.activeSegments.stable...)
+		prefix = append(prefix, m.activeSegments.tail...)
+		m.stableLinesCopied += uint64(len(m.activeSegments.stable))
+		m.renderedLines = prefix
+		m.activeSegments = nil
+		end = len(m.renderedLines)
+	}
+	// Replace the final item in place. It is normally the transcript suffix, so
+	// reslicing avoids copying the entire historical prefix on every streamed
+	// chunk; append only copies if the tail outgrows retained capacity.
+	if index == len(m.views)-1 && end == len(m.renderedLines) {
+		m.renderedLines = append(m.renderedLines[:start], item.lines...)
+	} else {
+		replacement := make([]string, 0, len(m.renderedLines)-(end-start)+item.height)
+		replacement = append(replacement, m.renderedLines[:start]...)
+		replacement = append(replacement, item.lines...)
+		replacement = append(replacement, m.renderedLines[end:]...)
+		m.renderedLines = replacement
+	}
+	delta := item.height - (end - start)
+	for i := index + 1; i < len(m.lineOffsets); i++ {
+		m.lineOffsets[i] += delta
+	}
+	m.totalHeight += delta
+	if wasAtBottom && !m.userHasScrolled {
+		m.scrollOffset = max(0, m.totalScrollableHeight()-m.height)
+	} else {
+		m.scrollOffset = min(m.scrollOffset, max(0, m.totalScrollableHeight()-m.height))
+	}
+	m.scrollview.SetScrollOffset(m.scrollOffset)
+	m.hoveredURL = nil
+	m.urlSpans.clear()
+	return true
+}
+
+func (m *model) refreshHoverItems(indices ...int) {
+	for _, index := range indices {
+		if index >= 0 {
+			m.refreshRenderedItem(index)
+		}
+	}
 }
 
 func (m *model) invalidateItem(index int) {
@@ -1299,7 +1637,6 @@ func (m *model) invalidateItem(index int) {
 	// shouldCacheMessage could leave a stale entry behind.
 	m.renderedItems.Delete(index)
 	m.renderDirty = true
-	m.visualGeneration++
 }
 
 func (m *model) invalidateAllItems() {
@@ -1309,7 +1646,6 @@ func (m *model) invalidateAllItems() {
 	m.totalHeight = 0
 	m.urlSpans.clear()
 	m.renderDirty = true
-	m.visualGeneration++
 }
 
 // finalizePreviousMessageView releases per-message render state on the most
@@ -1424,7 +1760,6 @@ func (m *model) addMessage(msg *types.Message) tea.Cmd {
 	m.sessionState.SetPreviousMessage(msg)
 	m.views = append(m.views, view)
 	m.renderDirty = true
-	m.visualGeneration++
 
 	var cmds []tea.Cmd
 	if initCmd := view.Init(); initCmd != nil {
@@ -1727,8 +2062,11 @@ func (m *model) AddToolResult(msg *runtime.ToolCallResponseEvent, status types.T
 func (m *model) AppendToLastMessage(agentName, content string) tea.Cmd {
 	m.removeSpinner()
 
+	// The first assistant chunk replaces the pending-response spinner. After
+	// removal the transcript can legitimately be empty; create the streaming
+	// message rather than dropping the first and every later chunk.
 	if len(m.messages) == 0 {
-		return nil
+		return m.addMessage(types.Agent(types.MessageTypeAssistant, agentName, content))
 	}
 
 	lastIdx := len(m.messages) - 1
@@ -1736,9 +2074,24 @@ func (m *model) AppendToLastMessage(agentName, content string) tea.Cmd {
 
 	// Append to existing assistant message from same agent
 	if lastMsg.Type == types.MessageTypeAssistant && lastMsg.Sender == agentName {
-		lastMsg.Content += content
-		cmd := m.views[lastIdx].(message.Model).SetMessage(lastMsg)
-		m.invalidateItem(lastIdx)
+		if m.userHasScrolled {
+			if len(m.deferredTail) == 0 {
+				m.deferredTailIndex = lastIdx
+			}
+			m.deferredTail = append(m.deferredTail, content)
+			return nil
+		}
+		m.materializeDeferredTail()
+		cmd := m.views[lastIdx].(message.Model).AppendContent(content)
+		// While scrolled away from the tail, the viewport and its geometry are
+		// unchanged. Retain the exact content but defer markdown rendering and
+		// transcript splicing until the tail becomes visible again.
+		if m.userHasScrolled {
+			m.renderedItems.Delete(lastIdx)
+			return cmd
+		}
+		m.refreshRenderedItem(lastIdx)
+		m.visualGeneration++
 		return cmd
 	}
 
@@ -1926,6 +2279,11 @@ func (m *model) removeSpinner() {
 		m.totalHeight = 0
 		m.urlSpans.clear()
 		m.renderDirty = true
+		// Removing the spinner invalidates the flattened transcript and resets
+		// its geometry. AgentChoice updates are eligible for root pointer-cache
+		// restoration, so publish this visual transition explicitly; otherwise
+		// the root can restore the pre-chunk spinner frame until an unrelated
+		// click invalidates it.
 		m.visualGeneration++
 	}
 }
@@ -1984,11 +2342,19 @@ func (m *model) labelHit(msgIdx, localLine, col int, label string) bool {
 	}
 
 	item := m.renderItem(msgIdx, m.views[msgIdx])
-	if localLine < 0 || localLine >= len(item.lines) {
+	var lines []string
+	if item.segments != nil {
+		lines = append(lines, item.segments.Header...)
+		lines = append(lines, item.segments.Stable...)
+		lines = append(lines, item.segments.Tail...)
+	} else {
+		lines = item.lines
+	}
+	if localLine < 0 || localLine >= len(lines) {
 		return false
 	}
 
-	plainLine := ansi.Strip(item.lines[localLine])
+	plainLine := ansi.Strip(lines[localLine])
 	before, _, ok := strings.Cut(plainLine, label)
 	if !ok {
 		return false
@@ -2022,6 +2388,17 @@ func (m *model) isEditLabelClick(msgIdx, localLine, col int) bool {
 	return m.labelHit(msgIdx, localLine, col, types.UserMessageEditLabel)
 }
 
+func (m *model) renderedItemLines(item renderedItem) []string {
+	if item.segments == nil {
+		return item.lines
+	}
+	lines := make([]string, 0, item.height)
+	lines = append(lines, item.segments.Header...)
+	lines = append(lines, item.segments.Stable...)
+	lines = append(lines, item.segments.Tail...)
+	return lines
+}
+
 // codeBlockAt returns the raw code of the fenced code block whose copy label
 // is at the given click position, if any.
 func (m *model) codeBlockAt(msgIdx, localLine, col int) (string, bool) {
@@ -2051,10 +2428,11 @@ func (m *model) codeBlockAt(msgIdx, localLine, col int) (string, bool) {
 	}
 
 	item := m.renderItem(msgIdx, m.views[msgIdx])
-	if localLine < 0 || localLine >= len(item.lines) {
+	lines := m.renderedItemLines(item)
+	if localLine < 0 || localLine >= len(lines) {
 		return "", false
 	}
-	plainLine := ansi.Strip(item.lines[localLine])
+	plainLine := ansi.Strip(lines[localLine])
 	before, _, found := strings.Cut(plainLine, markdown.CodeBlockCopyIcon)
 	if !found {
 		return "", false
@@ -2139,6 +2517,11 @@ func (m *model) IsMouseOnScrollbar(x, y int) bool {
 }
 
 func (m *model) handleScrollviewUpdate(msg tea.Msg) (layout.Model, tea.Cmd) {
+	// Drag calculations depend on total height and may jump directly into the
+	// stale final item, so reconcile before delegating any active drag update.
+	if m.scrollview.IsDragging() {
+		m.materializeDeferredTailForInteraction()
+	}
 	_, cmd := m.scrollview.UpdateMouse(msg)
 	m.scrollOffset = m.scrollview.ScrollOffset()
 	if m.isAtBottom() {

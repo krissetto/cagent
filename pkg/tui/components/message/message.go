@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/docker/docker-agent/pkg/tui/animation"
@@ -28,6 +29,7 @@ type Model interface {
 	layout.Model
 	layout.Sizeable
 	SetMessage(msg *types.Message) tea.Cmd
+	AppendContent(content string) tea.Cmd
 	SetSelected(selected bool)
 	SetHovered(hovered bool)
 	CodeBlocks() []markdown.CodeBlock
@@ -41,6 +43,19 @@ type Model interface {
 	// to assert that finalized views have actually released their per-message
 	// render state without reaching into unexported fields via reflection.
 	HasLiveRenderState() bool
+	// RenderedSegments exposes immutable header/stable blocks separately from
+	// the mutable tail so transcript follow-tail rendering need not flatten the
+	// complete active response on every chunk.
+	RenderedSegments(width int) (AssistantSegments, bool)
+}
+
+// AssistantSegments is a line-oriented active assistant rendering. Header and
+// Stable are retained by the message view and immutable until the next width
+// change; Tail contains only the mutable markdown block.
+type AssistantSegments struct {
+	Header []string
+	Stable []string
+	Tail   []string
 }
 
 // messageModel implements Model
@@ -72,7 +87,11 @@ type messageModel struct {
 	// mdRenderer is reused across renders of an assistant message so that
 	// streamed-in chunks only re-render the trailing block instead of the whole
 	// accumulated markdown each time.
-	mdRenderer *markdown.IncrementalRenderer
+	mdRenderer        *markdown.IncrementalRenderer
+	streamLines       assistantStreamLines
+	segmentCodeBlocks []markdown.CodeBlock
+	contentBuf        strings.Builder
+	imageScanTail     string
 
 	// finalized is set by Finalize() once the message is no longer the active
 	// streaming view. After it is set, Render() still produces correct output,
@@ -85,6 +104,14 @@ type messageModel struct {
 	markdownImages  map[string]tuiimage.Inline
 	loadingImages   map[string]bool
 	markdownImageID int
+}
+
+type assistantStreamLines struct {
+	width       int
+	stable      string
+	stableLines []string
+	headerKey   string
+	headerLines []string
 }
 
 type markdownImagesLoadedMsg struct {
@@ -158,8 +185,34 @@ func (mv *messageModel) SetMessage(msg *types.Message) tea.Cmd {
 		mv.mdRenderer.Reset()
 	}
 	mv.message = msg
+	mv.contentBuf.Reset()
+	if msg != nil {
+		mv.contentBuf.WriteString(msg.Content)
+	}
+	mv.imageScanTail = ""
 	mv.renderCache.valid = false
 	return mv.loadMarkdownImages(msg)
+}
+
+func (mv *messageModel) AppendContent(content string) tea.Cmd {
+	if content == "" || mv.message == nil {
+		return nil
+	}
+	if mv.contentBuf.Len() == 0 && mv.message.Content != "" {
+		mv.contentBuf.WriteString(mv.message.Content)
+	}
+	mv.contentBuf.WriteString(content)
+	mv.message.Content = mv.contentBuf.String()
+	mv.renderCache.valid = false
+	scan := mv.imageScanTail + content
+	if content != "" {
+		mv.imageScanTail = content[len(content)-1:]
+	}
+	// Keep one byte of overlap so an opener split as "!" then "[" is found.
+	if !strings.Contains(scan, "![") {
+		return nil
+	}
+	return mv.loadMarkdownImages(mv.message)
 }
 
 func (mv *messageModel) loadMarkdownImages(msg *types.Message) tea.Cmd {
@@ -258,6 +311,78 @@ func (mv *messageModel) IsToggleLine(lineIdx int) bool {
 	// By checking >= height-3, we provide a generous clickable area exactly on the toggle.
 	height := mv.Height(mv.width)
 	return lineIdx >= height-3
+}
+
+func (mv *messageModel) RenderedSegments(width int) (AssistantSegments, bool) {
+	msg := mv.message
+	if msg == nil || msg.Type != types.MessageTypeAssistant || msg.Content == "" || mv.selected || len(mv.markdownImages) != 0 {
+		return AssistantSegments{}, false
+	}
+	messageStyle := styles.AssistantMessageStyle
+	innerWidth := width - messageStyle.GetHorizontalFrameSize()
+	if mv.mdRenderer == nil {
+		mv.mdRenderer = markdown.NewIncrementalRenderer(innerWidth)
+	} else {
+		mv.mdRenderer.SetWidth(innerWidth)
+	}
+	parts, err := mv.mdRenderer.RenderParts(msg.Content)
+	if err != nil {
+		return AssistantSegments{}, false
+	}
+	cache := &mv.streamLines
+	if cache.width != width || !strings.HasPrefix(parts.StablePrefix, cache.stable) {
+		cache.width, cache.stable = width, ""
+		cache.stableLines = nil
+	}
+	if cache.stable != parts.StablePrefix {
+		delta := parts.StablePrefix[len(cache.stable):]
+		if cache.stable != "" && strings.HasPrefix(delta, "\n") {
+			delta = strings.TrimPrefix(delta, "\n")
+		}
+		cache.stableLines = append(cache.stableLines, styledAssistantLines(messageStyle, width, delta)...)
+		cache.stable = parts.StablePrefix
+	}
+	header := actionRow(innerWidth, mv.hovered, types.MessageCopyLabel)
+	prefix := ""
+	if !mv.sameAgentAsPrevious(msg) {
+		prefix = mv.senderPrefix(msg.Sender)
+	}
+	headerKey := prefix + header
+	if cache.headerKey != headerKey || cache.width != width {
+		cache.headerKey = headerKey
+		cache.headerLines = nil
+		if prefix != "" {
+			cache.headerLines = append(cache.headerLines, strings.Split(strings.TrimSuffix(prefix, "\n"), "\n")...)
+		}
+		cache.headerLines = append(cache.headerLines, styledAssistantLines(messageStyle, width, header)...)
+	}
+	tailLines := styledAssistantLines(messageStyle, width, parts.MutableTail)
+	if parts.MutableTail != "" && parts.StablePrefix != "" {
+		separator := styledAssistantLines(messageStyle, width, strings.Repeat(" ", max(innerWidth, 0)))
+		tailLines = append(separator, tailLines...)
+	}
+
+	prefixLines := len(cache.headerLines)
+	mv.segmentCodeBlocks = nil
+	if len(parts.CodeBlocks) > 0 {
+		mv.segmentCodeBlocks = make([]markdown.CodeBlock, len(parts.CodeBlocks))
+	}
+	for i, cb := range parts.CodeBlocks {
+		mv.segmentCodeBlocks[i] = markdown.CodeBlock{Content: cb.Content, Line: cb.Line + prefixLines}
+	}
+	if len(mv.segmentCodeBlocks) == 0 {
+		mv.codeBlocks = nil
+	} else {
+		mv.codeBlocks = append(mv.codeBlocks[:0], mv.segmentCodeBlocks...)
+	}
+	return AssistantSegments{Header: cache.headerLines, Stable: cache.stableLines, Tail: tailLines}, true
+}
+
+func styledAssistantLines(style lipgloss.Style, width int, content string) []string {
+	if content == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(style.Width(width).Render(content), "\n"), "\n")
 }
 
 // View renders the message view

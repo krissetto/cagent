@@ -141,6 +141,10 @@ func (d *manager) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	case tea.MouseWheelMsg:
 		cmd := d.forwardToTop(d.adjustMouseMsg(msg))
 		return d, cmd
+
+	case messages.WheelCoalescedMsg:
+		cmd := d.forwardToTop(d.adjustMouseMsg(msg))
+		return d, cmd
 	}
 
 	// Forward non-mouse messages to top dialog
@@ -247,6 +251,10 @@ func (d *manager) adjustMouseMsg(msg tea.Msg) tea.Msg {
 		m.Y -= e.offsetY
 		return m
 	case tea.MouseReleaseMsg:
+		m.X -= e.offsetX
+		m.Y -= e.offsetY
+		return m
+	case messages.WheelCoalescedMsg:
 		m.X -= e.offsetX
 		m.Y -= e.offsetY
 		return m

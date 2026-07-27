@@ -326,6 +326,10 @@ func (p *chatPage) handleAgentSwitching(msg *runtime.AgentSwitchingEvent) tea.Cm
 }
 
 func (p *chatPage) handleStreamStopped(msg *runtime.StreamStoppedEvent) tea.Cmd {
+	// Stream completion is an exact-content boundary even when the viewport is
+	// scrolled above the active response. Reconcile buffered chunks before any
+	// queue/export/copy consumer can observe the final message.
+	p.messages.FinalizeStream()
 	slog.Debug("handleStreamStopped called",
 		"agent", msg.AgentName,
 		"session_id", msg.SessionID,

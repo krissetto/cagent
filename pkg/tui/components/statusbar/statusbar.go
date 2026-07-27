@@ -2,6 +2,7 @@ package statusbar
 
 import (
 	"strings"
+	"sync/atomic"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -23,6 +24,7 @@ type StatusBar struct {
 
 	cached     string
 	cacheDirty bool
+	viewCount  atomic.Uint64
 }
 
 // Option is a functional option for configuring a StatusBar.
@@ -38,6 +40,8 @@ func WithTitle(title string) Option {
 }
 
 // New creates a new StatusBar instance
+//
+//nolint:govet // StatusBar is returned before its atomic counter is used.
 func New(help core.KeyMapHelp, opts ...Option) StatusBar {
 	s := StatusBar{
 		help:       help,
@@ -154,8 +158,12 @@ func (s *StatusBar) rebuild() {
 //
 // Layout: [ help text ...           (+ new tab)  docker agent VERSION ]
 func (s *StatusBar) View() string {
+	s.viewCount.Add(1)
 	if s.cacheDirty {
 		s.rebuild()
 	}
 	return s.cached
 }
+
+func (s *StatusBar) ViewCountForTest() uint64 { return s.viewCount.Load() }
+func (s *StatusBar) ResetViewCountForTest()   { s.viewCount.Store(0) }

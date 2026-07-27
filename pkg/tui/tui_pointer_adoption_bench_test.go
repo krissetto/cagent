@@ -19,7 +19,7 @@ import (
 
 func pointerBenchRoot(tb testing.TB, count int) *appModel {
 	tb.Helper()
-	root := wallClockRoot(tb, 240, 80)
+	root, _, _ := wallClockRoot(tb, 240, 80)
 	for i := range count {
 		msg := session.NewAgentMessage("root", &chat.Message{Role: chat.MessageRoleAssistant, Content: fmt.Sprintf("message %04d https://example.com/%04d\nbody line", i, i)})
 		root.application.Session().Messages = append(root.application.Session().Messages, session.NewMessageItem(msg))

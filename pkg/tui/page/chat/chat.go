@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/commands"
+	"github.com/docker/docker-agent/pkg/tui/components/markdown"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
@@ -176,6 +177,22 @@ type Page interface {
 func (p *chatPage) VisualGeneration() uint64 { return p.messages.VisualGeneration() }
 func (p *chatPage) SidebarVisualGeneration() uint64 {
 	return p.sidebar.VisualGeneration()
+}
+
+func (p *chatPage) WorkCountersForTest() messages.WorkCounters {
+	return p.messages.WorkCountersForTest()
+}
+func (p *chatPage) ResetWorkCountersForTest() { p.messages.ResetWorkCountersForTest() }
+func (p *chatPage) GeometryForTest() messages.GeometryForTest {
+	return p.messages.GeometryForTest()
+}
+
+func (p *chatPage) LastMessageContentForTest() string {
+	return p.messages.LastMessageContentForTest()
+}
+
+func (p *chatPage) LastMessageRenderedForTest() (string, []markdown.CodeBlock) {
+	return p.messages.LastMessageRenderedForTest()
 }
 
 type queuedMessage struct {
