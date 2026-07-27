@@ -5,13 +5,44 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestIncrementalRendererMatchesFullRender feeds a representative streaming
-// document chunk by chunk through the incremental renderer and checks that the
+func TestIncrementalRenderedPartsMatchJoinedOutputAtEveryStep(t *testing.T) {
+	t.Parallel()
+	chunks := []string{"unfinished *em", "phasis* and [li", "nk](https://example.com)\n\n", "```go\nfmt.Print(\"λ界\")", "\n```\n\n- one", "\n- two\n\nfinal"}
+	inc := NewIncrementalRenderer(64)
+	var input strings.Builder
+	for i, chunk := range chunks {
+		input.WriteString(chunk)
+		parts, err := inc.RenderParts(input.String())
+		require.NoError(t, err)
+		got := inc.joinPrefixAndTail(parts.StablePrefix, parts.MutableTail)
+		expected, err := NewFastRenderer(64).Render(input.String())
+		require.NoError(t, err)
+		require.Equal(t, expected, got, "step %d", i)
+	}
+}
+
 // final output matches a single full render. This is the correctness contract
 // the optimization must preserve.
+func TestIncrementalRendererScalingBound(t *testing.T) {
+	const chunk = "Paragraph with **markdown**, Unicode λ界, and `code`.\n\n"
+	for _, target := range []int{1 << 10, 10 << 10, 50 << 10, 100 << 10, 200 << 10} {
+		r := NewIncrementalRenderer(100)
+		var input strings.Builder
+		for input.Len() < target {
+			input.WriteString(chunk)
+			_, err := r.Render(input.String())
+			require.NoError(t, err)
+		}
+		stats := r.Stats()
+		assert.LessOrEqual(t, float64(stats.ParsedBytes)/float64(input.Len()), 3.5)
+		assert.LessOrEqual(t, stats.FullRenders, uint64(2))
+	}
+}
+
 func TestIncrementalRendererMatchesFullRender(t *testing.T) {
 	t.Parallel()
 
