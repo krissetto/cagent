@@ -54,6 +54,11 @@ type loadOptions struct {
 
 type Opt func(*loadOptions) error
 
+// WithWorkingDir overrides the working directory toolsets are built with,
+// without touching the caller's RuntimeConfig. Callers that share one
+// RuntimeConfig across concurrent loads (the API server, one per session)
+// need this to keep each session's shell, filesystem and git tools rooted in
+// that session's directory.
 func WithWorkingDir(dir string) Opt {
 	return func(opts *loadOptions) error {
 		opts.workingDir = dir
@@ -176,6 +181,16 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		}
 	}
 
+	// Toolsets read runConfig.WorkingDir, and the load below writes the
+	// resolved models, providers and provider registry back onto runConfig.
+	// Callers that load several agents from one RuntimeConfig (the API server
+	// shares a single one across concurrent sessions) must not see those
+	// writes, so take a copy when an explicit working directory is supplied.
+	if loadOpts.workingDir != "" && loadOpts.workingDir != runConfig.WorkingDir {
+		runConfig = runConfig.Clone()
+		runConfig.WorkingDir = loadOpts.workingDir
+	}
+
 	// Load the agent's configuration
 	cfg, err := config.Load(ctx, agentSource, config.WithFlavors(runConfig.Flavors...))
 	if err != nil {
@@ -258,12 +273,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 	runConfig.ProviderRegistry = loadOpts.providerRegistry
 
 	// Load agents
-	workingDir := cmp.Or(loadOpts.workingDir, runConfig.WorkingDir)
-	// Toolsets read runConfig.WorkingDir; propagate for this call and
-	// restore on return to avoid leaking across sessions that share rc.
-	originalWorkingDir := runConfig.WorkingDir
-	runConfig.WorkingDir = workingDir
-	defer func() { runConfig.WorkingDir = originalWorkingDir }()
+	workingDir := runConfig.WorkingDir
 	parentDir := cmp.Or(agentSource.ParentDir(), workingDir)
 	configName := configNameFromSource(agentSource.Name())
 	var agents []*agent.Agent
