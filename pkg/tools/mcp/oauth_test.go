@@ -506,6 +506,41 @@ func TestExchangeCodeForToken_MissingAccessToken(t *testing.T) {
 	}
 }
 
+func TestOAuthTransport_DoesNotForwardBearerAcrossOrigins(t *testing.T) {
+	t.Parallel()
+
+	var redirectedAuthorization string
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectedAuthorization = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer destination.Close()
+
+	sourceAuthorization := make(chan string, 1)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sourceAuthorization <- r.Header.Get("Authorization")
+		http.Redirect(w, r, destination.URL, http.StatusFound)
+	}))
+	defer source.Close()
+
+	store := NewInMemoryTokenStore()
+	require.NoError(t, store.StoreToken(source.URL, &OAuthToken{AccessToken: "stored-at"}))
+	transport := &oauthTransport{
+		base:       http.DefaultTransport,
+		tokenStore: store,
+		baseURL:    source.URL,
+	}
+	client := &http.Client{Transport: transport}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, source.URL, http.NoBody)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, "Bearer stored-at", <-sourceAuthorization)
+	assert.Empty(t, redirectedAuthorization)
+}
+
 // TestOAuthTransport_RetryFailureExposesResponseBody verifies that when
 // the authenticated retry after a successful OAuth flow still fails with
 // a non-2xx status, the response body is logged and preserved for the

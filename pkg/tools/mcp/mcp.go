@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -275,9 +276,9 @@ func newRemoteToolset(
 	policy ...lifecycle.Policy,
 ) *Toolset {
 	slog.Debug("Creating Remote MCP toolset",
-		"url", urlString,
+		"server", sanitizeRemoteAddress(urlString),
 		"transport", transport,
-		"headers", headers,
+		"header_names", headerNames(headers),
 		"allow_private_ips", allowPrivateIPs,
 	)
 
@@ -285,12 +286,21 @@ func newRemoteToolset(
 	ts := &Toolset{
 		name:        name,
 		mcpClient:   newRemoteClient(urlString, transport, headers, NewKeyringTokenStore(), oauthConfig, allowPrivateIPs, env),
-		logID:       urlString,
+		logID:       sanitizeRemoteAddress(urlString),
 		description: desc,
 		callTimeout: firstOrZero(policy).CallTimeout,
 	}
 	ts.supervisor = newSupervisor(ts, remotePolicy(firstOrZero(policy)))
 	return ts
+}
+
+func headerNames(headers map[string]string) []string {
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 func remotePolicy(base lifecycle.Policy) lifecycle.Policy {

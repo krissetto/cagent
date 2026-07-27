@@ -50,9 +50,9 @@ func newRemoteClient(
 	env environment.Provider,
 ) *remoteMCPClient {
 	slog.Debug("Creating remote MCP client",
-		"url", url,
+		"server", sanitizeRemoteAddress(url),
 		"transport", transportType,
-		"headers", headers,
+		"header_names", headerNames(headers),
 		"allow_private_ips", allowPrivateIPs,
 	)
 
@@ -95,6 +95,19 @@ func sanitizeRemoteAddress(rawURL string) string {
 		return ""
 	}
 	return u.Host
+}
+
+func sanitizeURLForLog(rawURL string) string {
+	u, err := neturl.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
 }
 
 // unixSocketPath mirrors pkg/server.Listen: it strips the "unix://" prefix so
@@ -292,15 +305,17 @@ func (c *remoteMCPClient) expandHeaders(ctx context.Context, headers map[string]
 
 func (c *remoteMCPClient) headerTransport() http.RoundTripper {
 	base := http.DefaultTransport
+	origin := c.url
 	if path, ok := unixSocketPath(c.url); ok {
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", path)
 		}
 		base = t
+		origin = "http://localhost/"
 	}
 	if len(c.headers) > 0 {
-		return upstream.NewHeaderTransportWithResolver(base, c.headers, c.expandHeaders)
+		return upstream.NewHeaderTransportWithResolverForOrigin(base, origin, c.headers, c.expandHeaders)
 	}
 	return base
 }

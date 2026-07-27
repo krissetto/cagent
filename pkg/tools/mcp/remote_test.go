@@ -53,8 +53,16 @@ func TestSanitizeRemoteAddress(t *testing.T) {
 	}
 }
 
-// TestRemoteClientCustomHeaders verifies that custom headers passed to the remote
-// MCP client are actually applied to HTTP requests sent to the MCP server.
+func TestSanitizeURLForLog(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t,
+		"https://example.com:8443/mcp",
+		sanitizeURLForLog("https://alice:s3cret@example.com:8443/mcp?api_key=secret#fragment"),
+	)
+	assert.Empty(t, sanitizeURLForLog("not-a-url"))
+}
+
 func TestRemoteClientCustomHeaders(t *testing.T) {
 	t.Parallel()
 
