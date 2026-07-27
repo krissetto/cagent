@@ -78,6 +78,7 @@ type Model interface {
 	// SetMirroredPadding swaps the horizontal edge padding so the sidebar hugs
 	// the terminal edge when rendered on the left of the chat.
 	SetMirroredPadding(mirrored bool)
+	VisualGeneration() uint64
 	SetAgentInfo(agentName, model, description string, contextLimit int64, compactionModel string, primaryContextLimit int64) tea.Cmd
 	SetTeamInfo(availableAgents []runtime.AgentDetails)
 	// SetAgentSwitching records the start (switching=true) or end of a
@@ -271,6 +272,7 @@ func transferTimer(d time.Duration, gen int64, kind transferTimerKind) TransferT
 
 // model implements Model
 type model struct {
+	runtime      *animation.Runtime
 	width        int
 	height       int
 	xPos         int                       // absolute x position on screen
@@ -366,7 +368,7 @@ type model struct {
 }
 
 // New creates a new sidebar bound to the given session state.
-func New(ctx context.Context, sessionState *service.SessionState) Model {
+func New(animRuntime *animation.Runtime, ctx context.Context, sessionState *service.SessionState) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Session title"
 	ti.CharLimit = 50
@@ -375,16 +377,17 @@ func New(ctx context.Context, sessionState *service.SessionState) Model {
 	wd, branch := getCurrentWorkingDirectory()
 
 	m := &model{
-		ctx:          func() context.Context { return context.WithoutCancel(ctx) },
-		width:        20,
-		layoutCfg:    DefaultLayoutConfig(),
-		height:       24,
-		sessionUsage: make(map[string]*runtime.Usage),
-		todoComp:     todotool.NewSidebarComponent(),
-		spinner:      spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle),
-		sessionTitle: "New session",
-		ragIndexing:  make(map[string]*ragIndexingState),
-		sessionState: sessionState,
+		runtime: animRuntime, ctx: func() context.Context { return context.WithoutCancel(ctx) },
+		width:             20,
+		layoutCfg:         DefaultLayoutConfig(),
+		height:            24,
+		sessionUsage:      make(map[string]*runtime.Usage),
+		todoComp:          todotool.NewSidebarComponent(),
+		transferAnimation: animRuntime.Subscribe(),
+		spinner:           spinner.New(animRuntime, spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle),
+		sessionTitle:      "New session",
+		ragIndexing:       make(map[string]*ragIndexingState),
+		sessionState:      sessionState,
 		scrollview: scrollview.New(
 			scrollview.WithWheelStep(1),
 			scrollview.WithKeyMap(nil), // Sidebar has no keyboard scroll — only mouse
@@ -437,6 +440,8 @@ func (m *model) stopSpinner() {
 // on the next View(). Use this for changes that may alter the rendered content
 // AND its line layout (todos, sizing, agents, theme, …): the next View()
 // re-probes scrollbar visibility via the two-pass render.
+func (m *model) VisualGeneration() uint64 { return 0 }
+
 func (m *model) invalidateCache() {
 	m.cacheDirty = true
 	m.layoutDirty = true
@@ -1348,7 +1353,7 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		if wasActive {
 			m.spinner.Stop()
 		}
-		m.spinner = spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
+		m.spinner = spinner.New(m.runtime, spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
 		if wasActive {
 			cmd := m.spinner.Init()
 			m.spinnerActive = true
@@ -1358,7 +1363,7 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		// Recreate all RAG indexing spinners
 		for _, state := range m.ragIndexing {
 			state.spinner.Stop()
-			state.spinner = spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
+			state.spinner = spinner.New(m.runtime, spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
 			cmds = append(cmds, state.spinner.Init())
 		}
 
@@ -1372,9 +1377,13 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		// Advance the transfer-box rail on the shared animation tick while a
 		// transfer is in flight; the phase math divides the coordinator's
 		// 14 FPS down to a sober dot movement (see transferPhase).
-		if _, isTick := msg.(animation.TickMsg); isTick && m.transferAnimation.IsActive() {
+		if tick, isTick := msg.(animation.TickMsg); isTick && m.transferAnimation.IsActive() {
+			before := m.transferPhase()
 			m.transferAnimationFrame++
-			needsInvalidate = true
+			if before != m.transferPhase() {
+				needsInvalidate = true
+				tick.MarkDirty()
+			}
 		}
 
 		// Update main spinner when tools are loading, agent is working, or title is regenerating

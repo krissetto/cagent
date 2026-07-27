@@ -70,8 +70,9 @@ const (
 
 // Model is the top-level TUI model that wraps the chat page.
 type appModel struct {
-	shutdownDone <-chan struct{}
-	cleanupOnce  sync.Once
+	animationRuntime *animation.Runtime
+	shutdownDone     <-chan struct{}
+	cleanupOnce      sync.Once
 
 	// cleanupAllOnce guards the full cleanupAll shutdown sequence so repeat
 	// invocations (ExitSessionMsg followed by ExitConfirmedMsg, …) are no-ops:
@@ -126,9 +127,11 @@ type appModel struct {
 	// Working state indicator (resize handle spinner)
 	workingSpinner spinner.Spinner
 
-	// animFrame is the current animation frame, used to rotate the window
-	// title spinner so that tmux can detect pane activity.
-	animFrame int
+	// Exact root view cache. Unchanged accepted ticks return this complete value,
+	// preserving metadata and function fields as well as content.
+	viewCache      tea.View
+	viewCacheValid bool
+	hasPointer     bool
 
 	// Window state
 	wWidth, wHeight int
@@ -427,12 +430,14 @@ func WithToolRenderers(renderers map[string]tool.Builder) Option {
 func New(ctx context.Context, spawner SessionSpawner, initialApp *app.App, initialWorkingDir string, cleanup func(), opts ...Option) tea.Model {
 	tuiCtx := func() context.Context { return context.WithoutCancel(ctx) }
 
+	animRuntime := animation.NewRuntime()
+
 	// Initialize supervisor
 	sv := supervisor.New(spawner)
 
 	// Initialize tab bar with configurable title length from user settings
 	userSettings := userconfig.Get()
-	tb := tabbar.New(userSettings.GetTabTitleMaxLength())
+	tb := tabbar.New(animRuntime, userSettings.GetTabTitleMaxLength())
 
 	// Initialize tab store
 	var ts *tuistate.Store
@@ -452,7 +457,8 @@ func New(ctx context.Context, spawner SessionSpawner, initialApp *app.App, initi
 	sessID := initialApp.Session().ID
 
 	m := &appModel{
-		shutdownDone: ctx.Done(),
+		animationRuntime: animRuntime,
+		shutdownDone:     ctx.Done(),
 		buildCommandCategories: func(ctx context.Context, _ tea.Model) []commands.Category {
 			return commands.BuildCommandCategories(ctx, initialApp)
 		},
@@ -474,7 +480,7 @@ func New(ctx context.Context, spawner SessionSpawner, initialApp *app.App, initi
 		completions:                   completion.New(),
 		tour:                          tour.New(),
 		transcriber:                   transcribe.New(os.Getenv("OPENAI_API_KEY")),
-		workingSpinner:                spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle),
+		workingSpinner:                spinner.New(animRuntime, spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle),
 		focusedPanel:                  PanelEditor,
 		editorLines:                   3,
 		layoutSettings:                layoutSettingsFromConfig(userSettings.GetLayout()),
@@ -496,7 +502,7 @@ func New(ctx context.Context, spawner SessionSpawner, initialApp *app.App, initi
 	m.editor = initialEditor
 
 	// Create initial chat page (after options are applied so leanMode is set)
-	initialChatPage := chat.New(m.ctx(), initialApp, initialSessionState, m.chatPageOpts()...)
+	initialChatPage := chat.New(m.animationRuntime, m.ctx(), initialApp, initialSessionState, m.chatPageOpts()...)
 	initialChatPage.SetRoutingID(sessID)
 	m.chatPages[sessID] = initialChatPage
 	m.chatPage = initialChatPage
@@ -638,7 +644,7 @@ func (m *appModel) editorOpts() []editor.Option {
 // convenience pointers (m.chatPage, m.sessionState, m.editor) are also updated.
 func (m *appModel) initSessionComponents(tabID string, a *app.App, sess *session.Session) {
 	ss := service.NewSessionState(sess)
-	cp := chat.New(m.ctx(), a, ss, m.chatPageOpts()...)
+	cp := chat.New(m.animationRuntime, m.ctx(), a, ss, m.chatPageOpts()...)
 	cp.SetRoutingID(tabID)
 	ed := editor.New(m.history, m.editorOpts()...)
 
@@ -778,7 +784,35 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return model, cmd
 }
 
+func tabVisualGeneration(tabBar *tabbar.TabBar) uint64 {
+	if tabBar == nil {
+		return 0
+	}
+	return tabBar.VisualGeneration()
+}
+
 func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	beforeVisual := m.chatPage.VisualGeneration()
+	beforeSidebarVisual := sidebarVisualGeneration(m.chatPage)
+	beforeTabVisual := tabVisualGeneration(m.tabBar)
+	beforeResizeHover := m.isHoveringHandle
+	wasCached := m.viewCacheValid
+	cached := m.viewCache
+	canRestore := m.canRestorePointerCache(msg)
+	defer func() {
+		if canRestore && wasCached && m.chatPage.VisualGeneration() == beforeVisual &&
+			sidebarVisualGeneration(m.chatPage) == beforeSidebarVisual &&
+			tabVisualGeneration(m.tabBar) == beforeTabVisual &&
+			m.isHoveringHandle == beforeResizeHover {
+			m.viewCache, m.viewCacheValid = cached, true
+		}
+	}()
+	if _, ok := msg.(tea.MouseMotionMsg); !ok {
+		m.hasPointer = false
+	}
+	if _, isTick := msg.(animation.TickMsg); !isTick {
+		m.viewCacheValid = false
+	}
 	// In lean mode, silently drop messages for features that don't exist.
 	if m.leanMode {
 		switch msg.(type) {
@@ -796,6 +830,11 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleRoutedMsg(msg)
 
 	case animation.TickMsg:
+		accepted, ok := m.animationRuntime.Accept(msg)
+		if !ok {
+			return m, nil
+		}
+		msg = accepted
 		// Drop the tick (and let the chain die) while we're blurred.
 		// animation.StartTick re-arms the chain on the next FocusMsg so
 		// spinners resume immediately when the user comes back.
@@ -809,12 +848,21 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.workingSpinner = model.(spinner.Spinner)
 			cmds = append(cmds, cmd)
 		}
-		// Track frame for window-title spinner (tmux activity detection)
-		m.animFrame = msg.Frame
-		// Forward frame to tab bar for running indicator animation
-		m.tabBar.SetAnimFrame(msg.Frame)
-		if animation.HasActive() {
-			cmds = append(cmds, animation.StartTick())
+		// Root-owned title and tab indicators are time-based rather than stateful
+		// children, so include their rendered frame boundaries in the shared
+		// dirty decision.
+		before, after := msg.ElapsedBounds()
+		if m.chatPage.IsWorking() && animation.Chat.FrameIndexAt(before) != animation.Chat.FrameIndexAt(after) {
+			msg.MarkDirty()
+		}
+		if m.supervisor != nil {
+			if tabs, _ := m.supervisor.GetTabs(); anyRunningTab(tabs) && animation.TabBusy.FrameIndexAt(before) != animation.TabBusy.FrameIndexAt(after) {
+				msg.MarkDirty()
+			}
+		}
+		cmds = append(cmds, m.animationRuntime.Continue())
+		if msg.Dirty() {
+			m.viewCacheValid = false
 		}
 		return m, tea.Batch(cmds...)
 
@@ -840,7 +888,8 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleCloseTab(msg.SessionID)
 
 	case messages.ReorderTabMsg:
-		return m.handleReorderTab(msg)
+		m.handleReorderTab(msg)
+		return m, nil
 
 	case messages.ToggleSidebarMsg:
 		if m.hideSidebar {
@@ -924,9 +973,7 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tickPaused {
 			// Re-arm the tick chain that died while we were blurred.
 			m.tickPaused = false
-			if animation.HasActive() {
-				cmds = append(cmds, animation.StartTick())
-			}
+			cmds = append(cmds, m.animationRuntime.EnsureRunning())
 		}
 		if styles.AutoThemeEnabled() {
 			// Terminals without mode 2031 can still flip their appearance
@@ -991,6 +1038,12 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseReleaseMsg:
 		return m.handleMouseRelease(msg)
+
+	case messages.PointerUpdateMsg:
+		return m.handlePointerUpdate(msg)
+
+	case messages.PointerBoundaryMsg:
+		return m.handlePointerBoundary(msg)
 
 	case messages.WheelCoalescedMsg:
 		return m.handleWheelCoalesced(msg)
@@ -1774,7 +1827,7 @@ func (m *appModel) handleSwitchTab(sessionID string) (tea.Model, tea.Cmd) {
 	// Sync editor working state and reset working spinner.
 	m.editor.SetWorking(m.chatPage.IsWorking())
 	m.workingSpinner.Stop()
-	m.workingSpinner = spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
+	m.workingSpinner = spinner.New(m.animationRuntime, spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
 
 	var cmds []tea.Cmd
 
@@ -1888,7 +1941,7 @@ func (m *appModel) dialogCmdForPendingEvent(pendingEvent tea.Msg, sessionState *
 	switch ev := pendingEvent.(type) {
 	case *runtime.ToolCallConfirmationEvent:
 		return core.CmdHandler(dialog.OpenDialogMsg{
-			Model:            dialog.NewToolConfirmationDialog(ev, sessionState),
+			Model:            dialog.NewToolConfirmationDialog(m.animationRuntime, ev, sessionState),
 			OriginatingEvent: ev,
 		})
 
@@ -1936,7 +1989,7 @@ func (m *appModel) replayElicitationEvent(ev *runtime.ElicitationRequestEvent) t
 }
 
 // handleReorderTab moves a tab from one position to another.
-func (m *appModel) handleReorderTab(msg messages.ReorderTabMsg) (tea.Model, tea.Cmd) {
+func (m *appModel) handleReorderTab(msg messages.ReorderTabMsg) {
 	m.supervisor.ReorderTab(msg.FromIdx, msg.ToIdx)
 
 	if m.tuiStore != nil {
@@ -1949,8 +2002,6 @@ func (m *appModel) handleReorderTab(msg messages.ReorderTabMsg) (tea.Model, tea.
 			slog.Warn("Failed to persist tab reorder", "error", err)
 		}
 	}
-
-	return m, nil
 }
 
 // handleCloseTab closes a session tab.
@@ -2411,6 +2462,55 @@ func (m *appModel) switchFocus() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func sidebarVisualGeneration(page chat.Page) uint64 {
+	if page, ok := page.(interface{ SidebarVisualGeneration() uint64 }); ok {
+		return page.SidebarVisualGeneration()
+	}
+	return 0
+}
+
+func (m *appModel) canRestorePointerCache(msg tea.Msg) bool {
+	if !m.viewCacheValid || m.tabBar == nil || m.chatPage == nil || m.isDragging || m.dialogMgr == nil || m.dialogMgr.Open() ||
+		m.chatPage.IsSelecting() || m.notification.Open() {
+		return false
+	}
+	var x, y int
+	switch msg := msg.(type) {
+	case tea.MouseMotionMsg:
+		if msg.Button == tea.MouseLeft && !m.tabBar.IsDragging() {
+			return false
+		}
+		x, y = msg.X, msg.Y
+	case messages.WheelCoalescedMsg:
+		x, y = msg.X, msg.Y
+	case *runtime.AgentChoiceEvent:
+		return true
+	case messages.RoutedMsg:
+		_, ok := msg.Inner.(*runtime.AgentChoiceEvent)
+		return ok
+	default:
+		return false
+	}
+	if m.hitTestRegion(y) != regionContent {
+		switch msg.(type) {
+		case tea.MouseMotionMsg:
+			return true
+		case messages.WheelCoalescedMsg:
+			return true
+		}
+		return false
+	}
+	_, motion := msg.(tea.MouseMotionMsg)
+	if motion {
+		return true
+	}
+	if _, wheel := msg.(messages.WheelCoalescedMsg); wheel {
+		return true
+	}
+	page, ok := m.chatPage.(interface{ PointerTargetsMessages(x, y int) bool })
+	return ok && page.PointerTargetsMessages(x, y)
+}
+
 // handleMouseClick routes mouse clicks to the appropriate component based on Y coordinate.
 func (m *appModel) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	// Check if click hits a notification close button before handling body clicks.
@@ -2535,11 +2635,9 @@ func (m *appModel) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd
 		model, cmd := m.forwardChat(msg)
 		return model, batchWith(cmd)
 	case regionEditor:
-		adjustedMsg := msg
-		adjustedMsg.X = msg.X - styles.AppPadding
-		adjustedMsg.Y = msg.Y - m.editorTop()
-		model, cmd := m.forwardEditor(adjustedMsg)
-		return model, batchWith(cmd)
+		// bubbles/textarea has no motion behavior; clicks, releases, wheel and
+		// keyboard input still take their normal routed paths.
+		return m, tea.Batch(cmds...)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -2584,6 +2682,36 @@ func (m *appModel) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.C
 	}
 
 	return m, nil
+}
+
+// handlePointerUpdate routes one coherent hover/wheel cadence update. Wheel
+// coordinates are authoritative, so a wheel-bearing update does not also send
+// a redundant motion through the component tree.
+func (m *appModel) handlePointerUpdate(msg messages.PointerUpdateMsg) (tea.Model, tea.Cmd) {
+	if msg.Wheel {
+		return m.handleWheelCoalesced(messages.WheelCoalescedMsg{Delta: msg.WheelDelta, X: msg.X, Y: msg.Y})
+	}
+	if msg.Motion != nil {
+		return m.handleMouseMotion(*msg.Motion)
+	}
+	return m, nil
+}
+
+// handlePointerBoundary applies pending hover/wheel state before the click or
+// release that ended its interval.
+func (m *appModel) handlePointerBoundary(msg messages.PointerBoundaryMsg) (tea.Model, tea.Cmd) {
+	model, pendingCmd := m.handlePointerUpdate(msg.Pending)
+	m = model.(*appModel)
+	var boundaryCmd tea.Cmd
+	switch event := msg.Event.(type) {
+	case tea.MouseClickMsg:
+		model, boundaryCmd = m.handleMouseClick(event)
+	case tea.MouseReleaseMsg:
+		model, boundaryCmd = m.handleMouseRelease(event)
+	default:
+		return m, pendingCmd
+	}
+	return model, tea.Batch(pendingCmd, boundaryCmd)
 }
 
 // handleWheelCoalesced routes coalesced wheel events with adjusted coordinates.
@@ -2775,8 +2903,27 @@ func lineWithSuffix(line, suffix string, width int) string {
 	return lipgloss.NewStyle().MaxWidth(width-suffixWidth).Render(line) + suffix
 }
 
+func anyRunningTab(tabs []messages.TabInfo) bool {
+	for _, tab := range tabs {
+		if tab.IsRunning {
+			return true
+		}
+	}
+	return false
+}
+
 // View renders the model.
 func (m *appModel) View() tea.View {
+	if m.viewCacheValid {
+		return m.viewCache
+	}
+	view := m.composeView()
+	m.viewCache = view
+	m.viewCacheValid = true
+	return view
+}
+
+func (m *appModel) composeView() tea.View {
 	windowTitle := m.windowTitle()
 
 	if m.err != nil {
@@ -2884,20 +3031,20 @@ func (m *appModel) fullscreenView(content, windowTitle string) tea.View {
 // When the agent is working, a rotating spinner character is prepended so that
 // terminal multiplexers (tmux) can detect activity in the pane.
 func (m *appModel) windowTitle() string {
-	return formatWindowTitle(m.appName, m.sessionState.SessionTitle(), m.chatPage.IsWorking(), m.animFrame)
+	return formatWindowTitle(m.animationRuntime.Now(), m.appName, m.sessionState.SessionTitle(), m.chatPage.IsWorking())
 }
 
 // formatWindowTitle assembles the terminal window title string from the
 // individual inputs that contribute to it. Pure function — extracted from the
 // windowTitle method so that it can be unit-tested without constructing a
 // full appModel.
-func formatWindowTitle(appName, sessionTitle string, working bool, animFrame int) string {
+func formatWindowTitle(elapsed time.Duration, appName, sessionTitle string, working bool) string {
 	title := appName
 	if sessionTitle != "" {
 		title = sessionTitle + " - " + appName
 	}
 	if working {
-		title = spinner.Frame(animFrame) + " " + title
+		title = animation.Chat.FrameAt(elapsed) + " " + title
 	}
 	return title
 }

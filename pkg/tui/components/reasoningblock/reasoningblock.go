@@ -106,28 +106,33 @@ type expandedToolView interface {
 
 // Model represents a collapsible reasoning + tool calls block.
 type Model struct {
-	id                  string
-	agentName           string
-	showAgentBadge      bool          // render the agent badge above the header
-	contentItems        []contentItem // Ordered sequence of reasoning and tool calls
-	toolEntries         []toolEntry   // All tool entries (referenced by contentItems)
-	expanded            bool
-	selected            bool
-	width               int
-	height              int
-	sessionState        service.SessionStateReader
-	reasoningVersion    int          // increments when reasoning content changes
-	cache               *renderCache // cached rendering results
-	animationRegistered bool         // whether we're registered with animation coordinator
+	runtime          *animation.Runtime
+	id               string
+	agentName        string
+	showAgentBadge   bool          // render the agent badge above the header
+	contentItems     []contentItem // Ordered sequence of reasoning and tool calls
+	toolEntries      []toolEntry   // All tool entries (referenced by contentItems)
+	expanded         bool
+	selected         bool
+	width            int
+	height           int
+	sessionState     service.SessionStateReader
+	reasoningVersion int                    // increments when reasoning content changes
+	cache            *renderCache           // cached rendering results
+	animationSub     animation.Subscription // whether we're registered with animation coordinator
 	// now returns the current time. Defaults to time.Now; tests override it
 	// per-instance for deterministic fade/grace-period behaviour.
 	now func() time.Time
 }
 
 // New creates a new reasoning block.
-func New(id, agentName string, sessionState service.SessionStateReader) *Model {
+func New(runtime *animation.Runtime, id, agentName string, sessionState service.SessionStateReader) *Model {
+	if runtime == nil {
+		panic("reasoningblock: nil animation runtime")
+	}
 	return &Model{
-		id:           id,
+		runtime:      runtime,
+		animationSub: runtime.Subscribe(), id: id,
 		agentName:    agentName,
 		expanded:     sessionState == nil || sessionState.ExpandThinking(),
 		width:        80,
@@ -205,14 +210,14 @@ func (m *Model) AddToolCall(msg *types.Message) tea.Cmd {
 	for i, entry := range m.toolEntries {
 		if entry.msg.ToolCall.ID == msg.ToolCall.ID {
 			m.toolEntries[i].msg = msg
-			m.toolEntries[i].view = tool.New(msg, m.sessionState)
+			m.toolEntries[i].view = tool.New(m.runtime, msg, m.sessionState)
 			m.toolEntries[i].view.SetSize(m.contentWidth(), 0)
 			return m.toolEntries[i].view.Init()
 		}
 	}
 
 	// New tool call - add to entries and track position in content sequence
-	view := tool.New(msg, m.sessionState)
+	view := tool.New(m.runtime, msg, m.sessionState)
 	view.SetSize(m.contentWidth(), 0)
 	toolIndex := len(m.toolEntries)
 	m.toolEntries = append(m.toolEntries, toolEntry{msg: msg, view: view})
@@ -288,14 +293,13 @@ func (m *Model) UpdateToolResult(toolCallID, content string, status types.ToolSt
 			entry.collapsedVisibleUntil = m.now().Add(totalDuration)
 			entry.fadeProgress = 0
 			// Register with animation coordinator if not already
-			if !m.animationRegistered {
-				animCmd = animation.StartTickIfFirst()
-				m.animationRegistered = true
+			if !m.animationSub.IsActive() {
+				animCmd = m.animationSub.Start()
 			}
 		}
 
 		// Recreate view to pick up new state
-		view := tool.New(entry.msg, m.sessionState)
+		view := tool.New(m.runtime, entry.msg, m.sessionState)
 		view.SetSize(m.contentWidth(), 0)
 		m.toolEntries[i] = entry
 		m.toolEntries[i].view = view
@@ -444,17 +448,27 @@ func (m *Model) Init() tea.Cmd {
 
 // Update handles messages.
 func (m *Model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
-	switch msg.(type) {
+	switch tick := msg.(type) {
 	case messages.ThemeChangedMsg:
 		// Theme changed - invalidate cached rendering
 		m.cache = nil
 	case animation.TickMsg:
-		// Compute fade levels based on elapsed time (tick-rate independent)
+		// Only a rendered fade bucket change is visible.
+		before := make([]int, len(m.toolEntries))
+		for i := range m.toolEntries {
+			before[i] = min(max(int(m.toolEntries[i].fadeProgress*fadeSteps), 0), fadeSteps)
+		}
 		m.computeFadeProgressAt(m.now())
+		for i := range m.toolEntries {
+			after := min(max(int(m.toolEntries[i].fadeProgress*fadeSteps), 0), fadeSteps)
+			if before[i] != after {
+				tick.MarkDirty()
+				break
+			}
+		}
 		// Unregister if no more fading tools (uses fadeProgress computed above)
-		if m.animationRegistered && !m.hasFadingTools() {
-			m.animationRegistered = false
-			animation.Unregister()
+		if m.animationSub.IsActive() && !m.hasFadingTools() {
+			m.animationSub.Stop()
 		}
 		// Continue to forward tick to tool views for their spinners
 	}
@@ -761,10 +775,7 @@ func (m *Model) renderReasoningPreviewWithTruncationInfo() (string, bool) {
 // This must be called when the block is removed from the UI to avoid leaked animation subscriptions.
 func (m *Model) StopAnimation() {
 	// Stop the block's own fade animation registration
-	if m.animationRegistered {
-		m.animationRegistered = false
-		animation.Unregister()
-	}
+	m.animationSub.Stop()
 	// Stop spinners in all tool entries
 	for _, entry := range m.toolEntries {
 		animation.StopView(entry.view)

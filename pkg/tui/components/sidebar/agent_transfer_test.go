@@ -12,7 +12,6 @@ import (
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tui/animation"
-	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/messages"
 )
 
@@ -177,7 +176,7 @@ func TestTransferPanelKeepsRosterMarkers(t *testing.T) {
 	box := strings.Join(agentBody(m)[idx-1:idx+2], "\n")
 	assert.NotContains(t, box, "▶", "the box carries no current-agent marker")
 	for i := range 10 {
-		assert.NotContains(t, box, spinner.Frame(i), "the box carries no spinner")
+		assert.NotContains(t, box, animation.Chat.Frames()[i], "the box carries no spinner")
 	}
 }
 
@@ -385,7 +384,7 @@ func TestTransferAnimationAdvancesAcrossTicks(t *testing.T) {
 	width := lipgloss.Width(first)
 	positions := map[string]bool{first: true}
 	for frame := 1; frame <= 2*transferFramesPerStep*transferRailCells; frame++ {
-		_, _ = m.Update(animation.TickMsg{Frame: frame})
+		_, _ = m.Update(animation.TickMsg{})
 		relation := snapshot()
 		assert.Equal(t, width, lipgloss.Width(relation), "the width is constant across frames")
 		positions[relation] = true
@@ -406,8 +405,10 @@ func TestTransferAnimationTickKeepsLayoutClean(t *testing.T) {
 	require.False(t, m.layoutDirty)
 	linesBefore := len(m.cachedLines)
 
-	_, _ = m.Update(animation.TickMsg{Frame: 1})
-	assert.True(t, m.cacheDirty, "a tick refreshes the rendered frame")
+	for range transferFramesPerStep {
+		_, _ = m.Update(animation.TickMsg{})
+	}
+	assert.True(t, m.cacheDirty, "a rendered phase boundary refreshes the frame")
 	assert.False(t, m.layoutDirty, "a tick is animation-only and keeps the layout clean")
 
 	_ = m.View()
@@ -430,7 +431,7 @@ func TestTransferStackNestedRestore(t *testing.T) {
 
 	m.SetAgentSwitching(true, "A", "B")
 	for frame := 1; frame <= transferFramesPerStep; frame++ {
-		_, _ = m.Update(animation.TickMsg{Frame: frame})
+		_, _ = m.Update(animation.TickMsg{})
 	}
 	require.NotZero(t, m.transferAnimationFrame)
 
@@ -441,7 +442,7 @@ func TestTransferStackNestedRestore(t *testing.T) {
 	assert.Contains(t, agentBody(m)[idx], "B ●──► C", "the innermost hop is shown, dot on the left")
 
 	for frame := 1; frame <= transferFramesPerStep; frame++ {
-		_, _ = m.Update(animation.TickMsg{Frame: frame})
+		_, _ = m.Update(animation.TickMsg{})
 	}
 	m.SetAgentSwitching(false, "C", "B") // stop of B→C carries the inverse pair
 	assert.Zero(t, m.transferAnimationFrame, "the Return restarts the dot on the left")
@@ -480,7 +481,7 @@ func TestTransferStackOutOfOrderStop(t *testing.T) {
 
 	m.SetAgentSwitching(true, "A", "B")
 	m.SetAgentSwitching(true, "B", "C")
-	_, _ = m.Update(animation.TickMsg{Frame: 1})
+	_, _ = m.Update(animation.TickMsg{})
 
 	m.SetAgentSwitching(false, "B", "A") // the outer stop arrives first
 	require.Len(t, m.agentTransfers, 1)
@@ -641,7 +642,7 @@ func TestTransferClearedOnCancelResetAndLoad(t *testing.T) {
 
 	m.SetAgentSwitching(true, "Scout", "Coder")
 	hopGen := m.agentTransfers[0].gen
-	_, _ = m.Update(animation.TickMsg{Frame: 1})
+	_, _ = m.Update(animation.TickMsg{})
 	require.GreaterOrEqual(t, transferRelationIndex(m), 0)
 	_, _ = m.Update(messages.StreamCancelledMsg{})
 	assertCleared("cancel clears the box and stops the animation")

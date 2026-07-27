@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -31,7 +32,7 @@ func TestSidebar_HandleClickType_Usage_Vertical(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -70,7 +71,7 @@ func TestSidebar_HandleClickType_Usage_Vertical_Compacting(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -98,7 +99,7 @@ func TestSidebar_HandleClickType_Usage_Vertical_Capped(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -132,7 +133,7 @@ func TestSidebar_HandleClickType_Usage_Vertical_Hidden(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.width = 40
@@ -156,7 +157,7 @@ func TestSidebar_HandleClickType_Usage_Vertical_ScrollbarNotUsage(t *testing.T) 
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -187,7 +188,7 @@ func TestSidebar_HandleClickType_Usage_Collapsed_SharedLine(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -224,7 +225,7 @@ func TestSidebar_HandleClickType_Usage_Collapsed_OwnLine(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -256,7 +257,7 @@ func TestSidebar_HandleClickType_Usage_Collapsed_Capped(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -291,7 +292,7 @@ func TestSidebar_HandleClickType_Usage_Collapsed_Hidden(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.mode = ModeCollapsed

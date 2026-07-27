@@ -10,10 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
 	msgtypes "github.com/docker/docker-agent/pkg/tui/messages"
 	"github.com/docker/docker-agent/pkg/tui/service"
+	"github.com/docker/docker-agent/pkg/tui/styles"
 )
 
 // newLayoutTestPage builds a chatPage large enough for the vertical sidebar
@@ -22,8 +24,8 @@ func newLayoutTestPage(t *testing.T, position msgtypes.SidebarPosition) *chatPag
 	t.Helper()
 	sessionState := &service.SessionState{}
 	p := &chatPage{
-		sidebar:      sidebar.New(t.Context(), sessionState),
-		messages:     messages.New(sessionState),
+		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
+		messages:     messages.New(animation.NewRuntime(), sessionState),
 		sessionState: sessionState,
 		width:        160,
 		height:       40,
@@ -217,8 +219,8 @@ func TestWithLayoutSettingsAppliesInfoMode(t *testing.T) {
 	sessionState := &service.SessionState{}
 	sessionState.SetCurrentAgentName("root")
 	p := &chatPage{
-		sidebar:      sidebar.New(t.Context(), sessionState),
-		messages:     messages.New(sessionState),
+		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
+		messages:     messages.New(animation.NewRuntime(), sessionState),
 		sessionState: sessionState,
 	}
 	WithLayoutSettings(msgtypes.LayoutSettings{SidebarInfoMode: msgtypes.InfoModeDetailed})(p)
@@ -236,8 +238,8 @@ func TestSetLayoutSettingsBeforeSizingReturnsNil(t *testing.T) {
 
 	sessionState := &service.SessionState{}
 	p := &chatPage{
-		sidebar:      sidebar.New(t.Context(), sessionState),
-		messages:     messages.New(sessionState),
+		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
+		messages:     messages.New(animation.NewRuntime(), sessionState),
 		sessionState: sessionState,
 	}
 
@@ -255,6 +257,30 @@ func sidebarTitleLine(view string) int {
 		}
 	}
 	return -1
+}
+
+func TestHiddenSidebarViewUsesAlreadySizedMessageViewport(t *testing.T) {
+	t.Parallel()
+
+	sessionState := &service.SessionState{}
+	animationRuntime := animation.NewRuntime()
+	messageList := messages.New(animationRuntime, sessionState)
+	p := &chatPage{
+		animationRuntime: animationRuntime,
+		sidebar:          sidebar.New(animationRuntime, t.Context(), sessionState),
+		messages:         messageList,
+		sessionState:     sessionState,
+		hideSidebar:      true,
+	}
+	require.NotNil(t, messageList.AddUserMessage("a λ界 message"))
+	p.SetSize(120, 40)
+
+	messagesView := messageList.View()
+	want := styles.AppStyle.Height(p.height).Render(messagesView)
+	got := p.View()
+	assert.Equal(t, want, got)
+	assert.Equal(t, p.height, lipgloss.Height(got))
+	assert.Equal(t, p.width, lipgloss.Width(got))
 }
 
 func TestViewRendersEveryPosition(t *testing.T) {

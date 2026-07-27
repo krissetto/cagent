@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bytes"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/completion"
 	"github.com/docker/docker-agent/pkg/tui/components/editor"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
@@ -59,8 +61,86 @@ func (m *mockChatPage) SetLayoutSettings(messages.LayoutSettings) tea.Cmd {
 func (m *mockChatPage) SetSendMode(messages.SendMode) {}
 func (m *mockChatPage) SetRoutingID(string)           {}
 func (m *mockChatPage) TakeRoutedTimers() tea.Cmd     { return nil }
+func (m *mockChatPage) VisualGeneration() uint64      { return 0 }
 func (m *mockChatPage) Bindings() []key.Binding       { return nil }
 func (m *mockChatPage) Help() help.KeyMap             { return nil }
+
+type countingChatPage struct {
+	mockChatPage
+
+	views     int
+	text      string
+	dirtyTick bool
+}
+
+func (p *countingChatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
+	if tick, ok := msg.(animation.TickMsg); ok && p.dirtyTick {
+		tick.MarkDirty()
+	}
+	return p, nil
+}
+
+func (p *countingChatPage) VisualGeneration() uint64 { return 0 }
+func (p *countingChatPage) View() string {
+	p.views++
+	return p.text
+}
+
+func TestRootViewCachePreservesExactViewOnCleanTick(t *testing.T) {
+	m, _ := newTestModel(t)
+	page := &countingChatPage{text: "stable"}
+	m.chatPage = page
+	m.ready = true
+	m.leanMode = true
+	m.animationRuntime = animation.NewRuntime()
+	m.appName = "test"
+	m.sessionState = &service.SessionState{}
+
+	first := m.View()
+	require.Equal(t, 1, page.views)
+	second := m.View()
+	assert.Equal(t, first, second)
+	assert.Equal(t, fmt.Sprintf("%p", first.OnMouse), fmt.Sprintf("%p", second.OnMouse))
+	assert.Equal(t, first.Cursor, second.Cursor)
+	assert.Equal(t, first.ForegroundColor, second.ForegroundColor)
+	assert.Equal(t, first.BackgroundColor, second.BackgroundColor)
+	assert.Equal(t, first.WindowTitle, second.WindowTitle)
+	assert.Equal(t, first.ProgressBar, second.ProgressBar)
+	assert.Equal(t, first.AltScreen, second.AltScreen)
+	assert.Equal(t, first.MouseMode, second.MouseMode)
+	assert.Equal(t, 1, page.views, "cached root view must skip composition")
+
+	m.update(struct{}{})
+	_ = m.View()
+	assert.Equal(t, 2, page.views, "every non-animation message invalidates")
+}
+
+func TestRootViewCacheInvalidatesOnlyForDirtyAcceptedTick(t *testing.T) {
+	m, _ := newTestModel(t)
+	page := &countingChatPage{text: "stable"}
+	m.chatPage = page
+	m.ready = true
+	m.leanMode = true
+	m.animationRuntime = animation.NewRuntime()
+	m.appName = "test"
+	m.sessionState = &service.SessionState{}
+	_ = m.View()
+
+	sub := m.animationRuntime.Subscribe()
+	cleanCmd := sub.Start()
+	clean := cleanCmd().(animation.TickMsg)
+	_, _ = m.update(clean)
+	_ = m.View()
+	assert.Equal(t, 1, page.views)
+
+	page.dirtyTick = true
+	dirtyCmd := m.animationRuntime.EnsureRunning()
+	dirty := dirtyCmd().(animation.TickMsg)
+	_, _ = m.update(dirty)
+	_ = m.View()
+	assert.Equal(t, 2, page.views)
+	sub.Stop()
+}
 
 // mockEditor implements editor.Editor for testing.
 type mockEditor struct {

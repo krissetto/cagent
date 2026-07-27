@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/toolconfirm"
 	"github.com/docker/docker-agent/pkg/tui/core"
@@ -336,9 +337,9 @@ func (d *toolConfirmationDialog) renderMetadata(contentWidth int) string {
 }
 
 // NewToolConfirmationDialog creates a new tool confirmation dialog
-func NewToolConfirmationDialog(msg *runtime.ToolCallConfirmationEvent, sessionState ConfirmationSessionState) Dialog {
+func NewToolConfirmationDialog(animRuntime *animation.Runtime, msg *runtime.ToolCallConfirmationEvent, sessionState ConfirmationSessionState) Dialog {
 	// Create scrollable view with minimal initial size (will be updated in SetSize)
-	scrollView := messages.NewScrollableView(1, 1, sessionState)
+	scrollView := messages.NewScrollableView(animRuntime, 1, 1, sessionState)
 
 	// Add the tool call message to the view
 	scrollView.AddOrUpdateToolCall(

@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
 	"github.com/docker/docker-agent/pkg/tui/service"
@@ -40,10 +41,10 @@ type Base struct {
 
 // NewBase creates a new base tool component with the given renderer.
 // Accepts SessionStateReader for read-only access (also accepts *SessionState which implements it).
-func NewBase(msg *types.Message, sessionState service.SessionStateReader, render Renderer) *Base {
+func NewBase(runtime *animation.Runtime, msg *types.Message, sessionState service.SessionStateReader, render Renderer) *Base {
 	return &Base{
 		message:      msg,
-		spinner:      spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsAccentStyle),
+		spinner:      spinner.New(runtime, spinner.ModeSpinnerOnly, styles.SpinnerDotsAccentStyle),
 		width:        80,
 		height:       1,
 		sessionState: sessionState,
@@ -53,10 +54,10 @@ func NewBase(msg *types.Message, sessionState service.SessionStateReader, render
 
 // NewBaseWithCollapsed creates a new base tool component with both regular and collapsed renderers.
 // Accepts SessionStateReader for read-only access (also accepts *SessionState which implements it).
-func NewBaseWithCollapsed(msg *types.Message, sessionState service.SessionStateReader, render Renderer, collapsedRender CollapsedRenderer) *Base {
+func NewBaseWithCollapsed(runtime *animation.Runtime, msg *types.Message, sessionState service.SessionStateReader, render Renderer, collapsedRender CollapsedRenderer) *Base {
 	return &Base{
 		message:           msg,
-		spinner:           spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsAccentStyle),
+		spinner:           spinner.New(runtime, spinner.ModeSpinnerOnly, styles.SpinnerDotsAccentStyle),
 		width:             80,
 		height:            1,
 		sessionState:      sessionState,

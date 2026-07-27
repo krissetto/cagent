@@ -8,6 +8,7 @@ import (
 
 	pathx "github.com/docker/docker-agent/pkg/path"
 	"github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/components/toolcommon"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
@@ -16,9 +17,9 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
 
-func New(msg *types.Message, sessionState service.SessionStateReader) layout.Model {
+func New(runtime *animation.Runtime, msg *types.Message, sessionState service.SessionStateReader) layout.Model {
 	extractPaths := toolcommon.StableExtractor(extractArgs)
-	return toolcommon.NewBase(msg, sessionState, func(msg *types.Message, s spinner.Spinner, sessionState service.SessionStateReader, width, height int) string {
+	return toolcommon.NewBase(runtime, msg, sessionState, func(msg *types.Message, s spinner.Spinner, sessionState service.SessionStateReader, width, height int) string {
 		return render(msg, s, sessionState, width, height, extractPaths)
 	})
 }

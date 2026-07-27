@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/toolcommon"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
 	"github.com/docker/docker-agent/pkg/tui/service"
@@ -23,8 +24,8 @@ import (
 
 // New builds the plan tool view: the plan name from the call arguments, plus a
 // compact title/status/revision summary from the result.
-func New(msg *types.Message, sessionState service.SessionStateReader) layout.Model {
-	return toolcommon.NewBase(msg, sessionState, toolcommon.SimpleRendererWithResult(
+func New(runtime *animation.Runtime, msg *types.Message, sessionState service.SessionStateReader) layout.Model {
+	return toolcommon.NewBase(runtime, msg, sessionState, toolcommon.SimpleRendererWithResult(
 		toolcommon.ExtractField(func(a nameArg) string { return a.Name }),
 		extractSummary,
 	))

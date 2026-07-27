@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	builtinshell "github.com/docker/docker-agent/pkg/tools/builtin/shell"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/components/toolcommon"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
@@ -14,9 +15,9 @@ import (
 
 const maxVisibleShellOutputLines = 20
 
-func New(msg *types.Message, sessionState service.SessionStateReader) layout.Model {
+func New(runtime *animation.Runtime, msg *types.Message, sessionState service.SessionStateReader) layout.Model {
 	extractCmd := toolcommon.ExtractField(func(a builtinshell.RunShellArgs) string { return a.Cmd })
-	return toolcommon.NewBase(msg, sessionState, func(msg *types.Message, s spinner.Spinner, sessionState service.SessionStateReader, width, height int) string {
+	return toolcommon.NewBase(runtime, msg, sessionState, func(msg *types.Message, s spinner.Spinner, sessionState service.SessionStateReader, width, height int) string {
 		return renderShell(msg, s, sessionState, width, height, extractCmd)
 	})
 }

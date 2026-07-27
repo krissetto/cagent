@@ -28,7 +28,7 @@ func TestViewDoesNotWrapWideLines(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(20, 5, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 20, 5, sessionState).(*model)
 	m.SetSize(20, 5)
 
 	msg := types.Agent(types.MessageTypeAssistant, "", strings.Repeat("x", 200))
@@ -44,7 +44,7 @@ func TestViewDoesNotWrapWideLines(t *testing.T) {
 func TestMouseClickOnURLOpensURL(t *testing.T) {
 	t.Parallel()
 
-	m := NewScrollableView(80, 24, &service.SessionState{}).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, &service.SessionState{}).(*model)
 	m.renderedLines = []string{"visit https://example.com for more"}
 	m.totalHeight = len(m.renderedLines)
 	m.renderDirty = false
@@ -60,7 +60,7 @@ func TestMouseClickOnURLOpensURL(t *testing.T) {
 func TestMouseClickOnRetryLabelEmitsRetryMsg(t *testing.T) {
 	t.Parallel()
 
-	m := NewScrollableView(80, 24, &service.SessionState{}).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, &service.SessionState{}).(*model)
 	m.SetSize(80, 24)
 
 	// Add an error message which renders a clickable retry affordance.
@@ -94,7 +94,7 @@ func TestLoadFromSessionIncludesReasoningContent(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -142,7 +142,7 @@ func TestLoadFromSessionReasoningOrderWithToolCalls(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -190,7 +190,7 @@ func TestLoadFromSessionReasoningOnlyNoContent(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -223,7 +223,7 @@ func TestLoadFromSessionToolCallsOnlyNoReasoning(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -263,7 +263,7 @@ func TestLoadFromSessionWithToolResults(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -341,7 +341,7 @@ func TestLoadFromSessionCombinesConsecutiveReasoningBlocks(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -462,7 +462,7 @@ func TestLoadFromSessionStandaloneToolCallsWithResults(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -509,7 +509,7 @@ func TestLoadFromSessionToolCallsDuringReasoningNoContent(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -559,7 +559,7 @@ func TestLoadFromSessionReasoningWithContentToolResultsStandalone(t *testing.T) 
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -615,7 +615,7 @@ func TestLoadFromSessionMultipleStandaloneToolCallsWithContentAndResults(t *test
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -698,7 +698,7 @@ func TestRenderCacheInvalidatesOnChildUpdate(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// Insert a dynamic view that changes on each Update
@@ -724,7 +724,7 @@ func TestRenderCacheInvalidatesOnAnimationTickWithAnimatedContent(t *testing.T) 
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// Add a running tool call which has a spinner (animated content)
@@ -753,7 +753,7 @@ func TestRenderCacheNotInvalidatedOnAnimationTickWithoutAnimatedContent(t *testi
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// Add a completed tool call (no spinner - not animated)
@@ -861,7 +861,7 @@ func TestHasAnimatedContent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			sessionState := &service.SessionState{}
-			m := NewScrollableView(80, 24, sessionState).(*model)
+			m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 			m.SetSize(80, 24)
 			tt.setupFunc(m)
 			got := m.hasAnimatedContent()
@@ -875,7 +875,7 @@ func TestHasAnimatedContent(t *testing.T) {
 func BenchmarkMessagesView_RenderWhileScrolling(b *testing.B) {
 	// Create a model with many messages to simulate a long conversation
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(120, 40, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 120, 40, sessionState).(*model)
 	m.SetSize(120, 40)
 
 	// Add 100 messages to create substantial history
@@ -903,7 +903,7 @@ func BenchmarkMessagesView_RenderWhileScrolling(b *testing.B) {
 // BenchmarkMessagesView_LargeHistory benchmarks View() with a very large message history.
 func BenchmarkMessagesView_LargeHistory(b *testing.B) {
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(120, 40, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 120, 40, sessionState).(*model)
 	m.SetSize(120, 40)
 
 	// Add 500 messages
@@ -934,7 +934,7 @@ func BenchmarkMessagesView_LargeHistory(b *testing.B) {
 // steady-state medium message rather than one unbounded message.
 func BenchmarkMessagesView_StreamingLargeHistory(b *testing.B) {
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(120, 40, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 120, 40, sessionState).(*model)
 	m.SetSize(120, 40)
 
 	for i := range 500 {
@@ -1014,7 +1014,7 @@ func TestIsSelectableMessage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			sessionState := &service.SessionState{}
-			m := NewScrollableView(80, 24, sessionState).(*model)
+			m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 			m.SetSize(80, 24)
 
 			m.messages = append(m.messages, tt.msg)
@@ -1031,7 +1031,7 @@ func TestKeyEEmitsEditUserMessageMsg(t *testing.T) {
 
 	sessionPos := 1
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// Add a user message with session position
@@ -1068,7 +1068,7 @@ func TestKeyENoOpForNonEditableUserMessage(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// Add a user message WITHOUT session position (not editable)
@@ -1096,7 +1096,7 @@ func TestKeyENoOpForAssistantMessage(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// Add an assistant message
@@ -1123,7 +1123,7 @@ func TestUserMessageNavigationWithArrowKeys(t *testing.T) {
 	sessionPos2 := 2
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// Add messages: user (editable), assistant, user (editable)
@@ -1170,7 +1170,7 @@ func TestBindingsIncludesEditKeyWhenUserMessageSelected(t *testing.T) {
 
 	sessionPos := 1
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// Add a user message with session position
@@ -1201,7 +1201,7 @@ func TestAddOrUpdateToolCallFindsToolInNonActiveReasoningBlock(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	agentName := "root"
@@ -1245,7 +1245,7 @@ func TestAppendReasoningAfterTransferTaskShowsAgentBadge(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// root delegates to developer: the transfer_task tool call is sent by the
@@ -1276,7 +1276,7 @@ func TestAppendReasoningContinuingSameAgentOmitsAgentBadge(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	m.AddUserMessage("hi")
@@ -1297,7 +1297,7 @@ func TestLoadFromSessionReasoningBlockAgentBadges(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -1345,7 +1345,7 @@ func TestLoadFromSessionReasoningAfterTransferTaskShowsAgentBadge(t *testing.T) 
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	sess := &session.Session{
@@ -1398,7 +1398,7 @@ func TestBindingsExcludesEditKeyWhenAssistantMessageSelected(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 24, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// Add an assistant message
@@ -1425,7 +1425,7 @@ func TestKeyGAndShiftGScrollMessagesView(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 10, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 10, sessionState).(*model)
 	m.SetSize(80, 10)
 
 	// Add enough messages to require scrolling.
@@ -1458,7 +1458,7 @@ func TestKeyGAndGWithEmptyMessages(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 10, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 10, sessionState).(*model)
 	m.SetSize(80, 10)
 
 	// No messages - should not panic
@@ -1473,7 +1473,7 @@ func TestKeyGAndGDuringInlineEdit(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(80, 10, sessionState).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 10, sessionState).(*model)
 	m.SetSize(80, 10)
 
 	sessionPos := 0
@@ -1509,7 +1509,7 @@ func TestKeyGAndGDuringInlineEdit(t *testing.T) {
 // hoverActionModel builds a single-message model, renders it, and returns it.
 func hoverActionModel(t *testing.T, msg *types.Message) *model {
 	t.Helper()
-	m := NewScrollableView(80, 24, &service.SessionState{}).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, &service.SessionState{}).(*model)
 	m.SetSize(80, 24)
 	m.messages = append(m.messages, msg)
 	m.views = append(m.views, m.createMessageView(msg))
@@ -1651,7 +1651,7 @@ func TestEditLabelInContentIsNotClickable(t *testing.T) {
 func TestAddAgentReturnKeepsSpinnerLast(t *testing.T) {
 	t.Parallel()
 
-	m := NewScrollableView(80, 24, &service.SessionState{}).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, &service.SessionState{}).(*model)
 	m.AddAssistantMessage("researcher", "root → researcher")
 	require.Equal(t, types.MessageTypeSpinner, m.messages[len(m.messages)-1].Type)
 
@@ -1677,7 +1677,7 @@ func TestAddAgentReturnKeepsSpinnerLast(t *testing.T) {
 func TestAddAgentReturnWithoutSpinnerAppends(t *testing.T) {
 	t.Parallel()
 
-	m := NewScrollableView(80, 24, &service.SessionState{}).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, &service.SessionState{}).(*model)
 	m.AddUserMessage("go")
 
 	require.NotNil(t, m.AddAgentReturn("researcher", "root"))
@@ -1695,7 +1695,7 @@ func TestAddAgentReturnWithoutSpinnerAppends(t *testing.T) {
 func TestAgentReturnIsInertInList(t *testing.T) {
 	t.Parallel()
 
-	m := NewScrollableView(80, 24, &service.SessionState{}).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, &service.SessionState{}).(*model)
 	m.AddAgentReturn("researcher", "root")
 
 	require.Len(t, m.messages, 1)

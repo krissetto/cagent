@@ -16,14 +16,15 @@ import (
 // the tick stream alive for the rest of the process. Not parallel — the test
 // asserts on the global coordinator.
 func TestStopAnimationsReleasesEverySubscription(t *testing.T) {
-	m := NewScrollableView(80, 24, &service.SessionState{})
+	animRuntime := animation.NewRuntime()
+	m := NewScrollableView(animRuntime, 80, 24, &service.SessionState{})
 
 	// A completed tool call replaces the running view; the old view's
 	// spinner subscription must not survive the swap.
 	call := tools.ToolCall{ID: "call-1", Function: tools.FunctionCall{Name: "list"}}
 	_ = m.AddOrUpdateToolCall("agent", call, tools.Tool{Name: "list"}, types.ToolStatusRunning)
 	_ = m.View() // running view renders and registers its spinner
-	require.True(t, animation.HasActive())
+	require.True(t, animRuntime.HasActive())
 	_ = m.AddToolResult(&runtime.ToolCallResponseEvent{ToolCallID: "call-1", Response: "done"}, types.ToolStatusCompleted)
 
 	// A waiting spinner still animating when the list is discarded.
@@ -31,6 +32,6 @@ func TestStopAnimationsReleasesEverySubscription(t *testing.T) {
 	_ = m.View()
 
 	m.StopAnimations()
-	require.False(t, animation.HasActive(),
+	require.False(t, animRuntime.HasActive(),
 		"discarding the list must release every animation subscription")
 }

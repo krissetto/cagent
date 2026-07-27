@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin/todo"
 	transfertasktool "github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
 	userpromptool "github.com/docker/docker-agent/pkg/tools/builtin/userprompt"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/api"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/defaulttool"
 	"github.com/docker/docker-agent/pkg/tui/components/tool/directorytree"
@@ -38,7 +39,7 @@ import (
 
 // Builder constructs the layout.Model for a tool message. Embedders implement
 // this to provide a custom view for a tool and register it via Register.
-type Builder = func(msg *types.Message, sessionState service.SessionStateReader) layout.Model
+type Builder = func(runtime *animation.Runtime, msg *types.Message, sessionState service.SessionStateReader) layout.Model
 
 // builders maps a tool name (or a "category:<name>" key) to its renderer.
 // Tools sharing the same visual representation point at the same builder.
@@ -109,17 +110,17 @@ func resolve(key string) (Builder, bool) {
 // New returns the appropriate tool view for the given message.
 // Lookup order: exact tool name, then "category:<category>", then default.
 // At each tier a registered custom renderer wins over the built-in one.
-func New(msg *types.Message, sessionState service.SessionStateReader) layout.Model {
+func New(runtime *animation.Runtime, msg *types.Message, sessionState service.SessionStateReader) layout.Model {
 	var view layout.Model
 	if b, ok := resolve(msg.ToolCall.Function.Name); ok {
-		view = b(msg, sessionState)
+		view = b(runtime, msg, sessionState)
 	} else if cat := msg.ToolDefinition.Category; cat != "" {
 		if b, ok := resolve("category:" + cat); ok {
-			view = b(msg, sessionState)
+			view = b(runtime, msg, sessionState)
 		}
 	}
 	if view == nil {
-		view = defaulttool.New(msg, sessionState)
+		view = defaulttool.New(runtime, msg, sessionState)
 	}
 	return withInlineImages(view, msg.Images, sessionState)
 }

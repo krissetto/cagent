@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/runtime"
@@ -49,7 +51,8 @@ func buildStreamingSidebar(tb testing.TB, nTodos int) *model {
 	sess := session.New()
 	ss := service.NewSessionState(sess)
 	ss.SetCurrentAgentName("root")
-	m := New(testContext(tb), ss).(*model)
+	sched := &immediateScheduler{now: time.Unix(1, 0)}
+	m := New(animation.NewRuntimeWithScheduler(sched), testContext(tb), ss).(*model)
 	m.SetSize(40, 30)
 	m.SetTeamInfo([]runtime.AgentDetails{
 		{Name: "root", Provider: "openai", Model: "gpt-4o", Description: "Expert developer that plans and executes migrations"},
@@ -108,9 +111,17 @@ func TestAnimationFastPathTracksSpinnerFrame(t *testing.T) {
 
 	// Advance the spinner until its frame changes, as the 14 FPS tick does.
 	prev := m.spinner.RawFrame()
-	for i := 1; i <= 20 && m.spinner.RawFrame() == prev; i++ {
-		model, _ := m.spinner.Update(animation.TickMsg{Frame: i})
+	cmd := m.spinner.Init()
+	require.NotNil(t, cmd)
+	var msg animation.TickMsg
+	for m.spinner.RawFrame() == prev {
+		var ok bool
+		msg, ok = m.runtime.Accept(cmd().(animation.TickMsg))
+		require.True(t, ok)
+		model, _ := m.spinner.Update(msg)
 		m.spinner = model.(spinner.Spinner)
+		cmd = m.runtime.Continue()
+		require.NotNil(t, cmd)
 	}
 	require.NotEqual(t, prev, m.spinner.RawFrame(), "spinner should advance to a new frame")
 
@@ -148,4 +159,11 @@ func BenchmarkStreamingViewFullRebuild(b *testing.B) {
 			}
 		})
 	}
+}
+
+type immediateScheduler struct{ now time.Time }
+
+func (s *immediateScheduler) Now() time.Time { return s.now }
+func (s *immediateScheduler) Tick(d time.Duration, f func(time.Time) tea.Msg) tea.Cmd {
+	return func() tea.Msg { s.now = s.now.Add(d); return f(s.now) }
 }

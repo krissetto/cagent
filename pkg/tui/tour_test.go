@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/paths"
 	tourstate "github.com/docker/docker-agent/pkg/tour"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/tabbar"
 	"github.com/docker/docker-agent/pkg/tui/dialog"
 	"github.com/docker/docker-agent/pkg/tui/messages"
@@ -71,7 +72,7 @@ func TestTourKeys(t *testing.T) {
 
 	t.Run("esc quits the tour", func(t *testing.T) {
 		m, _ := newTestModel(t)
-		m.tabBar = tabbar.New(0)
+		m.tabBar = tabbar.New(animation.NewRuntime(), 0)
 		_, _ = m.Update(messages.StartTourMsg{})
 		require.True(t, m.tour.Active())
 
@@ -83,7 +84,7 @@ func TestTourKeys(t *testing.T) {
 
 	t.Run("enter on empty editor advances", func(t *testing.T) {
 		m, _ := newTestModel(t)
-		m.tabBar = tabbar.New(0)
+		m.tabBar = tabbar.New(animation.NewRuntime(), 0)
 		m.focusedPanel = PanelEditor
 		_, _ = m.Update(messages.StartTourMsg{})
 		require.True(t, m.tour.Active())

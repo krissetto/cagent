@@ -613,23 +613,9 @@ func (e *editor) AcceptSuggestion() tea.Cmd {
 	return e.updateCompletionQuery()
 }
 
-func (e *editor) ScrollByWheel(delta int) {
-	if delta == 0 {
-		return
-	}
-
-	steps := delta
-	if steps < 0 {
-		steps = -steps
-		for range steps {
-			e.textarea.CursorUp()
-		}
-		return
-	}
-
-	for range steps {
-		e.textarea.CursorDown()
-	}
+func (e *editor) ScrollByWheel(int) {
+	// The input has no scroll viewport. Wheel-driven cursor movement was both
+	// surprising and usually invisible, so wheel input is intentionally inert.
 }
 
 // resetAndSend prepares a message for sending: processes pending file refs,

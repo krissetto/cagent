@@ -8,6 +8,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -77,7 +78,7 @@ func TestSetAgentInfo_UpdatesProviderAndModel(t *testing.T) {
 			// Create a sidebar model with initial agent details
 			sess := session.New()
 			sessionState := service.NewSessionState(sess)
-			m := New(t.Context(), sessionState).(*model)
+			m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 			// Set up initial availableAgents
 			m.availableAgents = []runtime.AgentDetails{
@@ -107,7 +108,7 @@ func TestSetAgentInfo_OnlyUpdatesMatchingAgent(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	// Set up multiple agents
 	m.availableAgents = []runtime.AgentDetails{
@@ -135,7 +136,7 @@ func TestSetAgentInfo_EmptyModelIDNoUpdate(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	// Set up initial agent
 	m.availableAgents = []runtime.AgentDetails{
@@ -155,7 +156,7 @@ func TestSetAgentInfo_NonexistentAgent(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	// Set up agents without the target
 	m.availableAgents = []runtime.AgentDetails{
@@ -179,7 +180,7 @@ func TestSetAgentInfo_CompactionAttribution(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	m.SetAgentInfo("root", "anthropic/claude", "desc", 16_000, "local/small", 128_000)
 	assert.Equal(t, "local/small", m.agentCompactionModel)
