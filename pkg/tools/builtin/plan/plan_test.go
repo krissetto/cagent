@@ -1300,3 +1300,49 @@ func TestPlanTool_NewToolsRegistered(t *testing.T) {
 		assert.True(t, names[want], "tool %q should be registered", want)
 	}
 }
+
+// --- Host-facing surface (pkg/plans) -----------------------------------------
+
+func TestValidateName(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"release", "release-2025", "db_migration", "a", "1plan"} {
+		require.NoError(t, ValidateName(name), "name %q should be valid", name)
+	}
+	for _, name := range []string{"", "///", "Has Space", "UPPER", "../escape", "a/b", "-leading", "with.dot"} {
+		err := ValidateName(name)
+		require.Error(t, err, "name %q should be rejected", name)
+		assert.Contains(t, err.Error(), "invalid plan name")
+	}
+}
+
+func TestSharedStorage(t *testing.T) {
+	t.Parallel()
+	first := SharedStorage()
+	require.NotNil(t, first)
+	// Stable across calls, so every host-side caller shares one mutex.
+	assert.Same(t, first, SharedStorage())
+
+	// Identical to the storage behind the process-wide toolset singleton.
+	ts, err := CreateToolSet()
+	require.NoError(t, err)
+	assert.Same(t, ts.(*ToolSet).storage, first)
+
+	// Per-instance toolsets built with New keep their own storage.
+	assert.NotSame(t, first, New().storage)
+}
+
+// TestStorage_CorruptErrorIsTyped proves a corrupt plan surfaces as a
+// *CorruptPlanError (with its historical message) so callers can classify it
+// without matching on error text.
+func TestStorage_CorruptErrorIsTyped(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	storage := NewFilesystemStorage(dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.json"), []byte("{not json"), 0o600))
+
+	_, _, err := storage.Get(t.Context(), "broken")
+	var corrupt *CorruptPlanError
+	require.ErrorAs(t, err, &corrupt)
+	assert.Equal(t, "broken.json", corrupt.File)
+	assert.Contains(t, err.Error(), "plan file broken.json is corrupt")
+}

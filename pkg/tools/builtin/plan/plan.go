@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker-agent/pkg/atomicfile"
@@ -73,12 +74,37 @@ func (e *VersionConflictError) Error() string {
 	return fmt.Sprintf("version conflict on plan %q: last_known_revision %d does not match current revision %d; re-read the plan and retry", e.Name, e.Expected, e.Current)
 }
 
+// CorruptPlanError is returned when a plan file exists but cannot be decoded,
+// so callers can tell a damaged plan apart from a missing one or a plain I/O
+// failure without matching on error text.
+type CorruptPlanError struct {
+	// File is the base name of the plan file that failed to decode.
+	File string
+	Err  error
+}
+
+func (e *CorruptPlanError) Error() string {
+	return fmt.Sprintf("plan file %s is corrupt: %v", e.File, e.Err)
+}
+
+func (e *CorruptPlanError) Unwrap() error { return e.Err }
+
 // namePattern defines the accepted plan-name format: a lowercase slug made of
 // alphanumerics, '-' and '_'. Names are validated against it rather than being
 // silently rewritten, so two different inputs can never collapse onto the same
 // file (which would let one plan clobber another) and no input can escape the
 // plans directory via path separators or "..".
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// ValidateName rejects names that do not match namePattern. It is the
+// canonical plan-name rule, exported so host-side callers (e.g. pkg/plans)
+// validate exactly like the storage instead of duplicating the pattern.
+func ValidateName(name string) error {
+	if !namePattern.MatchString(name) {
+		return fmt.Errorf("invalid plan name %q: use only lowercase letters, digits, '-' and '_', starting with a letter or digit", name)
+	}
+	return nil
+}
 
 // Plan is a shared document collaborated on by the agents.
 type Plan struct {
@@ -186,15 +212,65 @@ type Storage interface {
 	Delete(ctx context.Context, name string, expectedRevision *int) (deleted bool, err error)
 }
 
+// Change action labels reported through the ChangeNotifier callback.
+const (
+	ChangeActionWrite  = "write"
+	ChangeActionStatus = "status"
+	ChangeActionDelete = "delete"
+)
+
+// Change describes one successful mutation of a shared plan. It carries
+// identity and version only — never content — so observers refresh through
+// their own storage view instead of trusting an event payload. Revision is
+// the version after a write, or the guard version of a guarded delete (0
+// when the delete was unguarded).
+type Change struct {
+	Name     string
+	Action   string
+	Revision int
+}
+
+// ChangeNotifier is the optional host-notification capability of the plan
+// toolset: a host (e.g. the TUI) registers a callback that fires after every
+// successful mutation and never for failed ones. Discover it through toolset
+// wrappers with tools.As. The callback must be safe for concurrent use and
+// must not block; it does not alter tool schemas, outputs, or storage
+// behavior in any way.
+type ChangeNotifier interface {
+	SetChangeCallback(cb func(Change))
+}
+
 type ToolSet struct {
 	storage Storage
+
+	// changeCallback holds the ChangeNotifier callback. Atomic because the
+	// shared singleton toolset is re-configured per agent turn while other
+	// sessions' tool calls may be notifying concurrently.
+	changeCallback atomic.Pointer[func(Change)]
 }
 
 var (
 	_ tools.ToolSet      = (*ToolSet)(nil)
 	_ tools.Instructable = (*ToolSet)(nil)
 	_ tools.Describer    = (*ToolSet)(nil)
+	_ ChangeNotifier     = (*ToolSet)(nil)
 )
+
+// SetChangeCallback registers cb to run after every successful plan
+// mutation; nil unregisters. Implements ChangeNotifier.
+func (t *ToolSet) SetChangeCallback(cb func(Change)) {
+	if cb == nil {
+		t.changeCallback.Store(nil)
+		return
+	}
+	t.changeCallback.Store(&cb)
+}
+
+func (t *ToolSet) notifyChange(change Change) {
+	if cb := t.changeCallback.Load(); cb != nil {
+		(*cb)(change)
+	}
+}
 
 // Option configures a ToolSet.
 type Option func(*ToolSet)
@@ -229,6 +305,14 @@ var sharedToolSet = sync.OnceValue(func() *ToolSet {
 // storage over the global plans folder.
 func CreateToolSet() (tools.ToolSet, error) {
 	return sharedToolSet(), nil
+}
+
+// SharedStorage returns the Storage behind the process-wide shared ToolSet
+// (CreateToolSet). Host code that manages plans outside agent tool calls
+// (e.g. a TUI) should use it so both sides serialize on the same instance
+// and mutex. ToolSets built with New keep their own independent storage.
+func SharedStorage() Storage {
+	return sharedToolSet().storage
 }
 
 // DefaultDir is the global shared folder where plans are stored, under the
@@ -335,6 +419,7 @@ func (t *ToolSet) writePlan(ctx context.Context, params WritePlanArgs) (*tools.T
 		return tools.ResultError(err.Error()), nil
 	}
 
+	t.notifyChange(Change{Name: plan.Name, Action: ChangeActionWrite, Revision: plan.Revision})
 	return tools.ResultJSON(plan), nil
 }
 
@@ -372,6 +457,7 @@ func (t *ToolSet) updatePlanFromFile(ctx context.Context, params UpdatePlanFromF
 		return tools.ResultError(err.Error()), nil
 	}
 
+	t.notifyChange(Change{Name: plan.Name, Action: ChangeActionWrite, Revision: plan.Revision})
 	return tools.ResultJSON(plan), nil
 }
 
@@ -428,6 +514,7 @@ func (t *ToolSet) setPlanStatus(ctx context.Context, params SetPlanStatusArgs) (
 		return tools.ResultError(err.Error()), nil
 	}
 
+	t.notifyChange(Change{Name: plan.Name, Action: ChangeActionStatus, Revision: plan.Revision})
 	return tools.ResultJSON(StatusView{Name: plan.Name, Status: plan.Status, Revision: plan.Revision}), nil
 }
 
@@ -491,6 +578,11 @@ func (t *ToolSet) deletePlan(ctx context.Context, params DeletePlanArgs) (*tools
 		return tools.ResultError(fmt.Sprintf("plan %q not found", params.Name)), nil
 	}
 
+	revision := 0
+	if params.LastKnownRevision != nil {
+		revision = *params.LastKnownRevision
+	}
+	t.notifyChange(Change{Name: params.Name, Action: ChangeActionDelete, Revision: revision})
 	return tools.ResultJSON(map[string]string{"deleted": params.Name}), nil
 }
 
@@ -685,8 +777,8 @@ func (s *FilesystemStorage) String() string {
 // which guarantees a one-to-one mapping between names and files and prevents
 // path traversal.
 func (s *FilesystemStorage) planPath(name string) (string, error) {
-	if !namePattern.MatchString(name) {
-		return "", fmt.Errorf("invalid plan name %q: use only lowercase letters, digits, '-' and '_', starting with a letter or digit", name)
+	if err := ValidateName(name); err != nil {
+		return "", err
 	}
 	return filepath.Join(s.dir, name+".json"), nil
 }
@@ -705,7 +797,7 @@ func (s *FilesystemStorage) load(path string) (Plan, bool, error) {
 	}
 	var p Plan
 	if err := json.Unmarshal(data, &p); err != nil {
-		return Plan{}, false, fmt.Errorf("plan file %s is corrupt: %w", filepath.Base(path), err)
+		return Plan{}, false, &CorruptPlanError{File: filepath.Base(path), Err: err}
 	}
 	return p, true, nil
 }
