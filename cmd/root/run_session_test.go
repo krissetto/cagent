@@ -87,6 +87,54 @@ func TestCreateLocalRuntimeAndSession_ResumeKeepsExplicitSafetyPolicy(t *testing
 	assert.Equal(t, session.SafetyPolicyBalanced, sess.SafetyPolicy)
 }
 
+// A plain resume (no --yolo, no --safety) of a session stored as
+// autonomous must leave the stored state untouched: the policy stays
+// autonomous AND the legacy ToolsApproved flag stays true, so the two
+// fields remain in sync for legacy readers.
+func TestCreateLocalRuntimeAndSession_PlainResumeKeepsAutonomousInSync(t *testing.T) {
+	t.Parallel()
+
+	store := session.NewInMemorySessionStore()
+	require.NoError(t, store.AddSession(t.Context(), session.New(
+		session.WithID("existing"),
+		session.WithSafetyPolicy(session.SafetyPolicyAutonomous),
+	)))
+
+	f := &runExecFlags{}
+	req := runtime.CreateSessionRequest{AgentName: "root", ResumeSessionID: "existing"}
+
+	_, sess, err := f.createLocalRuntimeAndSession(t.Context(), newSessionTestLoadResult(), req, store)
+	require.NoError(t, err)
+	assert.Equal(t, session.SafetyPolicyAutonomous, sess.SafetyPolicy)
+	assert.True(t, sess.ToolsApproved, "plain resume must not reset the legacy flag out from under an autonomous policy")
+}
+
+// A plain resume of a legacy stored session — raw ToolsApproved=true with
+// no SafetyPolicy, the shape old stores deserialize to — must leave that
+// raw shape untouched: the blanket approval stays effective and no policy
+// is written onto the session behind the user's back.
+func TestCreateLocalRuntimeAndSession_PlainResumeKeepsLegacyToolsApprovedShape(t *testing.T) {
+	t.Parallel()
+
+	// WithToolsApproved(true) backfills SafetyPolicy=autonomous, so build
+	// the legacy deserialized shape via raw field writes instead.
+	legacy := session.New(session.WithID("existing"))
+	legacy.ToolsApproved = true
+	legacy.SafetyPolicy = ""
+
+	store := session.NewInMemorySessionStore()
+	require.NoError(t, store.AddSession(t.Context(), legacy))
+
+	f := &runExecFlags{}
+	req := runtime.CreateSessionRequest{AgentName: "root", ResumeSessionID: "existing"}
+
+	_, sess, err := f.createLocalRuntimeAndSession(t.Context(), newSessionTestLoadResult(), req, store)
+	require.NoError(t, err)
+	assert.True(t, sess.ToolsApproved, "plain resume must keep the legacy blanket approval")
+	assert.Equal(t, session.SafetyPolicy(""), sess.SafetyPolicy, "plain resume must not invent an explicit policy on a legacy session")
+	assert.Equal(t, session.SafetyPolicyAutonomous, sess.GetSafetyPolicy(), "the legacy flag alone must stay effective as autonomous")
+}
+
 // --yolo on resume escalates even a session stored with an explicit
 // non-autonomous mode: the flag is a direct user instruction for THIS
 // run, not a default that only fills a gap.

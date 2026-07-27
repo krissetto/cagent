@@ -92,9 +92,10 @@ func BuildPermissionPattern(toolCall tools.ToolCall) string {
 // AlwaysAllowLabel is the descriptive label of the "always allow" option
 // for a pattern from BuildPermissionPattern: the command pattern for shell
 // ("always allow ls*"), the tool name otherwise. Whitespace runs are
-// collapsed: the label feeds a single-line help row whose click
-// hit-testing treats "  " as the segment separator, so an interior
-// double space (or newline) would corrupt the segment walk.
+// collapsed: a newline would split the label's help row across physical
+// lines, breaking the one-line-per-row contract click hit-testing relies
+// on, and an interior double space would read like the separator between
+// options.
 func AlwaysAllowLabel(pattern string) string {
 	if _, cmdPattern, ok := strings.Cut(pattern, ":cmd="); ok {
 		pattern = cmdPattern
@@ -103,12 +104,13 @@ func AlwaysAllowLabel(pattern string) string {
 }
 
 // ActionKeys are the uppercase action letters of the decision row, in
-// display order. Click hit-testing on the rendered options walks these
-// letters; map a hit back to its decision with DecisionForAction.
+// display order — one letter per OptionsHelp pair. UIs dispatch a clicked
+// option by its action key; map a key back to its decision with
+// DecisionForAction.
 const ActionKeys = "YNTBA"
 
-// DecisionForAction maps an action letter from ActionKeys ("Y", "N", "T",
-// "A") to its decision. ok is false for any other string.
+// DecisionForAction maps an action letter from ActionKeys to its
+// decision. ok is false for any other string.
 func DecisionForAction(action string) (decision Decision, ok bool) {
 	switch action {
 	case "Y":
@@ -127,9 +129,8 @@ func DecisionForAction(action string) (decision Decision, ok bool) {
 
 // OptionsHelp returns the key/label pairs of the decision row, in display
 // order, ready for a help-keys renderer (e.g. dialog.RenderHelpKeys). The
-// Balanced label is deliberately the short mode name: the confirmation
-// dialog is ~70% of the terminal wide and a longer label makes the row
-// wrap, which breaks row-based click hit-testing.
+// Balanced label is deliberately the short mode name: it keeps the
+// decision block compact, wrapping onto fewer rows at narrow widths.
 func OptionsHelp(pattern string) []string {
 	return []string{
 		"Y", "yes",
