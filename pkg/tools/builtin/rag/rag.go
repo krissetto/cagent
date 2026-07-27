@@ -90,7 +90,6 @@ func (t *ToolSet) Start(ctx context.Context) error {
 	// when Stop() is called, preventing goroutine leaks if the parent context outlives this toolset.
 	watchCtx, cancel := context.WithCancel(ctx)
 	t.cancelWatcher = cancel
-	t.watcherDone = make(chan struct{})
 
 	// Forward RAG manager events if a callback is set.
 	if t.eventCallback != nil {
@@ -98,9 +97,11 @@ func (t *ToolSet) Start(ctx context.Context) error {
 	}
 
 	if err := t.manager.Initialize(ctx); err != nil {
+		cancel()
 		return fmt.Errorf("failed to initialize RAG manager %q: %w", t.toolName, err)
 	}
 
+	t.watcherDone = make(chan struct{})
 	go func() {
 		defer close(t.watcherDone)
 		if err := t.manager.StartFileWatcher(watchCtx); err != nil && !errors.Is(err, context.Canceled) {
