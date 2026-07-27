@@ -3,6 +3,24 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.117.0] - 2026-07-27
+
+This release adds support for Claude Opus 5 and introduces a new three-mode safety policy system for tool approval control.
+
+## What's New
+- Adds support for Claude Opus 5 (released 2026-07-24, 1M context window, 128k output)
+- Adds a three-mode safety policy (strict / balanced / autonomous) with native shell classification, providing a middle ground between per-call approval and blanket session-wide approval
+
+## Technical Changes
+- Refreshes the embedded models.dev catalog snapshot to 2026-07-24
+### Pull Requests
+
+- [#3828](https://github.com/docker/docker-agent/pull/3828) - docs: update CHANGELOG.md for v1.116.0
+- [#3830](https://github.com/docker/docker-agent/pull/3830) - feat: support Claude Opus 5
+- [#3834](https://github.com/docker/docker-agent/pull/3834) - chore: refresh embedded models.dev snapshot
+- [#3835](https://github.com/docker/docker-agent/pull/3835) - feat: three-mode safety policy (strict / balanced / autonomous) with native shell classification
+
+
 ## [v1.116.0] - 2026-07-24
 
 This release adds sandbox authentication improvements, compaction-model context visibility in the TUI, MCP lifecycle enforcement, and a range of bug fixes across the TUI, CLI, and OpenAI integration.
@@ -5144,3 +5162,5 @@ This release improves the terminal user interface with better error handling and
 [v1.115.0]: https://github.com/docker/docker-agent/releases/tag/v1.115.0
 
 [v1.116.0]: https://github.com/docker/docker-agent/releases/tag/v1.116.0
+
+[v1.117.0]: https://github.com/docker/docker-agent/releases/tag/v1.117.0
