@@ -96,9 +96,6 @@ func (c *Coordinator) tickLocked() tea.Cmd {
 // animated components in the running TUI.
 var globalCoordinator = &Coordinator{}
 
-// Register increments the active animation count on the global coordinator.
-func Register() { globalCoordinator.Register() }
-
 // Unregister decrements the active animation count on the global coordinator.
 func Unregister() { globalCoordinator.Unregister() }
 
