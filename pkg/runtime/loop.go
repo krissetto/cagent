@@ -29,6 +29,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin/backgroundjobs"
 	"github.com/docker/docker-agent/pkg/tools/builtin/handoff"
 	"github.com/docker/docker-agent/pkg/tools/builtin/modelpicker"
+	"github.com/docker/docker-agent/pkg/tools/builtin/plan"
 	"github.com/docker/docker-agent/pkg/tools/builtin/sessioncontext"
 	"github.com/docker/docker-agent/pkg/tools/builtin/sessionplan"
 	"github.com/docker/docker-agent/pkg/tools/builtin/skills"
@@ -1309,6 +1310,19 @@ func (r *LocalRuntime) configureToolsetHandlers(a *agent.Agent, events EventSink
 		// would deadlock.
 		if ragTool, ok := tools.As[ragtypes.EventForwarder](toolset); ok {
 			ragTool.SetEventCallback(ragEventForwarder(ragTool.Name(), r, nonBlocking(events).Emit))
+		}
+
+		// Notify the host of successful shared-plan mutations so an open
+		// /plans browser refreshes live. Non-blocking like the RAG forwarder:
+		// the shared plan toolset is a process-wide singleton whose callback
+		// can outlive this turn's events channel, and a blocking send into a
+		// stale sink could hang another session's tool call.
+		if notifier, ok := tools.As[plan.ChangeNotifier](toolset); ok {
+			agentName := a.Name()
+			sink := nonBlocking(events)
+			notifier.SetChangeCallback(func(c plan.Change) {
+				sink.Emit(PlanChanged("shared", c.Name, c.Action, c.Revision, agentName))
+			})
 		}
 	}
 }
