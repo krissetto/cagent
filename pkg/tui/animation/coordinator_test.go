@@ -59,10 +59,10 @@ func TestLegacyIsCurrentGenIsPureAndRejectsStaleTicks(t *testing.T) {
 }
 
 func TestAcceptedTickCopiesShareDirtyMarker(t *testing.T) {
-	runtime := NewRuntime()
-	sub := runtime.Subscribe()
+	ar := NewRuntime()
+	sub := ar.Subscribe()
 	tick := runTick(t, func() any { return sub.Start()() })
-	accepted, ok := runtime.Accept(tick)
+	accepted, ok := ar.Accept(tick)
 	require.True(t, ok)
 	acceptedCopy := accepted
 	assert.False(t, accepted.Dirty())
@@ -122,73 +122,73 @@ func TestRuntimeStopDoesNotAffectAnotherRuntime(t *testing.T) {
 }
 
 func TestRuntimeAcceptOnlyOnce(t *testing.T) {
-	runtime := NewRuntime()
-	sub := runtime.Subscribe()
+	ar := NewRuntime()
+	sub := ar.Subscribe()
 	tick := runTick(t, func() any { return sub.Start()() })
-	_, ok := runtime.Accept(tick)
+	_, ok := ar.Accept(tick)
 	require.True(t, ok)
-	elapsed := runtime.Now()
-	_, ok = runtime.Accept(tick)
+	elapsed := ar.Now()
+	_, ok = ar.Accept(tick)
 	assert.False(t, ok)
-	assert.Equal(t, elapsed, runtime.Now())
+	assert.Equal(t, elapsed, ar.Now())
 	sub.Stop()
 }
 
 func TestRuntimeTransitionUsesOwnedClock(t *testing.T) {
-	runtime := NewRuntime()
-	transition := runtime.Transition()
+	ar := NewRuntime()
+	transition := ar.Transition()
 	cmd := transition.Start(TickRate, Linear)
 	tick := runTick(t, func() any { return cmd() })
-	_, ok := runtime.Accept(tick)
+	_, ok := ar.Accept(tick)
 	require.True(t, ok)
 	transition.Tick()
 	assert.False(t, transition.Running())
-	assert.Equal(t, int32(0), runtime.ActiveCount())
+	assert.Equal(t, int32(0), ar.ActiveCount())
 }
 
 func TestTickOwnerIsImmutableAcrossRecovery(t *testing.T) {
-	runtime := NewRuntime()
-	sub := runtime.Subscribe()
+	ar := NewRuntime()
+	sub := ar.Subscribe()
 	staleCmd := sub.Start()
-	freshCmd := runtime.EnsureRunning()
+	freshCmd := ar.EnsureRunning()
 	stale := runTick(t, func() any { return staleCmd() })
 	fresh := runTick(t, func() any { return freshCmd() })
-	_, ok := runtime.Accept(stale)
+	_, ok := ar.Accept(stale)
 	assert.False(t, ok)
-	_, ok = runtime.Accept(fresh)
+	_, ok = ar.Accept(fresh)
 	assert.True(t, ok)
 	sub.Stop()
 }
 
 func TestRuntimeStopInvalidatesQueuedTickAndQuiesces(t *testing.T) {
-	runtime := NewRuntime()
-	sub := runtime.Subscribe()
+	ar := NewRuntime()
+	sub := ar.Subscribe()
 	queued := sub.Start()
 	require.NotNil(t, queued)
 
-	runtime.Stop()
-	assert.Equal(t, int32(0), runtime.ActiveCount())
-	assert.Nil(t, runtime.Continue(), "stopped animation runtime schedules no successor")
+	ar.Stop()
+	assert.Equal(t, int32(0), ar.ActiveCount())
+	assert.Nil(t, ar.Continue(), "stopped animation runtime schedules no successor")
 
-	_, accepted := runtime.Accept(runTick(t, func() any { return queued() }))
+	_, accepted := ar.Accept(runTick(t, func() any { return queued() }))
 	assert.False(t, accepted, "queued generation is stale after teardown")
-	assert.Zero(t, runtime.Now(), "rejected queued tick does not advance the clock")
+	assert.Zero(t, ar.Now(), "rejected queued tick does not advance the clock")
 }
 
 func TestExactlyOneContinuationPerAcceptedTick(t *testing.T) {
-	runtime := NewRuntime()
-	sub := runtime.Subscribe()
+	ar := NewRuntime()
+	sub := ar.Subscribe()
 	first := sub.Start()
-	_, accepted := runtime.Accept(runTick(t, func() any { return first() }))
+	_, accepted := ar.Accept(runTick(t, func() any { return first() }))
 	require.True(t, accepted)
 
-	successor := runtime.Continue()
+	successor := ar.Continue()
 	require.NotNil(t, successor)
-	assert.Nil(t, runtime.Continue(), "a live lease deduplicates parallel continuations")
+	assert.Nil(t, ar.Continue(), "a live lease deduplicates parallel continuations")
 	sub.Stop()
-	_, accepted = runtime.Accept(runTick(t, func() any { return successor() }))
+	_, accepted = ar.Accept(runTick(t, func() any { return successor() }))
 	assert.False(t, accepted, "last unregister invalidates queued successor")
-	assert.Nil(t, runtime.Continue())
+	assert.Nil(t, ar.Continue())
 }
 
 func TestTabBusySpinnerIsOneCellBraille(t *testing.T) {
@@ -201,16 +201,16 @@ func TestTabBusySpinnerIsOneCellBraille(t *testing.T) {
 }
 
 func TestRuntimeNowAdvancesByDeliveredTime(t *testing.T) {
-	runtime := NewRuntime()
-	runtime.Register()
+	ar := NewRuntime()
+	ar.Register()
 	base := time.Now()
-	runtime.mu.Lock()
-	runtime.tickScheduled = true
-	runtime.generation = 2
-	runtime.lastDeliveredAt = base
-	runtime.mu.Unlock()
-	_, ok := runtime.Accept(TickMsg{runtimeIdentity: runtime.runtimeIdentity, generation: 2, deliveredAt: base.Add(125 * time.Millisecond)})
+	ar.mu.Lock()
+	ar.tickScheduled = true
+	ar.generation = 2
+	ar.lastDeliveredAt = base
+	ar.mu.Unlock()
+	_, ok := ar.Accept(TickMsg{runtimeIdentity: ar.runtimeIdentity, generation: 2, deliveredAt: base.Add(125 * time.Millisecond)})
 	require.True(t, ok)
-	assert.Equal(t, 125*time.Millisecond, runtime.Now())
-	runtime.Unregister()
+	assert.Equal(t, 125*time.Millisecond, ar.Now())
+	ar.Unregister()
 }

@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -76,10 +77,10 @@ func RenderToolWithState(t *ToolView, width, frame int, sessionState service.Ses
 	boxStyle := StToolBox(width)
 	innerWidth := max(width-boxStyle.GetHorizontalFrameSize(), 1)
 
-	view := toolcomponent.New(t.message, sessionState)
+	ar := animation.NewSnapshotRuntime(time.Duration(frame) * animation.ChatSpinnerFrameDuration)
+	view := toolcomponent.New(ar, t.message, sessionState)
 	view.SetSize(innerWidth, 0)
 	if t.message.ToolStatus == tuitypes.ToolStatusPending || t.message.ToolStatus == tuitypes.ToolStatusRunning {
-		view, _ = view.Update(animation.TickMsg{Frame: frame})
 		defer animation.StopView(view)
 	}
 

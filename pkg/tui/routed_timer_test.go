@@ -11,6 +11,7 @@ import (
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
 	"github.com/docker/docker-agent/pkg/tui/messages"
 	"github.com/docker/docker-agent/pkg/tui/page/chat"
@@ -33,6 +34,8 @@ func (p *timerRecordingPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	p.updates = append(p.updates, msg)
 	return p, p.uiCmd
 }
+
+func (p *timerRecordingPage) VisualGeneration() uint64 { return 0 }
 
 func (p *timerRecordingPage) TakeRoutedTimers() tea.Cmd {
 	cmd := p.timerCmd
@@ -107,7 +110,7 @@ func newRealChatPage(t *testing.T, sess *session.Session, routingID string) chat
 	t.Helper()
 	ss := service.NewSessionState(sess)
 	ss.SetCurrentAgentName("root")
-	page := chat.New(t.Context(), app.New(t.Context(), stubRuntime{}, sess), ss)
+	page := chat.New(animation.NewRuntime(), t.Context(), app.New(t.Context(), stubRuntime{}, sess), ss)
 	page.SetRoutingID(routingID)
 	_ = page.SetSize(140, 40)
 	t.Cleanup(func() {

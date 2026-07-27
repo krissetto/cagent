@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -14,7 +15,7 @@ func TestQueueSection_SingleMessage(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	m.SetQueuedMessages("Hello world")
 
@@ -37,7 +38,7 @@ func TestQueueSection_MultipleMessages(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	m.SetQueuedMessages("First", "Second", "Third")
 
@@ -63,7 +64,7 @@ func TestQueueSection_LongMessageTruncation(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	// Create a very long message
 	longMessage := strings.Repeat("x", 100)
@@ -82,7 +83,7 @@ func TestQueueSection_InRenderSections(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 	m.SetSize(40, 100) // Set a reasonable size
 
 	// Without queued messages, queue section should not appear in output

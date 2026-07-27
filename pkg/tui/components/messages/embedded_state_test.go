@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
@@ -18,7 +19,7 @@ func TestEmbeddedSessionState(t *testing.T) {
 	state := &service.EmbeddedSessionState{
 		StaticSessionState: service.StaticSessionState{AgentName: "Gordon"},
 	}
-	m := NewScrollableView(80, 24, state).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, state).(*model)
 
 	t.Run("previous message tracked for grouping", func(t *testing.T) {
 		cmd := m.AddUserMessage("hello")

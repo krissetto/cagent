@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
 	msgtypes "github.com/docker/docker-agent/pkg/tui/messages"
@@ -22,8 +23,8 @@ func newLayoutTestPage(t *testing.T, position msgtypes.SidebarPosition) *chatPag
 	t.Helper()
 	sessionState := &service.SessionState{}
 	p := &chatPage{
-		sidebar:      sidebar.New(t.Context(), sessionState),
-		messages:     messages.New(sessionState),
+		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
+		messages:     messages.New(animation.NewRuntime(), sessionState),
 		sessionState: sessionState,
 		width:        160,
 		height:       40,
@@ -217,8 +218,8 @@ func TestWithLayoutSettingsAppliesInfoMode(t *testing.T) {
 	sessionState := &service.SessionState{}
 	sessionState.SetCurrentAgentName("root")
 	p := &chatPage{
-		sidebar:      sidebar.New(t.Context(), sessionState),
-		messages:     messages.New(sessionState),
+		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
+		messages:     messages.New(animation.NewRuntime(), sessionState),
 		sessionState: sessionState,
 	}
 	WithLayoutSettings(msgtypes.LayoutSettings{SidebarInfoMode: msgtypes.InfoModeDetailed})(p)
@@ -236,8 +237,8 @@ func TestSetLayoutSettingsBeforeSizingReturnsNil(t *testing.T) {
 
 	sessionState := &service.SessionState{}
 	p := &chatPage{
-		sidebar:      sidebar.New(t.Context(), sessionState),
-		messages:     messages.New(sessionState),
+		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
+		messages:     messages.New(animation.NewRuntime(), sessionState),
 		sessionState: sessionState,
 	}
 

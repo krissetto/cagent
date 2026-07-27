@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
 	msgtypes "github.com/docker/docker-agent/pkg/tui/messages"
 	"github.com/docker/docker-agent/pkg/tui/service"
@@ -55,7 +56,7 @@ func (r *recordingSidebar) SetAgentActivity(agentName string) tea.Cmd {
 func newSwitchingTestPage(t *testing.T) (*chatPage, *recordingSidebar) {
 	t.Helper()
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
 	rec := &recordingSidebar{Model: p.sidebar}
 	p.sidebar = rec
 	// Tests start transfers without always stopping them; the cancel clears

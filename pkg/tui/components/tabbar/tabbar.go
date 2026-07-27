@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/core"
 	"github.com/docker/docker-agent/pkg/tui/messages"
 	"github.com/docker/docker-agent/pkg/tui/styles"
@@ -72,6 +73,7 @@ type tabBound struct {
 
 // TabBar renders a horizontal bar of session tabs with click and keyboard support.
 type TabBar struct {
+	ar        *animation.Runtime
 	tabs      []messages.TabInfo
 	activeIdx int
 	width     int
@@ -95,11 +97,9 @@ type TabBar struct {
 	// actually changes.
 	lastEnsuredIdx int
 
-	// animFrame is the current animation frame from the global coordinator,
-	// used to cycle the running indicator on active streaming tabs.
-	animFrame int
-
 	drag dragState
+
+	visualGeneration uint64
 }
 
 // KeyMap defines key bindings for the tab bar.
@@ -134,11 +134,12 @@ func DefaultKeyMap() KeyMap {
 
 // New creates a new tab bar with the given max title length.
 // If maxTitleLen is <= 0, the default (20) is used.
-func New(maxTitleLen int) *TabBar {
+func New(ar *animation.Runtime, maxTitleLen int) *TabBar {
 	if maxTitleLen <= 0 {
 		maxTitleLen = defaultMaxTitleLen
 	}
 	return &TabBar{
+		ar:             ar,
 		keyMap:         DefaultKeyMap(),
 		maxTitleLen:    maxTitleLen,
 		lastEnsuredIdx: noTab,
@@ -178,11 +179,6 @@ func (t *TabBar) SetTabs(tabs []messages.TabInfo, activeIdx int) {
 	t.clampScroll()
 }
 
-// SetAnimFrame updates the animation frame for the running indicator.
-func (t *TabBar) SetAnimFrame(frame int) {
-	t.animFrame = frame
-}
-
 // Height returns the height of the tab bar.
 // Returns 0 when there is a single tab (no bar needed).
 func (t *TabBar) Height() int {
@@ -196,6 +192,9 @@ func (t *TabBar) Height() int {
 func (t *TabBar) IsDragging() bool {
 	return t.drag.active
 }
+
+// VisualGeneration changes only when rendered tab geometry or drag styling changes.
+func (t *TabBar) VisualGeneration() uint64 { return t.visualGeneration }
 
 // Bindings returns consolidated key bindings for the help bar.
 func (t *TabBar) Bindings() []key.Binding {
@@ -275,6 +274,7 @@ func (t *TabBar) handleLeftClickDown(x int) tea.Cmd {
 				dropIdx: noTab,
 				startX:  x,
 			}
+			t.visualGeneration++
 			return nil
 		}
 		break
@@ -288,7 +288,19 @@ func (t *TabBar) handleMouseMotion(x int) tea.Cmd {
 		return nil
 	}
 
-	t.drag.dropIdx = t.dropIndexForX(x)
+	beforeVisualDrop := noTab
+	if !t.drag.isNoOp() {
+		beforeVisualDrop = t.drag.dropIdx
+	}
+	next := t.dropIndexForX(x)
+	t.drag.dropIdx = next
+	afterVisualDrop := noTab
+	if !t.drag.isNoOp() {
+		afterVisualDrop = next
+	}
+	if afterVisualDrop != beforeVisualDrop {
+		t.visualGeneration++
+	}
 	return nil
 }
 
@@ -303,6 +315,7 @@ func (t *TabBar) handleMouseRelease(x int) tea.Cmd {
 	startX := t.drag.startX
 	noop := t.drag.isNoOp()
 	t.drag = dragState{dropIdx: noTab}
+	t.visualGeneration++
 
 	// If we never moved far enough to get a valid drop, treat as a click.
 	if noop {
@@ -409,7 +422,7 @@ func (t *TabBar) View() string {
 				role = dragRoleBystander
 			}
 		}
-		allTabs[i] = renderTab(info, t.maxTitleLen, t.animFrame, role)
+		allTabs[i] = renderTab(info, t.maxTitleLen, role, t.ar.Now())
 		totalWidth += allTabs[i].Width()
 	}
 	totalWidth += plusButtonWidth

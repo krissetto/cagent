@@ -24,7 +24,7 @@ import (
 //	}
 
 type Transition struct {
-	runtime   *Runtime
+	ar        *Runtime
 	running   bool
 	startedAt time.Duration
 	elapsed   time.Duration
@@ -33,29 +33,29 @@ type Transition struct {
 }
 
 // NewTransition returns an idle transition owned by an animation runtime.
-func NewTransition(runtime *Runtime) Transition {
-	if runtime == nil {
+func NewTransition(ar *Runtime) Transition {
+	if ar == nil {
 		panic("animation: nil runtime")
 	}
-	return Transition{runtime: runtime}
+	return Transition{ar: ar}
 }
 
 // SetRuntime binds an idle transition to a program's animation runtime.
-func (tr *Transition) SetRuntime(runtime *Runtime) {
-	if runtime == nil {
+func (tr *Transition) SetRuntime(ar *Runtime) {
+	if ar == nil {
 		panic("animation: nil runtime")
 	}
 	if tr.running {
 		panic("animation: cannot rebind running transition")
 	}
-	tr.runtime = runtime
+	tr.ar = ar
 }
 
 func (tr *Transition) boundRuntime() *Runtime {
-	if tr.runtime == nil {
+	if tr.ar == nil {
 		panic("animation: unbound Transition")
 	}
-	return tr.runtime
+	return tr.ar
 }
 
 // EasingFunc maps a linear progress value in [0,1] to an eased value in [0,1].

@@ -32,6 +32,7 @@ import (
 // with New. It is not safe for concurrent use: like every Bubble Tea model,
 // it must only be touched from the program's update loop.
 type Transcript struct {
+	ar    *animation.Runtime
 	state service.SessionStateReader
 	msgs  []*types.Message
 	views []layout.Model
@@ -41,8 +42,8 @@ type Transcript struct {
 // New creates an empty transcript. The session state is consulted by the
 // tool views for rendering preferences; embedders without one should pass
 // a service.StaticSessionState.
-func New(state service.SessionStateReader) *Transcript {
-	return &Transcript{state: state, width: 80}
+func New(ar *animation.Runtime, state service.SessionStateReader) *Transcript {
+	return &Transcript{ar: ar, state: state, width: 80}
 }
 
 // Append adds a message and returns the new view's Init command (spinner
@@ -59,9 +60,9 @@ func (t *Transcript) Append(msg *types.Message) tea.Cmd {
 func (t *Transcript) newView(msg, prev *types.Message) layout.Model {
 	var v layout.Model
 	if msg.Type == types.MessageTypeToolCall {
-		v = tool.New(msg, t.state)
+		v = tool.New(t.ar, msg, t.state)
 	} else {
-		v = message.New(msg, prev)
+		v = message.New(t.ar, msg, prev)
 	}
 	_ = v.SetSize(t.width, 0)
 	return v

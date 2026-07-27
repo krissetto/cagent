@@ -5,6 +5,7 @@ import (
 
 	pathx "github.com/docker/docker-agent/pkg/path"
 	"github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/components/toolcommon"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
@@ -16,8 +17,8 @@ import (
 type ToggleDiffViewMsg struct{}
 
 // New creates the edit_file tool UI model.
-func New(msg *types.Message, sessionState service.SessionStateReader) layout.Model {
-	return toolcommon.NewBaseWithCollapsed(msg, sessionState, render, renderCollapsed)
+func New(ar *animation.Runtime, msg *types.Message, sessionState service.SessionStateReader) layout.Model {
+	return toolcommon.NewBaseWithCollapsed(ar, msg, sessionState, render, renderCollapsed)
 }
 
 func parseEditFileArgs(args string) (filesystem.EditFileArgs, error) {

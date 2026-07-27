@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/markdown"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
@@ -14,7 +15,7 @@ import (
 // newSelectionModel builds a model whose rendered lines are set directly so
 // selection extraction can be exercised without rendering real messages.
 func newSelectionModel(lines []string) *model {
-	m := NewScrollableView(80, 24, &service.SessionState{}).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, &service.SessionState{}).(*model)
 	m.renderedLines = lines
 	m.totalHeight = len(lines)
 	m.renderDirty = false

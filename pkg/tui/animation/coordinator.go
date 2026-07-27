@@ -53,9 +53,19 @@ func (m TickMsg) ElapsedBounds() (time.Duration, time.Duration) {
 	return m.elapsedBeforeTick, m.elapsedAfterTick
 }
 
-// Runtime owns one program's animation clock, subscriptions, transitions, and
-// single outstanding tick lease. It must not be shared by concurrently running
-// Bubble Tea programs.
+// Scheduler provides the wall clock and delayed message delivery used by a
+// runtime. Embedders may supply a deterministic scheduler while preserving the
+// exact production tick lease and acceptance path.
+type Scheduler interface {
+	Now() time.Time
+	Tick(delay time.Duration, createMsg func(time.Time) tea.Msg) tea.Cmd
+}
+
+type wallScheduler struct{}
+
+func (wallScheduler) Now() time.Time                                          { return time.Now() }
+func (wallScheduler) Tick(d time.Duration, f func(time.Time) tea.Msg) tea.Cmd { return tea.Tick(d, f) }
+
 type Runtime struct {
 	mu              sync.Mutex
 	runtimeIdentity *runtimeIdentity
@@ -66,12 +76,30 @@ type Runtime struct {
 	tickScheduled   bool
 	lastDeliveredAt time.Time
 	acceptedTicks   uint64
+	scheduler       Scheduler
 }
 
 type runtimeIdentity struct{ _ byte }
 
 // NewRuntime creates an isolated program-scoped animation runtime.
-func NewRuntime() *Runtime { return &Runtime{runtimeIdentity: &runtimeIdentity{}} }
+func NewRuntime() *Runtime { return NewRuntimeWithScheduler(wallScheduler{}) }
+
+// NewRuntimeWithScheduler creates a runtime using the supplied production
+// scheduling boundary. Tick creation, leases, and acceptance remain owned by
+// Runtime; only time acquisition and delayed delivery are delegated.
+func NewRuntimeWithScheduler(s Scheduler) *Runtime {
+	if s == nil {
+		panic("animation: nil Scheduler")
+	}
+	return &Runtime{runtimeIdentity: &runtimeIdentity{}, scheduler: s}
+}
+
+// NewSnapshotRuntime renders at a fixed elapsed time and is used by the lean TUI for its current frame.
+func NewSnapshotRuntime(elapsed time.Duration) *Runtime {
+	r := NewRuntime()
+	r.elapsed = max(elapsed, 0)
+	return r
+}
 
 // Register increments this animation runtime's active animation count.
 func (r *Runtime) Register() {
@@ -217,8 +245,8 @@ func (r *Runtime) tickLocked() tea.Cmd {
 		return nil
 	}
 	r.tickScheduled = true
-	runtimeIdentity, generation, timerStartedAt := r.runtimeIdentity, r.generation, time.Now()
-	return tea.Tick(TickRate, func(t time.Time) tea.Msg {
+	runtimeIdentity, generation, timerStartedAt := r.runtimeIdentity, r.generation, r.scheduler.Now()
+	return r.scheduler.Tick(TickRate, func(t time.Time) tea.Msg {
 		return TickMsg{runtimeIdentity: runtimeIdentity, generation: generation, deliveredAt: t, timerStartedAt: timerStartedAt}
 	})
 }
@@ -254,7 +282,7 @@ func (r *Runtime) legacyTickLocked() tea.Cmd {
 	}
 	r.tickScheduled = true
 	runtimeIdentity, generation := r.runtimeIdentity, r.generation
-	return tea.Tick(TickRate, func(time.Time) tea.Msg {
+	return r.scheduler.Tick(TickRate, func(time.Time) tea.Msg {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		msg := TickMsg{runtimeIdentity: runtimeIdentity, generation: generation}
@@ -281,13 +309,13 @@ var legacyRuntime = NewRuntime()
 
 // Coordinator is retained as a compatibility facade for callers that own an
 // isolated coordinator. New code should use the animation Runtime.
-type Coordinator struct{ runtime *Runtime }
+type Coordinator struct{ ar *Runtime }
 
 func (c *Coordinator) boundRuntime() *Runtime {
-	if c.runtime == nil {
-		c.runtime = NewRuntime()
+	if c.ar == nil {
+		c.ar = NewRuntime()
 	}
-	return c.runtime
+	return c.ar
 }
 func (c *Coordinator) Register()                 { c.boundRuntime().Register() }
 func (c *Coordinator) Unregister()               { c.boundRuntime().Unregister() }

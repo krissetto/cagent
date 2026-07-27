@@ -7,6 +7,7 @@ import (
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/todo"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -34,7 +35,7 @@ func makeTodos(n int) *tools.ToolCallResult {
 func BenchmarkSidebarStreamingTodos(b *testing.B) {
 	for _, n := range []int{10, 50, 150} {
 		b.Run(fmt.Sprintf("todos=%d", n), func(b *testing.B) {
-			m := New(b.Context(), service.NewSessionState(session.New())).(*model)
+			m := New(animation.NewRuntime(), b.Context(), service.NewSessionState(session.New())).(*model)
 			m.SetMode(ModeVertical)
 			m.SetSize(40, 40) // small height so the long list overflows (two-pass)
 			m.workingAgent = "root"

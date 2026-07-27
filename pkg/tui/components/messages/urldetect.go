@@ -353,7 +353,7 @@ func (m *model) updateHoveredURL(line, col int) {
 				newHover := &hoveredURL{line: line, startCol: span.startCol, endCol: span.endCol}
 				if m.hoveredURL == nil || *m.hoveredURL != *newHover {
 					m.hoveredURL = newHover
-					m.renderDirty = true
+					m.invalidateView()
 				}
 				return
 			}
@@ -362,7 +362,7 @@ func (m *model) updateHoveredURL(line, col int) {
 
 	if m.hoveredURL != nil {
 		m.hoveredURL = nil
-		m.renderDirty = true
+		m.invalidateView()
 	}
 }
 

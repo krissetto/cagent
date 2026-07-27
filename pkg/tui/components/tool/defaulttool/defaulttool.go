@@ -1,6 +1,7 @@
 package defaulttool
 
 import (
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/components/toolcommon"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
@@ -10,9 +11,9 @@ import (
 
 // New creates a new default tool component.
 // It provides a standard visualization with tool name, arguments, and results.
-func New(msg *types.Message, sessionState service.SessionStateReader) layout.Model {
+func New(ar *animation.Runtime, msg *types.Message, sessionState service.SessionStateReader) layout.Model {
 	var lastArgs string
-	return toolcommon.NewBase(msg, sessionState, func(msg *types.Message, s spinner.Spinner, sessionState service.SessionStateReader, width, height int) string {
+	return toolcommon.NewBase(ar, msg, sessionState, func(msg *types.Message, s spinner.Spinner, sessionState service.SessionStateReader, width, height int) string {
 		return render(msg, s, sessionState, width, height, &lastArgs)
 	})
 }
