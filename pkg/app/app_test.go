@@ -442,6 +442,56 @@ func TestApp_NewSession_PreservesToolsApproved(t *testing.T) {
 	assert.True(t, app.Session().ToolsApproved, "NewSession should preserve ToolsApproved")
 }
 
+// Explicit strict/balanced modes leave ToolsApproved=false, so preserving
+// only that legacy flag silently dropped the mode on /new.
+func TestApp_NewSession_PreservesSafetyPolicy(t *testing.T) {
+	t.Parallel()
+
+	for _, policy := range []session.SafetyPolicy{session.SafetyPolicyStrict, session.SafetyPolicyBalanced} {
+		t.Run(string(policy), func(t *testing.T) {
+			t.Parallel()
+
+			rt := &mockRuntime{}
+
+			initialSess := session.New(session.WithSafetyPolicy(policy))
+			require.Equal(t, policy, initialSess.GetSafetyPolicy())
+
+			app := New(t.Context(), rt, initialSess)
+
+			app.NewSession()
+
+			assert.Equal(t, policy, app.Session().GetSafetyPolicy(), "NewSession should preserve the safety policy")
+			assert.False(t, app.Session().ToolsApproved, "non-autonomous modes must not grant blanket approval")
+		})
+	}
+}
+
+// An autonomous escalation must keep its toggle-back destination across
+// /new, or toggling yolo off afterwards drops to the legacy default
+// instead of the mode the user escalated from.
+func TestApp_NewSession_PreservesPriorSafetyPolicy(t *testing.T) {
+	t.Parallel()
+
+	rt := &mockRuntime{}
+
+	initialSess := session.New(session.WithSafetyPolicy(session.SafetyPolicyBalanced))
+	initialSess.ToggleYolo() // escalate: autonomous with prior=balanced
+	require.Equal(t, session.SafetyPolicyAutonomous, initialSess.GetSafetyPolicy())
+	require.Equal(t, session.SafetyPolicyBalanced, initialSess.GetPriorSafetyPolicy())
+
+	app := New(t.Context(), rt, initialSess)
+
+	app.NewSession()
+
+	sess := app.Session()
+	assert.Equal(t, session.SafetyPolicyAutonomous, sess.GetSafetyPolicy(), "NewSession should preserve the escalated mode")
+	assert.Equal(t, session.SafetyPolicyBalanced, sess.GetPriorSafetyPolicy(), "NewSession should preserve the toggle-back memory")
+
+	// The preserved memory must actually work: toggling off restores balanced.
+	sess.ToggleYolo()
+	assert.Equal(t, session.SafetyPolicyBalanced, sess.GetSafetyPolicy())
+}
+
 func TestApp_NewSession_PreservesHideToolResults(t *testing.T) {
 	t.Parallel()
 
