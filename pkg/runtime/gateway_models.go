@@ -3,13 +3,11 @@ package runtime
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/modelsgateway"
 )
@@ -111,50 +109,40 @@ func (r *LocalRuntime) buildGatewayChoices(ctx context.Context) ([]ModelChoice, 
 		}
 	}
 
-	choices := make([]ModelChoice, 0, len(ids))
-	for _, id := range ids {
-		prov, model, ok := strings.Cut(id, "/")
-		if !ok {
-			// Bare IDs (no provider prefix) are served through the
-			// gateway's OpenAI-compatible endpoint, so route them
-			// through the openai provider.
-			prov, model = "openai", id
+	// The metadata callback memoizes full catalog entries so the display
+	// name/pricing enrichment below reuses the lookup NormalizeIDs already
+	// performed for its embedding/modality filters.
+	metas := make(map[string]*modelsdev.Model)
+	lookup := func(ctx context.Context, prov, model string) (modelsgateway.Metadata, bool) {
+		if r.modelsStore == nil {
+			return modelsgateway.Metadata{}, false
 		}
-		if _, err := latest.ParseModelRef(prov + "/" + model); err != nil {
-			continue
+		m, err := r.modelsStore.GetModel(ctx, modelsdev.NewID(prov, model))
+		if err != nil {
+			return modelsgateway.Metadata{}, false
 		}
+		metas[prov+"/"+model] = m
+		return modelsgateway.Metadata{Family: m.Family, OutputModalities: m.Modalities.Output}, true
+	}
 
-		// Resolve catalog metadata before the embedding filter so the
-		// catalog Family (e.g. "text-embedding") is consulted even when
-		// the model ID itself doesn't contain "embed".
-		var meta *modelsdev.Model
-		if r.modelsStore != nil {
-			if m, err := r.modelsStore.GetModel(ctx, modelsdev.NewID(prov, model)); err == nil {
-				meta = m
-			}
-		}
-		family := ""
-		if meta != nil {
-			family = meta.Family
-		}
-		if isEmbeddingModel(family, model) {
-			continue
-		}
+	refs := modelsgateway.NormalizeIDs(ctx, ids, lookup)
 
-		ref := prov + "/" + model
+	choices := make([]ModelChoice, 0, len(refs))
+	for _, mr := range refs {
+		ref := mr.String()
 		if existingRefs[ref] {
 			continue
 		}
 		existingRefs[ref] = true
 
 		choice := ModelChoice{
-			Name:      model,
+			Name:      mr.Model,
 			Ref:       ref,
-			Provider:  prov,
-			Model:     model,
+			Provider:  mr.Provider,
+			Model:     mr.Model,
 			IsCatalog: true,
 		}
-		if meta != nil {
+		if meta := metas[ref]; meta != nil {
 			if meta.Name != "" {
 				choice.Name = meta.Name
 			}

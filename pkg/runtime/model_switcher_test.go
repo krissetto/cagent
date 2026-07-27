@@ -800,20 +800,25 @@ func TestGetAvailableProviders(t *testing.T) {
 			wantProviders: []string{"openai", "anthropic", "dmr", "ollama"},
 		},
 		{
-			name: "with gateway - uses docker token",
+			// A gateway no longer replaces availability with a hardcoded
+			// provider list: direct credentials keep counting.
+			name: "with gateway - direct credentials still count",
 			envVars: map[string]string{
-				"DOCKER_TOKEN": "test-token",
+				"DOCKER_TOKEN":   "test-token",
+				"OPENAI_API_KEY": "sk-test",
 			},
 			modelsGateway: "https://gateway.example.com",
-			wantProviders: []string{"openai", "anthropic", "google", "mistral", "xai"},
+			wantProviders: []string{"openai", "dmr", "ollama"},
 		},
 		{
+			// A generic gateway must not require the Docker token for the
+			// credential-based fallback either.
 			name: "with gateway but no token",
 			envVars: map[string]string{
-				"OPENAI_API_KEY": "sk-test", // This is ignored when gateway is set
+				"OPENAI_API_KEY": "sk-test",
 			},
 			modelsGateway: "https://gateway.example.com",
-			wantProviders: []string{}, // No token means no providers via gateway
+			wantProviders: []string{"openai", "dmr", "ollama"},
 		},
 		{
 			name: "aws access key for bedrock",
@@ -864,6 +869,32 @@ func TestGetAvailableProviders(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGetAvailableProviders_GatewayDoesNotHardcodeProviders pins the removal
+// of the old gateway special case: a Docker token alone must not surface a
+// hardcoded provider list, since the fallback taken when gateway discovery
+// fails is purely credential-based.
+func TestGetAvailableProviders_GatewayDoesNotHardcodeProviders(t *testing.T) {
+	t.Parallel()
+
+	r := &LocalRuntime{
+		modelSwitcherCfg: &ModelSwitcherConfig{
+			ProviderRegistry: testProviderRegistry(),
+			EnvProvider: environment.NewMapEnvProvider(map[string]string{
+				"DOCKER_TOKEN": "test-token",
+			}),
+			ModelsGateway: "https://gateway.example.com",
+		},
+	}
+
+	got := r.getAvailableProviders(t.Context())
+
+	for _, name := range []string{"openai", "anthropic", "google", "mistral", "xai"} {
+		assert.False(t, got[name], "provider %s must not be available from the Docker token alone", name)
+	}
+	assert.True(t, got["dmr"], "local providers stay available")
+	assert.True(t, got["ollama"], "local providers stay available")
 }
 
 // TestGetAvailableProviders_TemplatedAlias verifies that an alias with a
