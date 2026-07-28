@@ -95,9 +95,11 @@ func TestSidebar_AgentClickZones_EveryRenderedLineMapped(t *testing.T) {
 	assert.Positive(t, counts["agent1"], "agent1 should own rendered lines")
 	assert.Positive(t, counts["agent2"], "agent2 should own rendered lines")
 	// agent2 is a non-current roster agent: its mini-card spans the name line,
-	// the model line and two metric lines at this width, and ALL of them must
-	// map to it so a click on any card line switches to the agent.
-	assert.Equal(t, 4, counts["agent2"], "a roster agent owns every line of its card")
+	// the model line and one joined metric line at this width (the compact
+	// vocabulary renders, as agent1's preferred wide metric line would
+	// overflow), and ALL of them must map to it so a click on any card line
+	// switches to the agent.
+	assert.Equal(t, 3, counts["agent2"], "a roster agent owns every line of its card")
 
 	// The number of click zones equals the number of owned (non-blank) lines:
 	// every owned line is clickable.

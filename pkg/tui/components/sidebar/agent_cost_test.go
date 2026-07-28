@@ -266,8 +266,12 @@ func previewLines(m *model) []string {
 }
 
 // TestAgentCardPreview_DefaultWidth pins the exact ANSI-stripped Agents panel
-// at the default sidebar width (40 → 39 content columns). It doubles as the
-// visual reference for the mini-card design.
+// at the default sidebar width (40 → 39 content columns, 37 metric columns).
+// It doubles as the visual reference for the mini-card design at its most
+// common width: root's preferred wide joined metric line (45 columns) cannot
+// fit, so the roster adapts to the compact vocabulary and every card joins
+// its metrics on a single line — three lines per card, the issue #3856
+// vertical-space fix.
 func TestAgentCardPreview_DefaultWidth(t *testing.T) {
 	t.Parallel()
 
@@ -279,25 +283,25 @@ func TestAgentCardPreview_DefaultWidth(t *testing.T) {
 		"",
 		"▶ root                               ^1",
 		"  anthropic/claude-opus-4-8",
-		"  Effort ▰▰▰▰▱▱ high",
-		"  Context 30% · Cost $0.13",
+		"  Eff high · Ctx 30% · Cost $0.13",
 		"",
 		"  scout                              ^2",
 		"  openai/gpt-5.4-mini",
-		"  Effort ▱▱▱▱▱▱ off",
-		"  Context 6% · Cost $0.0042",
+		"  Eff off · Ctx 6% · Cost $0.0042",
 		"",
 		"  writer                             ^3",
 		"  google/gemini-flash",
-		"  Context — · Cost —",
+		"  Ctx — · Cost —",
 	}
 	require.Equal(t, want, got, "default-width preview changed:\n%s", strings.Join(got, "\n"))
 }
 
 // TestAgentCardPreview_MinWidth pins the exact ANSI-stripped Agents panel at
-// the minimum sidebar width (20 → 19 content columns): the full six-cell
-// effort gauge survives on its dedicated line (dropping only the value word
-// when it does not fit) and the context label compacts to "Ctx".
+// the minimum sidebar width (20 → 19 content columns, 17 metric columns):
+// the metric labels compact to Eff/Ctx, the effort value replaces the
+// decorative six-cell gauge while staying visible, and the compact segments
+// pack greedily — scout's "Eff off · Ctx 6%" (16 columns) shares a line
+// while root's "Eff high · Ctx 30%" (18 columns) would overflow and wraps.
 func TestAgentCardPreview_MinWidth(t *testing.T) {
 	t.Parallel()
 
@@ -309,14 +313,13 @@ func TestAgentCardPreview_MinWidth(t *testing.T) {
 		"",
 		"▶ root           ^1",
 		"  …/claude-opus-4-8",
-		"  Effort ▰▰▰▰▱▱",
+		"  Eff high",
 		"  Ctx 30%",
 		"  Cost $0.13",
 		"",
 		"  scout          ^2",
 		"  …nai/gpt-5.4-mini",
-		"  Effort ▱▱▱▱▱▱ off",
-		"  Ctx 6%",
+		"  Eff off · Ctx 6%",
 		"  Cost $0.0042",
 		"",
 		"  writer         ^3",

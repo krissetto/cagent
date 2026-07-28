@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,11 +117,11 @@ func TestClassifyThinking(t *testing.T) {
 // TestAgentEntryLayout verifies an agent renders as a labeled mini-card:
 // line 1 carries the name and "^N" shortcut (no description), line 2 the
 // provider/model, and the metric lines the labeled effort gauge, context and
-// cost.
+// cost. Rendered wide enough (56) for the full metric vocabulary.
 func TestAgentEntryLayout(t *testing.T) {
 	t.Parallel()
 
-	m := newAgentPanelSidebar(t, 40,
+	m := newAgentPanelSidebar(t, 56,
 		runtime.AgentDetails{Name: "root", Provider: "anthropic", Model: "claude-opus-4-8", Description: "Executive assistant", Thinking: "high"},
 	)
 
@@ -223,10 +224,11 @@ func TestShortcutColumnAlignment(t *testing.T) {
 // card's labeled metric line: effort levels keep the full six-cell gauge with
 // the level word, token budgets keep the token glyph with the budget,
 // adaptive reads "auto", and off shows an empty gauge with the word "off".
+// Rendered wide enough (56) for the full metric vocabulary.
 func TestEffortVocabularyOnCard(t *testing.T) {
 	t.Parallel()
 
-	m := newAgentPanelSidebar(t, 40,
+	m := newAgentPanelSidebar(t, 56,
 		runtime.AgentDetails{Name: "root", Provider: "anthropic", Model: "opus", Thinking: "high"},
 		runtime.AgentDetails{Name: "alpha", Provider: "openai", Model: "gpt-5.4-mini", Thinking: "off"},
 		runtime.AgentDetails{Name: "beta", Provider: "openai", Model: "gpt-5.4", Thinking: "high"},
@@ -290,29 +292,179 @@ func TestMoreThanNineAgentsNoShortcutBeyond9(t *testing.T) {
 	assert.NotContains(t, body, "^10", "agents beyond the 9th have no shortcut")
 }
 
-// TestNarrowWidthKeepsFullGauge verifies that at a narrow width the effort
-// gauge keeps its full six cells on a dedicated metric line (dropping only
-// the value word when it does not fit), the context label compacts to "Ctx",
-// and the model still occupies line 2.
-func TestNarrowWidthKeepsFullGauge(t *testing.T) {
+// TestDetailedCardWidthThreshold pins the adaptive compact/wide boundary of
+// the detailed card: the wide vocabulary renders exactly when every agent's
+// preferred joined metric line fits the metric width (the content width
+// minus the two-column card indent). This roster's widest such line is
+// root's "Effort <gauge> high · Context 30% · Cost $0.13" at 45 display
+// columns, so with the one-column outer padding and the card indent, outer
+// width 48 (metric width 45) is the first wide width and outer width 47
+// (metric width 44) renders compact — the boundary is the roster's own
+// widest line, not a fixed layout constant. On both sides every card keeps
+// exactly one metric line: the transition trades vocabulary, never vertical
+// height.
+func TestDetailedCardWidthThreshold(t *testing.T) {
 	t.Parallel()
 
-	m := newAgentPanelSidebar(t, 21,
-		runtime.AgentDetails{Name: "root", Provider: "anthropic", Model: "opus", Thinking: "high"},
-		runtime.AgentDetails{Name: "agent2", Provider: "anthropic", Model: "claude-sonnet-4-6", Thinking: "high"},
-	)
-
-	_, line2 := agentLines(m, "agent2")
-	metrics := agentMetrics(m, "agent2")
-	assert.Contains(t, metrics, gaugePattern(4), "narrow layout keeps the full six-cell gauge")
-	assert.Contains(t, metrics, "Ctx ", "narrow layout compacts the context label")
-	assert.NotContains(t, metrics, "Context", "narrow layout does not use the full context label")
-	assert.Contains(t, line2, "…", "narrow layout left-truncates the model on line 2")
-
-	contentWidth := m.contentWidth(false)
-	for _, line := range agentCard(m, "agent2") {
-		assert.LessOrEqual(t, len([]rune(line)), contentWidth, "no card line exceeds the content width: %q", line)
+	tests := []struct {
+		name  string
+		width int // outer width; one column of left padding
+		// metricCols is the width the metric lines get: the outer width minus
+		// the outer padding and the two-column card indent.
+		metricCols int
+		wide       bool
+		// wantMetrics are the exact indented metric lines of each card:
+		// grouping and line counts guard the vertical density.
+		wantMetrics map[string][]string
+		notWant     []string
+	}{
+		{
+			name:       "compact below the roster threshold",
+			width:      47,
+			metricCols: 44, // root's 45-column joined line no longer fits
+			wantMetrics: map[string][]string{
+				"root":  {"  Eff high · Ctx 30% · Cost $0.13"},
+				"scout": {"  Eff off · Ctx — · Cost —"},
+				"probe": {"  Eff minimal · Ctx — · Cost —"},
+			},
+			notWant: []string{"Effort", "Context", styles.GaugeFilled, styles.GaugeEmpty},
+		},
+		{
+			name:       "wide at the roster threshold",
+			width:      48,
+			metricCols: 45, // every agent's joined line fits
+			wide:       true,
+			wantMetrics: map[string][]string{
+				"root":  {"  Effort " + gaugePattern(4) + " high · Context 30% · Cost $0.13"},
+				"scout": {"  Effort " + gaugePattern(0) + " off · Context — · Cost —"},
+				"probe": {"  Effort " + gaugePattern(1) + " minimal · Context — · Cost —"},
+			},
+			notWant: []string{"Eff ", "Ctx"},
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := newAgentPanelSidebar(t, tt.width,
+				runtime.AgentDetails{Name: "root", Provider: "anthropic", Model: "claude-opus-4-8", Thinking: "high"},
+				runtime.AgentDetails{Name: "scout", Provider: "openai", Model: "gpt-5.4-mini", Thinking: "off"},
+				runtime.AgentDetails{Name: "probe", Provider: "openai", Model: "gpt-5.4", Thinking: "minimal"},
+			)
+			recordAgentUsageWithCost(m, "session-root", "root", 30_000, 100_000, 0.13)
+
+			// The roster's own threshold: its widest preferred joined line.
+			widest := 0
+			for _, agent := range m.availableAgents {
+				widest = max(widest, lipgloss.Width(joinSegments(m.metricSegments(agent, false))))
+			}
+			require.Equal(t, 45, widest, "root's full joined metric line sets this roster's threshold")
+
+			contentCols := m.contentWidth(false)
+			metricCols := contentCols - agentMarkerWidth
+			require.Equal(t, tt.metricCols, metricCols, "outer width must map to the intended metric columns")
+			if tt.wide {
+				require.GreaterOrEqual(t, metricCols, widest, "the wide side must fit the widest joined line")
+			} else {
+				require.Less(t, metricCols, widest, "the compact side must not fit the widest joined line")
+			}
+
+			for name, want := range tt.wantMetrics {
+				card := agentCard(m, name)
+				require.GreaterOrEqualf(t, len(card), 2, "card for %q renders its name and model lines", name)
+				got := make([]string, 0, len(card)-2)
+				for _, line := range card[2:] {
+					got = append(got, strings.TrimRight(line, " "))
+				}
+				assert.Equalf(t, want, got, "metric lines for %q at %d metric columns", name, metricCols)
+
+				metrics := strings.Join(got, "\n")
+				for _, notWant := range tt.notWant {
+					assert.NotContainsf(t, metrics, notWant, "metrics for %q at %d metric columns", name, metricCols)
+				}
+				for _, line := range card {
+					assert.LessOrEqualf(t, lipgloss.Width(line), contentCols,
+						"no card line for %q exceeds the content width: %q", name, line)
+				}
+			}
+
+			line1, line2 := agentLines(m, "root")
+			assert.Contains(t, line1, "root", "the name line stays readable")
+			assert.Contains(t, line2, "claude-opus-4-8", "the provider/model tail stays readable")
+		})
+	}
+}
+
+// TestDetailedCardResizeAcrossThreshold drives SetSize/View across the
+// roster's adaptive threshold through the realistic default width —
+// DefaultWidth (40, metric width 37: root's 45-column joined line overflows,
+// compact) → outer width 48 (metric width 45: every joined line fits, wide)
+// → DefaultWidth again — and verifies each rendering carries only its own
+// vocabulary at one joined metric line per three-line card, no line
+// overflows the sidebar width, and returning to the default width
+// reproduces the exact default rendering: nothing stale survives.
+func TestDetailedCardResizeAcrossThreshold(t *testing.T) {
+	t.Parallel()
+
+	m := newAgentPanelSidebar(t, DefaultWidth,
+		runtime.AgentDetails{Name: "root", Provider: "anthropic", Model: "claude-opus-4-8", Thinking: "high"},
+		runtime.AgentDetails{Name: "scout", Provider: "openai", Model: "gpt-5.4-mini", Thinking: "off"},
+	)
+	recordAgentUsageWithCost(m, "session-root", "root", 30_000, 100_000, 0.13)
+	m.workingDirectory = "" // keep the full-view render environment-independent
+
+	render := func(width int) []string {
+		m.SetSize(width, 200)
+		lines := strings.Split(ansi.Strip(m.View()), "\n")
+		for i, line := range lines {
+			lines[i] = strings.TrimRight(line, " ")
+		}
+		return lines
+	}
+	assertFits := func(lines []string, width int) {
+		t.Helper()
+		for _, line := range lines {
+			assert.LessOrEqualf(t, lipgloss.Width(line), width, "line must fit the sidebar width: %q", line)
+		}
+	}
+	cardLines := func() map[string]int {
+		counts := map[string]int{}
+		for _, owner := range m.agentLineOwners {
+			if owner != "" {
+				counts[owner]++
+			}
+		}
+		return counts
+	}
+
+	defaultBefore := render(DefaultWidth)
+	compact := strings.Join(defaultBefore, "\n")
+	require.Contains(t, compact, "Eff high · Ctx 30% · Cost $0.13",
+		"the default width joins root's compact metrics on one line")
+	require.Contains(t, compact, "Eff off · Ctx — · Cost —",
+		"the default width joins scout's compact metrics on one line")
+	require.NotContains(t, compact, "Effort", "the default width drops the full effort label")
+	require.NotContains(t, compact, "Context", "the default width drops the full context label")
+	require.NotContains(t, compact, styles.GaugeFilled, "the default width omits the decorative gauge")
+	require.NotContains(t, compact, styles.GaugeEmpty, "the default width omits the decorative gauge")
+	require.Equal(t, map[string]int{"root": 3, "scout": 3}, cardLines(),
+		"compact cards are three lines: name, model, one joined metric line")
+	assertFits(defaultBefore, DefaultWidth)
+
+	wideLines := render(48) // metric width 45: this roster's widest joined line fits exactly
+	wide := strings.Join(wideLines, "\n")
+	assert.Contains(t, wide, "Effort "+gaugePattern(4)+" high · Context 30% · Cost $0.13",
+		"widening restores the full labels and gauge on one joined line")
+	assert.Contains(t, wide, "Effort "+gaugePattern(0)+" off · Context — · Cost —")
+	assert.NotContains(t, wide, "Eff ", "no compact effort label survives the widening")
+	assert.NotContains(t, wide, "Ctx", "no compact context label survives the widening")
+	assert.Equal(t, map[string]int{"root": 3, "scout": 3}, cardLines(),
+		"wide cards keep the same three-line height: the transition adds no lines")
+	assertFits(wideLines, 48)
+
+	defaultAfter := render(DefaultWidth)
+	assert.Equal(t, defaultBefore, defaultAfter,
+		"returning to the default width reproduces the exact default render — nothing stale survives")
 }
 
 // TestClickZonesEveryLine verifies that clicking any rendered agent line (either

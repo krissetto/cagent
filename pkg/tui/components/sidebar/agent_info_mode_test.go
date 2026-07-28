@@ -67,7 +67,12 @@ func trimmedAgentBody(m *model) []string {
 // modes at the default (40) and minimum (20) sidebar widths. The compact
 // lines reproduce the pre-card roster: two lines per agent, the thinking
 // badge right-aligned on line 1 (single-cell glyph near MinWidth), the bare
-// context percent right-aligned on line 2, and no cost display.
+// context percent right-aligned on line 2, and no cost display. The detailed
+// cards adapt their metric vocabulary to the roster: root's preferred wide
+// joined line ("Effort <gauge> high · Context 30% · Cost $0.13", 45 columns)
+// overflows both widths, so every card compacts — at 40 each card joins its
+// metrics on a single line (a three-line card), at 20 the compact segments
+// pack greedily across lines.
 func TestAgentInfoModeExactOutputs(t *testing.T) {
 	t.Parallel()
 
@@ -114,21 +119,19 @@ func TestAgentInfoModeExactOutputs(t *testing.T) {
 			want: []string{
 				"▶ root                               ^1",
 				"  anthropic/claude-opus-4-8",
-				"  Effort ▰▰▰▰▱▱ high",
-				"  Context 30% · Cost $0.13",
+				"  Eff high · Ctx 30% · Cost $0.13",
 				"",
 				"  helper                             ^2",
 				"  openai/gpt-5.4-mini",
-				"  Effort ▱▱▱▱▱▱ off",
-				"  Context 91% · Cost $0.02",
+				"  Eff off · Ctx 91% · Cost $0.02",
 				"",
 				"  budget                             ^3",
 				"  openai/gpt-4o",
-				"  Effort ◉ 8.2K · Context — · Cost —",
+				"  Eff ◉ 8.2K · Ctx — · Cost —",
 				"",
 				"  plain                              ^4",
 				"  google/gemini-flash",
-				"  Context — · Cost —",
+				"  Ctx — · Cost —",
 			},
 		},
 		{
@@ -136,19 +139,18 @@ func TestAgentInfoModeExactOutputs(t *testing.T) {
 			want: []string{
 				"▶ root           ^1",
 				"  …/claude-opus-4-8",
-				"  Effort ▰▰▰▰▱▱",
+				"  Eff high",
 				"  Ctx 30%",
 				"  Cost $0.13",
 				"",
 				"  helper         ^2",
 				"  …nai/gpt-5.4-mini",
-				"  Effort ▱▱▱▱▱▱ off",
-				"  Ctx 91%",
+				"  Eff off · Ctx 91%",
 				"  Cost $0.02",
 				"",
 				"  budget         ^3",
 				"  openai/gpt-4o",
-				"  Effort ◉ 8.2K",
+				"  Eff ◉ 8.2K",
 				"  Ctx — · Cost —",
 				"",
 				"  plain          ^4",
@@ -308,7 +310,8 @@ func TestSetAgentInfoMode_LiveSwitch(t *testing.T) {
 			detailedOwned++
 		}
 	}
-	assert.Equal(t, 4, detailedOwned, "click-zone ownership follows the detailed card lines")
+	assert.Equal(t, 3, detailedOwned,
+		"click-zone ownership follows the detailed card lines: name, model, one joined metric line")
 
 	m.SetAgentInfoMode(AgentInfoCompact)
 	assert.NotContains(t, strings.Join(agentBody(m), "\n"), "Cost",

@@ -22,12 +22,6 @@ const (
 	// the name column keeps usable room.
 	rowGlyphOnlyMinWidth = 22
 
-	// cardNarrowMinWidth is the content-column breakpoint (near MinWidth) below
-	// which a detailed agent card compacts its metric labels (Context → Ctx).
-	// The effort gauge keeps its full six cells at every width; only its value
-	// word may be dropped when the line cannot hold it.
-	cardNarrowMinWidth = 22
-
 	// starClickWidth is the clickable area width for the star indicator.
 	starClickWidth = 2
 

@@ -187,7 +187,9 @@ func TestAgentInfoModeMapsValues(t *testing.T) {
 
 // TestSetLayoutSettingsForwardsInfoModeToSidebar verifies the info mode
 // reaches the sidebar's roster renderer and can be switched live: the
-// detailed cards carry the "Effort" metric label, the compact roster does not.
+// detailed cards carry the labeled effort metric — "Eff high" in the compact
+// vocabulary the cards adapt to at the default sidebar width — while the
+// compact roster shows only the gauge badge, never the label.
 func TestSetLayoutSettingsForwardsInfoModeToSidebar(t *testing.T) {
 	t.Parallel()
 
@@ -198,15 +200,15 @@ func TestSetLayoutSettingsForwardsInfoModeToSidebar(t *testing.T) {
 	})
 	p.SetSize(160, 40)
 
-	require.NotContains(t, ansi.Strip(p.View()), "Effort",
+	require.NotContains(t, ansi.Strip(p.View()), "Eff high",
 		"the default layout renders the compact roster")
 
 	p.SetLayoutSettings(msgtypes.LayoutSettings{SidebarInfoMode: msgtypes.InfoModeDetailed})
-	assert.Contains(t, ansi.Strip(p.View()), "Effort",
+	assert.Contains(t, ansi.Strip(p.View()), "Eff high",
 		"detailed mode renders the labeled agent cards")
 
 	p.SetLayoutSettings(msgtypes.LayoutSettings{})
-	assert.NotContains(t, ansi.Strip(p.View()), "Effort",
+	assert.NotContains(t, ansi.Strip(p.View()), "Eff high",
 		"switching back live restores the compact roster")
 }
 
@@ -228,7 +230,7 @@ func TestWithLayoutSettingsAppliesInfoMode(t *testing.T) {
 	})
 	p.SetSize(160, 40)
 
-	assert.Contains(t, ansi.Strip(p.View()), "Effort",
+	assert.Contains(t, ansi.Strip(p.View()), "Eff high",
 		"the initial layout option applies the detailed mode")
 }
 
