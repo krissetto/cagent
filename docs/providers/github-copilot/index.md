@@ -24,6 +24,20 @@ subscription can reuse their entitlement from Docker Agent.
 export GITHUB_TOKEN="ghp_..."
 ```
 
+## Running Evals
+
+Eval cases (`docker agent eval`) run in isolated containers. Unlike dedicated
+provider API keys, `GITHUB_TOKEN` and `GH_TOKEN` are **not** forwarded into
+eval containers automatically, because a GitHub token grants far broader
+access than a model API key. Pass the token explicitly:
+
+```bash
+docker agent eval agent.yaml ./evals -e GITHUB_TOKEN
+```
+
+See [Evaluation](../../features/evaluation/index.md#provider-credentials)
+for details, including behavior with `--env-from-file`.
+
 ## Configuration
 
 ### Inline
