@@ -1058,7 +1058,7 @@ func TestPlanTool_UpdateFromFileTooLarge(t *testing.T) {
 	tool := newTestPlanTool(t)
 
 	src := filepath.Join(t.TempDir(), "big.md")
-	require.NoError(t, os.WriteFile(src, make([]byte, maxPlanFileSize+1), 0o600))
+	require.NoError(t, os.WriteFile(src, make([]byte, MaxPlanFileSize+1), 0o600))
 
 	result, err := tool.updatePlanFromFile(t.Context(), UpdatePlanFromFileArgs{Name: "p", Path: src})
 	require.NoError(t, err)

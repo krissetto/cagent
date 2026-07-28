@@ -277,6 +277,11 @@ func TestPlansGet_SharedJSON(t *testing.T) {
 	require.NotNil(t, doc.Plan.Version)
 	assert.Equal(t, 1, *doc.Plan.Version)
 	assert.False(t, doc.Plan.UpdatedAt.IsZero())
+
+	// The host contract is snake_case; the agent tools' camelCase keys must
+	// never leak into it.
+	assert.Contains(t, stdout, `"updated_at"`)
+	assert.NotContains(t, stdout, `"updatedAt"`)
 }
 
 func TestPlansGet_Session(t *testing.T) {
@@ -305,6 +310,8 @@ func TestPlansGet_Session(t *testing.T) {
 	assert.Equal(t, "# session plan\n", doc.Plan.Content)
 	assert.Equal(t, path, doc.Plan.Path)
 	assert.Nil(t, doc.Plan.Version)
+	assert.Contains(t, stdout, `"session_id"`)
+	assert.NotContains(t, stdout, `"sessionId"`)
 }
 
 func TestPlansGet_RefValidation(t *testing.T) {
@@ -414,6 +421,78 @@ func TestPlansCreate_FromStdin(t *testing.T) {
 	assert.Equal(t, "piped body", doc.Plan.Content)
 	require.NotNil(t, doc.Plan.Version)
 	assert.Equal(t, 1, *doc.Plan.Version)
+}
+
+func TestPlansCreate_StdinAtSizeLimit(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+
+	// Exactly the cap is not "over" it: the bounded reader must pass the
+	// content through (no off-by-one). The create still fails — the stored
+	// JSON envelope around a 10 MiB body encodes past the storage's own cap —
+	// but as the storage's typed refusal, not the reader's input error.
+	content := strings.Repeat("a", plan.MaxPlanFileSize)
+	_, stderr, err := executePlansIn(t, svc, strings.NewReader(content), "create", "p", "--file", "-", "--json")
+	requirePlansStatusCode(t, err, 1)
+	body := decodePlansError(t, stderr)
+	assert.Equal(t, "storage", body.Code)
+	assert.Contains(t, body.Message, "too large to store")
+	assert.NotContains(t, body.Message, "exceeds the maximum plan size", "at-limit input must not trip the reader bound")
+}
+
+func TestPlansCreate_StdinOverSizeLimit(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+
+	// One byte over the cap must be detected and refused.
+	content := strings.Repeat("a", plan.MaxPlanFileSize+1)
+	stdout, stderr, err := executePlansIn(t, svc, strings.NewReader(content), "create", "p", "--file", "-", "--json")
+	requirePlansStatusCode(t, err, 1)
+	assert.Empty(t, stdout)
+	body := decodePlansError(t, stderr)
+	assert.Equal(t, "invalid_argument", body.Code)
+	assert.Contains(t, body.Message, "stdin")
+	assert.Contains(t, body.Message, "exceeds the maximum plan size")
+
+	_, err = svc.Get(t.Context(), plans.SharedRef("p"))
+	require.Error(t, err, "the refused create must not store a plan")
+}
+
+func TestPlansCreate_EmptyStdin(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+
+	// Empty piped content reaches the service and is rejected there, like an
+	// empty --file.
+	_, stderr, err := executePlansIn(t, svc, strings.NewReader(""), "create", "p", "--file", "-", "--json")
+	requirePlansStatusCode(t, err, 1)
+	body := decodePlansError(t, stderr)
+	assert.Equal(t, "invalid_argument", body.Code)
+	assert.Contains(t, body.Message, "content must not be empty")
+}
+
+func TestPlansCreate_OversizedFile(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+	big := filepath.Join(t.TempDir(), "big.md")
+	require.NoError(t, os.WriteFile(big, make([]byte, plan.MaxPlanFileSize+1), 0o600))
+
+	_, stderr, err := executePlans(t, svc, "create", "p", "--file", big, "--json")
+	requirePlansStatusCode(t, err, 1)
+	body := decodePlansError(t, stderr)
+	assert.Equal(t, "invalid_argument", body.Code)
+	assert.Contains(t, body.Message, "exceeds the maximum plan size")
+}
+
+func TestPlansCreate_DirectoryAsFile(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+
+	_, stderr, err := executePlans(t, svc, "create", "p", "--file", t.TempDir(), "--json")
+	requirePlansStatusCode(t, err, 1)
+	body := decodePlansError(t, stderr)
+	assert.Equal(t, "invalid_argument", body.Code)
+	assert.Contains(t, body.Message, "is a directory, not a file")
 }
 
 // stdinMustNotBeRead fails the test when a command reads stdin without being
@@ -724,6 +803,8 @@ func TestPlansExport_SessionJSON(t *testing.T) {
 	assert.Equal(t, dest, doc.Export.Path)
 	assert.Nil(t, doc.Export.Version, "session plans have no version to export")
 	assert.Equal(t, len("# session plan"), doc.Export.BytesWritten)
+	assert.Contains(t, stdout, `"bytes_written"`)
+	assert.NotContains(t, stdout, `"bytesWritten"`)
 
 	data, err := os.ReadFile(dest)
 	require.NoError(t, err)
@@ -835,6 +916,127 @@ func TestPlansDelete_NotFound(t *testing.T) {
 	body := decodePlansError(t, stderr)
 	assert.Equal(t, "not_found", body.Code)
 	assert.Equal(t, "ghost", body.Name)
+}
+
+// --- Cobra validation errors in JSON mode ------------------------------------------
+
+// TestPlansValidation_JSONContract proves the validation cobra performs
+// before RunE (missing required flags, violated flag groups, bad positional
+// args, unknown flags) also honours the --json error contract: a single
+// schema-versioned JSON object on stderr, nothing on stdout, exit code 1.
+func TestPlansValidation_JSONContract(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+	file := writePlanContentFile(t, "body")
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantMsg string
+	}{
+		{"missing required --file", []string{"create", "p", "--json"}, `"file" not set`},
+		{"missing required --output", []string{"export", "p", "--json"}, `"output" not set`},
+		{"missing guard flag", []string{"delete", "p", "--json"}, "at least one of the flags in the group [expected-version force] is required"},
+		{"mutually exclusive guard flags", []string{"update", "p", "--file", file, "--expected-version", "1", "--force", "--json"}, "none of the others can be"},
+		{"too many args", []string{"get", "a", "b", "--json"}, "accepts at most 1 arg(s), received 2"},
+		{"unexpected arg", []string{"list", "nope", "--json"}, `unknown command "nope"`},
+		{"unknown flag", []string{"list", "--json", "--frobnicate"}, "unknown flag: --frobnicate"},
+		{"invalid flag value", []string{"delete", "p", "--json", "--expected-version", "abc"}, `invalid argument "abc"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stdout, stderr, err := executePlans(t, svc, tt.args...)
+			requirePlansStatusCode(t, err, 1)
+			assert.Empty(t, stdout, "JSON mode must keep stdout free of prose")
+			body := decodePlansError(t, stderr)
+			assert.Equal(t, "invalid_argument", body.Code)
+			assert.Contains(t, body.Message, tt.wantMsg)
+			// decodePlansError already pins stderr to a single JSON line, so
+			// cobra's own "Error: ..." rendering cannot have run as well.
+			assert.NotContains(t, stderr, "Error:")
+			assert.NotContains(t, stderr, "Usage:")
+		})
+	}
+}
+
+// TestPlansValidation_UnknownFlagBeforeJSONIsPlainText documents the one
+// residual of the contract: flag parsing stops at the first unknown flag, so
+// --json is only honoured when it was parsed before the failure.
+func TestPlansValidation_UnknownFlagBeforeJSONIsPlainText(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+
+	stdout, stderr, err := executePlans(t, svc, "list", "--frobnicate", "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown flag: --frobnicate")
+	assert.Empty(t, stdout)
+	assert.NotContains(t, stderr, "schema_version", "an unparsed --json cannot enable the JSON contract")
+}
+
+// TestPlansValidation_HumanModeKeepsCobraRendering proves validation errors
+// without --json keep cobra's plain-text behaviour: the error is returned to
+// the caller and rendered once, never as JSON.
+func TestPlansValidation_HumanModeKeepsCobraRendering(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+
+	_, stderr, err := executePlans(t, svc, "get", "a", "b")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "accepts at most 1 arg(s), received 2")
+	assert.NotContains(t, stderr, "schema_version")
+	assert.LessOrEqual(t, strings.Count(stderr, "accepts at most"), 1, "the error must not be rendered twice")
+}
+
+// TestPlansValidation_JSONThroughRootCommand exercises the full production
+// command tree (NewRootCmd, not a plans tree built directly by the test) to
+// prove the interception is wired where real invocations run. Only failures
+// raised before the root persistent pre-run are used, so the test touches no
+// global state (no telemetry setup, no data-dir resolution).
+func TestPlansValidation_JSONThroughRootCommand(t *testing.T) {
+	t.Parallel()
+
+	for _, args := range [][]string{
+		{"plans", "get", "a", "b", "--json"},
+		{"plans", "list", "--json", "--frobnicate"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+			cmd := NewRootCmd()
+			var outBuf, errBuf bytes.Buffer
+			cmd.SetOut(&outBuf)
+			cmd.SetErr(&errBuf)
+			cmd.SetIn(strings.NewReader(""))
+			cmd.SetArgs(args)
+			cmd.SetContext(t.Context())
+
+			err := cmd.Execute()
+			requirePlansStatusCode(t, err, 1)
+			assert.Empty(t, outBuf.String())
+			body := decodePlansError(t, errBuf.String())
+			assert.Equal(t, "invalid_argument", body.Code)
+		})
+	}
+}
+
+// TestRootCommand_FlagErrorFuncStaysDefault guards the scoping of the plans
+// flag-error interception: other commands keep cobra's default plain-text
+// flag errors.
+func TestRootCommand_FlagErrorFuncStaysDefault(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCmd()
+	var outBuf, errBuf bytes.Buffer
+	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetArgs([]string{"version", "--frobnicate"})
+	cmd.SetContext(t.Context())
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown flag: --frobnicate")
+	assert.NotContains(t, errBuf.String(), "schema_version")
 }
 
 // --- Storage failures -------------------------------------------------------------

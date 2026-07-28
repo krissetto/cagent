@@ -37,6 +37,11 @@ const (
 func (s Scope) Mutable() bool { return s == ScopeShared }
 
 // Plan is the host-facing view of a plan from either scope.
+//
+// The JSON tags are a stable, snake_case wire contract for host consumers
+// (e.g. the plans CLI --json output). It is deliberately independent of the
+// agent tool JSON of pkg/tools/builtin/plan, which keeps its historical
+// camelCase fields (updatedAt, bytesWritten) for backward compatibility.
 type Plan struct {
 	// Scope tells which plan system the plan lives in.
 	Scope Scope `json:"scope"`
@@ -57,11 +62,12 @@ type Plan struct {
 	Version *int `json:"version,omitempty"`
 	// UpdatedAt is the time of the last write: the stored timestamp for
 	// shared plans, the plan file's modification time for session plans.
-	// Zero when unknown.
-	UpdatedAt time.Time `json:"updatedAt,omitzero"`
+	// Zero when unknown (and then omitted from JSON via omitzero, which
+	// consults time.Time.IsZero; omitempty would keep the zero struct).
+	UpdatedAt time.Time `json:"updated_at,omitzero"`
 	// SessionID is the owning session of a session plan, empty for shared
 	// plans.
-	SessionID string `json:"sessionId,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
 	// Path is the backing file of a session plan. It is empty for shared
 	// plans, whose storage backend is pluggable and opaque.
 	Path string `json:"path,omitempty"`
@@ -155,7 +161,7 @@ type ExportResult struct {
 	Name         string `json:"name"`
 	Path         string `json:"path"`
 	Version      *int   `json:"version,omitempty"`
-	BytesWritten int    `json:"bytesWritten"`
+	BytesWritten int    `json:"bytes_written"`
 }
 
 // Service is the host-facing contract for managing plans across both scopes.

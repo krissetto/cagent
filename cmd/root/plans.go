@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -110,6 +110,14 @@ failures are then reported as a single JSON object on stderr.`,
 		newPlansDeleteCmd(options),
 	)
 
+	// Flag-parse failures (unknown flag, bad flag value) short-circuit before
+	// RunE; route them through the --json error contract. Scoped to the plans
+	// tree: subcommands inherit this func, the root command is untouched.
+	cmd.SetFlagErrorFunc(plansValidationError)
+	for _, sub := range cmd.Commands() {
+		hardenPlansValidation(sub)
+	}
+
 	return cmd
 }
 
@@ -151,6 +159,50 @@ func (e *plansUsageError) Error() string { return e.msg }
 
 func plansUsagef(format string, a ...any) error {
 	return &plansUsageError{msg: fmt.Sprintf(format, a...)}
+}
+
+// plansJSONRequested reports whether the subcommand's --json flag has been
+// parsed to true. Flags are parsed left-to-right and parsing stops at the
+// first bad token, so during a flag-parse failure --json is only detected
+// when it precedes the failing flag (a documented residual of the contract).
+func plansJSONRequested(cmd *cobra.Command) bool {
+	jsonOut, err := cmd.Flags().GetBool("json")
+	return err == nil && jsonOut
+}
+
+// plansValidationError adapts a cobra-level validation failure (unknown
+// flag, bad positional args, missing required flag, violated flag group) to
+// the --json error contract. Without --json the error passes through for
+// cobra's usual plain-text rendering; with it, the failure is printed as the
+// single JSON error object and cobra's own printing is silenced so stderr
+// carries no duplicate prose.
+func plansValidationError(cmd *cobra.Command, err error) error {
+	if err == nil || !plansJSONRequested(cmd) {
+		return err
+	}
+	cmd.SilenceErrors = true
+	usageErr := &plansUsageError{msg: err.Error()}
+	printPlansError(cmd.ErrOrStderr(), usageErr, true)
+	return cli.StatusError{StatusCode: plansExitCode(usageErr), Cause: usageErr}
+}
+
+// hardenPlansValidation re-renders the validations cobra runs before RunE
+// through plansValidationError. Positional args are covered by wrapping the
+// command's Args; required flags and flag groups are checked from PreRunE,
+// immediately before cobra's own — then passing — checks, so nothing is
+// validated twice with two different renderings.
+func hardenPlansValidation(cmd *cobra.Command) {
+	if inner := cmd.Args; inner != nil {
+		cmd.Args = func(cmd *cobra.Command, args []string) error {
+			return plansValidationError(cmd, inner(cmd, args))
+		}
+	}
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		if err := cmd.ValidateRequiredFlags(); err != nil {
+			return plansValidationError(cmd, err)
+		}
+		return plansValidationError(cmd, cmd.ValidateFlagGroups())
+	}
 }
 
 // plansErrorBody is the "error" object of the JSON stderr contract. Scope,
@@ -305,19 +357,63 @@ func (f *planGuardFlags) expected() (*int, error) {
 }
 
 // readPlanContent loads the new plan body from path, or from stdin when path
-// is "-" so scripts can pipe content in. The CLI never prompts: content only
-// ever arrives through --file.
+// is "-" so scripts can pipe content in. Both sources are bounded by the plan
+// storage's own content cap (plan.MaxPlanFileSize): the storage would refuse
+// to persist anything larger, so reading past the cap could only waste
+// memory. A regular file is required — a directory, device, or named pipe is
+// rejected — and every check runs on the opened descriptor (File.Stat), never
+// on the path, so the file that is validated is exactly the file that is read
+// and a concurrent path swap cannot slip a non-regular file past the checks.
+// The open itself cannot hang on a FIFO with no writer (see
+// plan.OpenContentFile), and a device like /dev/zero is rejected before any
+// read. The CLI never prompts: content only ever arrives through --file.
 func readPlanContent(cmd *cobra.Command, path string) (string, error) {
 	if path == "-" {
-		data, err := io.ReadAll(cmd.InOrStdin())
+		content, err := readBoundedPlanContent(cmd.InOrStdin())
 		if err != nil {
 			return "", plansUsagef("reading plan content from stdin: %v", err)
 		}
-		return string(data), nil
+		return content, nil
 	}
-	data, err := os.ReadFile(path)
+
+	f, err := plan.OpenContentFile(filepath.Clean(path))
 	if err != nil {
 		return "", plansUsagef("reading plan content from %q: %v", path, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", plansUsagef("reading plan content from %q: %v", path, err)
+	}
+	if info.IsDir() {
+		return "", plansUsagef("plan content path %q is a directory, not a file", path)
+	}
+	if !info.Mode().IsRegular() {
+		return "", plansUsagef("plan content path %q is not a regular file (e.g. a device or named pipe)", path)
+	}
+	if info.Size() > plan.MaxPlanFileSize {
+		return "", plansUsagef("reading plan content from %q: content exceeds the maximum plan size (%d bytes)", path, plan.MaxPlanFileSize)
+	}
+
+	content, err := readBoundedPlanContent(f)
+	if err != nil {
+		return "", plansUsagef("reading plan content from %q: %v", path, err)
+	}
+	return content, nil
+}
+
+// readBoundedPlanContent reads r up to the shared plan content cap. It reads
+// one byte past the cap so an over-cap source is detected without trusting
+// any pre-declared size (stdin has none, and a file can grow between the
+// descriptor size check and the read).
+func readBoundedPlanContent(r io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(r, plan.MaxPlanFileSize+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > plan.MaxPlanFileSize {
+		return "", fmt.Errorf("content exceeds the maximum plan size (%d bytes)", plan.MaxPlanFileSize)
 	}
 	return string(data), nil
 }

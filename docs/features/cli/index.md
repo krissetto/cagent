@@ -623,6 +623,8 @@ $ docker agent plans <subcommand> [flags]
 | `export <name> --output <path>` | Write a plan's content, byte-exact, to a file (parents created, atomic write). Works for both scopes: `export --session <id> --output <path>`. |
 | `delete <name>` | Delete a shared plan. A `--force` delete also recovers a corrupt plan. |
 
+Plan content passed via `--file` (a regular file, or stdin with `--file -`) is capped at 10 MiB — the same limit the plan storage itself enforces — and a directory or non-regular file (device, named pipe) is rejected up front; violations fail with an `invalid_argument` error.
+
 **Concurrency guard:** every mutation (`update`, `status`, `delete`) requires exactly one of two mutually exclusive flags — the CLI is headless and never prompts:
 
 - `--expected-version <n>` — the version you last read (from `get` or `list`; must be ≥ 1). When the plan changed in the meantime the command fails with a version conflict, reports the current version, leaves the plan untouched, and exits with code **3** (all other failures exit with 1).
@@ -630,13 +632,13 @@ $ docker agent plans <subcommand> [flags]
 
 `create` takes no guard: it is inherently create-only and conflicts (exit code 3) when the name already exists.
 
-**JSON output:** every subcommand accepts `--json`. Success documents go to stdout with a top-level `"schema_version": "1"` marker and stable service-model keys (`plans`, `plan`, `export`, `deleted`); empty plan lists encode as `[]`, and no prose or ANSI is mixed in. Failures print a single JSON object to stderr:
+**JSON output:** every subcommand accepts `--json`. Success documents go to stdout with a top-level `"schema_version": "1"` marker and stable service-model keys (`plans`, `plan`, `export`, `deleted`) whose fields are snake_case (`updated_at`, `session_id`, `bytes_written`; a zero/unknown `updated_at` is omitted); empty plan lists encode as `[]`, and no prose or ANSI is mixed in. Failures print a single JSON object to stderr:
 
 ```json
 {"schema_version":"1","error":{"code":"conflict","message":"...","scope":"shared","name":"p","expected_version":1,"current_version":2}}
 ```
 
-with `code` one of `conflict` (including `expected_version` and `current_version`), `not_found`, `invalid_argument`, `unsupported`, `corrupt`, `storage`, or `error`; `scope`, `name`, and `op` are included where the failure carries them. Argument-parsing errors (unknown flags, missing required flags) are reported as plain text by the CLI framework before JSON mode takes effect.
+with `code` one of `conflict` (including `expected_version` and `current_version`), `not_found`, `invalid_argument`, `unsupported`, `corrupt`, `storage`, or `error`; `scope`, `name`, and `op` are included where the failure carries them. Validation performed before a subcommand runs is covered too: a missing required flag, a violated `--expected-version`/`--force` group rule, and wrong positional arguments are reported as the same JSON object (code `invalid_argument`) whenever `--json` is present. One residual: flags are parsed left-to-right and parsing stops at the first unknown flag or invalid flag value, so such an error is reported as JSON only when `--json` appears before it on the command line; errors raised before a `plans` subcommand is resolved at all (e.g. an unknown subcommand) also remain plain text.
 
 ```bash
 # Examples

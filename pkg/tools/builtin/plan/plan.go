@@ -8,13 +8,14 @@
 //
 // Concurrency: agents that share one ToolSet instance also share its Storage,
 // which serializes their operations. The default FilesystemStorage guards its
-// read-modify-write revision bump with a mutex and writes atomically
-// (write-to-temp + rename), so a reader — including a separate docker-agent
-// process — never observes a partially written plan. Two distinct processes
-// writing the *same* plan at the very same instant can still race on the
-// revision bump (last writer wins); this is acceptable for the intended
-// in-process multi-agent collaboration. Other backends can make the bump
-// atomic.
+// read-modify-write revision bump with a mutex within the process and with an
+// exclusive advisory lock on a sentinel file in the plans directory across
+// processes, and writes atomically (write-to-temp + rename). A reader —
+// including a separate docker-agent process — never observes a partially
+// written plan, and two processes writing the *same* plan at the very same
+// instant cannot both pass an optimistic-lock check: exactly one wins and the
+// other gets a deterministic *VersionConflictError. Other backends own the
+// same guarantees through their Upsert/Delete implementations.
 package plan
 
 import (
@@ -30,7 +31,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker-agent/pkg/atomicfile"
@@ -49,11 +49,17 @@ const (
 	ToolNameGetPlanStatus      = "get_plan_status"
 )
 
-// maxPlanFileSize caps how much update_plan_from_file will read from disk, so a
+// MaxPlanFileSize caps how much update_plan_from_file will read from disk, so a
 // pathological or wrong path cannot make the agent pull an arbitrarily large
 // file into a plan (and into the model's context). 10 MiB is far above any
-// realistic plan while still bounding memory.
-const maxPlanFileSize = 10 << 20
+// realistic plan while still bounding memory. The same cap bounds stored plan
+// files on both sides: FilesystemStorage refuses to persist a plan that would
+// encode past it and refuses to decode a file beyond it, so a corrupt or
+// foreign oversized file in the plans directory cannot cause unbounded
+// allocation. It is exported so host-side callers (e.g. the docker agent
+// plans CLI) bound plan content with the same limit instead of duplicating
+// the number.
+const MaxPlanFileSize = 10 << 20
 
 // ErrPlanNotFound is returned by write operations that require an existing plan
 // (set_plan_status) when the named plan does not exist, so callers can tell a
@@ -212,7 +218,7 @@ type Storage interface {
 	Delete(ctx context.Context, name string, expectedRevision *int) (deleted bool, err error)
 }
 
-// Change action labels reported through the ChangeNotifier callback.
+// Change action labels reported through ChangeNotifier subscriptions.
 const (
 	ChangeActionWrite  = "write"
 	ChangeActionStatus = "status"
@@ -223,7 +229,10 @@ const (
 // identity and version only — never content — so observers refresh through
 // their own storage view instead of trusting an event payload. Revision is
 // the version after a write, or the guard version of a guarded delete (0
-// when the delete was unguarded).
+// when the delete was unguarded). It deliberately carries no mutator
+// identity: the shared singleton toolset executes tool calls for whichever
+// session's agent is running, so a subscriber must not attribute a change to
+// its own agent. The plan's Author field is the collaborative attribution.
 type Change struct {
 	Name     string
 	Action   string
@@ -231,22 +240,29 @@ type Change struct {
 }
 
 // ChangeNotifier is the optional host-notification capability of the plan
-// toolset: a host (e.g. the TUI) registers a callback that fires after every
-// successful mutation and never for failed ones. Discover it through toolset
-// wrappers with tools.As. The callback must be safe for concurrent use and
-// must not block; it does not alter tool schemas, outputs, or storage
-// behavior in any way.
+// toolset: hosts (e.g. one runtime stream per TUI tab) subscribe callbacks
+// that fire after every successful mutation and never for failed ones.
+// Discover it through toolset wrappers with tools.As. Any number of
+// subscribers may be active at once — every one receives every change —
+// because the shared singleton toolset serves all sessions in the process.
+// Callbacks must be safe for concurrent use and must not block; they do not
+// alter tool schemas, outputs, or storage behavior in any way.
 type ChangeNotifier interface {
-	SetChangeCallback(cb func(Change))
+	// SubscribeChanges registers cb and returns an idempotent unsubscribe
+	// function that removes exactly this subscription.
+	SubscribeChanges(cb func(Change)) (unsubscribe func())
 }
 
 type ToolSet struct {
 	storage Storage
 
-	// changeCallback holds the ChangeNotifier callback. Atomic because the
-	// shared singleton toolset is re-configured per agent turn while other
-	// sessions' tool calls may be notifying concurrently.
-	changeCallback atomic.Pointer[func(Change)]
+	// subsMu guards the subscriber registry. A mutex (not an atomic slot)
+	// because the shared singleton toolset serves several sessions at once:
+	// each active stream holds its own subscription, and subscriptions come
+	// and go while other sessions' tool calls are notifying concurrently.
+	subsMu      sync.Mutex
+	subscribers map[uint64]func(Change)
+	nextSubID   uint64
 }
 
 var (
@@ -256,19 +272,47 @@ var (
 	_ ChangeNotifier     = (*ToolSet)(nil)
 )
 
-// SetChangeCallback registers cb to run after every successful plan
-// mutation; nil unregisters. Implements ChangeNotifier.
-func (t *ToolSet) SetChangeCallback(cb func(Change)) {
+// SubscribeChanges registers cb to run after every successful plan mutation
+// and returns an unsubscribe function. Every active subscriber receives every
+// change exactly once; unsubscribing removes only that subscription and is
+// idempotent. A nil cb registers nothing and returns a no-op unsubscribe.
+// Implements ChangeNotifier.
+func (t *ToolSet) SubscribeChanges(cb func(Change)) func() {
 	if cb == nil {
-		t.changeCallback.Store(nil)
-		return
+		return func() {}
 	}
-	t.changeCallback.Store(&cb)
+
+	t.subsMu.Lock()
+	defer t.subsMu.Unlock()
+	if t.subscribers == nil {
+		t.subscribers = make(map[uint64]func(Change))
+	}
+	id := t.nextSubID
+	t.nextSubID++
+	t.subscribers[id] = cb
+	return func() {
+		t.subsMu.Lock()
+		defer t.subsMu.Unlock()
+		// Deleting a missing key is a no-op, which makes unsubscribe
+		// idempotent and safe to call from multiple teardown paths.
+		delete(t.subscribers, id)
+	}
 }
 
+// notifyChange fans change out to all current subscribers. The subscriber
+// set is copied under the lock and invoked outside it, so a callback can
+// subscribe or unsubscribe without deadlocking the registry and a slow
+// callback never blocks concurrent subscription changes.
 func (t *ToolSet) notifyChange(change Change) {
-	if cb := t.changeCallback.Load(); cb != nil {
-		(*cb)(change)
+	t.subsMu.Lock()
+	subs := make([]func(Change), 0, len(t.subscribers))
+	for _, cb := range t.subscribers {
+		subs = append(subs, cb)
+	}
+	t.subsMu.Unlock()
+
+	for _, cb := range subs {
+		cb(change)
 	}
 }
 
@@ -587,21 +631,28 @@ func (t *ToolSet) deletePlan(ctx context.Context, params DeletePlanArgs) (*tools
 }
 
 // readPlanFile reads plan content from a file for update_plan_from_file. It
-// rejects directories, non-regular files, and oversized files up front so a
-// wrong path fails with a clear message instead of pulling unexpected data into
-// a plan. The non-regular check matters for safety as well as clarity: a device
-// (e.g. /dev/zero) or a named pipe reports size 0 from stat yet would stream
-// unbounded data or block forever if opened, so it is rejected before any open.
-// The read itself goes through an io.LimitReader rather than trusting the stat
-// size, which closes the race where the file grows between stat and read.
+// rejects directories, non-regular files, and oversized files with a clear
+// message instead of pulling unexpected data into a plan. Every check runs on
+// the opened descriptor (File.Stat), never on the path, so the file that is
+// validated is exactly the file that is read and a concurrent path swap
+// cannot slip a directory, device, or named pipe past the checks. The open
+// itself is hang-safe for those cases too (see OpenContentFile), and a
+// device like /dev/zero, which would stream unbounded data, is rejected
+// before any read. The read goes through an io.LimitReader rather than
+// trusting the stat size, which closes the race where the file grows between
+// the size check and the read.
 func readPlanFile(path string) (string, error) {
-	clean := filepath.Clean(path)
-
-	info, err := os.Stat(clean)
+	f, err := OpenContentFile(filepath.Clean(path))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("file %q does not exist", path)
 		}
+		return "", fmt.Errorf("reading plan file: %w", err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
 		return "", fmt.Errorf("reading plan file: %w", err)
 	}
 	if info.IsDir() {
@@ -610,24 +661,18 @@ func readPlanFile(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("path %q is not a regular file (e.g. a device or named pipe)", path)
 	}
-	if info.Size() > maxPlanFileSize {
-		return "", fmt.Errorf("file %q is too large (%d bytes; max %d)", path, info.Size(), maxPlanFileSize)
+	if info.Size() > MaxPlanFileSize {
+		return "", fmt.Errorf("file %q is too large (%d bytes; max %d)", path, info.Size(), MaxPlanFileSize)
 	}
-
-	f, err := os.Open(clean)
-	if err != nil {
-		return "", fmt.Errorf("reading plan file: %w", err)
-	}
-	defer f.Close()
 
 	// Read one byte past the cap so an over-cap file is detected even if it grew
-	// since the stat above.
-	data, err := io.ReadAll(io.LimitReader(f, maxPlanFileSize+1))
+	// since the size check above.
+	data, err := io.ReadAll(io.LimitReader(f, MaxPlanFileSize+1))
 	if err != nil {
 		return "", fmt.Errorf("reading plan file: %w", err)
 	}
-	if len(data) > maxPlanFileSize {
-		return "", fmt.Errorf("file %q is too large (max %d bytes)", path, maxPlanFileSize)
+	if len(data) > MaxPlanFileSize {
+		return "", fmt.Errorf("file %q is too large (max %d bytes)", path, MaxPlanFileSize)
 	}
 	return string(data), nil
 }
@@ -750,9 +795,16 @@ func (t *ToolSet) Tools(context.Context) ([]tools.Tool, error) {
 
 // FilesystemStorage is the default Storage. It persists each plan as a JSON
 // file named <name>.json in a directory, with atomic temp+rename writes, plan
-// name validation, and unreadable-file warnings on List. A mutex serializes its
-// operations so the read-modify-write revision bump in Upsert is consistent
-// within a process.
+// name validation, and unreadable-file warnings on List. Upsert and Delete
+// hold an exclusive advisory lock on a persistent sentinel file
+// (lockFileName) in the same directory, so their check-and-mutate windows are
+// serialized against other processes sharing the directory and a stale
+// ExpectedRevision always fails deterministically instead of clobbering a
+// concurrent write. A mutex serializes the local check-and-mutate windows
+// within the process; mutations take it only after the sentinel lock is held,
+// so a writer waiting for a contended sentinel never blocks Get or List. Get
+// and List do not take the file lock: writes are atomic, so readers always
+// see a complete plan.
 type FilesystemStorage struct {
 	mu  sync.Mutex
 	dir string
@@ -786,14 +838,28 @@ func (s *FilesystemStorage) planPath(name string) (string, error) {
 // load reads and decodes the plan at path. It distinguishes a missing plan
 // (false, nil) from a real failure such as a permission error or corrupt JSON
 // (false, err), so callers can report the latter instead of masking it as
-// "not found".
+// "not found". The read is bounded by MaxPlanFileSize: this package never
+// persists a larger plan (save enforces the same cap), so anything beyond it
+// is a foreign or damaged file and is reported as corrupt rather than being
+// slurped into memory whole.
 func (s *FilesystemStorage) load(path string) (Plan, bool, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Plan{}, false, nil
 	}
 	if err != nil {
 		return Plan{}, false, fmt.Errorf("reading plan: %w", err)
+	}
+	defer f.Close()
+
+	// Read one byte past the cap so an over-cap file is detected without
+	// trusting a stat size that could change under us.
+	data, err := io.ReadAll(io.LimitReader(f, MaxPlanFileSize+1))
+	if err != nil {
+		return Plan{}, false, fmt.Errorf("reading plan: %w", err)
+	}
+	if len(data) > MaxPlanFileSize {
+		return Plan{}, false, &CorruptPlanError{File: filepath.Base(path), Err: fmt.Errorf("file exceeds %d bytes", MaxPlanFileSize)}
 	}
 	var p Plan
 	if err := json.Unmarshal(data, &p); err != nil {
@@ -809,6 +875,11 @@ func (s *FilesystemStorage) save(path string, p Plan) error {
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling plan: %w", err)
+	}
+	// Enforce the cap load applies on the way back in, so a plan is never
+	// persisted in a form this storage would then refuse to decode.
+	if len(data) > MaxPlanFileSize {
+		return fmt.Errorf("plan %q is too large to store (%d bytes; max %d)", p.Name, len(data), MaxPlanFileSize)
 	}
 	// Atomic write (temp file + rename): readers in other agents or processes
 	// see either the old or the new content, never a partial file, and an
@@ -839,11 +910,23 @@ func (s *FilesystemStorage) Get(_ context.Context, name string) (Plan, bool, err
 	return plan, ok, err
 }
 
-func (s *FilesystemStorage) Upsert(_ context.Context, req UpsertRequest) (Plan, error) {
+func (s *FilesystemStorage) Upsert(ctx context.Context, req UpsertRequest) (Plan, error) {
 	path, err := s.planPath(req.Name)
 	if err != nil {
 		return Plan{}, err
 	}
+
+	// Lock order: cross-process sentinel first, s.mu second, with s.mu held
+	// only around the local load/check/save window. A writer waiting for a
+	// contended sentinel therefore never holds s.mu, so Get and List stay
+	// responsive in the meantime; every mutation takes the locks in this
+	// order, so they cannot deadlock. s.mu still serializes same-process
+	// writers where the sentinel lock is a no-op (js/wasm).
+	release, err := acquireFileLock(ctx, filepath.Join(s.dir, lockFileName))
+	if err != nil {
+		return Plan{}, err
+	}
+	defer release()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -856,8 +939,10 @@ func (s *FilesystemStorage) Upsert(_ context.Context, req UpsertRequest) (Plan, 
 		return Plan{}, fmt.Errorf("%w: %q", ErrPlanNotFound, req.Name)
 	}
 	// Optimistic-lock check: reject the write if another writer bumped the
-	// revision since the caller last read it. Checked under the same lock as
-	// the load+save below so the compare-and-set is atomic within the process.
+	// revision since the caller last read it. Checked while both the mutex and
+	// the cross-process file lock are held, so the compare-and-set is atomic
+	// against writers in this process and in any other process sharing the
+	// directory.
 	if req.ExpectedRevision != nil && plan.Revision != *req.ExpectedRevision {
 		return Plan{}, &VersionConflictError{Name: req.Name, Expected: *req.ExpectedRevision, Current: plan.Revision}
 	}
@@ -939,20 +1024,30 @@ func (s *FilesystemStorage) List(_ context.Context) ([]Summary, []string, error)
 	return plans, warnings, nil
 }
 
-func (s *FilesystemStorage) Delete(_ context.Context, name string, expectedRevision *int) (bool, error) {
+func (s *FilesystemStorage) Delete(ctx context.Context, name string, expectedRevision *int) (bool, error) {
 	path, err := s.planPath(name)
 	if err != nil {
 		return false, err
 	}
 
+	// Same lock order as Upsert: sentinel first, s.mu only around the local
+	// load/check/remove window, so a delete blocked on the sentinel never
+	// stalls readers.
+	release, err := acquireFileLock(ctx, filepath.Join(s.dir, lockFileName))
+	if err != nil {
+		return false, err
+	}
+	defer release()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// With an optimistic-lock guard we must read the current revision first, so
-	// the compare-and-delete is atomic under the lock. This means a guarded
-	// delete of a corrupt plan fails (its revision can't be read to compare);
-	// recovering from a corrupt plan is done with an unguarded delete, which
-	// removes the file directly without pre-loading it.
+	// the compare-and-delete is atomic under the locks (in-process mutex plus
+	// cross-process file lock). This means a guarded delete of a corrupt plan
+	// fails (its revision can't be read to compare); recovering from a corrupt
+	// plan is done with an unguarded delete, which removes the file directly
+	// without pre-loading it.
 	if expectedRevision != nil {
 		plan, ok, err := s.load(path)
 		if err != nil {
