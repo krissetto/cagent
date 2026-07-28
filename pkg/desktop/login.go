@@ -2,6 +2,8 @@ package desktop
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"sync"
 	"time"
@@ -25,9 +27,33 @@ func GetToken(ctx context.Context) string {
 	}
 
 	if fresh := forceTokenRefresh(ctx); fresh != "" {
+		slog.InfoContext(ctx, "Recovered a fresh token from Docker Desktop",
+			"fingerprint", tokenFingerprint(fresh))
 		return fresh
 	}
+	slog.WarnContext(ctx, "Token refresh failed, sending a token known to be expired",
+		"fingerprint", tokenFingerprint(token),
+		"expired_for", expiredFor(token))
 	return token
+}
+
+// tokenFingerprint returns a short non-reversible identifier, safe to log.
+func tokenFingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:4])
+}
+
+// expiredFor returns how long ago the token's exp claim passed.
+func expiredFor(token string) string {
+	parsed, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
+	if err != nil {
+		return "unknown"
+	}
+	exp, err := parsed.Claims.GetExpirationTime()
+	if err != nil || exp == nil {
+		return "unknown"
+	}
+	return time.Since(exp.Time).Round(time.Second).String()
 }
 
 func GetUserInfo(ctx context.Context) DockerHubInfo {
@@ -143,9 +169,9 @@ func awaitRefresh(ctx context.Context, done <-chan struct{}) string {
 }
 
 func runTokenRefresh(ctx context.Context) string {
-	slog.DebugContext(ctx, "Docker Desktop returned an expired token, forcing a refresh")
+	slog.WarnContext(ctx, "Docker Desktop returned an expired token, forcing a refresh")
 	if err := postRefreshNudge(ctx); err != nil {
-		slog.DebugContext(ctx, "Failed to trigger Docker Desktop token refresh", "error", err)
+		slog.WarnContext(ctx, "Failed to trigger Docker Desktop token refresh", "error", err)
 		return ""
 	}
 
@@ -159,7 +185,7 @@ func runTokenRefresh(ctx context.Context) string {
 		}
 		select {
 		case <-ctx.Done():
-			slog.DebugContext(ctx, "Docker Desktop did not deliver a fresh token in time")
+			slog.WarnContext(ctx, "Docker Desktop did not deliver a fresh token in time")
 			return ""
 		case <-ticker.C:
 		}
