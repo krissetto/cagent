@@ -91,6 +91,27 @@ func TestDockerAgentArgs_PreservesUserYolo(t *testing.T) {
 	assert.Contains(t, got, "--yolo=true")
 }
 
+func TestDockerAgentArgs_PreservesUserSafetyWithoutInjectingYolo(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{
+		RunE: func(*cobra.Command, []string) error { return nil },
+	}
+	var sandboxFlag bool
+	var safety string
+	cmd.PersistentFlags().BoolVar(&sandboxFlag, "sandbox", false, "")
+	cmd.PersistentFlags().StringVar(&safety, "safety", "", "")
+
+	require.NoError(t, cmd.ParseFlags([]string{"--sandbox", "--safety", "strict"}))
+
+	got := dockerAgentArgs(cmd, []string{"./agent.yaml"}, "/cfg")
+
+	assert.Contains(t, got, "--safety")
+	assert.Contains(t, got, "strict")
+	assert.NotContains(t, got, "--yolo",
+		"the sandbox default must not add --yolo when the user explicitly selected a safety mode")
+}
+
 func TestDockerAgentArgs_PreservesExplicitFalseBool(t *testing.T) {
 	t.Parallel()
 

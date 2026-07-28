@@ -15,6 +15,11 @@ import (
 type Team struct {
 	agents      []*agent.Agent
 	permissions *permissions.Checker
+	// runtimeSafety is the config-wide safety-mode default declared under
+	// runtime.safety, retained so session constructors can apply it when
+	// neither the user nor the selected agent chose a mode. Empty when the
+	// config declares none (or the team was built without a config).
+	runtimeSafety latest.SafetyMode
 	// agentConfigs holds the raw resolved config for each agent, keyed by
 	// name. It is retained only when the team is built from a config file
 	// (WithAgentConfigs) so surfaces like the agent inspector can show
@@ -43,6 +48,14 @@ func WithPermissions(checker *permissions.Checker) Opt {
 func WithAgentConfigs(configs map[string]latest.AgentConfig) Opt {
 	return func(t *Team) {
 		t.agentConfigs = configs
+	}
+}
+
+// WithRuntimeSafety records the config-wide runtime.safety default the
+// team was loaded with.
+func WithRuntimeSafety(mode latest.SafetyMode) Opt {
+	return func(t *Team) {
+		t.runtimeSafety = mode
 	}
 }
 
@@ -165,6 +178,13 @@ func (t *Team) AgentConfig(name string) (latest.AgentConfig, bool) {
 // Returns nil if no permissions are configured.
 func (t *Team) Permissions() *permissions.Checker {
 	return t.permissions
+}
+
+// RuntimeSafety returns the config-wide safety-mode default declared under
+// runtime.safety, or empty when the config declares none. It is a default
+// only: user-owned choices and per-agent safety take precedence.
+func (t *Team) RuntimeSafety() latest.SafetyMode {
+	return t.runtimeSafety
 }
 
 // SetPermissions replaces the team's permission checker.

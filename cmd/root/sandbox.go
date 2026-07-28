@@ -283,6 +283,7 @@ func dockerAgentArgs(cmd *cobra.Command, args []string, configDir string) []stri
 
 	var dockerAgentArgs []string
 	hasYolo := false
+	hasSafety := false
 	cmd.Flags().Visit(func(f *pflag.Flag) {
 		if skip[f.Name] {
 			return
@@ -291,6 +292,9 @@ func dockerAgentArgs(cmd *cobra.Command, args []string, configDir string) []stri
 		if f.Name == "yolo" {
 			hasYolo = true
 		}
+		if f.Name == "safety" {
+			hasSafety = true
+		}
 
 		if f.Value.Type() == "bool" {
 			dockerAgentArgs = append(dockerAgentArgs, "--"+f.Name+"="+f.Value.String())
@@ -298,7 +302,7 @@ func dockerAgentArgs(cmd *cobra.Command, args []string, configDir string) []stri
 			dockerAgentArgs = append(dockerAgentArgs, "--"+f.Name, f.Value.String())
 		}
 	})
-	if !hasYolo {
+	if !hasYolo && !hasSafety {
 		dockerAgentArgs = append(dockerAgentArgs, "--yolo")
 	}
 

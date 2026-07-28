@@ -168,6 +168,14 @@ func WithRedactSecrets(redactSecrets bool) Opt {
 	}
 }
 
+// WithSafety sets the author-declared safety-mode default applied to new
+// sessions started on this agent when the user has not chosen a mode.
+func WithSafety(mode latest.SafetyMode) Opt {
+	return func(a *Agent) {
+		a.safety = mode
+	}
+}
+
 func WithAddDescriptionParameter(addDescriptionParameter bool) Opt {
 	return func(a *Agent) {
 		a.addDescriptionParameter = addDescriptionParameter

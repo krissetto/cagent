@@ -659,6 +659,15 @@
           "type": "boolean",
           "description": "When true, makes every one of this agent's toolsets read-only: only tools whose annotations carry a read-only hint are listed and callable, and all other (mutating) tools are filtered out. Equivalent to setting 'readonly: true' on each toolset. A sub-agent or handoff agent is made read-only by setting this flag on that agent's own definition."
         },
+        "safety": {
+          "type": "string",
+          "enum": [
+            "strict",
+            "balanced",
+            "autonomous"
+          ],
+          "description": "Safety mode new sessions started on this agent default to when the user has not chosen one (no --safety/--yolo flag, no alias option, no user-config setting). Takes precedence over the config-wide runtime.safety. A default only: it never overrides a user choice and never replaces the mode stored on a resumed session. Trust warning: 'autonomous' auto-approves every tool call — review configs from URLs or OCI registries before running them."
+        },
         "redact_secrets": {
           "type": "boolean",
           "default": true,
@@ -1840,6 +1849,15 @@
           "items": {
             "type": "string"
           }
+        },
+        "safety": {
+          "type": "string",
+          "enum": [
+            "strict",
+            "balanced",
+            "autonomous"
+          ],
+          "description": "Safety mode new sessions default to when the user has not chosen one (no --safety/--yolo flag, no alias option, no user-config setting). A per-agent 'safety' takes precedence over this config-wide default. A default only: it never overrides a user choice and never replaces the mode stored on a resumed session. Trust warning: 'autonomous' auto-approves every tool call — review configs from URLs or OCI registries before running them."
         }
       },
       "additionalProperties": false

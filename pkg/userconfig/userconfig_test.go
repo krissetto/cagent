@@ -743,6 +743,7 @@ func TestAlias_HasOptions(t *testing.T) {
 		{"nil alias", nil, false},
 		{"empty alias", &Alias{Path: "test"}, false},
 		{"yolo only", &Alias{Path: "test", Yolo: true}, true},
+		{"safety only", &Alias{Path: "test", Safety: latest.SafetyModeBalanced}, true},
 		{"model only", &Alias{Path: "test", Model: "openai/gpt-4o"}, true},
 		{"hide_tool_results only", &Alias{Path: "test", HideToolResults: true}, true},
 		{"sandbox only", &Alias{Path: "test", Sandbox: true}, true},
@@ -1414,4 +1415,129 @@ func TestLoad_UnknownVersionStillLoads(t *testing.T) {
 	cfg, err := loadFrom(configFile, "")
 	require.NoError(t, err)
 	assert.Equal(t, "https://gw.example.com", cfg.ModelsGateway)
+}
+
+func TestConfig_Settings_Safety(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte(`settings:
+  safety: balanced
+`), 0o644))
+
+	cfg, err := loadFrom(configFile, "")
+	require.NoError(t, err)
+	assert.Equal(t, latest.SafetyModeBalanced, cfg.GetSettings().Safety)
+	assert.Equal(t, latest.SafetyModeBalanced, cfg.GetSettings().GetSafety())
+}
+
+func TestConfig_Settings_InvalidSafetyFailsLoad(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte(`settings:
+  safety: yolo
+`), 0o644))
+
+	_, err := loadFrom(configFile, "")
+	require.ErrorContains(t, err, "settings.safety")
+	require.ErrorContains(t, err, `invalid safety mode "yolo" (valid: strict, balanced, autonomous)`)
+}
+
+func TestConfig_Alias_InvalidSafetyFailsLoad(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte(`aliases:
+  coder:
+    path: myorg/coder
+    safety: unsafe
+`), 0o644))
+
+	_, err := loadFrom(configFile, "")
+	require.ErrorContains(t, err, "aliases.coder.safety")
+	require.ErrorContains(t, err, `invalid safety mode "unsafe"`)
+}
+
+func TestSettings_GetSafety(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		settings *Settings
+		want     latest.SafetyMode
+	}{
+		{"nil settings", nil, ""},
+		{"unset", &Settings{}, ""},
+		{"safety set", &Settings{Safety: latest.SafetyModeStrict}, latest.SafetyModeStrict},
+		{"legacy YOLO maps to autonomous", &Settings{YOLO: true}, latest.SafetyModeAutonomous},
+		{"safety wins over legacy YOLO", &Settings{YOLO: true, Safety: latest.SafetyModeBalanced}, latest.SafetyModeBalanced},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.settings.GetSafety())
+		})
+	}
+}
+
+func TestAlias_GetSafety(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		alias *Alias
+		want  latest.SafetyMode
+	}{
+		{"nil alias", nil, ""},
+		{"unset", &Alias{Path: "x"}, ""},
+		{"safety set", &Alias{Path: "x", Safety: latest.SafetyModeBalanced}, latest.SafetyModeBalanced},
+		{"legacy yolo maps to autonomous", &Alias{Path: "x", Yolo: true}, latest.SafetyModeAutonomous},
+		{"safety wins over legacy yolo", &Alias{Path: "x", Yolo: true, Safety: latest.SafetyModeStrict}, latest.SafetyModeStrict},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.alias.GetSafety())
+		})
+	}
+}
+
+func TestConfig_SetAlias_InvalidSafety(t *testing.T) {
+	t.Parallel()
+
+	config := &Config{Aliases: make(map[string]*Alias)}
+	err := config.SetAlias("bad", &Alias{Path: "myorg/coder", Safety: "yolo"})
+	require.ErrorContains(t, err, "safety")
+	require.ErrorContains(t, err, "invalid safety mode")
+}
+
+// Alias safety must survive a save/load round trip alongside the other
+// options, and unknown keys must still round-trip via Extra.
+func TestConfig_AliasSafetyRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+
+	config := &Config{
+		Aliases: map[string]*Alias{
+			"careful": {Path: "myorg/coder", Safety: latest.SafetyModeStrict},
+		},
+		Settings: &Settings{Safety: latest.SafetyModeBalanced},
+	}
+	require.NoError(t, config.saveTo(configFile))
+
+	loaded, err := loadFrom(configFile, "")
+	require.NoError(t, err)
+
+	alias, ok := loaded.GetAlias("careful")
+	require.True(t, ok)
+	assert.Equal(t, latest.SafetyModeStrict, alias.Safety)
+	assert.Equal(t, latest.SafetyModeBalanced, loaded.GetSettings().Safety)
 }
