@@ -13,6 +13,87 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestFilesystemStorage_FIFOPlanFileFailsFast proves a <name>.json entry
+// that is a FIFO with no writer cannot wedge the storage: Get reports it as
+// a typed corrupt plan and List degrades it to a warning while listing the
+// healthy plans — both promptly. The open is hang-safe (a plain open of a
+// FIFO with no writer blocks forever) and the descriptor is rejected before
+// any read; the timeouts guard against a regression to a blocking open.
+func TestFilesystemStorage_FIFOPlanFileFailsFast(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := NewFilesystemStorage(dir)
+	_, err := s.Upsert(t.Context(), UpsertRequest{Name: "good", Content: new("ok")})
+	require.NoError(t, err)
+	require.NoError(t, syscall.Mkfifo(filepath.Join(dir, "wedged.json"), 0o600))
+
+	type getResult struct {
+		ok  bool
+		err error
+	}
+	getDone := make(chan getResult, 1)
+	go func() {
+		_, ok, err := s.Get(t.Context(), "wedged")
+		getDone <- getResult{ok: ok, err: err}
+	}()
+	select {
+	case res := <-getDone:
+		assert.False(t, res.ok)
+		var corrupt *CorruptPlanError
+		require.ErrorAs(t, res.err, &corrupt)
+		assert.Equal(t, "wedged.json", corrupt.File)
+		assert.Contains(t, corrupt.Error(), "not a regular file")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Get blocked on a FIFO plan file; the open must not block and the descriptor must be rejected before any read")
+	}
+
+	type listResult struct {
+		plans    []Summary
+		warnings []string
+		err      error
+	}
+	listDone := make(chan listResult, 1)
+	go func() {
+		plans, warnings, err := s.List(t.Context())
+		listDone <- listResult{plans: plans, warnings: warnings, err: err}
+	}()
+	select {
+	case res := <-listDone:
+		require.NoError(t, res.err)
+		require.Len(t, res.plans, 1, "the healthy plan must still be listed")
+		assert.Equal(t, "good", res.plans[0].Name)
+		require.Len(t, res.warnings, 1, "the FIFO must surface as a warning, not abort the listing")
+		assert.Contains(t, res.warnings[0], "wedged")
+		assert.Contains(t, res.warnings[0], "not a regular file")
+	case <-time.After(5 * time.Second):
+		t.Fatal("List blocked on a FIFO plan file; the open must not block and the descriptor must be rejected before any read")
+	}
+}
+
+// TestFilesystemStorage_UpsertRejectsFIFOPlanFileFast proves the mutation
+// path fails fast too: Upsert's pre-read goes through the same hang-safe
+// load, so a FIFO squatting on the plan file yields a typed corrupt error
+// instead of a wedged write holding the cross-process lock forever.
+func TestFilesystemStorage_UpsertRejectsFIFOPlanFileFast(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := NewFilesystemStorage(dir)
+	require.NoError(t, syscall.Mkfifo(filepath.Join(dir, "wedged.json"), 0o600))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Upsert(t.Context(), UpsertRequest{Name: "wedged", Content: new("x")})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		var corrupt *CorruptPlanError
+		require.ErrorAs(t, err, &corrupt)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Upsert blocked on a FIFO plan file; the pre-read must not block")
+	}
+}
+
 // TestPlanTool_UpdateFromFileRejectsNamedPipe proves a non-regular file (here a
 // named pipe with no writer) is rejected without hanging and without being
 // read. The pipe is opened with O_NONBLOCK — a plain open would block forever

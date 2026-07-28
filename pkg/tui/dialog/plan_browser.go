@@ -63,6 +63,14 @@ type PlanDetailViewer interface {
 	PlanRef() plans.Ref
 }
 
+// PlanBrowserViewer identifies the /plans browser dialog on the stack, so
+// the app model can refuse stacking a duplicate browser. The marker method
+// is unexported like PlanDialog's: only this package's browser implements
+// it, while other packages can still assert against the interface.
+type PlanBrowserViewer interface {
+	planBrowserDialog()
+}
+
 // planBrowserKeyMap defines key bindings for the plan browser.
 type planBrowserKeyMap struct {
 	Up      key.Binding
@@ -135,8 +143,9 @@ type planBrowserDialog struct {
 }
 
 var (
-	_ Dialog     = (*planBrowserDialog)(nil)
-	_ PlanDialog = (*planBrowserDialog)(nil)
+	_ Dialog            = (*planBrowserDialog)(nil)
+	_ PlanDialog        = (*planBrowserDialog)(nil)
+	_ PlanBrowserViewer = (*planBrowserDialog)(nil)
 )
 
 // NewPlanBrowserDialog creates the /plans browser over a listing produced by
@@ -160,6 +169,8 @@ func NewPlanBrowserDialog(result plans.ListResult) Dialog {
 }
 
 func (d *planBrowserDialog) planDialog() {}
+
+func (d *planBrowserDialog) planBrowserDialog() {}
 
 func (d *planBrowserDialog) Init() tea.Cmd {
 	return nil

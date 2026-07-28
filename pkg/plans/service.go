@@ -109,8 +109,12 @@ func (s *service) Create(ctx context.Context, req CreateRequest) (Plan, error) {
 	if err := validateContent(req.Content); err != nil {
 		return Plan{}, err
 	}
-	// Expected revision 0 makes the write create-only: it conflicts instead
-	// of overwriting when the plan already exists.
+	// MustNotExist makes the write create-only by existence, not by
+	// revision: a plan that already exists conflicts even when its stored
+	// revision is 0 (a hand-written or foreign file that omits the field).
+	// ExpectedRevision 0 is kept alongside it as a defensive guard for
+	// injected backends that predate MustNotExist: those still conflict for
+	// any plan that ever took a revision bump.
 	p, err := s.storage.Upsert(ctx, plan.UpsertRequest{
 		Name:             req.Ref.Name,
 		Content:          &req.Content,
@@ -118,6 +122,7 @@ func (s *service) Create(ctx context.Context, req CreateRequest) (Plan, error) {
 		Author:           &req.Author,
 		Status:           &req.Status,
 		ExpectedRevision: new(0),
+		MustNotExist:     true,
 	})
 	if err != nil {
 		return Plan{}, sharedError("create", req.Ref.Name, err)

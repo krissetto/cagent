@@ -51,6 +51,16 @@ func mustCreatePlan(t *testing.T, svc plans.Service, name, content string) plans
 	return p
 }
 
+// switchPlansTestSession replaces the model's active session with a fresh
+// one, as a tab switch would, and returns it.
+func switchPlansTestSession(t *testing.T, m *appModel) *session.Session {
+	t.Helper()
+	sess := session.New()
+	m.application = app.New(t.Context(), stubRuntime{}, sess)
+	m.sessionState = service.NewSessionState(sess)
+	return sess
+}
+
 // openPlanBrowser puts a plan browser dialog on the model's dialog stack, as
 // if /plans had been run.
 func openPlanBrowser(t *testing.T, m *appModel, result plans.ListResult) {
@@ -153,6 +163,7 @@ func TestPlanList_IncludesOnlyActiveSessionPlan(t *testing.T) {
 	t.Parallel()
 	m, svc, sess, sessionDir := newPlansTestModel(t)
 	mustCreatePlan(t, svc, "shared-one", "content")
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
 
 	// Current session's plan plus a stale plan from another session that
 	// must never be enumerated.
@@ -178,6 +189,7 @@ func TestHandleSetPlanStatus_RefreshesAfterWrite(t *testing.T) {
 	m, svc, _, _ := newPlansTestModel(t)
 	created := mustCreatePlan(t, svc, "release", "content")
 	require.Equal(t, 1, *created.Version)
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{created}})
 
 	msgs := runPlanFlow(t, m, messages.SetPlanStatusMsg{
 		Ref:             plans.SharedRef("release"),
@@ -204,6 +216,7 @@ func TestHandleSetPlanStatus_StaleConflictPreservesNewerData(t *testing.T) {
 	t.Parallel()
 	m, svc, _, _ := newPlansTestModel(t)
 	mustCreatePlan(t, svc, "release", "content")
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
 
 	// Someone else moved the plan to v2 with a newer status.
 	v1 := 1
@@ -238,6 +251,7 @@ func TestHandleDeletePlan_Semantics(t *testing.T) {
 	t.Parallel()
 	m, svc, _, _ := newPlansTestModel(t)
 	mustCreatePlan(t, svc, "release", "content")
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
 
 	// Stale guard: delete is refused and the plan survives.
 	v1 := 1
@@ -431,6 +445,7 @@ func TestHandleEditPlan_VersionDriftRefreshesInsteadOfEditing(t *testing.T) {
 	t.Parallel()
 	m, svc, _, _ := newPlansTestModel(t)
 	mustCreatePlan(t, svc, "release", "v1 content")
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
 	v1 := 1
 	_, err := svc.Update(t.Context(), plans.UpdateRequest{
 		Ref: plans.SharedRef("release"), Content: "v2 content", ExpectedVersion: &v1,
@@ -560,6 +575,7 @@ func TestHandleSetPlanStatus_WedgedLockTimesOutAsynchronously(t *testing.T) {
 	t.Parallel()
 	m, svc, _, _ := newPlansTestModel(t)
 	mustCreatePlan(t, svc, "release", "content")
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
 	blocking := &blockingPlansService{Service: svc}
 	WithPlansService(blocking)(m)
 	m.planMutationTimeout = 50 * time.Millisecond
@@ -884,6 +900,7 @@ func TestPlanRefresh_CoalescesInFlightRequests(t *testing.T) {
 	t.Parallel()
 	m, svc, _, _ := newPlansTestModel(t)
 	mustCreatePlan(t, svc, "release", "content")
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
 
 	_, cmd1 := m.Update(messages.RefreshPlansMsg{})
 	require.NotNil(t, cmd1)
@@ -1138,6 +1155,7 @@ func TestHandleEditPlan_PreparesAsynchronously(t *testing.T) {
 		t.Parallel()
 		m, svc, _, _ := newPlansTestModel(t)
 		mustCreatePlan(t, svc, "release", "v1 content")
+		openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
 		v1 := 1
 		_, err := svc.Update(t.Context(), plans.UpdateRequest{
 			Ref: plans.SharedRef("release"), Content: "v2 content", ExpectedVersion: &v1,
@@ -1226,6 +1244,135 @@ func TestHandleExportPlan_DuplicateInFlightRefused(t *testing.T) {
 	assert.Equal(t, "the content", string(data), "the existing file must never be overwritten")
 }
 
+// --- Duplicate async browser/detail opens ----------------------------------
+
+// TestHandleShowPlanBrowser_DuplicateRequestsDropped proves two /plans
+// requests racing one in-flight listing read start exactly one List and
+// stack exactly one browser.
+func TestHandleShowPlanBrowser_DuplicateRequestsDropped(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "content")
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+
+	_, cmd1 := m.Update(messages.ShowPlanBrowserMsg{})
+	require.NotNil(t, cmd1)
+	_, cmd2 := m.Update(messages.ShowPlanBrowserMsg{})
+	assert.Nil(t, cmd2, "a second /plans while the listing read is in flight must not start another read")
+
+	close(blocking.release)
+	msgs := drainPlanFlow(t, m, cmd1)
+	assert.Equal(t, int32(1), blocking.readsStarted.Load(), "exactly one List reaches the service")
+	assert.Equal(t, 1, countOfType[dialog.OpenDialogMsg](msgs), "exactly one browser opens")
+	assert.False(t, m.planBrowserLoadInFlight, "the guard must clear when the result lands")
+}
+
+// TestHandleShowPlanBrowser_RefusedWhenBrowserAlreadyOpen proves /plans with
+// a browser already on the dialog stack neither reads nor stacks a second
+// browser.
+func TestHandleShowPlanBrowser_RefusedWhenBrowserAlreadyOpen(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
+
+	_, cmd := m.Update(messages.ShowPlanBrowserMsg{})
+	assert.Nil(t, cmd, "a /plans with the browser already open must not start a read")
+	assert.Zero(t, blocking.readsStarted.Load())
+}
+
+// TestHandleShowPlanBrowser_SessionSwitchAllowsFreshLaunch proves the
+// browser-load guard tracks session identity: /plans for the new session
+// launches while the previous session's read is still in flight, the stale
+// result opens nothing, and the fresh one opens exactly one browser.
+func TestHandleShowPlanBrowser_SessionSwitchAllowsFreshLaunch(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "content")
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+
+	_, cmdA := m.Update(messages.ShowPlanBrowserMsg{})
+	require.NotNil(t, cmdA)
+
+	switchPlansTestSession(t, m)
+	_, cmdB := m.Update(messages.ShowPlanBrowserMsg{})
+	require.NotNil(t, cmdB, "/plans for the new session must launch despite the stale in-flight read")
+
+	close(blocking.release)
+	msgsA := drainPlanFlow(t, m, cmdA)
+	assert.Zero(t, countOfType[dialog.OpenDialogMsg](msgsA), "the stale session's listing must not open a browser")
+	msgsB := drainPlanFlow(t, m, cmdB)
+	assert.Equal(t, 1, countOfType[dialog.OpenDialogMsg](msgsB), "the fresh session's listing opens the browser")
+	assert.False(t, m.planBrowserLoadInFlight)
+}
+
+// TestHandleOpenPlanDetail_DuplicateRequestsDropped proves two open requests
+// for the same plan racing one in-flight read start exactly one Get and
+// stack exactly one detail dialog.
+func TestHandleOpenPlanDetail_DuplicateRequestsDropped(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "content")
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+
+	sizeDialogs(t, m)
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
+
+	_, cmd1 := m.Update(messages.OpenPlanDetailMsg{Ref: plans.SharedRef("release")})
+	require.NotNil(t, cmd1)
+	_, cmd2 := m.Update(messages.OpenPlanDetailMsg{Ref: plans.SharedRef("release")})
+	assert.Nil(t, cmd2, "a repeated open for the same plan while its read is in flight must not start another Get")
+
+	close(blocking.release)
+	msgs := drainPlanFlow(t, m, cmd1)
+	assert.Equal(t, int32(1), blocking.readsStarted.Load(), "exactly one Get reaches the service")
+	assert.Equal(t, 1, countOfType[dialog.OpenDialogMsg](msgs), "exactly one detail opens")
+	assert.Empty(t, m.planDetailLoadsInFlight, "the guard must clear when the result lands")
+}
+
+// TestHandleOpenPlanDetail_RefusedWhenDetailAlreadyOpen proves an open for a
+// plan whose detail is already on the stack neither reads nor stacks a
+// duplicate, while a different plan still loads.
+func TestHandleOpenPlanDetail_RefusedWhenDetailAlreadyOpen(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	p := mustCreatePlan(t, svc, "release", "content")
+	mustCreatePlan(t, svc, "other", "content")
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+
+	sizeDialogs(t, m)
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{p}})
+	openDialog(t, m, dialog.NewPlanDetailDialog(p))
+
+	_, cmd := m.Update(messages.OpenPlanDetailMsg{Ref: plans.SharedRef("release")})
+	assert.Nil(t, cmd, "an open for an already-shown detail must not start a read")
+	assert.Zero(t, blocking.readsStarted.Load())
+
+	_, cmd = m.Update(messages.OpenPlanDetailMsg{Ref: plans.SharedRef("other")})
+	assert.NotNil(t, cmd, "a different plan's detail may still load")
+}
+
+// TestHandlePlanDetailLoaded_DuplicateOpenRefused proves a completed read
+// for a plan whose detail appeared in the meantime does not stack a second
+// copy.
+func TestHandlePlanDetailLoaded_DuplicateOpenRefused(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	p := mustCreatePlan(t, svc, "release", "content")
+
+	sizeDialogs(t, m)
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{p}})
+	openDialog(t, m, dialog.NewPlanDetailDialog(p))
+
+	_, cmd := m.Update(planDetailLoadedMsg{ref: plans.SharedRef("release"), plan: p})
+	assert.Nil(t, cmd, "a result for an already-open detail must not stack a duplicate")
+}
+
 // --- Bounded reads under wedged storage ------------------------------------
 
 // TestPlanReads_WedgedStorageTimesOut proves every plan read command is
@@ -1256,6 +1403,12 @@ func TestPlanReads_WedgedStorageTimesOut(t *testing.T) {
 				require.True(t, ok, "got %T", result)
 				return msg.err
 			},
+			after: func(t *testing.T, m *appModel) {
+				t.Helper()
+				assert.False(t, m.planBrowserLoadInFlight, "a timed-out open must clear the browser-load guard")
+				_, cmd := m.Update(messages.ShowPlanBrowserMsg{})
+				assert.NotNil(t, cmd, "/plans must relaunch after a timeout")
+			},
 		},
 		{
 			name:        "open detail",
@@ -1267,10 +1420,17 @@ func TestPlanReads_WedgedStorageTimesOut(t *testing.T) {
 				require.True(t, ok, "got %T", result)
 				return msg.err
 			},
+			after: func(t *testing.T, m *appModel) {
+				t.Helper()
+				assert.Empty(t, m.planDetailLoadsInFlight, "a timed-out open must clear the detail-load guard")
+				_, cmd := m.Update(messages.OpenPlanDetailMsg{Ref: plans.SharedRef("release")})
+				assert.NotNil(t, cmd, "the detail open must relaunch after a timeout")
+			},
 		},
 		{
-			name: "refresh",
-			msg:  messages.RefreshPlansMsg{},
+			name:        "refresh",
+			msg:         messages.RefreshPlansMsg{},
+			openBrowser: true,
 			resultErr: func(t *testing.T, result tea.Msg) error {
 				t.Helper()
 				msg, ok := result.(planRefreshedMsg)
@@ -1362,6 +1522,7 @@ func TestPlanRefresh_TimeoutClearsInFlightAndRunsQueued(t *testing.T) {
 	t.Parallel()
 	m, svc, _, _ := newPlansTestModel(t)
 	mustCreatePlan(t, svc, "release", "content")
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
 	blocking := newBlockingReadPlansService(svc) // never released
 	WithPlansService(blocking)(m)
 	m.planReadTimeout = 50 * time.Millisecond
@@ -1439,4 +1600,78 @@ func TestStalePlanResults_Dropped(t *testing.T) {
 		})
 		assert.Nil(t, cmd, "a listing read for another session must not open the browser")
 	})
+}
+
+// --- Stale refresh across session switches ---------------------------------
+
+// TestPlanRefresh_StaleSessionResultDroppedAndRelaunched reproduces the
+// verifier proof: a reload launched for session A lands after the user
+// switched to session B. A's listing — naming A's session plan — must not
+// reach the dialogs, and exactly one fresh reload for B must replace it.
+func TestPlanRefresh_StaleSessionResultDroppedAndRelaunched(t *testing.T) {
+	t.Parallel()
+	m, svc, sessA, sessionDir := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "content")
+	_, err := sessionplan.WriteContent(sessionDir, sessA.ID, "session A plan")
+	require.NoError(t, err)
+
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
+
+	// The reload launches against session A's listing.
+	_, cmd := m.Update(messages.RefreshPlansMsg{})
+	require.NotNil(t, cmd)
+	result := cmd()
+	refreshed, ok := result.(planRefreshedMsg)
+	require.True(t, ok, "got %T", result)
+	require.Equal(t, sessA.ID, refreshed.sessionID)
+
+	// The user switches to session B before the result lands.
+	sessB := switchPlansTestSession(t, m)
+	_, err = sessionplan.WriteContent(sessionDir, sessB.ID, "session B plan")
+	require.NoError(t, err)
+
+	// Dispatching A's stale result broadcasts nothing and relaunches once.
+	_, cmd = m.Update(result)
+	require.NotNil(t, cmd, "a fresh reload for the current session must launch")
+	assert.True(t, m.planRefreshInFlight, "the relaunched reload must be in flight")
+
+	msgs := drainPlanFlow(t, m, cmd)
+	require.Equal(t, 1, countOfType[dialog.PlanBrowserDataMsg](msgs),
+		"exactly one fresh reload broadcasts; the stale one never does")
+	dataMsg, ok := firstOfType[dialog.PlanBrowserDataMsg](msgs)
+	require.True(t, ok)
+	var sessionRows []string
+	for _, p := range dataMsg.Result.Plans {
+		if p.Scope == plans.ScopeSession {
+			sessionRows = append(sessionRows, p.SessionID)
+		}
+	}
+	assert.Equal(t, []string{sessB.ID}, sessionRows, "only the current session's plan may be applied")
+	assert.False(t, m.planRefreshInFlight, "the pipeline must settle")
+}
+
+// TestPlanRefresh_ResultWithoutDialogsDropsSilently proves a reload result
+// (here: a failed one) arriving after every plan dialog closed yields no
+// orphan notification and leaves the pipeline clean, queued intent included.
+func TestPlanRefresh_ResultWithoutDialogsDropsSilently(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "content")
+
+	// A reload was in flight (with a queued follow-up) when the user closed
+	// the last plan dialog.
+	m.planRefreshInFlight = true
+	m.planRefreshQueued = true
+	m.planRefreshQueuedWarnings = true
+
+	_, cmd := m.Update(planRefreshedMsg{sessionID: m.currentPlanSessionID(), listErr: errors.New("boom")})
+	assert.Nil(t, cmd, "no notification and no follow-up may be produced")
+	assert.False(t, m.planRefreshInFlight, "the pipeline must be idle")
+	assert.False(t, m.planRefreshQueued, "the queued follow-up must be dropped")
+	assert.False(t, m.planRefreshQueuedWarnings)
+
+	// The pipeline accepts new requests immediately.
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
+	_, cmd = m.Update(messages.RefreshPlansMsg{})
+	assert.NotNil(t, cmd)
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPlansCreate_RejectsNamedPipe proves a non-regular --file (here a named
@@ -67,4 +68,57 @@ func TestPlansCreate_RejectsDevice(t *testing.T) {
 	body := decodePlansError(t, stderr)
 	assert.Equal(t, "invalid_argument", body.Code)
 	assert.Contains(t, body.Message, "not a regular file")
+}
+
+// TestPlansGetList_FIFOPlanFileFailsFast proves a FIFO squatting on a
+// stored plan file cannot wedge the read commands: get reports it as a
+// typed corrupt plan and list degrades it to a warning while still listing
+// healthy plans — both promptly. The timeout guards against a regression to
+// a blocking open in the storage's load path.
+func TestPlansGetList_FIFOPlanFileFailsFast(t *testing.T) {
+	t.Parallel()
+	svc, sharedDir, _ := newPlansTestService(t)
+	mustCreatePlan(t, svc, "good", "content")
+
+	if err := syscall.Mkfifo(filepath.Join(sharedDir, "wedged.json"), 0o600); err != nil {
+		t.Skipf("cannot create a FIFO on this system: %v", err)
+	}
+
+	type result struct {
+		stdout, stderr string
+		err            error
+	}
+
+	getDone := make(chan result, 1)
+	go func() {
+		stdout, stderr, err := executePlans(t, svc, "get", "wedged", "--json")
+		getDone <- result{stdout, stderr, err}
+	}()
+	select {
+	case res := <-getDone:
+		requirePlansStatusCode(t, res.err, 1)
+		assert.Empty(t, res.stdout)
+		body := decodePlansError(t, res.stderr)
+		assert.Equal(t, "corrupt", body.Code)
+		assert.Equal(t, "wedged", body.Name)
+		assert.Contains(t, body.Message, "not a regular file")
+	case <-time.After(5 * time.Second):
+		t.Fatal("plans get blocked on a FIFO plan file; the open must not block and the descriptor must be rejected before any read")
+	}
+
+	listDone := make(chan result, 1)
+	go func() {
+		stdout, stderr, err := executePlans(t, svc, "list", "--json")
+		listDone <- result{stdout, stderr, err}
+	}()
+	select {
+	case res := <-listDone:
+		require.NoError(t, res.err)
+		assert.Contains(t, res.stdout, `"name": "good"`, "the healthy plan must still be listed")
+		assert.NotContains(t, res.stdout, `"name": "wedged"`)
+		assert.Contains(t, res.stdout, "warnings", "the FIFO must surface as a warning")
+		assert.Contains(t, res.stdout, "wedged")
+	case <-time.After(5 * time.Second):
+		t.Fatal("plans list blocked on a FIFO plan file; the open must not block and the descriptor must be rejected before any read")
+	}
 }

@@ -531,6 +531,28 @@ func runStorageConformance(t *testing.T, s Storage) {
 	require.True(t, ok)
 	assert.Equal(t, p, got)
 
+	// MustNotExist is the create-only guard: it conflicts with any existing
+	// plan — deterministically carrying Expected 0 and the current revision —
+	// and leaves it untouched.
+	var conflict *VersionConflictError
+	_, err = s.Upsert(ctx, UpsertRequest{Name: "release", Content: new("clobber"), MustNotExist: true})
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, 0, conflict.Expected)
+	assert.Equal(t, 1, conflict.Current)
+	got, ok, err = s.Get(ctx, "release")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, p, got, "the refused create must not touch the plan")
+
+	// A MustNotExist write of a plan that does not exist yet succeeds like
+	// any first write, and the guarded delete below cleans it up again.
+	fresh, err := s.Upsert(ctx, UpsertRequest{Name: "fresh", Content: new("f"), MustNotExist: true})
+	require.NoError(t, err)
+	assert.Equal(t, 1, fresh.Revision)
+	freshDeleted, err := s.Delete(ctx, "fresh", new(1))
+	require.NoError(t, err)
+	assert.True(t, freshDeleted)
+
 	// Upsert with nil fields bumps the revision and preserves title, author,
 	// and status; only the content changes.
 	p2, err := s.Upsert(ctx, UpsertRequest{Name: "release", Content: new("v2")})
@@ -565,7 +587,6 @@ func runStorageConformance(t *testing.T, s Storage) {
 
 	_, err = s.Upsert(ctx, UpsertRequest{Name: "release", Content: new("stale"), ExpectedRevision: new(4)})
 	require.Error(t, err)
-	var conflict *VersionConflictError
 	require.ErrorAs(t, err, &conflict)
 	assert.Equal(t, 4, conflict.Expected)
 	assert.Equal(t, 5, conflict.Current)
@@ -610,6 +631,156 @@ func runStorageConformance(t *testing.T, s Storage) {
 	assert.False(t, deleted)
 }
 
+// TestFilesystemStorage_MustNotExistRejectsRevisionZeroFile proves the
+// create-only guard is existence-driven, not revision-driven: a valid stored
+// plan whose revision field is omitted (reading back as revision 0) still
+// conflicts — with Expected 0 and Current 0 — and stays byte-identical,
+// where an ExpectedRevision-0 guard alone would have overwritten it.
+func TestFilesystemStorage_MustNotExistRejectsRevisionZeroFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := NewFilesystemStorage(dir)
+
+	original := `{"name":"planted","content":"precious content"}`
+	path := filepath.Join(dir, "planted.json")
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o600))
+
+	_, err := s.Upsert(t.Context(), UpsertRequest{Name: "planted", Content: new("clobber"), MustNotExist: true})
+	var conflict *VersionConflictError
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, 0, conflict.Expected)
+	assert.Equal(t, 0, conflict.Current)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, original, string(data), "the refused create must leave the existing file byte-identical")
+}
+
+// TestFilesystemStorage_DirectoryPlanFileIsCorrupt proves a directory
+// squatting on <name>.json is a typed corrupt plan on Get — validated on the
+// opened descriptor, never read — and a warning on List, so it is never
+// mistaken for a missing plan or a plain I/O failure.
+func TestFilesystemStorage_DirectoryPlanFileIsCorrupt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := NewFilesystemStorage(dir)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "squatter.json"), 0o700))
+
+	_, ok, err := s.Get(t.Context(), "squatter")
+	assert.False(t, ok)
+	var corrupt *CorruptPlanError
+	require.ErrorAs(t, err, &corrupt)
+	assert.Contains(t, corrupt.Error(), "directory")
+
+	plans, warnings, err := s.List(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, plans)
+	// ReadDir-level directory entries are skipped before load, so no warning
+	// is required here; the point is that List neither fails nor lists it.
+	assert.Empty(t, warnings)
+}
+
+// TestFilesystemStorage_ReadsObserveContext proves Get and List honour an
+// already-expired context instead of starting filesystem work: the refresh
+// pipelines above them pass bounded contexts and rely on reads not outliving
+// their deadline when storage is healthy enough to return at all.
+func TestFilesystemStorage_ReadsObserveContext(t *testing.T) {
+	t.Parallel()
+	s := NewFilesystemStorage(t.TempDir())
+	_, err := s.Upsert(t.Context(), UpsertRequest{Name: "p", Content: new("x")})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, _, err = s.Get(ctx, "p")
+	require.ErrorIs(t, err, context.Canceled)
+	_, _, err = s.List(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+// TestFilesystemStorage_LockFreeReadsUnderConcurrentWrites hammers the
+// lock-free Get and List with concurrent mutations. Writes are atomic
+// (temp + rename), so every read must observe a complete, decodable plan —
+// never a partial file, a temp file in the listing, or a spurious warning —
+// and the race detector proves the in-process consistency of dropping the
+// reader mutex.
+func TestFilesystemStorage_LockFreeReadsUnderConcurrentWrites(t *testing.T) {
+	t.Parallel()
+	s := NewFilesystemStorage(t.TempDir())
+	ctx := t.Context()
+	_, err := s.Upsert(ctx, UpsertRequest{Name: "p", Content: new("content-seed")})
+	require.NoError(t, err)
+
+	const writes = 25
+	done := make(chan struct{})
+	var writeErr error
+	go func() {
+		defer close(done)
+		for i := range writes {
+			content := fmt.Sprintf("content-%d", i)
+			if _, err := s.Upsert(ctx, UpsertRequest{Name: "p", Content: &content}); err != nil {
+				writeErr = err
+				return
+			}
+		}
+	}()
+
+	// Readers report violations as errors; all assertions run on the test
+	// goroutine after the workers join.
+	readOnce := func() error {
+		plan, ok, err := s.Get(ctx, "p")
+		switch {
+		case err != nil:
+			return fmt.Errorf("lock-free Get failed: %w", err)
+		case !ok:
+			return errors.New("lock-free Get lost the plan")
+		case !strings.Contains(plan.Content, "content-"):
+			return fmt.Errorf("Get observed a torn plan: %q", plan.Content)
+		}
+		plans, warnings, err := s.List(ctx)
+		switch {
+		case err != nil:
+			return fmt.Errorf("lock-free List failed: %w", err)
+		case len(warnings) != 0:
+			return fmt.Errorf("List surfaced warnings despite atomic writes: %v", warnings)
+		case len(plans) != 1:
+			return fmt.Errorf("List observed %d plans; temp files must never be listed", len(plans))
+		}
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	readerErrs := make([]error, 4)
+	for i := range readerErrs {
+		wg.Go(func() {
+			for {
+				if err := readOnce(); err != nil {
+					readerErrs[i] = err
+					return
+				}
+				select {
+				case <-done:
+					return
+				default:
+				}
+			}
+		})
+	}
+	wg.Wait()
+	<-done
+	require.NoError(t, writeErr)
+	for i, err := range readerErrs {
+		require.NoError(t, err, "reader %d", i)
+	}
+
+	plan, ok, err := s.Get(ctx, "p")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, writes+1, plan.Revision)
+	assert.Equal(t, fmt.Sprintf("content-%d", writes-1), plan.Content)
+}
+
 // memoryStorage is an in-memory Storage used to exercise the toolset through a
 // custom backend. It mirrors the filesystem default's contract: Upsert owns the
 // revision bump and preserves title/author when omitted.
@@ -637,6 +808,9 @@ func (s *memoryStorage) Upsert(_ context.Context, req UpsertRequest) (Plan, erro
 	p, exists := s.plans[req.Name]
 	if req.MustExist && !exists {
 		return Plan{}, fmt.Errorf("%w: %q", ErrPlanNotFound, req.Name)
+	}
+	if req.MustNotExist && exists {
+		return Plan{}, &VersionConflictError{Name: req.Name, Expected: 0, Current: p.Revision}
 	}
 	if req.ExpectedRevision != nil && p.Revision != *req.ExpectedRevision {
 		return Plan{}, &VersionConflictError{Name: req.Name, Expected: *req.ExpectedRevision, Current: p.Revision}

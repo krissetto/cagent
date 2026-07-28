@@ -424,6 +424,36 @@ func TestService_CreateIsCreateOnly(t *testing.T) {
 	assert.Equal(t, "original", got.Content)
 }
 
+// TestService_CreateConflictsWithExistingRevisionZeroFile proves create is
+// existence-driven, not revision-driven: a valid stored plan whose revision
+// field is omitted (reading back as revision 0) still conflicts and stays
+// byte-identical, and creating under a fresh name keeps working.
+func TestService_CreateConflictsWithExistingRevisionZeroFile(t *testing.T) {
+	t.Parallel()
+	svc, sharedDir, _ := newTestService(t)
+
+	original := `{"name":"planted","content":"precious content"}`
+	path := filepath.Join(sharedDir, "planted.json")
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o600))
+
+	_, err := svc.Create(t.Context(), CreateRequest{Ref: SharedRef("planted"), Content: "clobber"})
+	var conflict *ConflictError
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, "planted", conflict.Name)
+	assert.Equal(t, 0, conflict.Expected)
+	assert.Equal(t, 0, conflict.Current)
+	assert.Contains(t, conflict.Error(), "already exists")
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, original, string(data), "the refused create must leave the existing file byte-identical")
+
+	// A normal create is unaffected by the guard.
+	p, err := svc.Create(t.Context(), CreateRequest{Ref: SharedRef("fresh"), Content: "new plan"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, *p.Version)
+}
+
 func TestService_CreateValidation(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := newTestService(t)
@@ -986,6 +1016,9 @@ func (s *memStorage) Upsert(_ context.Context, req plan.UpsertRequest) (plan.Pla
 	p, exists := s.plans[req.Name]
 	if req.MustExist && !exists {
 		return plan.Plan{}, plan.ErrPlanNotFound
+	}
+	if req.MustNotExist && exists {
+		return plan.Plan{}, &plan.VersionConflictError{Name: req.Name, Expected: 0, Current: p.Revision}
 	}
 	if req.ExpectedRevision != nil && p.Revision != *req.ExpectedRevision {
 		return plan.Plan{}, &plan.VersionConflictError{Name: req.Name, Expected: *req.ExpectedRevision, Current: p.Revision}

@@ -105,8 +105,39 @@ func (m *appModel) planDialogOpen() bool {
 	})
 }
 
+// planBrowserOpen reports whether the /plans browser dialog is on the stack,
+// topmost or buried.
+func (m *appModel) planBrowserOpen() bool {
+	return m.dialogMgr.HasDialog(func(d dialog.Dialog) bool {
+		_, ok := d.(dialog.PlanBrowserViewer)
+		return ok
+	})
+}
+
+// planDetailOpen reports whether a detail dialog for exactly ref is on the
+// stack, topmost or buried.
+func (m *appModel) planDetailOpen(ref plans.Ref) bool {
+	return m.dialogMgr.HasDialog(func(d dialog.Dialog) bool {
+		viewer, ok := d.(dialog.PlanDetailViewer)
+		return ok && viewer.PlanRef() == ref
+	})
+}
+
 func (m *appModel) handleShowPlanBrowser() (tea.Model, tea.Cmd) {
+	// One browser only: with a browser already on the stack (even buried) or
+	// its opening read already in flight for this session, a repeated /plans
+	// must not start a second List or stack a duplicate browser. A request
+	// for a different session may launch — the superseded read's result is
+	// dropped as stale in handlePlanBrowserLoaded.
+	if m.planBrowserOpen() {
+		return m, nil
+	}
 	svc, ctx, opts := m.plansService(), m.ctx(), m.planListOptions()
+	if m.planBrowserLoadInFlight && m.planBrowserLoadSessionID == opts.SessionID {
+		return m, nil
+	}
+	m.planBrowserLoadInFlight = true
+	m.planBrowserLoadSessionID = opts.SessionID
 	timeout := m.planReadTimeoutOrDefault()
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -121,12 +152,24 @@ func (m *appModel) handleShowPlanBrowser() (tea.Model, tea.Cmd) {
 // dropped: the user switched tabs while the read was in flight, and popping
 // a browser that lists the previous tab's session plan would mislead.
 func (m *appModel) handlePlanBrowserLoaded(msg planBrowserLoadedMsg) (tea.Model, tea.Cmd) {
+	// Clear the guard first, whatever the outcome, so a failed or stale open
+	// never wedges /plans. A result whose session differs from the guard's
+	// belongs to a superseded launch; the guard keeps tracking the newer
+	// in-flight read.
+	if msg.sessionID == m.planBrowserLoadSessionID {
+		m.planBrowserLoadInFlight = false
+	}
 	if msg.sessionID != m.currentPlanSessionID() {
 		return m, nil
 	}
 	if msg.err != nil {
 		cmd := m.planReadFailureCmd(msg.err)
 		return m, cmd
+	}
+	// A browser that appeared while this read was in flight wins; stacking a
+	// second one would duplicate it.
+	if m.planBrowserOpen() {
+		return m, nil
 	}
 	cmds := []tea.Cmd{core.CmdHandler(dialog.OpenDialogMsg{Model: dialog.NewPlanBrowserDialog(msg.result)})}
 	cmds = append(cmds, planWarningsCmds(msg.result.Warnings)...)
@@ -163,7 +206,7 @@ func (m *appModel) planRefreshCmd(notifyWarnings bool) tea.Cmd {
 		// refresh pipeline can never get stuck.
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		msg := planRefreshedMsg{notifyWarnings: notifyWarnings}
+		msg := planRefreshedMsg{sessionID: opts.SessionID, notifyWarnings: notifyWarnings}
 		msg.list, msg.listErr = svc.List(ctx, opts)
 		for _, ref := range refs {
 			p, err := svc.Get(ctx, ref)
@@ -183,18 +226,38 @@ func (m *appModel) appendPlanRefreshCmd(cmds []tea.Cmd) []tea.Cmd {
 }
 
 // handlePlanRefreshed applies a completed reload to the open plan dialogs.
-// The list data (or its failure) surfaces unconditionally. Detail read
-// failures surface only for a detail that is the topmost dialog now, when
-// the result is applied: a plan that disappeared closes it — through the
-// targeted ClosePlanDetailMsg, so duplicated results for the same vanished
-// plan can never pop a second dialog — with one notification, and any other
-// failure notifies without closing. A buried detail cannot be closed
-// without popping the wrong dialog, and notifying on every refresh would
-// repeat the same warning indefinitely, so a buried failing ref is skipped
-// silently: it is notified (and closed if gone) once it surfaces and the
-// next refresh runs.
+// The in-flight flag is always cleared first, whatever the outcome, so the
+// refresh pipeline can never wedge. With no plan dialog left the result —
+// data, errors, and warnings alike — is dropped along with any queued
+// follow-up: it has nowhere to land and a notification would reference
+// nothing on screen. A result read for another session's listing (the user
+// switched tabs while it was in flight) is dropped too, and exactly one
+// fresh reload for the current session replaces it, folding in the queued
+// intent. Otherwise the list data (or its failure) surfaces
+// unconditionally. Detail read failures surface only for a detail that is
+// the topmost dialog now, when the result is applied: a plan that
+// disappeared closes it — through the targeted ClosePlanDetailMsg, so
+// duplicated results for the same vanished plan can never pop a second
+// dialog — with one notification, and any other failure notifies without
+// closing. A buried detail cannot be closed without popping the wrong
+// dialog, and notifying on every refresh would repeat the same warning
+// indefinitely, so a buried failing ref is skipped silently: it is notified
+// (and closed if gone) once it surfaces and the next refresh runs.
 func (m *appModel) handlePlanRefreshed(msg planRefreshedMsg) (tea.Model, tea.Cmd) {
 	m.planRefreshInFlight = false
+
+	if !m.planDialogOpen() {
+		m.planRefreshQueued = false
+		m.planRefreshQueuedWarnings = false
+		return m, nil
+	}
+	if msg.sessionID != m.currentPlanSessionID() {
+		notify := msg.notifyWarnings || m.planRefreshQueuedWarnings
+		m.planRefreshQueued = false
+		m.planRefreshQueuedWarnings = false
+		cmd := m.planRefreshCmd(notify)
+		return m, cmd
+	}
 
 	var cmds []tea.Cmd
 	if msg.listErr != nil {
@@ -266,8 +329,11 @@ type planBrowserLoadedMsg struct {
 
 // planRefreshedMsg reports a completed asynchronous reload of the open plan
 // dialogs: the browser listing plus the full plan of every detail dialog
-// that was open when the reload started.
+// that was open when the reload started. sessionID is the session the
+// listing was read for, so a reload that raced a tab switch can be told
+// apart, dropped, and replaced by a fresh one.
 type planRefreshedMsg struct {
+	sessionID      string
 	list           plans.ListResult
 	listErr        error
 	details        []planDetailFetch
@@ -275,7 +341,10 @@ type planRefreshedMsg struct {
 }
 
 // planDetailLoadedMsg reports the read that backs opening a detail dialog.
+// ref identifies the request so its in-flight guard is cleared on every
+// outcome.
 type planDetailLoadedMsg struct {
+	ref  plans.Ref
 	plan plans.Plan
 	err  error
 }
@@ -293,13 +362,26 @@ type planExportResultMsg struct {
 }
 
 func (m *appModel) handleOpenPlanDetail(ref plans.Ref) (tea.Model, tea.Cmd) {
+	// One detail per plan: with a detail for this ref already on the stack or
+	// its opening read already in flight, a repeated open must not start a
+	// second Get or stack a duplicate dialog.
+	if m.planDetailOpen(ref) {
+		return m, nil
+	}
+	if _, inFlight := m.planDetailLoadsInFlight[ref]; inFlight {
+		return m, nil
+	}
+	if m.planDetailLoadsInFlight == nil {
+		m.planDetailLoadsInFlight = make(map[plans.Ref]struct{})
+	}
+	m.planDetailLoadsInFlight[ref] = struct{}{}
 	svc, ctx := m.plansService(), m.ctx()
 	timeout := m.planReadTimeoutOrDefault()
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		p, err := svc.Get(ctx, ref)
-		return planDetailLoadedMsg{plan: p, err: err}
+		return planDetailLoadedMsg{ref: ref, plan: p, err: err}
 	}
 }
 
@@ -308,12 +390,20 @@ func (m *appModel) handleOpenPlanDetail(ref plans.Ref) (tea.Model, tea.Cmd) {
 // requested from the browser, so after the user closed /plans while the
 // read was in flight no dialog may pop up out of nowhere.
 func (m *appModel) handlePlanDetailLoaded(msg planDetailLoadedMsg) (tea.Model, tea.Cmd) {
+	// Clear the guard first, whatever the outcome, so a failed open can be
+	// retried.
+	delete(m.planDetailLoadsInFlight, msg.ref)
 	if !m.planDialogOpen() {
 		return m, nil
 	}
 	if msg.err != nil {
 		cmd := m.planReadFailureCmd(msg.err)
 		return m, cmd
+	}
+	// A detail for this plan that appeared while the read was in flight wins;
+	// stacking a second copy would duplicate it.
+	if m.planDetailOpen(msg.ref) {
+		return m, nil
 	}
 	return m, core.CmdHandler(dialog.OpenDialogMsg{Model: dialog.NewPlanDetailDialog(msg.plan)})
 }

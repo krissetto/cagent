@@ -567,6 +567,41 @@ func TestPlansCreate_ExistingNameConflictHuman(t *testing.T) {
 	assert.NotContains(t, stderr, "force", "create has no --force; the human message must not suggest one")
 }
 
+// TestPlansCreate_ExistingRevisionZeroFileConflicts proves the create-only
+// guard is existence-driven end to end: a valid stored plan whose revision
+// field is omitted (reading back as revision 0) still conflicts with exit
+// code 3 and stays byte-identical, and a fresh name keeps working.
+func TestPlansCreate_ExistingRevisionZeroFileConflicts(t *testing.T) {
+	t.Parallel()
+	svc, sharedDir, _ := newPlansTestService(t)
+
+	original := `{"name":"planted","content":"precious content"}`
+	plantedPath := filepath.Join(sharedDir, "planted.json")
+	require.NoError(t, os.WriteFile(plantedPath, []byte(original), 0o600))
+	file := writePlanContentFile(t, "clobber")
+
+	stdout, stderr, err := executePlans(t, svc, "create", "planted", "--file", file, "--json")
+	requirePlansStatusCode(t, err, plansConflictExitCode)
+	assert.Empty(t, stdout)
+	body := decodePlansError(t, stderr)
+	assert.Equal(t, "conflict", body.Code)
+	assert.Equal(t, "planted", body.Name)
+	require.NotNil(t, body.ExpectedVersion)
+	assert.Equal(t, 0, *body.ExpectedVersion)
+	require.NotNil(t, body.CurrentVersion)
+	assert.Equal(t, 0, *body.CurrentVersion)
+	assert.Contains(t, body.Message, "already exists")
+
+	data, err := os.ReadFile(plantedPath)
+	require.NoError(t, err)
+	assert.Equal(t, original, string(data), "the refused create must leave the existing file byte-identical")
+
+	// A normal create is unaffected by the guard.
+	stdout, _, err = executePlans(t, svc, "create", "fresh", "--file", file, "--json")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, `"version": 1`)
+}
+
 func TestPlansCreate_Validation(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := newPlansTestService(t)

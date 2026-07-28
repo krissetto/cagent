@@ -189,7 +189,12 @@ type ExportResult struct {
 // enables optimistic locking: when non-nil, the write is rejected with a
 // *VersionConflictError unless it equals the plan's current revision. MustExist
 // makes the write fail with ErrPlanNotFound when the plan does not already
-// exist (used by set_plan_status, which must not create a plan).
+// exist (used by set_plan_status, which must not create a plan). MustNotExist
+// makes the write create-only by existence, not by revision: any existing
+// plan is rejected with a *VersionConflictError carrying Expected 0 and the
+// plan's current revision — including revision 0, which a stored plan can
+// legitimately carry (a hand-written or foreign file that omits the field),
+// so ExpectedRevision 0 alone is not a create-only guard.
 type UpsertRequest struct {
 	Name             string
 	Content          *string
@@ -198,6 +203,7 @@ type UpsertRequest struct {
 	Status           *string
 	ExpectedRevision *int
 	MustExist        bool
+	MustNotExist     bool
 }
 
 // ListResult is the output of list_plans. Warnings lists plan files that could
@@ -220,10 +226,11 @@ type Storage interface {
 	Get(ctx context.Context, name string) (Plan, bool, error)
 	// Upsert creates or updates a plan as described by req: nil fields are
 	// preserved from the previous revision, the optimistic-lock check and the
-	// must-exist guard are honoured atomically with the write, the revision is
+	// existence guards are honoured atomically with the write, the revision is
 	// bumped and UpdatedAt stamped. It returns a *VersionConflictError on a
-	// revision mismatch and ErrPlanNotFound when req.MustExist is set but the
-	// plan is absent.
+	// revision mismatch or when req.MustNotExist is set but the plan exists
+	// (Expected 0, Current the plan's revision — even revision 0), and
+	// ErrPlanNotFound when req.MustExist is set but the plan is absent.
 	Upsert(ctx context.Context, req UpsertRequest) (Plan, error)
 	// List returns a summary of every stored plan. Warnings carries entries
 	// that could not be read, so a caller can tell "no plans" apart from "some
@@ -820,9 +827,12 @@ func (t *ToolSet) Tools(context.Context) ([]tools.Tool, error) {
 // ExpectedRevision always fails deterministically instead of clobbering a
 // concurrent write. A mutex serializes the local check-and-mutate windows
 // within the process; mutations take it only after the sentinel lock is held,
-// so a writer waiting for a contended sentinel never blocks Get or List. Get
-// and List do not take the file lock: writes are atomic, so readers always
-// see a complete plan.
+// so a writer waiting for a contended sentinel never blocks another local
+// mutation's chance to fail fast on the sentinel. Get and List take neither
+// the file lock nor the mutex: writes are atomic (temp + rename), so a
+// lock-free reader always sees a complete plan — either the previous or the
+// new revision, never a partial file — and a mutation blocked on wedged
+// storage can never stall readers.
 type FilesystemStorage struct {
 	mu  sync.Mutex
 	dir string
@@ -856,13 +866,18 @@ func (s *FilesystemStorage) planPath(name string) (string, error) {
 // load reads and decodes the plan at path. It distinguishes a missing plan
 // (false, nil) from a real failure such as a permission error or corrupt JSON
 // (false, err), so callers can report the latter instead of masking it as
-// "not found". The read is bounded by maxEncodedPlanSize: this package never
-// persists a larger file (save validates content and metadata against caps
-// that always encode within it), so anything beyond it is a foreign or
-// damaged file and is reported as corrupt rather than being slurped into
-// memory whole.
+// "not found". The open is hang-safe (see OpenContentFile) and the descriptor
+// is validated before any read — a .json entry that is a directory, device,
+// or FIFO is a foreign file, reported as a typed *CorruptPlanError — so a
+// FIFO with no writer can never wedge Get, List, or an Upsert's pre-read.
+// Checking the opened descriptor (File.Stat), never the path, means a
+// concurrent path swap cannot slip a non-regular file past the check. The
+// read is bounded by maxEncodedPlanSize: this package never persists a
+// larger file (save validates content and metadata against caps that always
+// encode within it), so anything beyond it is a foreign or damaged file and
+// is reported as corrupt rather than being slurped into memory whole.
 func (s *FilesystemStorage) load(path string) (Plan, bool, error) {
-	f, err := os.Open(path)
+	f, err := OpenContentFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Plan{}, false, nil
 	}
@@ -870,6 +885,17 @@ func (s *FilesystemStorage) load(path string) (Plan, bool, error) {
 		return Plan{}, false, fmt.Errorf("reading plan: %w", err)
 	}
 	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return Plan{}, false, fmt.Errorf("reading plan: %w", err)
+	}
+	if info.IsDir() {
+		return Plan{}, false, &CorruptPlanError{File: filepath.Base(path), Err: errors.New("is a directory, not a plan file")}
+	}
+	if !info.Mode().IsRegular() {
+		return Plan{}, false, &CorruptPlanError{File: filepath.Base(path), Err: errors.New("not a regular file (e.g. a device or named pipe)")}
+	}
 
 	// Read one byte past the cap so an over-cap file is detected without
 	// trusting a stat size that could change under us.
@@ -920,15 +946,22 @@ func (s *FilesystemStorage) save(path string, p Plan) error {
 	return nil
 }
 
-func (s *FilesystemStorage) Get(_ context.Context, name string) (Plan, bool, error) {
+func (s *FilesystemStorage) Get(ctx context.Context, name string) (Plan, bool, error) {
 	path, err := s.planPath(name)
 	if err != nil {
 		return Plan{}, false, err
 	}
+	// Observe cancellation before touching the filesystem. A blocked open on
+	// truly wedged storage (e.g. a dead NFS mount) cannot be interrupted, but
+	// a caller whose deadline already expired gets its context error instead
+	// of another read.
+	if err := ctx.Err(); err != nil {
+		return Plan{}, false, err
+	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	// Deliberately lock-free (no s.mu): writes are atomic (temp + rename), so
+	// this always reads a complete plan, and a mutation blocked on wedged
+	// storage while holding s.mu can never stall a reader.
 	plan, ok, err := s.load(path)
 	if ok {
 		// The filename is the authoritative key (List and Upsert key off it), so
@@ -947,11 +980,11 @@ func (s *FilesystemStorage) Upsert(ctx context.Context, req UpsertRequest) (Plan
 	}
 
 	// Lock order: cross-process sentinel first, s.mu second, with s.mu held
-	// only around the local load/check/save window. A writer waiting for a
-	// contended sentinel therefore never holds s.mu, so Get and List stay
-	// responsive in the meantime; every mutation takes the locks in this
-	// order, so they cannot deadlock. s.mu still serializes same-process
-	// writers where the sentinel lock is a no-op (js/wasm, wasip1, plan9).
+	// only around the local load/check/save window. s.mu serializes the
+	// check-and-mutate windows of same-process writers where the sentinel
+	// lock is a no-op (js/wasm, wasip1, plan9); Get and List are lock-free,
+	// so a mutation blocked here never stalls readers. Every mutation takes
+	// the locks in this order, so they cannot deadlock.
 	release, err := acquireFileLock(ctx, filepath.Join(s.dir, lockFileName))
 	if err != nil {
 		return Plan{}, err
@@ -967,6 +1000,14 @@ func (s *FilesystemStorage) Upsert(ctx context.Context, req UpsertRequest) (Plan
 	}
 	if req.MustExist && !exists {
 		return Plan{}, fmt.Errorf("%w: %q", ErrPlanNotFound, req.Name)
+	}
+	// Create-only guard: any existing plan conflicts, whatever its revision.
+	// Existence is checked directly rather than through the optimistic lock
+	// below because revision 0 is not proof of absence — a stored plan file
+	// that omits the revision field legitimately reads back as revision 0
+	// and must not be overwritten by a create.
+	if req.MustNotExist && exists {
+		return Plan{}, &VersionConflictError{Name: req.Name, Expected: 0, Current: plan.Revision}
 	}
 	// Optimistic-lock check: reject the write if another writer bumped the
 	// revision since the caller last read it. Checked while both the mutex and
@@ -1003,9 +1044,13 @@ func (s *FilesystemStorage) Upsert(ctx context.Context, req UpsertRequest) (Plan
 	return plan, nil
 }
 
-func (s *FilesystemStorage) List(_ context.Context) ([]Summary, []string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *FilesystemStorage) List(ctx context.Context) ([]Summary, []string, error) {
+	// Deliberately lock-free (no s.mu), like Get: every plan file is read
+	// through the same atomic-write guarantee, so holding the mutex across a
+	// whole directory walk would only let a wedged mutation stall listings.
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -1018,6 +1063,12 @@ func (s *FilesystemStorage) List(_ context.Context) ([]Summary, []string, error)
 	plans := []Summary{}
 	var warnings []string
 	for _, entry := range entries {
+		// The directory is read file by file; observe cancellation between
+		// files so an expired deadline stops the walk instead of pointlessly
+		// finishing it.
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}

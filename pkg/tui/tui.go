@@ -115,6 +115,23 @@ type appModel struct {
 	planRefreshQueued         bool
 	planRefreshQueuedWarnings bool
 
+	// planBrowserLoadInFlight and planBrowserLoadSessionID guard the /plans
+	// browser-opening read: a repeated request for the same session while its
+	// List is in flight is dropped, so duplicate browsers can never stack and
+	// no redundant read starts. A request for a different session (the user
+	// switched tabs) may launch; the superseded result is dropped as stale by
+	// its session stamp and only the matching result clears the guard. Both
+	// fields are touched exclusively from Update.
+	planBrowserLoadInFlight  bool
+	planBrowserLoadSessionID string
+
+	// planDetailLoadsInFlight tracks the refs of running detail-opening
+	// reads, so repeated open requests for the same plan cannot pile up
+	// redundant Gets or stack duplicate detail dialogs. Refs are registered
+	// in handleOpenPlanDetail and always cleared in handlePlanDetailLoaded;
+	// the map is touched exclusively from Update.
+	planDetailLoadsInFlight map[plans.Ref]struct{}
+
 	// planExportsInFlight tracks the destination paths of running plan
 	// export commands, so a duplicate export cannot race the no-overwrite
 	// pre-check against the write. Keys are registered in handleExportPlan
