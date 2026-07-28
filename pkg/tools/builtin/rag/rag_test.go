@@ -143,3 +143,46 @@ func TestRAGTool_HandleQuery_Telemetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, res)
 }
+
+type failingMockStrategy struct {
+	mockStrategy
+}
+
+func (m *failingMockStrategy) Initialize(_ context.Context, _ []string, _ strategy.ChunkingConfig) error {
+	return assert.AnError
+}
+
+func TestStopAfterFailedStart(t *testing.T) {
+	t.Parallel()
+
+	strategyMock := &failingMockStrategy{}
+	cfg := rag.Config{
+		StrategyConfigs: []strategy.Config{
+			{Name: "failingStrategy", Strategy: strategyMock},
+		},
+	}
+
+	mgr, err := rag.New(t.Context(), "failing-rag", cfg, nil)
+	require.NoError(t, err)
+
+	tool := &ToolSet{
+		manager:  mgr,
+		toolName: "failing-rag",
+	}
+
+	err = tool.Start(t.Context())
+	require.Error(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		_ = tool.Stop(t.Context())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: Stop returned without deadlocking
+	case <-t.Context().Done():
+		t.Fatal("Test context canceled")
+	}
+}
