@@ -128,6 +128,34 @@ func (b *BudgetConfig) validate() error {
 	return nil
 }
 
+// SafetyMode is a declarative safety-mode default that agent authors
+// (runtime.safety, agents.<name>.safety) and users (settings.safety,
+// alias safety) can put in YAML. Only the three canonical session modes
+// are accepted; the legacy aliases the session layer still normalizes
+// (unsafe, safer, safe-auto) are not valid in configuration files.
+//
+// The values mirror pkg/session.SafetyPolicy but are defined here so
+// the config layer does not depend on the session layer.
+type SafetyMode string
+
+const (
+	// SafetyModeStrict prompts on every tool call.
+	SafetyModeStrict SafetyMode = "strict"
+	// SafetyModeBalanced auto-approves classifier-safe calls only.
+	SafetyModeBalanced SafetyMode = "balanced"
+	// SafetyModeAutonomous auto-approves every call (legacy yolo).
+	SafetyModeAutonomous SafetyMode = "autonomous"
+)
+
+// Validate accepts the three canonical modes and empty (unset).
+func (m SafetyMode) Validate() error {
+	switch m {
+	case "", SafetyModeStrict, SafetyModeBalanced, SafetyModeAutonomous:
+		return nil
+	}
+	return fmt.Errorf("invalid safety mode %q (valid: strict, balanced, autonomous)", string(m))
+}
+
 // RuntimeDefaults captures execution-time defaults the agent author
 // wants applied when this config is run. The values act as defaults
 // only: an explicit CLI flag or user-config setting always wins.
@@ -136,6 +164,13 @@ type RuntimeDefaults struct {
 	// default — equivalent to passing --sandbox on the command line.
 	// Useful for agents that always need filesystem/network isolation.
 	Sandbox bool `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+
+	// Safety is the safety mode new sessions default to when the user
+	// has not chosen one (no --safety/--yolo flag, no alias option, no
+	// user-config setting). It never overrides a user choice and never
+	// replaces the mode stored on a resumed session. A per-agent
+	// AgentConfig.Safety takes precedence over this config-wide default.
+	Safety SafetyMode `json:"safety,omitempty" yaml:"safety,omitempty"`
 
 	// NetworkAllowlist is the list of hosts that should be added to
 	// the sandbox's default-deny network proxy when this agent runs in
@@ -622,6 +657,12 @@ type AgentConfig struct {
 	// tools whose annotations carry a read-only hint are listed and
 	// callable. Equivalent to setting `readonly: true` on each toolset.
 	ReadOnly bool `json:"readonly,omitempty" yaml:"readonly,omitempty"`
+	// Safety is the safety mode new sessions started on this agent
+	// default to when the user has not chosen one (no --safety/--yolo
+	// flag, no alias option, no user-config setting). It never overrides
+	// a user choice and never replaces the mode stored on a resumed
+	// session. Takes precedence over the config-wide RuntimeDefaults.Safety.
+	Safety SafetyMode `json:"safety,omitempty" yaml:"safety,omitempty"`
 	// RedactSecrets enables every leg of the redact_secrets feature:
 	// the pre_tool_use builtin (scrubs tool arguments), the
 	// before_llm_call hook (scrubs outgoing chat content), and the

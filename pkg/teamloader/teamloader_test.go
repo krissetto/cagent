@@ -1131,6 +1131,82 @@ func TestLoadPropagatesMaxToolResultTokens(t *testing.T) {
 	assert.Equal(t, 512, agt.MaxToolResultTokens())
 }
 
+// TestLoadPropagatesSafetyDefaults verifies the author-declared safety
+// defaults travel from the YAML config to the built team: runtime.safety
+// lands on the team (team.RuntimeSafety) and agents.<name>.safety on the
+// agent (agent.Safety), where session constructors resolve them.
+func TestLoadPropagatesSafetyDefaults(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "dummy")
+
+	data := []byte(`runtime:
+  safety: autonomous
+agents:
+  root:
+    model: openai/gpt-4o
+    instruction: test
+    safety: balanced
+  careful:
+    model: openai/gpt-4o
+    instruction: test
+`)
+
+	team, err := Load(t.Context(), config.NewBytesSource("safety.yaml", data), &config.RuntimeConfig{}, withTestProviderRegistry()...)
+	require.NoError(t, err)
+
+	assert.Equal(t, latest.SafetyModeAutonomous, team.RuntimeSafety())
+
+	root, err := team.Agent("root")
+	require.NoError(t, err)
+	assert.Equal(t, latest.SafetyModeBalanced, root.Safety())
+
+	careful, err := team.Agent("careful")
+	require.NoError(t, err)
+	assert.Empty(t, careful.Safety(), "agent without a safety default carries none of its own")
+}
+
+// TestLoadRejectsInvalidSafety pins the load-time failure: a non-canonical
+// safety value anywhere in the config must fail loading with an error that
+// names the offending field.
+func TestLoadRejectsInvalidSafety(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "dummy")
+
+	tests := []struct {
+		name    string
+		data    string
+		wantErr string
+	}{
+		{
+			name: "runtime scope",
+			data: `runtime:
+  safety: yolo
+agents:
+  root:
+    model: openai/gpt-4o
+    instruction: test
+`,
+			wantErr: "runtime.safety: invalid safety mode \"yolo\"",
+		},
+		{
+			name: "agent scope",
+			data: `agents:
+  root:
+    model: openai/gpt-4o
+    instruction: test
+    safety: safe-auto
+`,
+			wantErr: "agents.root.safety: invalid safety mode \"safe-auto\"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(t.Context(), config.NewBytesSource("bad.yaml", []byte(tt.data)), &config.RuntimeConfig{}, withTestProviderRegistry()...)
+			require.ErrorContains(t, err, tt.wantErr)
+			require.ErrorContains(t, err, "strict, balanced, autonomous")
+		})
+	}
+}
+
 // TestLoadWithConfig_GlobalProviders covers user-level custom providers
 // (seeded into the runtime config from the user config file): they must
 // resolve inline `provider/model` references in any agent config, while

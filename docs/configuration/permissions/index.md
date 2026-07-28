@@ -33,6 +33,46 @@ Every session runs in a **safety mode** that decides what happens when no permis
 
 Pick a mode with the `--safety` flag (`docker-agent run --safety balanced ...`), the `safety_policy` field on session create (`POST /api/sessions`) or mid-session (`PATCH /api/sessions/:id/safety-policy`), or escalate directly from a confirmation prompt (`B` switches to balanced, `A` to autonomous). Sessions that never choose a mode keep the historical default: read-only tools auto-approve, everything else asks.
 
+### Declarative Safety Defaults
+
+Safety modes can also be declared as **defaults** in YAML, at four scopes:
+
+| Scope | Location | Owner |
+| ----- | -------- | ----- |
+| Alias | `aliases.<name>.safety` in `~/.config/cagent/config.yaml` (or `docker agent alias add ... --safety <mode>`) | User |
+| Global settings | `settings.safety` in `~/.config/cagent/config.yaml` | User |
+| Per-agent | `agents.<name>.safety` in the agent YAML | Agent author |
+| Config-wide | `runtime.safety` in the agent YAML | Agent author |
+
+```yaml
+# Agent YAML (author-declared defaults)
+runtime:
+  safety: balanced # config-wide default for new sessions
+
+agents:
+  root:
+    safety: strict # overrides runtime.safety for this agent
+```
+
+All four fields accept only the three canonical modes — `strict`, `balanced`, `autonomous` (yes, an author may declare `autonomous`) — and any other value fails loading with an error naming the field. The legacy spellings remain as aliases for `autonomous`: `settings.YOLO`, the alias `yolo` option, and the `--yolo` flag. When both are set at the same scope, `safety` wins over the legacy `YOLO`/`yolo`.
+
+For a **new** root session the first source in this order wins:
+
+1. explicit `--safety` flag
+2. explicit `--yolo` flag
+3. alias `safety`/`yolo` option
+4. `settings.safety`/`settings.YOLO` (user config)
+5. selected agent's `agents.<name>.safety`
+6. `runtime.safety`
+7. the historical default (read-only tools auto-approve, everything else asks)
+
+**Resuming a session never re-applies defaults**: the stored mode is kept unless you pass an explicit `--safety` or `--yolo` flag for that run. Agent switches, handoffs, and delegated sub-agent sessions inherit the active session's mode rather than resetting it.
+
+Sessions created through the API (`POST /api/sessions`) without a `safety_policy` receive the author-declared defaults (5–6) when their first run starts — the earliest point the agent configuration is loaded. If the server restarts before that first run, the session keeps the historical unset default (7).
+
+> [!WARNING]
+> **Trust: author defaults never outrank you.** `runtime.safety` and `agents.<name>.safety` are written by the agent's author — which may be a config you pulled from a URL or an OCI registry. They only fill the gap when you expressed no preference: any user-owned source (CLI flag, alias option, user settings) always takes precedence, and a resumed session keeps its stored mode. Still, an author default of `autonomous` means a fresh session runs every tool call unprompted — review third-party configs before running them, or pin your own floor with `settings.safety` / `--safety`.
+
 **Custom rules always win over the mode**, with one asymmetry: `ask:` rules written in an agent's YAML (or global config) are agent-author advisories and yield to a user-chosen `balanced`/`autonomous` mode, while `ask:` rules granted at the session level (interactive "always ask" decisions, the session permissions API) always prompt.
 
 ## Permission Levels

@@ -46,9 +46,19 @@ type CreateSessionRequest struct {
 	// ToolsApproved is the legacy --yolo signal. New callers should
 	// prefer SafetyPolicy; option setters keep both in sync.
 	ToolsApproved bool `json:"tools_approved"`
-	// SafetyPolicy is the per-session safety preference; empty falls
-	// back to the ToolsApproved-derived default. See [session.SafetyPolicy].
-	SafetyPolicy      session.SafetyPolicy `json:"safety_policy,omitempty"`
+	// SafetyPolicy is the user-owned per-session safety preference (CLI
+	// flags, alias options, user settings — never author YAML); empty
+	// falls back to the ToolsApproved-derived default or, for fresh local
+	// sessions, to the author-declared config defaults. See
+	// [session.SafetyPolicy].
+	SafetyPolicy session.SafetyPolicy `json:"safety_policy,omitempty"`
+	// SafetyExplicit marks a SafetyPolicy chosen explicitly on the command
+	// line (--safety / --yolo) rather than resolved from alias or
+	// user-settings defaults. Resuming a stored session only honours
+	// explicit values: defaults must never replace the persisted mode.
+	// Not serialized: the remote protocol has no resume path yet (--remote
+	// is mutually exclusive with --session).
+	SafetyExplicit    bool                 `json:"-"`
 	HideToolResults   bool                 `json:"hide_tool_results"`
 	SessionDB         string               `json:"session_db,omitempty"`
 	ResumeSessionID   string               `json:"resume_session_id,omitempty"`

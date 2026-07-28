@@ -42,6 +42,7 @@ type Agent struct {
 	addEnvironmentInfo      bool
 	addDescriptionParameter bool
 	redactSecrets           bool
+	safety                  latest.SafetyMode // Author-declared safety-mode default for new sessions; empty when unset
 	maxIterations           int
 	maxConsecutiveToolCalls int
 	maxOldToolCallTokens    int
@@ -112,6 +113,15 @@ func (a *Agent) RedactSecrets() bool {
 
 func (a *Agent) MaxIterations() int {
 	return a.maxIterations
+}
+
+// Safety returns the safety-mode default the agent's author declared in
+// its config (agents.<name>.safety), or empty when unset. It is a
+// default only: any user-owned choice (CLI flags, alias options, user
+// settings) takes precedence when a session is created, and it never
+// replaces the mode stored on a resumed session.
+func (a *Agent) Safety() latest.SafetyMode {
+	return a.safety
 }
 
 func (a *Agent) MaxConsecutiveToolCalls() int {

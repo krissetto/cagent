@@ -432,6 +432,39 @@ func TestSessionManager_SetSessionAgentModel_RuntimeFailureLeavesStateUntouched(
 	assert.Equal(t, []string{"openai/gpt-4o"}, sess.CustomModelsUsed)
 }
 
+// SetSessionAgentModel persists a partial clone of the live session; a
+// clone that drops SafetyPolicy would silently reset a strict/balanced
+// session to the legacy default on the next reload, breaking the
+// guarantee that resumes preserve the chosen safety mode.
+func TestSessionManager_SetSessionAgentModel_PreservesSafetyPolicy(t *testing.T) {
+	t.Parallel()
+
+	for _, policy := range []session.SafetyPolicy{session.SafetyPolicyStrict, session.SafetyPolicyBalanced} {
+		t.Run(string(policy), func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			store := session.NewInMemorySessionStore()
+			sess := session.New(session.WithSafetyPolicy(policy))
+			require.NoError(t, store.AddSession(ctx, sess))
+
+			fake := newModelSwitchingRuntime(nil)
+
+			sm := NewSessionManager(ctx, config.Sources{}, store, 0, &config.RuntimeConfig{})
+			sm.AttachRuntime(t.Context(), sess.ID, fake, sess)
+
+			_, _, err := sm.SetSessionAgentModel(ctx, sess.ID, "openai/gpt-4o")
+			require.NoError(t, err)
+
+			stored, err := store.GetSession(ctx, sess.ID)
+			require.NoError(t, err)
+			assert.Equal(t, policy, stored.GetSafetyPolicy(),
+				"a model switch must not reset the persisted safety mode")
+			assert.Equal(t, "openai/gpt-4o", stored.AgentModelOverrides["root"])
+		})
+	}
+}
+
 // Server-side errors (store-write failures, runtime errors that aren't
 // the well-known sentinels) must be reported as 500, not 400. 400 is
 // reserved for client-side mistakes like an invalid request body.

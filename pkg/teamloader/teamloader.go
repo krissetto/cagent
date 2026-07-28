@@ -310,6 +310,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			agent.WithAddEnvironmentInfo(agentConfig.AddEnvironmentInfo),
 			agent.WithAddDescriptionParameter(agentConfig.AddDescriptionParameter),
 			agent.WithRedactSecrets(agentConfig.RedactSecretsEnabled()),
+			agent.WithSafety(agentConfig.Safety),
 			agent.WithAddPromptFiles(promptFiles),
 			agent.WithMaxIterations(agentConfig.MaxIterations),
 			agent.WithMaxConsecutiveToolCalls(agentConfig.MaxConsecutiveToolCalls),
@@ -488,11 +489,19 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		}
 	}
 
+	// runtime.safety is a config-wide session default; it travels on the
+	// team so session constructors can consult it without the raw config.
+	var runtimeSafety latest.SafetyMode
+	if cfg.Runtime != nil {
+		runtimeSafety = cfg.Runtime.Safety
+	}
+
 	return &LoadResult{
 		Team: team.New(
 			team.WithAgents(agents...),
 			team.WithPermissions(permChecker),
 			team.WithAgentConfigs(agentConfigs),
+			team.WithRuntimeSafety(runtimeSafety),
 		),
 		Models:             cfg.Models,
 		Providers:          cfg.Providers,

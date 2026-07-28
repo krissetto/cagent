@@ -28,7 +28,8 @@ $ docker agent run [config] [message...] [flags]
 | Flag                                    | Description                                                                                                                               |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `-a, --agent <name>`                    | Run a specific agent from the config                                                                                                      |
-| `--yolo`                                | Auto-approve tool calls (unless explicitly denied)                                                                                        |
+| `--yolo`                                | Auto-approve tool calls (unless explicitly denied). Legacy alias for `--safety autonomous`.                                              |
+| `--safety <mode>`                       | Safety mode for tool approval: `strict` (ask for everything), `balanced` (auto-approve safe calls), or `autonomous` (approve everything). Wins over `--yolo` when both are given. Without the flag, the mode falls back to alias/user-config defaults, then the agent YAML's `agents.<name>.safety` / `runtime.safety`; a resumed session keeps its stored mode unless `--safety`/`--yolo` is passed explicitly. See [Safety Modes](../../configuration/permissions/index.md#safety-modes). |
 | `--model <ref>`                         | Override model(s). Use `provider/model` for all agents, or `agent=provider/model` for specific agents. Comma-separate multiple overrides. |
 | `--session <id>`                        | Resume a previous session. Supports relative refs (`-1` = newest by creation time, `-2` = second-newest, … — creation order, not last-used). An explicit ID that does not exist yet is created with that ID, so a supervisor can own the session ID upfront and reuse it across runs. |
 | `-s, --session-db <path>`               | Path to the SQLite session database (default: `<data-dir>/session.db`, so `~/.cagent/session.db` unless `--data-dir` is set)              |
@@ -506,6 +507,7 @@ $ docker agent alias add other ociReference
 
 # Add an alias with runtime options
 $ docker agent alias add yolo-coder myorg/coder --yolo
+$ docker agent alias add careful-coder myorg/coder --safety balanced
 $ docker agent alias add fast-coder myorg/coder --model openai/gpt-4o-mini
 $ docker agent alias add safe-coder myorg/coder --sandbox
 $ docker agent alias add turbo myorg/coder --yolo --model anthropic/claude-sonnet-4-5
@@ -517,10 +519,13 @@ $ docker agent run yolo-coder
 
 **Alias Options:** Aliases can include runtime options that apply automatically when used:
 
-- `--yolo` — Auto-approve tool calls (unless explicitly denied) when running the alias
+- `--yolo` — Auto-approve tool calls (unless explicitly denied) when running the alias. Legacy alias for `--safety autonomous`.
+- `--safety <mode>` — Default [safety mode](../../configuration/permissions/index.md#safety-modes) (`strict`, `balanced`, or `autonomous`) when running the alias. Wins over the alias's `yolo` option; both are stored declaratively in the user config (`aliases.<name>.safety` / `aliases.<name>.yolo`), so you can also edit them there by hand.
 - `--model <ref>` — Override the model for the alias
 - `--hide-tool-results` — Hide tool call results in the TUI when running the alias
 - `--sandbox` — Always run the alias inside a [Docker sandbox](../../configuration/sandbox/index.md)
+
+Alias safety options are defaults for new sessions: an explicit `--safety`/`--yolo` on the command line wins over them, they win over `settings.safety`/`settings.YOLO` and over anything declared in the agent YAML, and they never change the mode of a resumed session.
 
 When listing aliases, options are shown in brackets:
 
