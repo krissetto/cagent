@@ -29,8 +29,16 @@ import (
 // the TUI (create, update, set-status, delete). Those writes take a
 // cross-process file lock, so a lock wedged by another process must surface
 // as an actionable timeout notification instead of freezing the event loop
-// indefinitely. Reads never take that lock and stay unbounded.
+// indefinitely.
 const defaultPlanMutationTimeout = 5 * time.Second
+
+// defaultPlanReadTimeout bounds every plan read issued from the TUI (list,
+// get, export, and the read preparing an edit). Reads never take the plans
+// lock, but storage can still wedge (network filesystem, dying disk); the
+// deliberately generous bound turns a stuck read into an actionable
+// notification instead of dialogs that never load, and guarantees the
+// refresh pipeline's in-flight flag is always cleared.
+const defaultPlanReadTimeout = 10 * time.Second
 
 // WithPlansService injects the plans host service, replacing the lazily
 // built default over plan.SharedStorage(). Intended for tests, which run
@@ -48,6 +56,13 @@ func WithPlansService(svc plans.Service) Option {
 // timeout scenarios fast.
 func (m *appModel) planMutationTimeoutOrDefault() time.Duration {
 	return cmp.Or(m.planMutationTimeout, defaultPlanMutationTimeout)
+}
+
+// planReadTimeoutOrDefault returns the read timeout for this model, falling
+// back to the package default. Tests set the field to keep timeout scenarios
+// fast.
+func (m *appModel) planReadTimeoutOrDefault() time.Duration {
+	return cmp.Or(m.planReadTimeout, defaultPlanReadTimeout)
 }
 
 // plansService returns the host-facing plan service, building it on first
@@ -74,8 +89,10 @@ func (m *appModel) currentPlanSessionID() string {
 	return ""
 }
 
-func (m *appModel) loadPlanList() (plans.ListResult, error) {
-	return m.plansService().List(m.ctx(), plans.ListOptions{SessionID: m.currentPlanSessionID()})
+// planListOptions snapshots the listing options from model state; commands
+// run off the event loop and must not touch the model.
+func (m *appModel) planListOptions() plans.ListOptions {
+	return plans.ListOptions{SessionID: m.currentPlanSessionID()}
 }
 
 // planDialogOpen reports whether any dialog of the /plans flow is on the
@@ -89,38 +106,131 @@ func (m *appModel) planDialogOpen() bool {
 }
 
 func (m *appModel) handleShowPlanBrowser() (tea.Model, tea.Cmd) {
-	result, err := m.loadPlanList()
-	if err != nil {
-		return m, planErrorCmd(err)
+	svc, ctx, opts := m.plansService(), m.ctx(), m.planListOptions()
+	timeout := m.planReadTimeoutOrDefault()
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		result, err := svc.List(ctx, opts)
+		return planBrowserLoadedMsg{sessionID: opts.SessionID, result: result, err: err}
 	}
-	cmds := []tea.Cmd{core.CmdHandler(dialog.OpenDialogMsg{Model: dialog.NewPlanBrowserDialog(result)})}
-	cmds = append(cmds, planWarningsCmds(result.Warnings)...)
+}
+
+// handlePlanBrowserLoaded opens the /plans browser with the completed
+// listing. A result whose session no longer matches the active one is
+// dropped: the user switched tabs while the read was in flight, and popping
+// a browser that lists the previous tab's session plan would mislead.
+func (m *appModel) handlePlanBrowserLoaded(msg planBrowserLoadedMsg) (tea.Model, tea.Cmd) {
+	if msg.sessionID != m.currentPlanSessionID() {
+		return m, nil
+	}
+	if msg.err != nil {
+		cmd := m.planReadFailureCmd(msg.err)
+		return m, cmd
+	}
+	cmds := []tea.Cmd{core.CmdHandler(dialog.OpenDialogMsg{Model: dialog.NewPlanBrowserDialog(msg.result)})}
+	cmds = append(cmds, planWarningsCmds(msg.result.Warnings)...)
 	return m, tea.Sequence(cmds...)
 }
 
 func (m *appModel) handleRefreshPlans() (tea.Model, tea.Cmd) {
-	return m, tea.Sequence(m.planRefreshCmds(true)...)
+	cmd := m.planRefreshCmd(true)
+	return m, cmd
 }
 
-// planRefreshCmds reloads plan data into the open plan dialogs: fresh rows
-// for the browser and fresh content for an open detail dialog. The data
-// messages are broadcast so a browser buried under the detail updates too.
-func (m *appModel) planRefreshCmds(notifyWarnings bool) []tea.Cmd {
-	cmds := m.planListRefreshCmds(notifyWarnings)
-	cmds = append(cmds, m.planDetailRefreshCmds()...)
+// planRefreshCmd returns a command that reloads plan data for the open plan
+// dialogs off the event loop: fresh rows for the browser and fresh content
+// for every open detail dialog, buried ones included. The reads run in the
+// command — never in Update, which a slow disk would stall — and report back
+// as one planRefreshedMsg so the data is applied in a deterministic order.
+// At most one reload runs at a time: requests arriving while one is in
+// flight are coalesced into a single follow-up reload launched when the
+// in-flight result lands, so event bursts cannot pile up redundant reads.
+// Returns nil when the request was coalesced.
+func (m *appModel) planRefreshCmd(notifyWarnings bool) tea.Cmd {
+	if m.planRefreshInFlight {
+		m.planRefreshQueued = true
+		m.planRefreshQueuedWarnings = m.planRefreshQueuedWarnings || notifyWarnings
+		return nil
+	}
+	m.planRefreshInFlight = true
+	svc, ctx, opts := m.plansService(), m.ctx(), m.planListOptions()
+	timeout := m.planReadTimeoutOrDefault()
+	refs := m.openPlanDetailRefs()
+	return func() tea.Msg {
+		// One shared deadline for the whole reload: however wedged storage
+		// is, the result always lands and clears the in-flight flag, so the
+		// refresh pipeline can never get stuck.
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		msg := planRefreshedMsg{notifyWarnings: notifyWarnings}
+		msg.list, msg.listErr = svc.List(ctx, opts)
+		for _, ref := range refs {
+			p, err := svc.Get(ctx, ref)
+			msg.details = append(msg.details, planDetailFetch{ref: ref, plan: p, err: err})
+		}
+		return msg
+	}
+}
+
+// appendPlanRefreshCmd appends a coalesced refresh (without warning
+// notifications) when one was launched; a coalesced request adds nothing.
+func (m *appModel) appendPlanRefreshCmd(cmds []tea.Cmd) []tea.Cmd {
+	if cmd := m.planRefreshCmd(false); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	return cmds
 }
 
-func (m *appModel) planListRefreshCmds(notifyWarnings bool) []tea.Cmd {
-	result, err := m.loadPlanList()
-	if err != nil {
-		return []tea.Cmd{planErrorCmd(err)}
+// handlePlanRefreshed applies a completed reload to the open plan dialogs.
+// The list data (or its failure) surfaces unconditionally. Detail read
+// failures surface only for a detail that is the topmost dialog now, when
+// the result is applied: a plan that disappeared closes it — through the
+// targeted ClosePlanDetailMsg, so duplicated results for the same vanished
+// plan can never pop a second dialog — with one notification, and any other
+// failure notifies without closing. A buried detail cannot be closed
+// without popping the wrong dialog, and notifying on every refresh would
+// repeat the same warning indefinitely, so a buried failing ref is skipped
+// silently: it is notified (and closed if gone) once it surfaces and the
+// next refresh runs.
+func (m *appModel) handlePlanRefreshed(msg planRefreshedMsg) (tea.Model, tea.Cmd) {
+	m.planRefreshInFlight = false
+
+	var cmds []tea.Cmd
+	if msg.listErr != nil {
+		cmds = append(cmds, m.planReadFailureCmd(msg.listErr))
+	} else {
+		cmds = append(cmds, core.CmdHandler(dialog.PlanBrowserDataMsg{Result: msg.list}))
+		if msg.notifyWarnings {
+			cmds = append(cmds, planWarningsCmds(msg.list.Warnings)...)
+		}
 	}
-	cmds := []tea.Cmd{core.CmdHandler(dialog.PlanBrowserDataMsg{Result: result})}
-	if notifyWarnings {
-		cmds = append(cmds, planWarningsCmds(result.Warnings)...)
+	for _, fetch := range msg.details {
+		if fetch.err != nil {
+			if viewer, ok := m.dialogMgr.TopDialog().(dialog.PlanDetailViewer); !ok || viewer.PlanRef() != fetch.ref {
+				continue
+			}
+			var notFound *plans.NotFoundError
+			if errors.As(fetch.err, &notFound) {
+				cmds = append(cmds, core.CmdHandler(dialog.ClosePlanDetailMsg{Ref: fetch.ref}))
+			}
+			cmds = append(cmds, m.planReadFailureCmd(fetch.err))
+			continue
+		}
+		cmds = append(cmds, core.CmdHandler(dialog.PlanDetailDataMsg{Plan: fetch.plan}))
 	}
-	return cmds
+
+	// Replay the requests that arrived while this reload was in flight as
+	// one follow-up reload.
+	if m.planRefreshQueued {
+		m.planRefreshQueued = false
+		notify := m.planRefreshQueuedWarnings
+		m.planRefreshQueuedWarnings = false
+		if cmd := m.planRefreshCmd(notify); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return m, tea.Sequence(cmds...)
 }
 
 // openPlanDetailRefs returns the refs shown by every open plan detail
@@ -137,59 +247,126 @@ func (m *appModel) openPlanDetailRefs() []plans.Ref {
 	return refs
 }
 
-// planDetailRefreshCmds re-fetches the plan shown by every open detail
-// dialog, buried ones included; the data messages are broadcast and each
-// detail applies only its own plan. Read failures surface only for the
-// detail that is the topmost dialog: a plan that disappeared closes it,
-// with one notification, and any other failure notifies without closing. A
-// buried detail cannot be closed without popping the wrong dialog, and
-// notifying on every refresh would repeat the same warning indefinitely, so
-// a buried failing ref is skipped silently: it is notified (and closed if
-// gone) once it surfaces and the next refresh runs.
-func (m *appModel) planDetailRefreshCmds() []tea.Cmd {
-	var cmds []tea.Cmd
-	for _, ref := range m.openPlanDetailRefs() {
-		p, err := m.plansService().Get(m.ctx(), ref)
-		if err != nil {
-			if viewer, ok := m.dialogMgr.TopDialog().(dialog.PlanDetailViewer); !ok || viewer.PlanRef() != ref {
-				continue
-			}
-			var notFound *plans.NotFoundError
-			if errors.As(err, &notFound) {
-				cmds = append(cmds, core.CmdHandler(dialog.CloseDialogMsg{}))
-			}
-			cmds = append(cmds, planErrorCmd(err))
-			continue
-		}
-		cmds = append(cmds, core.CmdHandler(dialog.PlanDetailDataMsg{Plan: p}))
-	}
-	return cmds
+// planDetailFetch is one detail dialog's re-fetched plan (or the failure to
+// fetch it) inside a planRefreshedMsg.
+type planDetailFetch struct {
+	ref  plans.Ref
+	plan plans.Plan
+	err  error
+}
+
+// planBrowserLoadedMsg reports the listing read that backs opening the
+// /plans browser. sessionID is the session the listing was requested for,
+// so a result that raced a tab switch can be told apart and dropped.
+type planBrowserLoadedMsg struct {
+	sessionID string
+	result    plans.ListResult
+	err       error
+}
+
+// planRefreshedMsg reports a completed asynchronous reload of the open plan
+// dialogs: the browser listing plus the full plan of every detail dialog
+// that was open when the reload started.
+type planRefreshedMsg struct {
+	list           plans.ListResult
+	listErr        error
+	details        []planDetailFetch
+	notifyWarnings bool
+}
+
+// planDetailLoadedMsg reports the read that backs opening a detail dialog.
+type planDetailLoadedMsg struct {
+	plan plans.Plan
+	err  error
+}
+
+// planExportResultMsg reports a completed asynchronous export to path.
+type planExportResultMsg struct {
+	path   string
+	result plans.ExportResult
+	// exists marks a refused export: the default path already existed.
+	exists bool
+	// statErr reports a failed overwrite pre-check; the export was never
+	// attempted.
+	statErr error
+	err     error
 }
 
 func (m *appModel) handleOpenPlanDetail(ref plans.Ref) (tea.Model, tea.Cmd) {
-	p, err := m.plansService().Get(m.ctx(), ref)
-	if err != nil {
-		return m, planErrorCmd(err)
+	svc, ctx := m.plansService(), m.ctx()
+	timeout := m.planReadTimeoutOrDefault()
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		p, err := svc.Get(ctx, ref)
+		return planDetailLoadedMsg{plan: p, err: err}
 	}
-	return m, core.CmdHandler(dialog.OpenDialogMsg{Model: dialog.NewPlanDetailDialog(p)})
 }
 
+// handlePlanDetailLoaded opens the detail dialog for a completed read. The
+// result is dropped when no plan dialog is open anymore: the detail was
+// requested from the browser, so after the user closed /plans while the
+// read was in flight no dialog may pop up out of nowhere.
+func (m *appModel) handlePlanDetailLoaded(msg planDetailLoadedMsg) (tea.Model, tea.Cmd) {
+	if !m.planDialogOpen() {
+		return m, nil
+	}
+	if msg.err != nil {
+		cmd := m.planReadFailureCmd(msg.err)
+		return m, cmd
+	}
+	return m, core.CmdHandler(dialog.OpenDialogMsg{Model: dialog.NewPlanDetailDialog(msg.plan)})
+}
+
+// handleExportPlan resolves the export destination from model state, then
+// runs the read and the file write in a command so a large plan or a slow
+// disk never stalls the event loop. At most one export per destination is
+// in flight: concurrent duplicates would race the no-overwrite pre-check
+// against the write and could both pass it. planExportsInFlight is only
+// touched here and in handlePlanExportResult — never from the command.
 func (m *appModel) handleExportPlan(ref plans.Ref) (tea.Model, tea.Cmd) {
 	path := filepath.Join(m.activeWorkingDir(), planExportFilename(ref))
-	// Refuse to overwrite: the default path is deterministic, so a repeat
-	// export must fail loudly instead of clobbering the previous file.
-	if _, err := os.Stat(path); err == nil {
-		return m, notification.ErrorCmd(
-			path + " already exists — move it away, or export to a custom path with 'docker agent plans export'.")
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return m, notification.ErrorCmd(fmt.Sprintf("Cannot export to %s: %v", path, err))
+	if _, inFlight := m.planExportsInFlight[path]; inFlight {
+		return m, notification.InfoCmd("An export to " + path + " is already running — wait for its result.")
 	}
+	if m.planExportsInFlight == nil {
+		m.planExportsInFlight = make(map[string]struct{})
+	}
+	m.planExportsInFlight[path] = struct{}{}
+	svc, ctx := m.plansService(), m.ctx()
+	timeout := m.planReadTimeoutOrDefault()
+	return m, func() tea.Msg {
+		msg := planExportResultMsg{path: path}
+		// Refuse to overwrite: the default path is deterministic, so a repeat
+		// export must fail loudly instead of clobbering the previous file.
+		if _, err := os.Stat(path); err == nil {
+			msg.exists = true
+			return msg
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			msg.statErr = err
+			return msg
+		}
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		msg.result, msg.err = svc.Export(ctx, plans.ExportRequest{Ref: ref, Path: path})
+		return msg
+	}
+}
 
-	result, err := m.plansService().Export(m.ctx(), plans.ExportRequest{Ref: ref, Path: path})
-	if err != nil {
-		return m, planErrorCmd(err)
+func (m *appModel) handlePlanExportResult(msg planExportResultMsg) (tea.Model, tea.Cmd) {
+	// Whatever the outcome, the destination is no longer being exported to.
+	delete(m.planExportsInFlight, msg.path)
+	switch {
+	case msg.exists:
+		return m, notification.ErrorCmd(
+			msg.path + " already exists — move it away, or export to a custom path with 'docker agent plans export'.")
+	case msg.statErr != nil:
+		return m, notification.ErrorCmd(fmt.Sprintf("Cannot export to %s: %v", msg.path, msg.statErr))
+	case msg.err != nil:
+		cmd := m.planReadFailureCmd(msg.err)
+		return m, cmd
 	}
-	return m, notification.SuccessCmd(fmt.Sprintf("Exported %s plan to %s (%d bytes)", result.Scope, result.Path, result.BytesWritten))
+	return m, notification.SuccessCmd(fmt.Sprintf("Exported %s plan to %s (%d bytes)", msg.result.Scope, msg.result.Path, msg.result.BytesWritten))
 }
 
 // planExportFilename is the deterministic default export target: the plan
@@ -279,7 +456,7 @@ func (m *appModel) handlePlanStatusResult(msg planStatusResultMsg) (tea.Model, t
 		return m, cmd
 	}
 	cmds := []tea.Cmd{notification.SuccessCmd(fmt.Sprintf("Status of %q set to %q (now v%d)", msg.plan.Name, msg.plan.Status, planVersionOf(msg.plan)))}
-	cmds = append(cmds, m.planRefreshCmds(false)...)
+	cmds = m.appendPlanRefreshCmd(cmds)
 	return m, tea.Sequence(cmds...)
 }
 
@@ -304,12 +481,14 @@ func (m *appModel) handlePlanDeleteResult(msg planDeleteResultMsg) (tea.Model, t
 	}
 	cmds := []tea.Cmd{notification.SuccessCmd(fmt.Sprintf("Deleted shared plan %q (was v%d)", msg.ref.Name, msg.expectedVersion))}
 	// A detail dialog showing the deleted plan has nothing left to show.
-	// The browser row is only removed by the refresh below — never before
-	// the service confirmed the delete.
+	// The targeted close re-checks the top when it is applied, so it can
+	// never pop anything but that exact detail. The browser row is only
+	// removed by the refresh below — never before the service confirmed the
+	// delete.
 	if viewer, ok := m.dialogMgr.TopDialog().(dialog.PlanDetailViewer); ok && viewer.PlanRef() == msg.ref {
-		cmds = append(cmds, core.CmdHandler(dialog.CloseDialogMsg{}))
+		cmds = append(cmds, core.CmdHandler(dialog.ClosePlanDetailMsg{Ref: msg.ref}))
 	}
-	cmds = append(cmds, m.planListRefreshCmds(false)...)
+	cmds = m.appendPlanRefreshCmd(cmds)
 	return m, tea.Sequence(cmds...)
 }
 
@@ -328,25 +507,78 @@ func (m *appModel) handleCreatePlan(name string) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// handleEditPlan prepares an editor-driven edit off the event loop: the
+// current plan is read and the draft file seeded with its content in a
+// command — wedged storage or a slow disk must never stall Update — and the
+// outcome reports back as a planEditReadyMsg.
 func (m *appModel) handleEditPlan(msg messages.EditPlanMsg) (tea.Model, tea.Cmd) {
-	p, err := m.plansService().Get(m.ctx(), msg.Ref)
-	if err != nil {
-		return m, planErrorCmd(err)
+	svc, ctx := m.plansService(), m.ctx()
+	timeout := m.planReadTimeoutOrDefault()
+	return m, func() tea.Msg {
+		ready := planEditReadyMsg{ref: msg.Ref, expectedVersion: msg.ExpectedVersion}
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		p, err := svc.Get(ctx, msg.Ref)
+		if err != nil {
+			ready.err = err
+			return ready
+		}
+		ready.currentVersion = planVersionOf(p)
+		if ready.currentVersion != msg.ExpectedVersion {
+			// No draft for a drifted base; handlePlanEditReady refreshes
+			// instead of editing.
+			return ready
+		}
+		ready.draftPath, ready.draftErr = planDraftFile("cagent-plan-"+msg.Ref.Name+"-*.md", p.Content)
+		return ready
+	}
+}
+
+// planEditReadyMsg reports the preparation behind an editor-driven edit:
+// the plan's current version and, when it still matches the version the
+// user saw, the draft file seeded with the plan's content.
+type planEditReadyMsg struct {
+	ref             plans.Ref
+	expectedVersion int
+	// currentVersion is the version read from storage. When it differs from
+	// expectedVersion no draft was created and the data on screen is
+	// refreshed instead of edited.
+	currentVersion int
+	draftPath      string
+	// draftErr reports a draft file that could not be created; the editor is
+	// never opened.
+	draftErr error
+	// err reports a failed plan read; nothing else was attempted.
+	err error
+}
+
+// handlePlanEditReady launches the external editor over the prepared draft,
+// or surfaces why there is nothing to edit.
+func (m *appModel) handlePlanEditReady(msg planEditReadyMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		cmd := m.planReadFailureCmd(msg.err)
+		return m, cmd
 	}
 	// The plan moved on since the version on screen: refresh instead of
 	// editing a base the user has not seen.
-	if planVersionOf(p) != msg.ExpectedVersion {
+	if msg.currentVersion != msg.expectedVersion {
 		cmds := []tea.Cmd{notification.WarningCmd(fmt.Sprintf(
 			"Plan %q is at v%d now (you read v%d). Data refreshed — review and press e again.",
-			p.Name, planVersionOf(p), msg.ExpectedVersion))}
-		cmds = append(cmds, m.planRefreshCmds(false)...)
+			msg.ref.Name, msg.currentVersion, msg.expectedVersion))}
+		cmds = m.appendPlanRefreshCmd(cmds)
 		return m, tea.Sequence(cmds...)
 	}
-	tmpPath, err := planDraftFile("cagent-plan-"+msg.Ref.Name+"-*.md", p.Content)
-	if err != nil {
-		return m, notification.ErrorCmd(fmt.Sprintf("Failed to create draft file: %v", err))
+	if msg.draftErr != nil {
+		return m, notification.ErrorCmd(fmt.Sprintf("Failed to create draft file: %v", msg.draftErr))
 	}
-	cmd := m.execPlanEditor(planEditorClosedMsg{ref: msg.Ref, expectedVersion: msg.ExpectedVersion, path: tmpPath})
+	// The user closed the plan dialogs while the edit was being prepared:
+	// taking over the terminal with an editor now would be disruptive. The
+	// draft holds only the stored content, so removing it loses nothing.
+	if !m.planDialogOpen() {
+		_ = os.Remove(msg.draftPath)
+		return m, nil
+	}
+	cmd := m.execPlanEditor(planEditorClosedMsg{ref: msg.ref, expectedVersion: msg.expectedVersion, path: msg.draftPath})
 	return m, cmd
 }
 
@@ -402,8 +634,11 @@ func (m *appModel) execPlanEditor(result planEditorClosedMsg) tea.Cmd {
 
 func (m *appModel) handlePlanEditorClosed(msg planEditorClosedMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
-		_ = os.Remove(msg.path)
-		return m, notification.ErrorCmd(fmt.Sprintf("Editor error: %v", msg.err))
+		// The editor may have failed after the user saved content (e.g. it
+		// exited non-zero); the draft is kept so no edit is ever lost.
+		return m, tea.Sequence(
+			notification.ErrorCmd(fmt.Sprintf("Editor error: %v", msg.err)),
+			notification.InfoCmd("Your draft is kept at "+msg.path))
 	}
 
 	// Both the draft read and the guarded write run in a command: reading in
@@ -496,7 +731,7 @@ func (m *appModel) handlePlanWriteResult(msg planWriteResultMsg) (tea.Model, tea
 		verb = "Created"
 	}
 	cmds := []tea.Cmd{notification.SuccessCmd(fmt.Sprintf("%s shared plan %q (now v%d)", verb, msg.plan.Name, planVersionOf(msg.plan)))}
-	cmds = append(cmds, m.planRefreshCmds(false)...)
+	cmds = m.appendPlanRefreshCmd(cmds)
 	return m, tea.Sequence(cmds...)
 }
 
@@ -519,7 +754,7 @@ func (m *appModel) planEditorFailureCmd(err error, draftPath string) tea.Cmd {
 				conflict.Name, conflict.Current, draftPath)
 		}
 		cmds := []tea.Cmd{notification.ErrorCmd(text)}
-		cmds = append(cmds, m.planRefreshCmds(false)...)
+		cmds = m.appendPlanRefreshCmd(cmds)
 		return tea.Sequence(cmds...)
 	}
 	return tea.Sequence(planErrorCmd(err), notification.InfoCmd("Your draft is kept at "+draftPath))
@@ -536,7 +771,7 @@ func (m *appModel) planWriteFailureCmd(err error) tea.Cmd {
 		cmds := []tea.Cmd{notification.ErrorCmd(fmt.Sprintf(
 			"Version conflict on %q: it changed to v%d since you read v%d. Data refreshed — review and retry.",
 			conflict.Name, conflict.Current, conflict.Expected))}
-		cmds = append(cmds, m.planRefreshCmds(false)...)
+		cmds = m.appendPlanRefreshCmd(cmds)
 		return tea.Sequence(cmds...)
 	}
 	return planErrorCmd(err)
@@ -553,6 +788,19 @@ func (m *appModel) planTimeoutCmd(err error) tea.Cmd {
 	return notification.ErrorCmd(fmt.Sprintf(
 		"Plan write timed out after %s — the plan store may be locked by another process. Retry shortly.",
 		m.planMutationTimeoutOrDefault()))
+}
+
+// planReadFailureCmd reports a failed plan read (list, get, export, or the
+// read preparing an edit), mapping a hit read deadline onto an actionable
+// timeout notification; every other failure goes through the typed
+// planErrorCmd notifications.
+func (m *appModel) planReadFailureCmd(err error) tea.Cmd {
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return planErrorCmd(err)
+	}
+	return notification.ErrorCmd(fmt.Sprintf(
+		"Plan read timed out after %s — plan storage may be unavailable. Retry shortly.",
+		m.planReadTimeoutOrDefault()))
 }
 
 // planVersionOf reads a shared plan's version defensively; the service
@@ -602,7 +850,7 @@ func planWarningsCmds(warnings []string) []tea.Cmd {
 
 // handleSessionPlanUpdatedEvent forwards the event to the chat page like any
 // runtime event and live-refreshes open plan dialogs when the active
-// session's plan changed.
+// session's plan changed. The refresh reads run in a command, never here.
 func (m *appModel) handleSessionPlanUpdatedEvent(msg *runtime.SessionPlanUpdatedEvent) (tea.Model, tea.Cmd) {
 	if name := msg.GetAgentName(); name != "" {
 		m.sessionState.SetCurrentAgentName(name)
@@ -610,7 +858,7 @@ func (m *appModel) handleSessionPlanUpdatedEvent(msg *runtime.SessionPlanUpdated
 	chatCmd := m.updateChatCmd(msg)
 	var refresh tea.Cmd
 	if m.planDialogOpen() && msg.SessionID == m.currentPlanSessionID() {
-		refresh = tea.Sequence(m.planRefreshCmds(false)...)
+		refresh = m.planRefreshCmd(false)
 	}
 	return m, tea.Batch(chatCmd, refresh)
 }
@@ -625,7 +873,7 @@ func (m *appModel) handlePlanChangedEvent(msg *runtime.PlanChangedEvent) (tea.Mo
 	chatCmd := m.updateChatCmd(msg)
 	var refresh tea.Cmd
 	if m.planDialogOpen() {
-		refresh = tea.Sequence(m.planRefreshCmds(false)...)
+		refresh = m.planRefreshCmd(false)
 	}
 	return m, tea.Batch(chatCmd, refresh)
 }

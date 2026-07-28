@@ -65,6 +65,9 @@ jobs:
       - name: Build
         run: task build
 
+      - name: Cross-compile plan storage
+        run: task check-plan-cross
+
       - name: Run tests
         run: |
           task test

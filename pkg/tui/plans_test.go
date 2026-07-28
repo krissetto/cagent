@@ -76,23 +76,31 @@ func sizeDialogs(t *testing.T, m *appModel) {
 
 // runPlanFlow drives msg through the model like the Bubble Tea runtime
 // would: produced commands run on the test goroutine and the typed results
-// of asynchronous plan mutations are dispatched back into Update. All other
-// produced messages are returned in order.
+// of asynchronous plan reads and mutations are dispatched back into Update.
+// All other produced messages are returned in order.
 func runPlanFlow(t *testing.T, m *appModel, msg tea.Msg) []tea.Msg {
 	t.Helper()
+	_, cmd := m.Update(msg)
+	return drainPlanFlow(t, m, cmd)
+}
+
+// drainPlanFlow executes cmd, feeding every produced plan result message
+// back into Update until the flow settles.
+func drainPlanFlow(t *testing.T, m *appModel, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
 	var out []tea.Msg
-	queue := []tea.Msg{msg}
+	queue := collectMsgs(cmd)
 	for len(queue) > 0 {
 		next := queue[0]
 		queue = queue[1:]
-		_, cmd := m.Update(next)
-		for _, produced := range collectMsgs(cmd) {
-			switch produced.(type) {
-			case planStatusResultMsg, planDeleteResultMsg, planWriteResultMsg:
-				queue = append(queue, produced)
-			default:
-				out = append(out, produced)
-			}
+		switch next.(type) {
+		case planStatusResultMsg, planDeleteResultMsg, planWriteResultMsg,
+			planBrowserLoadedMsg, planRefreshedMsg, planDetailLoadedMsg,
+			planEditReadyMsg, planExportResultMsg:
+			_, cmd := m.Update(next)
+			queue = append(queue, collectMsgs(cmd)...)
+		default:
+			out = append(out, next)
 		}
 	}
 	return out
@@ -106,6 +114,16 @@ func firstOfType[T any](msgs []tea.Msg) (T, bool) {
 	}
 	var zero T
 	return zero, false
+}
+
+func countOfType[T any](msgs []tea.Msg) int {
+	n := 0
+	for _, msg := range msgs {
+		if _, ok := msg.(T); ok {
+			n++
+		}
+	}
+	return n
 }
 
 func notificationTexts(msgs []tea.Msg) []string {
@@ -123,8 +141,7 @@ func TestHandleShowPlanBrowser_OpensDialog(t *testing.T) {
 	m, svc, _, _ := newPlansTestModel(t)
 	mustCreatePlan(t, svc, "release", "content")
 
-	_, cmd := m.Update(messages.ShowPlanBrowserMsg{})
-	msgs := collectMsgs(cmd)
+	msgs := runPlanFlow(t, m, messages.ShowPlanBrowserMsg{})
 	openMsg, ok := firstOfType[dialog.OpenDialogMsg](msgs)
 	require.True(t, ok, "/plans must open the browser dialog")
 
@@ -145,8 +162,7 @@ func TestPlanList_IncludesOnlyActiveSessionPlan(t *testing.T) {
 	_, err = sessionplan.WriteContent(sessionDir, staleSess.ID, "stale plan")
 	require.NoError(t, err)
 
-	_, cmd := m.Update(messages.RefreshPlansMsg{})
-	dataMsg, ok := firstOfType[dialog.PlanBrowserDataMsg](collectMsgs(cmd))
+	dataMsg, ok := firstOfType[dialog.PlanBrowserDataMsg](runPlanFlow(t, m, messages.RefreshPlansMsg{}))
 	require.True(t, ok)
 
 	names := make([]string, 0, len(dataMsg.Result.Plans))
@@ -258,8 +274,7 @@ func TestHandleExportPlan_RefusesOverwrite(t *testing.T) {
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	_, cmd := m.Update(messages.ExportPlanMsg{Ref: plans.SharedRef("release")})
-	msgs := collectMsgs(cmd)
+	msgs := runPlanFlow(t, m, messages.ExportPlanMsg{Ref: plans.SharedRef("release")})
 	note, ok := firstOfType[notification.ShowMsg](msgs)
 	require.True(t, ok)
 	assert.Equal(t, notification.TypeSuccess, note.Type)
@@ -271,8 +286,7 @@ func TestHandleExportPlan_RefusesOverwrite(t *testing.T) {
 
 	// Second export to the same default path must refuse to overwrite.
 	require.NoError(t, os.WriteFile(path, []byte("precious local edits"), 0o600))
-	_, cmd = m.Update(messages.ExportPlanMsg{Ref: plans.SharedRef("release")})
-	msgs = collectMsgs(cmd)
+	msgs = runPlanFlow(t, m, messages.ExportPlanMsg{Ref: plans.SharedRef("release")})
 	note, ok = firstOfType[notification.ShowMsg](msgs)
 	require.True(t, ok)
 	assert.Equal(t, notification.TypeError, note.Type)
@@ -291,8 +305,7 @@ func TestHandleExportPlan_SessionDefaultFilename(t *testing.T) {
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	_, cmd := m.Update(messages.ExportPlanMsg{Ref: plans.SessionRef(sess.ID)})
-	msgs := collectMsgs(cmd)
+	msgs := runPlanFlow(t, m, messages.ExportPlanMsg{Ref: plans.SessionRef(sess.ID)})
 	note, ok := firstOfType[notification.ShowMsg](msgs)
 	require.True(t, ok)
 	assert.Equal(t, notification.TypeSuccess, note.Type)
@@ -425,7 +438,7 @@ func TestHandleEditPlan_VersionDriftRefreshesInsteadOfEditing(t *testing.T) {
 	require.NoError(t, err)
 
 	_, cmd := m.Update(messages.EditPlanMsg{Ref: plans.SharedRef("release"), ExpectedVersion: 1})
-	msgs := collectMsgs(cmd)
+	msgs := drainPlanFlow(t, m, cmd)
 	texts := notificationTexts(msgs)
 	require.NotEmpty(t, texts)
 	assert.Contains(t, texts[0], "v2")
@@ -443,8 +456,7 @@ func TestSessionPlanUpdatedEvent_RefreshesOpenPlanDialogs(t *testing.T) {
 	_, err := sessionplan.WriteContent(sessionDir, sess.ID, "plan body")
 	require.NoError(t, err)
 
-	_, cmd := m.Update(runtime.SessionPlanUpdated(sess.ID, "plan body", "", "root"))
-	msgs := collectMsgs(cmd)
+	msgs := runPlanFlow(t, m, runtime.SessionPlanUpdated(sess.ID, "plan body", "", "root"))
 	dataMsg, ok := firstOfType[dialog.PlanBrowserDataMsg](msgs)
 	require.True(t, ok, "an open plan browser must live-refresh on session plan writes")
 	require.Len(t, dataMsg.Result.Plans, 1)
@@ -455,8 +467,8 @@ func TestSessionPlanUpdatedEvent_NoRefreshWithoutPlanDialog(t *testing.T) {
 	t.Parallel()
 	m, _, sess, _ := newPlansTestModel(t)
 
-	_, cmd := m.Update(runtime.SessionPlanUpdated(sess.ID, "plan body", "", "root"))
-	_, refreshed := firstOfType[dialog.PlanBrowserDataMsg](collectMsgs(cmd))
+	msgs := runPlanFlow(t, m, runtime.SessionPlanUpdated(sess.ID, "plan body", "", "root"))
+	_, refreshed := firstOfType[dialog.PlanBrowserDataMsg](msgs)
 	assert.False(t, refreshed, "no plan dialog open, nothing to refresh")
 }
 
@@ -466,8 +478,7 @@ func TestPlanChangedEvent_RefreshesOpenPlanDialogs(t *testing.T) {
 	mustCreatePlan(t, svc, "release", "content")
 	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
 
-	_, cmd := m.Update(runtime.PlanChanged("shared", "release", plan.ChangeActionWrite, 1, "root"))
-	msgs := collectMsgs(cmd)
+	msgs := runPlanFlow(t, m, runtime.PlanChanged("shared", "release", plan.ChangeActionWrite, 1, "root"))
 	dataMsg, ok := firstOfType[dialog.PlanBrowserDataMsg](msgs)
 	require.True(t, ok, "an open plan browser must live-refresh on shared plan mutations")
 	require.Len(t, dataMsg.Result.Plans, 1)
@@ -488,11 +499,11 @@ func TestPlanChangedEvent_BackgroundSessionStillRefreshes(t *testing.T) {
 
 	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
 
-	_, cmd := m.Update(messages.RoutedMsg{
+	msgs := runPlanFlow(t, m, messages.RoutedMsg{
 		SessionID: backgroundID,
 		Inner:     runtime.PlanChanged("shared", "release", plan.ChangeActionStatus, 2, "bg-agent"),
 	})
-	_, ok := firstOfType[dialog.PlanBrowserDataMsg](collectMsgs(cmd))
+	_, ok := firstOfType[dialog.PlanBrowserDataMsg](msgs)
 	assert.True(t, ok, "shared plans are scope-global: background mutations refresh the open browser")
 }
 
@@ -563,8 +574,7 @@ func TestHandleSetPlanStatus_WedgedLockTimesOutAsynchronously(t *testing.T) {
 
 	// The TUI stays responsive while the mutation is pending: a read-driven
 	// refresh is processed before the mutation command has even run.
-	_, refreshCmd := m.Update(messages.RefreshPlansMsg{})
-	_, ok := firstOfType[dialog.PlanBrowserDataMsg](collectMsgs(refreshCmd))
+	_, ok := firstOfType[dialog.PlanBrowserDataMsg](runPlanFlow(t, m, messages.RefreshPlansMsg{}))
 	assert.True(t, ok, "reads keep working while a mutation is pending")
 
 	// Running the command blocks on the wedged lock until the bounded
@@ -677,8 +687,7 @@ func TestPlanChangedEvent_RefreshesBuriedPlanDialogs(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, cmd := m.Update(runtime.PlanChanged("shared", "release", plan.ChangeActionWrite, 2, "root"))
-	msgs := collectMsgs(cmd)
+	msgs := runPlanFlow(t, m, runtime.PlanChanged("shared", "release", plan.ChangeActionWrite, 2, "root"))
 
 	listMsg, ok := firstOfType[dialog.PlanBrowserDataMsg](msgs)
 	require.True(t, ok, "a buried browser must still trigger a list refresh")
@@ -708,8 +717,7 @@ func TestSessionPlanUpdatedEvent_RefreshesBuriedBrowser(t *testing.T) {
 	_, err := sessionplan.WriteContent(sessionDir, sess.ID, "plan body")
 	require.NoError(t, err)
 
-	_, cmd := m.Update(runtime.SessionPlanUpdated(sess.ID, "plan body", "", "root"))
-	msgs := collectMsgs(cmd)
+	msgs := runPlanFlow(t, m, runtime.SessionPlanUpdated(sess.ID, "plan body", "", "root"))
 	dataMsg, ok := firstOfType[dialog.PlanBrowserDataMsg](msgs)
 	require.True(t, ok, "a buried plan browser must still live-refresh on session plan writes")
 	require.Len(t, dataMsg.Result.Plans, 1)
@@ -787,11 +795,10 @@ func TestPlanRefresh_BuriedDetailSuppressesErrorsUntilSurfaced(t *testing.T) {
 			// Repeated refreshes neither notify nor try to close the buried
 			// detail.
 			for range 2 {
-				_, cmd := m.Update(messages.RefreshPlansMsg{})
-				msgs := collectMsgs(cmd)
+				msgs := runPlanFlow(t, m, messages.RefreshPlansMsg{})
 				assert.Empty(t, notificationTexts(msgs), "a buried failing detail must not notify on refresh")
-				_, closed := firstOfType[dialog.CloseDialogMsg](msgs)
-				assert.False(t, closed, "a buried detail must never pop the covering dialog")
+				_, closed := firstOfType[dialog.ClosePlanDetailMsg](msgs)
+				assert.False(t, closed, "a buried detail must never be closed")
 			}
 
 			// The covering dialog closes, the failing detail surfaces: the
@@ -800,14 +807,636 @@ func TestPlanRefresh_BuriedDetailSuppressesErrorsUntilSurfaced(t *testing.T) {
 			updated, _ := m.dialogMgr.Update(dialog.CloseDialogMsg{})
 			m.dialogMgr = updated.(dialog.Manager)
 
-			_, cmd := m.Update(messages.RefreshPlansMsg{})
-			msgs := collectMsgs(cmd)
-			_, closed := firstOfType[dialog.CloseDialogMsg](msgs)
+			msgs := runPlanFlow(t, m, messages.RefreshPlansMsg{})
+			closeMsg, closed := firstOfType[dialog.ClosePlanDetailMsg](msgs)
 			assert.Equal(t, tt.wantClose, closed, "only a vanished plan closes the surfaced detail")
+			if closed {
+				assert.Equal(t, plans.SharedRef("release"), closeMsg.Ref, "the close must target the vanished detail")
+			}
 
 			texts := notificationTexts(msgs)
 			require.Len(t, texts, 1, "the surfaced failing detail notifies exactly once")
 			assert.Contains(t, texts[0], tt.wantText)
 		})
 	}
+}
+
+// TestPlanRefresh_DuplicateVanishedDetailClosesOnlyDetail reproduces the
+// adversarial double-close: two refreshes are requested while a detail's
+// plan has vanished, and both results are dispatched before either close is
+// applied, so each one still sees the detail on top and emits a targeted
+// close. Applying both must pop only the detail — never the browser
+// underneath. Notifications may repeat; the dialog stack must stay correct.
+func TestPlanRefresh_DuplicateVanishedDetailClosesOnlyDetail(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	p := mustCreatePlan(t, svc, "release", "content")
+	WithPlansService(&failingGetPlansService{
+		Service: svc,
+		failRef: plans.SharedRef("release"),
+		err:     &plans.NotFoundError{Scope: plans.ScopeShared, Name: "release"},
+	})(m)
+
+	sizeDialogs(t, m)
+	browser := dialog.NewPlanBrowserDialog(plans.ListResult{Plans: []plans.Plan{p}})
+	openDialog(t, m, browser)
+	openDialog(t, m, dialog.NewPlanDetailDialog(p))
+
+	// Two refreshes are requested back-to-back; the second coalesces behind
+	// the in-flight first one.
+	_, cmd1 := m.Update(messages.RefreshPlansMsg{})
+	require.NotNil(t, cmd1)
+	_, cmd2 := m.Update(messages.RefreshPlansMsg{})
+	assert.Nil(t, cmd2, "a refresh requested while one is in flight is coalesced")
+
+	// Handle the first result. It emits the first targeted close (the close
+	// is NOT applied yet) and replays the coalesced refresh, whose read runs
+	// here and yields the second result.
+	result1, ok := firstOfType[planRefreshedMsg](collectMsgs(cmd1))
+	require.True(t, ok)
+	_, cmd := m.Update(result1)
+	out1 := collectMsgs(cmd)
+	assert.Equal(t, 1, countOfType[dialog.ClosePlanDetailMsg](out1))
+	result2, ok := firstOfType[planRefreshedMsg](out1)
+	require.True(t, ok, "the coalesced refresh must be replayed")
+
+	// Handle the second result before the first close was applied: the
+	// detail is still on top, so a second close for the same ref is emitted.
+	_, cmd = m.Update(result2)
+	out2 := collectMsgs(cmd)
+	assert.Equal(t, 1, countOfType[dialog.ClosePlanDetailMsg](out2))
+
+	// Apply everything — both targeted closes included — like the runtime
+	// would. Only the detail may close; the browser survives as top.
+	for _, msg := range append(out1, out2...) {
+		if _, ok := msg.(planRefreshedMsg); ok {
+			continue // already handled above
+		}
+		_, _ = m.Update(msg)
+	}
+	require.True(t, m.dialogMgr.Open(), "the browser must survive both closes")
+	assert.Same(t, browser, m.dialogMgr.TopDialog(), "exactly one pop: the detail closed, the browser is top")
+}
+
+// TestPlanRefresh_CoalescesInFlightRequests proves refresh requests arriving
+// while a reload is in flight collapse into exactly one follow-up reload.
+func TestPlanRefresh_CoalescesInFlightRequests(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "content")
+
+	_, cmd1 := m.Update(messages.RefreshPlansMsg{})
+	require.NotNil(t, cmd1)
+	_, cmd2 := m.Update(messages.RefreshPlansMsg{})
+	assert.Nil(t, cmd2, "the second request coalesces behind the in-flight reload")
+	_, cmd3 := m.Update(messages.RefreshPlansMsg{})
+	assert.Nil(t, cmd3, "the third request folds into the same follow-up")
+
+	msgs := drainPlanFlow(t, m, cmd1)
+	assert.Equal(t, 2, countOfType[dialog.PlanBrowserDataMsg](msgs),
+		"the in-flight reload plus exactly one coalesced follow-up")
+
+	// The pipeline is idle again: a new request launches immediately.
+	_, cmd4 := m.Update(messages.RefreshPlansMsg{})
+	assert.NotNil(t, cmd4)
+}
+
+// TestHandlePlanEditorClosed_EditorErrorKeepsDraft proves an editor failure
+// (e.g. a non-zero exit after the user saved) never deletes the draft: the
+// content survives on disk and the notifications name both the error and
+// the kept path.
+func TestHandlePlanEditorClosed_EditorErrorKeepsDraft(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+
+	draft := filepath.Join(t.TempDir(), "draft.md")
+	require.NoError(t, os.WriteFile(draft, []byte("# saved before the editor failed"), 0o600))
+
+	msgs := runPlanFlow(t, m, planEditorClosedMsg{
+		ref:    plans.SharedRef("fresh"),
+		create: true,
+		path:   draft,
+		err:    errors.New("exit status 1"),
+	})
+	texts := notificationTexts(msgs)
+	require.Len(t, texts, 2)
+	assert.Contains(t, texts[0], "Editor error")
+	assert.Contains(t, texts[0], "exit status 1")
+	assert.Contains(t, texts[1], draft, "the notification must point at the kept draft")
+
+	data, err := os.ReadFile(draft)
+	require.NoError(t, err, "the draft must survive an editor error")
+	assert.Equal(t, "# saved before the editor failed", string(data))
+
+	_, err = svc.Get(t.Context(), plans.SharedRef("fresh"))
+	require.Error(t, err, "nothing may be written when the editor failed")
+}
+
+// --- Reads never run inline in Update -------------------------------------
+
+// blockingReadPlansService blocks every read until release is closed or the
+// read's context expires, counting the reads that started. It simulates
+// slow storage: if Update ran a read inline it would block forever on the
+// unreleased channel and fail the test by timeout, the same proof style as
+// the FIFO draft-read test. An expired context reports the deadline as a
+// typed storage error, exactly like real storage that respects
+// cancellation, so bounded-read tests never leak a blocked goroutine.
+type blockingReadPlansService struct {
+	plans.Service
+
+	readsStarted atomic.Int32
+	release      chan struct{}
+}
+
+func newBlockingReadPlansService(svc plans.Service) *blockingReadPlansService {
+	return &blockingReadPlansService{Service: svc, release: make(chan struct{})}
+}
+
+func (s *blockingReadPlansService) await(ctx context.Context, op string) error {
+	s.readsStarted.Add(1)
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return &plans.StorageError{Scope: plans.ScopeShared, Op: op, Err: ctx.Err()}
+	}
+}
+
+func (s *blockingReadPlansService) List(ctx context.Context, opts plans.ListOptions) (plans.ListResult, error) {
+	if err := s.await(ctx, "list"); err != nil {
+		return plans.ListResult{}, err
+	}
+	return s.Service.List(ctx, opts)
+}
+
+func (s *blockingReadPlansService) Get(ctx context.Context, ref plans.Ref) (plans.Plan, error) {
+	if err := s.await(ctx, "get"); err != nil {
+		return plans.Plan{}, err
+	}
+	return s.Service.Get(ctx, ref)
+}
+
+func (s *blockingReadPlansService) Export(ctx context.Context, req plans.ExportRequest) (plans.ExportResult, error) {
+	if err := s.await(ctx, "export"); err != nil {
+		return plans.ExportResult{}, err
+	}
+	return s.Service.Export(ctx, req)
+}
+
+// requireDeferredRead asserts Update produced a command without starting any
+// service read inline, then releases the blocked reads, runs the command,
+// and returns every message the settled flow produced.
+func requireDeferredRead(t *testing.T, m *appModel, blocking *blockingReadPlansService, msg tea.Msg) []tea.Msg {
+	t.Helper()
+	_, cmd := m.Update(msg)
+	require.NotNil(t, cmd, "Update must defer the read to a command")
+	assert.Zero(t, blocking.readsStarted.Load(), "Update must never read the plan service inline")
+
+	close(blocking.release)
+	return drainPlanFlow(t, m, cmd)
+}
+
+func TestHandleShowPlanBrowser_ReadsAsynchronously(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "content")
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+
+	msgs := requireDeferredRead(t, m, blocking, messages.ShowPlanBrowserMsg{})
+	_, ok := firstOfType[dialog.OpenDialogMsg](msgs)
+	assert.True(t, ok, "the browser opens once the deferred read completes")
+}
+
+func TestHandleRefreshPlans_ReadsAsynchronously(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	p := mustCreatePlan(t, svc, "release", "content")
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+
+	sizeDialogs(t, m)
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{p}})
+	openDialog(t, m, dialog.NewPlanDetailDialog(p))
+
+	msgs := requireDeferredRead(t, m, blocking, messages.RefreshPlansMsg{})
+	_, ok := firstOfType[dialog.PlanBrowserDataMsg](msgs)
+	assert.True(t, ok, "the browser rows arrive once the deferred reads complete")
+	detailMsg, ok := firstOfType[dialog.PlanDetailDataMsg](msgs)
+	require.True(t, ok, "the open detail is re-fetched off the event loop too")
+	assert.Equal(t, "content", detailMsg.Plan.Content)
+	assert.Equal(t, int32(2), blocking.readsStarted.Load(), "one List plus one Get for the open detail")
+}
+
+func TestHandleOpenPlanDetail_ReadsAsynchronously(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "content")
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+
+	// The detail is requested from an open browser; its result is dropped
+	// once no plan dialog is open anymore.
+	sizeDialogs(t, m)
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
+
+	msgs := requireDeferredRead(t, m, blocking, messages.OpenPlanDetailMsg{Ref: plans.SharedRef("release")})
+	openMsg, ok := firstOfType[dialog.OpenDialogMsg](msgs)
+	require.True(t, ok, "the detail opens once the deferred read completes")
+	viewer, ok := openMsg.Model.(dialog.PlanDetailViewer)
+	require.True(t, ok)
+	assert.Equal(t, plans.SharedRef("release"), viewer.PlanRef())
+}
+
+func TestHandleExportPlan_ExportsAsynchronously(t *testing.T) {
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "the content")
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	path := filepath.Join(workDir, "release.md")
+
+	_, cmd := m.Update(messages.ExportPlanMsg{Ref: plans.SharedRef("release")})
+	require.NotNil(t, cmd, "Update must defer the export to a command")
+	assert.Zero(t, blocking.readsStarted.Load(), "Update must never read the plan service inline")
+	_, err := os.Stat(path)
+	assert.True(t, os.IsNotExist(err), "nothing may be written before the command runs")
+
+	close(blocking.release)
+	msgs := drainPlanFlow(t, m, cmd)
+	note, ok := firstOfType[notification.ShowMsg](msgs)
+	require.True(t, ok)
+	assert.Equal(t, notification.TypeSuccess, note.Type)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "the content", string(data))
+}
+
+func TestPlanChangedEvent_RefreshReadsAsynchronously(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "content")
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+
+	sizeDialogs(t, m)
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
+
+	msgs := requireDeferredRead(t, m, blocking, runtime.PlanChanged("shared", "release", plan.ChangeActionWrite, 1, "root"))
+	_, ok := firstOfType[dialog.PlanBrowserDataMsg](msgs)
+	assert.True(t, ok, "the event-driven refresh lands once the deferred read completes")
+}
+
+// TestHandleEditPlan_PreparesAsynchronously proves the whole edit
+// preparation — the Get and the draft-file write seeded from it — runs in a
+// command, never inline in Update: with reads blocked, Update returns
+// immediately and no read has started (and since the draft is seeded from
+// the read plan, no draft was written either).
+func TestHandleEditPlan_PreparesAsynchronously(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matching version drafts and launches the editor", func(t *testing.T) {
+		t.Parallel()
+		m, svc, _, _ := newPlansTestModel(t)
+		p := mustCreatePlan(t, svc, "release", "v1 content")
+		blocking := newBlockingReadPlansService(svc)
+		WithPlansService(blocking)(m)
+
+		sizeDialogs(t, m)
+		openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{p}})
+
+		_, cmd := m.Update(messages.EditPlanMsg{Ref: plans.SharedRef("release"), ExpectedVersion: 1})
+		require.NotNil(t, cmd, "Update must defer the edit preparation to a command")
+		assert.Zero(t, blocking.readsStarted.Load(), "Update must never read the plan service inline")
+
+		close(blocking.release)
+		result := cmd()
+		ready, ok := result.(planEditReadyMsg)
+		require.True(t, ok, "the command must yield a typed result, got %T", result)
+		require.NoError(t, ready.err)
+		require.NoError(t, ready.draftErr)
+		require.NotEmpty(t, ready.draftPath)
+		t.Cleanup(func() { _ = os.Remove(ready.draftPath) })
+
+		data, err := os.ReadFile(ready.draftPath)
+		require.NoError(t, err)
+		assert.Equal(t, "v1 content", string(data), "the draft must be seeded with the current content")
+
+		// Dispatching the result launches the editor — an exec command, not a
+		// notification — and the draft survives for the editor to open.
+		_, editorCmd := m.Update(result)
+		require.NotNil(t, editorCmd, "the prepared edit must launch the editor")
+		assert.Empty(t, notificationTexts(collectMsgs(editorCmd)), "the launch must not be a notification")
+		_, err = os.Stat(ready.draftPath)
+		require.NoError(t, err, "the draft must be kept for the editor")
+	})
+
+	t.Run("version drift refreshes instead of editing", func(t *testing.T) {
+		t.Parallel()
+		m, svc, _, _ := newPlansTestModel(t)
+		mustCreatePlan(t, svc, "release", "v1 content")
+		v1 := 1
+		_, err := svc.Update(t.Context(), plans.UpdateRequest{
+			Ref: plans.SharedRef("release"), Content: "v2 content", ExpectedVersion: &v1,
+		})
+		require.NoError(t, err)
+		blocking := newBlockingReadPlansService(svc)
+		WithPlansService(blocking)(m)
+
+		_, cmd := m.Update(messages.EditPlanMsg{Ref: plans.SharedRef("release"), ExpectedVersion: 1})
+		require.NotNil(t, cmd)
+		assert.Zero(t, blocking.readsStarted.Load(), "Update must never read the plan service inline")
+
+		close(blocking.release)
+		result := cmd()
+		ready, ok := result.(planEditReadyMsg)
+		require.True(t, ok, "the command must yield a typed result, got %T", result)
+		require.NoError(t, ready.err)
+		assert.Equal(t, 2, ready.currentVersion)
+		assert.Empty(t, ready.draftPath, "no draft may be created for a drifted base")
+
+		msgs := drainPlanFlow(t, m, func() tea.Msg { return result })
+		texts := notificationTexts(msgs)
+		require.NotEmpty(t, texts)
+		assert.Contains(t, texts[0], "v2")
+		_, refreshed := firstOfType[dialog.PlanBrowserDataMsg](msgs)
+		assert.True(t, refreshed, "version drift must refresh the data on screen")
+	})
+}
+
+// --- Concurrent duplicate exports -----------------------------------------
+
+// TestHandleExportPlan_DuplicateInFlightRefused proves two exports to the
+// same destination cannot race the no-overwrite pre-check against the
+// write: the second request — arriving before the first command has even
+// run — is refused with a notification and never starts an export, exactly
+// one write happens, and once it completed the pre-check refuses the
+// existing file.
+func TestHandleExportPlan_DuplicateInFlightRefused(t *testing.T) {
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "the content")
+	blocking := newBlockingReadPlansService(svc)
+	WithPlansService(blocking)(m)
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	path := filepath.Join(workDir, "release.md")
+
+	// Two exports of the same plan before the first command executes.
+	_, cmd1 := m.Update(messages.ExportPlanMsg{Ref: plans.SharedRef("release")})
+	require.NotNil(t, cmd1)
+	_, cmd2 := m.Update(messages.ExportPlanMsg{Ref: plans.SharedRef("release")})
+	require.NotNil(t, cmd2)
+
+	// The duplicate yields only the refusal notification — no export command.
+	dupMsgs := collectMsgs(cmd2)
+	assert.Zero(t, countOfType[planExportResultMsg](dupMsgs), "the duplicate must not start an export")
+	note, ok := firstOfType[notification.ShowMsg](dupMsgs)
+	require.True(t, ok, "the duplicate must be refused with a notification")
+	assert.Equal(t, notification.TypeInfo, note.Type)
+	assert.Contains(t, note.Text, path)
+	assert.Contains(t, note.Text, "already running")
+	assert.Zero(t, blocking.readsStarted.Load(), "no export may have reached the service yet")
+
+	// The first export completes: exactly one write happened.
+	close(blocking.release)
+	msgs := drainPlanFlow(t, m, cmd1)
+	note, ok = firstOfType[notification.ShowMsg](msgs)
+	require.True(t, ok)
+	assert.Equal(t, notification.TypeSuccess, note.Type)
+	assert.Equal(t, int32(1), blocking.readsStarted.Load(), "exactly one export reaches the service")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "the content", string(data))
+	assert.Empty(t, m.planExportsInFlight, "a completed export must clear its in-flight key")
+
+	// The destination is registrable again — and the no-overwrite pre-check
+	// now sees the exported file and refuses.
+	msgs = runPlanFlow(t, m, messages.ExportPlanMsg{Ref: plans.SharedRef("release")})
+	note, ok = firstOfType[notification.ShowMsg](msgs)
+	require.True(t, ok)
+	assert.Equal(t, notification.TypeError, note.Type)
+	assert.Contains(t, note.Text, "already exists")
+	assert.Empty(t, m.planExportsInFlight, "a refused export must clear its in-flight key too")
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "the content", string(data), "the existing file must never be overwritten")
+}
+
+// --- Bounded reads under wedged storage ------------------------------------
+
+// TestPlanReads_WedgedStorageTimesOut proves every plan read command is
+// bounded: against storage that never answers, Update stays responsive (no
+// read ever runs inline), the command returns a typed deadline result
+// within the configured read timeout instead of hanging forever, and
+// dispatching the result yields the actionable timeout notification and
+// clears any in-flight bookkeeping.
+//
+// Not parallel: the export case pins the working directory via t.Chdir.
+func TestPlanReads_WedgedStorageTimesOut(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  tea.Msg
+		// openBrowser puts a plan dialog on the stack for results that are
+		// dropped without one.
+		openBrowser bool
+		chdir       bool
+		resultErr   func(t *testing.T, result tea.Msg) error
+		after       func(t *testing.T, m *appModel)
+	}{
+		{
+			name: "show browser",
+			msg:  messages.ShowPlanBrowserMsg{},
+			resultErr: func(t *testing.T, result tea.Msg) error {
+				t.Helper()
+				msg, ok := result.(planBrowserLoadedMsg)
+				require.True(t, ok, "got %T", result)
+				return msg.err
+			},
+		},
+		{
+			name:        "open detail",
+			msg:         messages.OpenPlanDetailMsg{Ref: plans.SharedRef("release")},
+			openBrowser: true,
+			resultErr: func(t *testing.T, result tea.Msg) error {
+				t.Helper()
+				msg, ok := result.(planDetailLoadedMsg)
+				require.True(t, ok, "got %T", result)
+				return msg.err
+			},
+		},
+		{
+			name: "refresh",
+			msg:  messages.RefreshPlansMsg{},
+			resultErr: func(t *testing.T, result tea.Msg) error {
+				t.Helper()
+				msg, ok := result.(planRefreshedMsg)
+				require.True(t, ok, "got %T", result)
+				return msg.listErr
+			},
+			after: func(t *testing.T, m *appModel) {
+				t.Helper()
+				assert.False(t, m.planRefreshInFlight, "a timed-out reload must clear the in-flight flag")
+				_, cmd := m.Update(messages.RefreshPlansMsg{})
+				assert.NotNil(t, cmd, "the refresh pipeline must accept new requests after a timeout")
+			},
+		},
+		{
+			name:  "export",
+			msg:   messages.ExportPlanMsg{Ref: plans.SharedRef("release")},
+			chdir: true,
+			resultErr: func(t *testing.T, result tea.Msg) error {
+				t.Helper()
+				msg, ok := result.(planExportResultMsg)
+				require.True(t, ok, "got %T", result)
+				return msg.err
+			},
+			after: func(t *testing.T, m *appModel) {
+				t.Helper()
+				assert.Empty(t, m.planExportsInFlight, "a timed-out export must clear its in-flight key")
+			},
+		},
+		{
+			name: "edit",
+			msg:  messages.EditPlanMsg{Ref: plans.SharedRef("release"), ExpectedVersion: 1},
+			resultErr: func(t *testing.T, result tea.Msg) error {
+				t.Helper()
+				msg, ok := result.(planEditReadyMsg)
+				require.True(t, ok, "got %T", result)
+				return msg.err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, svc, _, _ := newPlansTestModel(t)
+			mustCreatePlan(t, svc, "release", "content")
+			blocking := newBlockingReadPlansService(svc) // never released: reads answer only via ctx
+			WithPlansService(blocking)(m)
+			m.planReadTimeout = 50 * time.Millisecond
+
+			if tt.openBrowser {
+				sizeDialogs(t, m)
+				openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
+			}
+			if tt.chdir {
+				t.Chdir(t.TempDir())
+			}
+
+			_, cmd := m.Update(tt.msg)
+			require.NotNil(t, cmd, "Update must defer the read to a command")
+			assert.Zero(t, blocking.readsStarted.Load(), "Update must never read the plan service inline")
+
+			start := time.Now()
+			result := cmd()
+			elapsed := time.Since(start)
+			assert.GreaterOrEqual(t, elapsed, 40*time.Millisecond, "the command waits for the bounded timeout")
+			assert.Less(t, elapsed, time.Second, "the bounded timeout must fire, not the 10s default or never")
+
+			err := tt.resultErr(t, result)
+			require.Error(t, err)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+
+			_, notifyCmd := m.Update(result)
+			texts := notificationTexts(collectMsgs(notifyCmd))
+			require.NotEmpty(t, texts, "the deadline must surface as a notification")
+			assert.Contains(t, texts[0], "timed out")
+			assert.Contains(t, texts[0], "unavailable")
+
+			if tt.after != nil {
+				tt.after(t, m)
+			}
+		})
+	}
+}
+
+// TestPlanRefresh_TimeoutClearsInFlightAndRunsQueued proves a timed-out
+// reload cannot wedge the refresh pipeline: the deadline result clears the
+// in-flight flag and the refresh that was coalesced behind it launches as
+// the follow-up reload.
+func TestPlanRefresh_TimeoutClearsInFlightAndRunsQueued(t *testing.T) {
+	t.Parallel()
+	m, svc, _, _ := newPlansTestModel(t)
+	mustCreatePlan(t, svc, "release", "content")
+	blocking := newBlockingReadPlansService(svc) // never released
+	WithPlansService(blocking)(m)
+	m.planReadTimeout = 50 * time.Millisecond
+
+	_, cmd1 := m.Update(messages.RefreshPlansMsg{})
+	require.NotNil(t, cmd1)
+	_, cmd2 := m.Update(messages.RefreshPlansMsg{})
+	assert.Nil(t, cmd2, "the second refresh coalesces behind the in-flight one")
+
+	result := cmd1()
+	refreshed, ok := result.(planRefreshedMsg)
+	require.True(t, ok, "the reload must report back despite wedged storage, got %T", result)
+	require.ErrorIs(t, refreshed.listErr, context.DeadlineExceeded)
+
+	_, cmd := m.Update(result)
+	assert.True(t, m.planRefreshInFlight, "the coalesced refresh must be relaunched as the follow-up")
+
+	out := collectMsgs(cmd)
+	texts := notificationTexts(out)
+	require.NotEmpty(t, texts)
+	assert.Contains(t, texts[0], "timed out")
+
+	followUp, ok := firstOfType[planRefreshedMsg](out)
+	require.True(t, ok, "the queued refresh must run once the timed-out reload lands")
+	require.ErrorIs(t, followUp.listErr, context.DeadlineExceeded)
+
+	_, _ = m.Update(followUp)
+	assert.False(t, m.planRefreshInFlight, "the pipeline must be idle again")
+}
+
+// --- Stale async results after the user moved on ---------------------------
+
+// TestStalePlanResults_Dropped proves slow read results cannot disrupt a
+// user who moved on: a detail result opens no dialog after /plans was
+// closed, a prepared edit launches no editor (and leaves no draft behind),
+// and a listing read for a previous tab's session opens no browser.
+func TestStalePlanResults_Dropped(t *testing.T) {
+	t.Parallel()
+
+	t.Run("detail result after /plans closed opens no dialog", func(t *testing.T) {
+		t.Parallel()
+		m, svc, _, _ := newPlansTestModel(t)
+		p := mustCreatePlan(t, svc, "release", "content")
+
+		// No plan dialog is open anymore when the read lands.
+		_, cmd := m.Update(planDetailLoadedMsg{plan: p})
+		assert.Nil(t, cmd, "a stale detail result must not open a dialog")
+	})
+
+	t.Run("edit result after /plans closed launches no editor", func(t *testing.T) {
+		t.Parallel()
+		m, _, _, _ := newPlansTestModel(t)
+		draft := filepath.Join(t.TempDir(), "draft.md")
+		require.NoError(t, os.WriteFile(draft, []byte("stored content"), 0o600))
+
+		_, cmd := m.Update(planEditReadyMsg{
+			ref:             plans.SharedRef("release"),
+			expectedVersion: 1,
+			currentVersion:  1,
+			draftPath:       draft,
+		})
+		assert.Nil(t, cmd, "a stale edit must not take over the terminal with an editor")
+		_, err := os.Stat(draft)
+		assert.True(t, os.IsNotExist(err), "the unused draft holds no user edits and is removed")
+	})
+
+	t.Run("browser listing for a switched session opens no dialog", func(t *testing.T) {
+		t.Parallel()
+		m, svc, _, _ := newPlansTestModel(t)
+		p := mustCreatePlan(t, svc, "release", "content")
+
+		_, cmd := m.Update(planBrowserLoadedMsg{
+			sessionID: "previous-tab-session",
+			result:    plans.ListResult{Plans: []plans.Plan{p}},
+		})
+		assert.Nil(t, cmd, "a listing read for another session must not open the browser")
+	})
 }

@@ -41,6 +41,16 @@ type PlanDetailDataMsg struct {
 // BroadcastToDialogs implements Broadcastable.
 func (PlanDetailDataMsg) BroadcastToDialogs() {}
 
+// ClosePlanDetailMsg closes the topmost dialog only when it is a plan detail
+// dialog showing exactly Ref. The manager checks the current top when the
+// message is applied — not when it was emitted — so duplicated closes for
+// the same vanished plan pop at most one dialog, and a close arriving after
+// the detail was already closed (or covered by another dialog) is a no-op
+// instead of popping the wrong dialog.
+type ClosePlanDetailMsg struct {
+	Ref plans.Ref
+}
+
 // PlanDialog is implemented by every dialog of the /plans flow, so the app
 // model can tell whether plan data is on screen and needs live refreshing.
 type PlanDialog interface {

@@ -951,7 +951,7 @@ func (s *FilesystemStorage) Upsert(ctx context.Context, req UpsertRequest) (Plan
 	// contended sentinel therefore never holds s.mu, so Get and List stay
 	// responsive in the meantime; every mutation takes the locks in this
 	// order, so they cannot deadlock. s.mu still serializes same-process
-	// writers where the sentinel lock is a no-op (js/wasm).
+	// writers where the sentinel lock is a no-op (js/wasm, wasip1, plan9).
 	release, err := acquireFileLock(ctx, filepath.Join(s.dir, lockFileName))
 	if err != nil {
 		return Plan{}, err

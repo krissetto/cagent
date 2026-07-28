@@ -124,6 +124,9 @@ func (d *manager) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	case CloseDialogMsg:
 		return d.handleClose()
 
+	case ClosePlanDetailMsg:
+		return d.handleClosePlanDetail(msg)
+
 	case CloseAllDialogsMsg:
 		return d.handleCloseAll()
 
@@ -301,6 +304,18 @@ func (d *manager) handleClose() (layout.Model, tea.Cmd) {
 		d.stack = d.stack[:len(d.stack)-1]
 	}
 	d.drag.active = false
+	return d, nil
+}
+
+// handleClosePlanDetail pops the top dialog only when it is a plan detail
+// viewer showing exactly msg.Ref; anything else (another dialog on top, a
+// detail for a different plan, an empty stack) is left untouched. Checking
+// at apply time makes the close idempotent: duplicates for the same vanished
+// plan cannot pop a second dialog.
+func (d *manager) handleClosePlanDetail(msg ClosePlanDetailMsg) (layout.Model, tea.Cmd) {
+	if viewer, ok := d.TopDialog().(PlanDetailViewer); ok && viewer.PlanRef() == msg.Ref {
+		return d.handleClose()
+	}
 	return d, nil
 }
 

@@ -98,10 +98,29 @@ type appModel struct {
 	// after path configuration; tests inject one via WithPlansService.
 	plansSvc plans.Service
 
-	// planMutationTimeout overrides the bounded timeout of plan persistence
-	// commands. Zero means defaultPlanMutationTimeout; tests set it per-model
-	// so timeout scenarios stay fast and parallel-safe.
+	// planMutationTimeout and planReadTimeout override the bounded timeouts
+	// of plan persistence and plan read commands. Zero means the package
+	// defaults (defaultPlanMutationTimeout / defaultPlanReadTimeout); tests
+	// set them per-model so timeout scenarios stay fast and parallel-safe.
 	planMutationTimeout time.Duration
+	planReadTimeout     time.Duration
+
+	// planRefreshInFlight coalesces plan-dialog refreshes: at most one read
+	// command runs at a time, and requests arriving meanwhile only mark
+	// planRefreshQueued (plus planRefreshQueuedWarnings when the request
+	// wanted listing warnings notified) so a single follow-up reload is
+	// launched when the in-flight result lands. All three fields are touched
+	// exclusively from Update.
+	planRefreshInFlight       bool
+	planRefreshQueued         bool
+	planRefreshQueuedWarnings bool
+
+	// planExportsInFlight tracks the destination paths of running plan
+	// export commands, so a duplicate export cannot race the no-overwrite
+	// pre-check against the write. Keys are registered in handleExportPlan
+	// and always cleared in handlePlanExportResult; the map is touched
+	// exclusively from Update.
+	planExportsInFlight map[string]struct{}
 
 	// Per-session chat pages (kept alive for streaming continuity)
 	chatPages     map[string]chat.Page
@@ -1056,7 +1075,7 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// --- Dialog lifecycle ---
 
-	case dialog.OpenDialogMsg, dialog.CloseDialogMsg:
+	case dialog.OpenDialogMsg, dialog.CloseDialogMsg, dialog.ClosePlanDetailMsg:
 		return m.forwardDialog(msg)
 
 	case dialog.ExitConfirmedMsg:
@@ -1320,6 +1339,22 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case planWriteResultMsg:
 		return m.handlePlanWriteResult(msg)
 
+	// Outcomes of the asynchronous plan read commands.
+	case planBrowserLoadedMsg:
+		return m.handlePlanBrowserLoaded(msg)
+
+	case planRefreshedMsg:
+		return m.handlePlanRefreshed(msg)
+
+	case planDetailLoadedMsg:
+		return m.handlePlanDetailLoaded(msg)
+
+	case planEditReadyMsg:
+		return m.handlePlanEditReady(msg)
+
+	case planExportResultMsg:
+		return m.handlePlanExportResult(msg)
+
 	case dialog.PlanBrowserDataMsg, dialog.PlanDetailDataMsg:
 		return m.forwardDialog(msg)
 
@@ -1499,7 +1534,7 @@ func (m *appModel) handleRoutedMsg(msg messages.RoutedMsg) (tea.Model, tea.Cmd) 
 	// Shared plans are scope-global: a mutation from a background tab's agent
 	// must still live-refresh the plan dialogs open on the active tab.
 	if _, isPlanChange := msg.Inner.(*runtime.PlanChangedEvent); isPlanChange && m.planDialogOpen() {
-		return m, tea.Batch(page.TakeRoutedTimers(), tea.Sequence(m.planRefreshCmds(false)...))
+		return m, tea.Batch(page.TakeRoutedTimers(), m.planRefreshCmd(false))
 	}
 	return m, page.TakeRoutedTimers()
 }
