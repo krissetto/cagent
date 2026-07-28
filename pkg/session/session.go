@@ -107,6 +107,12 @@ type Item struct {
 	// for diagnostics.
 	Error *Error `json:"error,omitempty"`
 
+	// Termination holds a structured, non-error run stop marker (e.g. a
+	// budget ceiling) recorded by the evaluation pipeline. Storing it as an
+	// item keeps the stop's chronological position across reloads and
+	// JSON exports. Absent for runs that ended normally or with an error.
+	Termination *Termination `json:"termination,omitempty"`
+
 	// Summary is a summary of the session up until this point
 	Summary string `json:"summary,omitempty"`
 
@@ -153,6 +159,11 @@ func (si *Item) IsError() bool {
 	return si.Error != nil
 }
 
+// IsTermination returns true if this item contains a termination marker
+func (si *Item) IsTermination() bool {
+	return si.Termination != nil
+}
+
 // Error records an agent failure that occurred during a run. It is stored as
 // a session item so the error is visible when the session is reopened and is
 // included in a shared JSON session export for diagnostics.
@@ -166,6 +177,36 @@ type Error struct {
 	AgentName string `json:"agent_name,omitempty"`
 	// CreatedAt is the RFC3339 timestamp of the failure.
 	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// TerminationReasonBudgetExceeded is the only recognized Termination
+// reason: the runtime's native budget_exceeded event.
+const TerminationReasonBudgetExceeded = "budget_exceeded"
+
+// Termination records a structured, non-error run stop observed during an
+// evaluation, currently only the runtime's budget_exceeded event. It is an
+// allow-listed copy of that event: all fields are plain strings, only
+// Reason is required, and producers omit optional fields whose source
+// value is missing or unusable. It deliberately never carries session,
+// agent, prompt, or tool data.
+type Termination struct {
+	// Reason is the stop reason; the only recognized value is
+	// [TerminationReasonBudgetExceeded].
+	Reason string `json:"reason"`
+	// Budget names the budget that tripped: "run" for the top-level
+	// `budget:`, otherwise the key under `budgets:`.
+	Budget string `json:"budget,omitempty"`
+	// Limit is the limit kind that tripped ("max_cost", "max_tokens",
+	// "max_time").
+	Limit string `json:"limit,omitempty"`
+	// Used and Max are the human-readable amounts reported by the runtime.
+	Used string `json:"used,omitempty"`
+	Max  string `json:"max,omitempty"`
+	// ConfigPath is the YAML path of the limit that tripped, e.g.
+	// "budgets.tight.max_cost".
+	ConfigPath string `json:"config_path,omitempty"`
+	// Message is the human-readable stop message reported by the runtime.
+	Message string `json:"message,omitempty"`
 }
 
 // Session represents the agent's state including conversation history and variables
@@ -510,6 +551,11 @@ func NewErrorItem(e *Error) Item {
 	return Item{Error: e}
 }
 
+// NewTerminationItem creates a SessionItem containing a termination marker
+func NewTerminationItem(t *Termination) Item {
+	return Item{Termination: t}
+}
+
 // EvalResult contains the evaluation scoring outcome for a session.
 type EvalResult struct {
 	Passed       bool             `json:"passed"`
@@ -519,6 +565,11 @@ type EvalResult struct {
 	Cost         float64          `json:"cost"`
 	OutputTokens int64            `json:"output_tokens"`
 	Checks       EvalResultChecks `json:"checks"`
+	// Termination is the structured, non-error stop recorded for the run
+	// (e.g. budget exceeded), copied from the session items. It is
+	// informational only and does not affect Passed, Failures, or Error.
+	// Absent for runs that ended normally or with an error.
+	Termination *Termination `json:"termination,omitempty"`
 }
 
 // EvalResultChecks groups the individual check results.
@@ -985,6 +1036,29 @@ func (s *Session) AddError(e *Error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Messages = append(s.Messages, NewErrorItem(e))
+}
+
+// AddTermination appends a structured termination marker to the session so
+// the stop's chronological position survives reload and JSON export.
+func (s *Session) AddTermination(t *Termination) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Messages = append(s.Messages, NewTerminationItem(t))
+}
+
+// Termination returns a copy of the first structured termination marker
+// recorded in the session's items, or nil when the run was never stopped
+// by one.
+func (s *Session) Termination() *Termination {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.Messages {
+		if s.Messages[i].Termination != nil {
+			t := *s.Messages[i].Termination
+			return &t
+		}
+	}
+	return nil
 }
 
 // Duration calculates the duration of the session from message timestamps.

@@ -786,11 +786,52 @@ type BudgetExceededEvent struct {
 	// "budgets.tight.max_cost", so an operator knows exactly what to edit.
 	ConfigPath string `json:"config_path"`
 	Message    string `json:"message"`
+	// StopMessage is the assistant stop message the runtime appends to the
+	// session right after this event. message_added events carry no JSON
+	// payload, so this is how JSON consumers (the evaluation pipeline
+	// reading `run --exec --json` output) see the message a budget stop
+	// records. Its dedicated type carries only agent name, role, content,
+	// and creation time; tool calls, reasoning, model, usage, and cost
+	// cannot be represented at all.
+	StopMessage *BudgetStopMessage `json:"stop_message,omitempty"`
+}
+
+// BudgetStopMessage is the wire form of the stop message embedded in a
+// BudgetExceededEvent. It mirrors the JSON shape of [session.Message]
+// ({"agent_name":...,"message":{...}}) restricted to the safe fields, so
+// no caller can ever put reasoning, tool calls, model, usage, or cost on
+// the wire.
+type BudgetStopMessage struct {
+	AgentName string                `json:"agent_name,omitempty"`
+	Message   BudgetStopChatMessage `json:"message"`
+}
+
+// BudgetStopChatMessage is the inner chat message of a BudgetStopMessage,
+// mirroring [chat.Message]'s JSON keys for the allowed fields only.
+type BudgetStopChatMessage struct {
+	Role      chat.MessageRole `json:"role"`
+	Content   string           `json:"content"`
+	CreatedAt string           `json:"created_at,omitempty"`
 }
 
 func (e *BudgetExceededEvent) GetSessionID() string { return e.SessionID }
 
-func BudgetExceeded(sessionID, agentName string, br budgetBreach) Event {
+// BudgetExceeded builds the budget_exceeded event. Only the safe fields of
+// stopMessage (role, content, creation time) are copied onto the wire, so
+// a caller cannot leak the other chat.Message fields. A nil stopMessage
+// omits stop_message entirely.
+func BudgetExceeded(sessionID, agentName string, br budgetBreach, stopMessage *chat.Message) Event {
+	var stop *BudgetStopMessage
+	if stopMessage != nil {
+		stop = &BudgetStopMessage{
+			AgentName: agentName,
+			Message: BudgetStopChatMessage{
+				Role:      stopMessage.Role,
+				Content:   stopMessage.Content,
+				CreatedAt: stopMessage.CreatedAt,
+			},
+		}
+	}
 	return &BudgetExceededEvent{
 		Type:         "budget_exceeded",
 		SessionID:    sessionID,
@@ -801,6 +842,7 @@ func BudgetExceeded(sessionID, agentName string, br budgetBreach) Event {
 		Max:          br.Max,
 		ConfigPath:   br.configPath(),
 		Message:      br.Message(),
+		StopMessage:  stop,
 	}
 }
 
