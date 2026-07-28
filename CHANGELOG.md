@@ -3,6 +3,50 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.118.0] - 2026-07-28
+
+This release brings TUI animation infrastructure improvements, several bug fixes for session isolation, credential security, and model discovery, plus a new desktop token staleness logging feature.
+
+## What's New
+
+- Adds a program-scoped animation runtime to the TUI, centralizing spinners, durations, and transitions for more consistent and robust animations
+- Adds token staleness logging when Docker Desktop refresh recovery fails, promoting failure paths to Warn/Info level for better observability
+
+## Improvements
+
+- Bounds progressive Markdown rendering in the TUI, enabling segmented output that avoids repeatedly re-processing completed blocks
+- Adopts the program-scoped animation runtime across TUI animation consumers, migrating to elapsed-time updates and dirty-tick-driven root-view caching
+- Compacts detailed sidebar metrics in the TUI to adapt to available width, using short forms (`Eff`, `Ctx`, `Cost`) at constrained widths and restoring full labels and gauges when space allows
+
+## Bug Fixes
+
+- Fixes concurrent `LoadWithConfig` calls from sharing a working directory, preventing sessions from observing each other's working directory under concurrent load
+- Fixes duplicated text in GitHub Copilot responses by deduplicating streamed content tracked by both item ID and `output_index`
+- Unifies gateway model discovery between `docker agent models` and the interactive `/model` picker so that a non-empty `/v1/models` response is the source of truth
+- Fixes safety modes (autonomous, legacy approval, YOLO state) not being preserved across session flows and `/new` transitions
+- Fixes credential leaks in remote tool transports (MCP and A2A) by restricting bearer tokens and custom headers to requests whose origin matches the transport's configured origin
+
+## Technical Changes
+
+- Removes unused dead TUI code including an unused lean TUI transcript reset method, package-level animation registration shim, and user-theme existence helper
+### Pull Requests
+
+- [#3836](https://github.com/docker/docker-agent/pull/3836) - chore: remove dead TUI code
+- [#3838](https://github.com/docker/docker-agent/pull/3838) - docs: update CHANGELOG.md for v1.117.0
+- [#3842](https://github.com/docker/docker-agent/pull/3842) - fix: prevent concurrent LoadWithConfig calls from sharing working dir
+- [#3843](https://github.com/docker/docker-agent/pull/3843) - TUI - Program-scoped animation runtime
+- [#3846](https://github.com/docker/docker-agent/pull/3846) - fix(openai): deduplicate Copilot response text
+- [#3847](https://github.com/docker/docker-agent/pull/3847) - fix(models): unify gateway model discovery
+- [#3848](https://github.com/docker/docker-agent/pull/3848) - fix: preserve safety modes across session flows
+- [#3850](https://github.com/docker/docker-agent/pull/3850) - fix: prevent credential leaks in remote tool transports
+- [#3851](https://github.com/docker/docker-agent/pull/3851) - TUI - enable segmented markdown rendering
+- [#3852](https://github.com/docker/docker-agent/pull/3852) - chore: update docker-agent-action to v2.0.3
+- [#3854](https://github.com/docker/docker-agent/pull/3854) - chore: bump direct go dependencies
+- [#3855](https://github.com/docker/docker-agent/pull/3855) - Adopt program-scoped animation runtime
+- [#3858](https://github.com/docker/docker-agent/pull/3858) - fix(tui): compact detailed sidebar metrics
+- [#3859](https://github.com/docker/docker-agent/pull/3859) - feat(desktop): log token staleness when refresh recovery fails
+
+
 ## [v1.117.0] - 2026-07-27
 
 This release adds support for Claude Opus 5 and introduces a new three-mode safety policy system for tool approval control.
@@ -5164,3 +5208,5 @@ This release improves the terminal user interface with better error handling and
 [v1.116.0]: https://github.com/docker/docker-agent/releases/tag/v1.116.0
 
 [v1.117.0]: https://github.com/docker/docker-agent/releases/tag/v1.117.0
+
+[v1.118.0]: https://github.com/docker/docker-agent/releases/tag/v1.118.0
