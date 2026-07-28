@@ -358,12 +358,13 @@ func (f *planGuardFlags) expected() (*int, error) {
 
 // readPlanContent loads the new plan body from path, or from stdin when path
 // is "-" so scripts can pipe content in. Both sources are bounded by the plan
-// storage's own content cap (plan.MaxPlanFileSize): the storage would refuse
-// to persist anything larger, so reading past the cap could only waste
-// memory. A regular file is required — a directory, device, or named pipe is
-// rejected — and every check runs on the opened descriptor (File.Stat), never
-// on the path, so the file that is validated is exactly the file that is read
-// and a concurrent path swap cannot slip a non-regular file past the checks.
+// storage's own content cap (plan.MaxPlanContentSize): content of exactly the
+// cap is accepted, anything beyond it is refused as invalid input since the
+// storage would refuse to persist it anyway. A regular file is required — a
+// directory, device, or named pipe is rejected — and every check runs on the
+// opened descriptor (File.Stat), never on the path, so the file that is
+// validated is exactly the file that is read and a concurrent path swap
+// cannot slip a non-regular file past the checks.
 // The open itself cannot hang on a FIFO with no writer (see
 // plan.OpenContentFile), and a device like /dev/zero is rejected before any
 // read. The CLI never prompts: content only ever arrives through --file.
@@ -392,8 +393,8 @@ func readPlanContent(cmd *cobra.Command, path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", plansUsagef("plan content path %q is not a regular file (e.g. a device or named pipe)", path)
 	}
-	if info.Size() > plan.MaxPlanFileSize {
-		return "", plansUsagef("reading plan content from %q: content exceeds the maximum plan size (%d bytes)", path, plan.MaxPlanFileSize)
+	if info.Size() > plan.MaxPlanContentSize {
+		return "", plansUsagef("reading plan content from %q: content exceeds the maximum plan size (%d bytes)", path, plan.MaxPlanContentSize)
 	}
 
 	content, err := readBoundedPlanContent(f)
@@ -408,12 +409,12 @@ func readPlanContent(cmd *cobra.Command, path string) (string, error) {
 // any pre-declared size (stdin has none, and a file can grow between the
 // descriptor size check and the read).
 func readBoundedPlanContent(r io.Reader) (string, error) {
-	data, err := io.ReadAll(io.LimitReader(r, plan.MaxPlanFileSize+1))
+	data, err := io.ReadAll(io.LimitReader(r, plan.MaxPlanContentSize+1))
 	if err != nil {
 		return "", err
 	}
-	if len(data) > plan.MaxPlanFileSize {
-		return "", fmt.Errorf("content exceeds the maximum plan size (%d bytes)", plan.MaxPlanFileSize)
+	if len(data) > plan.MaxPlanContentSize {
+		return "", fmt.Errorf("content exceeds the maximum plan size (%d bytes)", plan.MaxPlanContentSize)
 	}
 	return string(data), nil
 }

@@ -62,6 +62,10 @@ type Manager interface {
 	// so the same instance (with any in-progress input) can be re-opened on
 	// return.
 	TopDialog() Dialog
+	// HasDialog reports whether pred matches any dialog in the stack,
+	// visiting bottom to top. Unlike TopDialog it also sees dialogs buried
+	// under other dialogs, e.g. a plan browser under a help dialog.
+	HasDialog(pred func(Dialog) bool) bool
 }
 
 // dialogEntry pairs a dialog with its drag offset so the two stay in sync.
@@ -350,6 +354,17 @@ func (d *manager) TopDialog() Dialog {
 		return nil
 	}
 	return d.stack[len(d.stack)-1].dialog
+}
+
+// HasDialog reports whether pred matches any dialog in the stack, bottom to
+// top.
+func (d *manager) HasDialog(pred func(Dialog) bool) bool {
+	for i := range d.stack {
+		if pred(d.stack[i].dialog) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *manager) SetSize(width, height int) tea.Cmd {

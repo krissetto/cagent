@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -72,6 +74,9 @@ func (s *service) List(ctx context.Context, opts ListOptions) (ListResult, error
 		return ListResult{}, &StorageError{Scope: ScopeShared, Op: "list", Err: err}
 	}
 	result.Warnings = append(result.Warnings, warnings...)
+	// The documented order is by name; enforce it here so it holds for any
+	// injected Storage, not only backends that happen to sort.
+	sort.SliceStable(summaries, func(i, j int) bool { return summaries[i].Name < summaries[j].Name })
 	for _, sum := range summaries {
 		result.Plans = append(result.Plans, Plan{
 			Scope:     ScopeShared,
@@ -101,8 +106,8 @@ func (s *service) Create(ctx context.Context, req CreateRequest) (Plan, error) {
 	if err := checkSharedMutation("create", req.Ref); err != nil {
 		return Plan{}, err
 	}
-	if req.Content == "" {
-		return Plan{}, &ValidationError{Message: "content must not be empty"}
+	if err := validateContent(req.Content); err != nil {
+		return Plan{}, err
 	}
 	// Expected revision 0 makes the write create-only: it conflicts instead
 	// of overwriting when the plan already exists.
@@ -124,8 +129,8 @@ func (s *service) Update(ctx context.Context, req UpdateRequest) (Plan, error) {
 	if err := checkSharedMutation("update", req.Ref); err != nil {
 		return Plan{}, err
 	}
-	if req.Content == "" {
-		return Plan{}, &ValidationError{Message: "content must not be empty"}
+	if err := validateContent(req.Content); err != nil {
+		return Plan{}, err
 	}
 	p, err := s.storage.Upsert(ctx, plan.UpsertRequest{
 		Name:             req.Ref.Name,
@@ -210,18 +215,55 @@ func (s *service) getShared(ctx context.Context, name string) (Plan, error) {
 }
 
 func (s *service) getSession(sessionID string) (Plan, error) {
-	content, path, err := sessionplan.ReadContent(s.sessionDir, sessionID)
+	path, err := sessionplan.Path(s.sessionDir, sessionID)
 	if err != nil {
 		return Plan{}, sessionError("get", sessionID, err)
 	}
-	p := sessionPlan(sessionID, path, time.Time{})
-	p.Content = content
-	// The timestamp comes from file metadata; it is best-effort so a racing
-	// delete cannot fail a read that already succeeded.
-	if info, err := os.Stat(path); err == nil {
-		p.UpdatedAt = info.ModTime().UTC()
+	content, modTime, err := readSessionPlanFile(sessionID, path)
+	if err != nil {
+		return Plan{}, err
 	}
+	p := sessionPlan(sessionID, path, modTime)
+	p.Content = content
 	return p, nil
+}
+
+// readSessionPlanFile reads a session plan's markdown bounded by the same
+// content cap as shared plans, so a hostile or damaged file in the session
+// plans directory can never cause unbounded allocation. Every check runs on
+// the opened descriptor, never on the path, and the open itself is hang-safe
+// (see plan.OpenContentFile). A plan that exists but is not a readable plan
+// file — a directory, a device, or oversized content — is a *CorruptError so
+// it is never mistaken for a missing plan; genuine I/O failures remain
+// *StorageError.
+func readSessionPlanFile(sessionID, path string) (content string, modTime time.Time, err error) {
+	f, err := plan.OpenContentFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", time.Time{}, &NotFoundError{Scope: ScopeSession, Name: sessionID}
+	}
+	if err != nil {
+		return "", time.Time{}, &StorageError{Scope: ScopeSession, Op: "get", Err: err}
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", time.Time{}, &StorageError{Scope: ScopeSession, Op: "get", Err: err}
+	}
+	if !info.Mode().IsRegular() {
+		return "", time.Time{}, &CorruptError{Scope: ScopeSession, Name: sessionID, Err: fmt.Errorf("%s is not a regular file", path)}
+	}
+
+	// Read one byte past the cap so an over-cap file is detected without
+	// trusting a stat size that could change under us.
+	data, err := io.ReadAll(io.LimitReader(f, plan.MaxPlanContentSize+1))
+	if err != nil {
+		return "", time.Time{}, &StorageError{Scope: ScopeSession, Op: "get", Err: err}
+	}
+	if len(data) > plan.MaxPlanContentSize {
+		return "", time.Time{}, &CorruptError{Scope: ScopeSession, Name: sessionID, Err: fmt.Errorf("plan file exceeds %d bytes", plan.MaxPlanContentSize)}
+	}
+	return string(data), info.ModTime().UTC(), nil
 }
 
 // statSessionPlan returns list metadata for the session's plan without
@@ -241,8 +283,25 @@ func (s *service) statSessionPlan(sessionID string) (p Plan, ok bool, warning st
 		return Plan{}, false, fmt.Sprintf("skipped session plan %q: %v", sessionID, err), nil
 	case info.IsDir():
 		return Plan{}, false, fmt.Sprintf("skipped session plan %q: %s is a directory", sessionID, path), nil
+	case !info.Mode().IsRegular():
+		return Plan{}, false, fmt.Sprintf("skipped session plan %q: %s is not a regular file", sessionID, path), nil
+	case info.Size() > plan.MaxPlanContentSize:
+		return Plan{}, false, fmt.Sprintf("skipped session plan %q: plan file exceeds %d bytes", sessionID, plan.MaxPlanContentSize), nil
 	}
 	return sessionPlan(sessionID, path, info.ModTime().UTC()), true, "", nil
+}
+
+// validateContent gates mutation content: it must be non-empty and within
+// the advertised content cap, refused as invalid input before the storage is
+// touched. Content of exactly the cap is accepted.
+func validateContent(content string) error {
+	if content == "" {
+		return &ValidationError{Message: "content must not be empty"}
+	}
+	if len(content) > plan.MaxPlanContentSize {
+		return &ValidationError{Message: fmt.Sprintf("content exceeds the maximum plan size (%d bytes; max %d)", len(content), plan.MaxPlanContentSize)}
+	}
+	return nil
 }
 
 // checkSharedMutation gates every mutation: session plans are refused with a

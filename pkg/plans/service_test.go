@@ -170,6 +170,28 @@ func TestService_ListStorageFailure(t *testing.T) {
 	assert.ErrorIs(t, err, base)
 }
 
+// TestService_ListSortsSharedPlansFromUnsortedStorage pins the documented
+// sort order independently of the backend: an injected Storage that lists in
+// arbitrary order must still yield a name-sorted listing, with the session
+// plan first.
+func TestService_ListSortsSharedPlansFromUnsortedStorage(t *testing.T) {
+	t.Parallel()
+	sessionDir := t.TempDir()
+	svc := NewService(unsortedStorage{names: []string{"zeta", "alpha", "mid"}}, WithSessionDir(sessionDir))
+	writeSessionPlan(t, sessionDir, "sess-1", "# session plan")
+
+	result, err := svc.List(t.Context(), ListOptions{SessionID: "sess-1"})
+	require.NoError(t, err)
+	require.Len(t, result.Plans, 4)
+
+	names := make([]string, 0, len(result.Plans))
+	for _, p := range result.Plans {
+		names = append(names, p.Name)
+	}
+	assert.Equal(t, []string{"sess-1", "alpha", "mid", "zeta"}, names,
+		"the session plan comes first, shared plans sorted by name regardless of storage order")
+}
+
 // --- Get ---------------------------------------------------------------------
 
 func TestService_GetShared(t *testing.T) {
@@ -279,6 +301,74 @@ func TestService_GetSessionInvalidID(t *testing.T) {
 	}
 }
 
+// TestService_GetSessionOversized proves the host read of session-plan
+// markdown is bounded: a file past the shared content cap is a typed
+// *CorruptError — the plan exists but cannot be treated as a plan — never an
+// unbounded read or a not-found.
+func TestService_GetSessionOversized(t *testing.T) {
+	t.Parallel()
+	svc, _, sessionDir := newTestService(t)
+	require.NoError(t, os.MkdirAll(sessionDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "sess-1.md"), make([]byte, plan.MaxPlanContentSize+1), 0o600))
+
+	_, err := svc.Get(t.Context(), SessionRef("sess-1"))
+	var corrupt *CorruptError
+	require.ErrorAs(t, err, &corrupt)
+	assert.Equal(t, ScopeSession, corrupt.Scope)
+	assert.Equal(t, "sess-1", corrupt.Name)
+	assert.Contains(t, err.Error(), "exceeds")
+
+	var notFound *NotFoundError
+	require.NotErrorAs(t, err, &notFound, "an oversized plan must not read as missing")
+
+	// Export goes through Get and must refuse the same way, writing nothing.
+	dest := filepath.Join(t.TempDir(), "export.md")
+	_, err = svc.Export(t.Context(), ExportRequest{Ref: SessionRef("sess-1"), Path: dest})
+	require.ErrorAs(t, err, &corrupt)
+	assert.NoFileExists(t, dest)
+
+	// List skips it with a warning, mirroring unreadable shared plans.
+	result, err := svc.List(t.Context(), ListOptions{SessionID: "sess-1"})
+	require.NoError(t, err)
+	assert.Empty(t, result.Plans)
+	require.Len(t, result.Warnings, 1)
+	assert.Contains(t, result.Warnings[0], "sess-1")
+	assert.Contains(t, result.Warnings[0], "exceeds")
+}
+
+// TestService_GetSessionAtSizeCap proves the bound is exact: a session plan
+// of exactly the content cap reads back whole.
+func TestService_GetSessionAtSizeCap(t *testing.T) {
+	t.Parallel()
+	svc, _, sessionDir := newTestService(t)
+	content := strings.Repeat("a", plan.MaxPlanContentSize)
+	writeSessionPlan(t, sessionDir, "sess-1", content)
+
+	p, err := svc.Get(t.Context(), SessionRef("sess-1"))
+	require.NoError(t, err)
+	assert.Len(t, p.Content, plan.MaxPlanContentSize)
+	assert.False(t, p.UpdatedAt.IsZero())
+}
+
+// TestService_GetSessionNotRegularFile proves a directory squatting on the
+// session plan path is a *CorruptError on Get and a warning on List.
+func TestService_GetSessionNotRegularFile(t *testing.T) {
+	t.Parallel()
+	svc, _, sessionDir := newTestService(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(sessionDir, "sess-1.md"), 0o700))
+
+	_, err := svc.Get(t.Context(), SessionRef("sess-1"))
+	var corrupt *CorruptError
+	require.ErrorAs(t, err, &corrupt)
+	assert.Equal(t, ScopeSession, corrupt.Scope)
+
+	result, err := svc.List(t.Context(), ListOptions{SessionID: "sess-1"})
+	require.NoError(t, err)
+	assert.Empty(t, result.Plans)
+	require.Len(t, result.Warnings, 1)
+	assert.Contains(t, result.Warnings[0], "directory")
+}
+
 func TestService_GetUnknownScope(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := newTestService(t)
@@ -323,6 +413,12 @@ func TestService_CreateIsCreateOnly(t *testing.T) {
 	assert.Equal(t, 0, conflict.Expected)
 	assert.Equal(t, 1, conflict.Current)
 
+	// A create conflict cannot be forced or retried; the message must point
+	// at a different name or an update instead.
+	assert.Contains(t, conflict.Error(), "already exists")
+	assert.Contains(t, conflict.Error(), "update")
+	assert.NotContains(t, conflict.Error(), "force")
+
 	got, err := svc.Get(t.Context(), SharedRef("p"))
 	require.NoError(t, err)
 	assert.Equal(t, "original", got.Content)
@@ -342,6 +438,72 @@ func TestService_CreateValidation(t *testing.T) {
 		require.ErrorAs(t, err, &invalid, "name %q should be invalid", name)
 		assert.Contains(t, invalid.Message, "invalid plan name")
 	}
+}
+
+// TestService_ContentSizeCap proves the advertised 10 MiB content cap end to
+// end: exactly the cap is accepted by Create and Update, one byte over is a
+// typed *ValidationError before the storage is touched.
+func TestService_ContentSizeCap(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newTestService(t)
+
+	atCap := strings.Repeat("a", plan.MaxPlanContentSize)
+	p, err := svc.Create(t.Context(), CreateRequest{Ref: SharedRef("big"), Content: atCap})
+	require.NoError(t, err, "content of exactly the cap must be accepted")
+	assert.Equal(t, 1, *p.Version)
+
+	got, err := svc.Get(t.Context(), SharedRef("big"))
+	require.NoError(t, err)
+	assert.Len(t, got.Content, plan.MaxPlanContentSize)
+
+	overCap := atCap + "b"
+	var invalid *ValidationError
+	_, err = svc.Create(t.Context(), CreateRequest{Ref: SharedRef("big2"), Content: overCap})
+	require.ErrorAs(t, err, &invalid)
+	assert.Contains(t, invalid.Message, "maximum plan size")
+
+	_, err = svc.Update(t.Context(), UpdateRequest{Ref: SharedRef("big"), Content: overCap, ExpectedVersion: new(1)})
+	require.ErrorAs(t, err, &invalid)
+
+	got, err = svc.Get(t.Context(), SharedRef("big"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, *got.Version, "the refused update must not touch the plan")
+}
+
+// TestService_LargeMetadataAccepted proves metadata stays free-form through
+// the service: title, author, and status beyond 4 KiB are accepted on Create,
+// SetStatus, and content-only Update — and preserved — because only content
+// is size-capped (issue #3844: labels have no fixed vocabulary or size).
+func TestService_LargeMetadataAccepted(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newTestService(t)
+
+	bigTitle := strings.Repeat("t", 5<<10)
+	bigAuthor := strings.Repeat("a", 5<<10)
+	bigStatus := strings.Repeat("s", 5<<10)
+
+	p, err := svc.Create(t.Context(), CreateRequest{
+		Ref: SharedRef("p"), Content: "body", Title: bigTitle, Author: bigAuthor, Status: bigStatus,
+	})
+	require.NoError(t, err, "metadata beyond 4 KiB must be accepted")
+	assert.Equal(t, bigStatus, p.Status)
+
+	biggerStatus := strings.Repeat("z", 6<<10)
+	p, err = svc.SetStatus(t.Context(), SetStatusRequest{Ref: SharedRef("p"), Status: biggerStatus, ExpectedVersion: new(1)})
+	require.NoError(t, err, "a large status must be accepted")
+	assert.Equal(t, biggerStatus, p.Status)
+
+	// A content-only update preserves the large labels.
+	p, err = svc.Update(t.Context(), UpdateRequest{Ref: SharedRef("p"), Content: "new body", ExpectedVersion: new(2)})
+	require.NoError(t, err)
+	assert.Equal(t, bigTitle, p.Title)
+	assert.Equal(t, bigAuthor, p.Author)
+	assert.Equal(t, biggerStatus, p.Status)
+
+	got, err := svc.Get(t.Context(), SharedRef("p"))
+	require.NoError(t, err)
+	assert.Equal(t, bigTitle, got.Title)
+	assert.Equal(t, biggerStatus, got.Status)
 }
 
 // --- Update ------------------------------------------------------------------
@@ -774,6 +936,32 @@ func (f failingStorage) List(context.Context) ([]plan.Summary, []string, error) 
 
 func (f failingStorage) Delete(context.Context, string, *int) (bool, error) {
 	return false, f.err
+}
+
+// unsortedStorage lists a fixed set of plans in deliberately unsorted order,
+// to prove Service.List owns the documented ordering.
+type unsortedStorage struct{ names []string }
+
+var _ plan.Storage = unsortedStorage{}
+
+func (s unsortedStorage) Get(context.Context, string) (plan.Plan, bool, error) {
+	return plan.Plan{}, false, nil
+}
+
+func (s unsortedStorage) Upsert(context.Context, plan.UpsertRequest) (plan.Plan, error) {
+	return plan.Plan{}, errors.New("read-only")
+}
+
+func (s unsortedStorage) List(context.Context) ([]plan.Summary, []string, error) {
+	out := make([]plan.Summary, 0, len(s.names))
+	for _, name := range s.names {
+		out = append(out, plan.Summary{Name: name, Revision: 1})
+	}
+	return out, nil, nil
+}
+
+func (s unsortedStorage) Delete(context.Context, string, *int) (bool, error) {
+	return false, nil
 }
 
 // memStorage is a minimal in-memory plan.Storage honouring the same contract

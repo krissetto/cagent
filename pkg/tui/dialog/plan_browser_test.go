@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +356,100 @@ func TestPlanBrowserDataMsgReplacesRowsAndKeepsSelection(t *testing.T) {
 	assert.NotContains(t, d.View(), "11112222", "removed rows must disappear")
 }
 
+// manyPlansListing builds n shared plans named plan-00, plan-01, … so tests
+// can scroll a list taller than the viewport.
+func manyPlansListing(n int) plans.ListResult {
+	result := plans.ListResult{Plans: make([]plans.Plan, 0, n)}
+	for i := range n {
+		result.Plans = append(result.Plans, plans.Plan{
+			Scope:   plans.ScopeShared,
+			Name:    fmt.Sprintf("plan-%02d", i),
+			Version: new(1),
+		})
+	}
+	return result
+}
+
+// TestPlanBrowserDataMsgPreservesScrollOffset proves a live data refresh
+// never yanks a scrolled viewport back to the top while the selected plan
+// still exists — independent of how the offset came about (wheel, scrollbar,
+// or keys).
+func TestPlanBrowserDataMsgPreservesScrollOffset(t *testing.T) {
+	t.Parallel()
+	listing := manyPlansListing(40)
+	d := newTestPlanBrowser(t, listing)
+	viewport := d.scrollview.VisibleHeight()
+	require.Greater(t, len(listing.Plans), viewport, "the list must be taller than the viewport")
+
+	// Scroll down and select a row inside the scrolled window.
+	d.selected = 30
+	d.ensureSelectedVisible()
+	offset := d.scrollview.ScrollOffset()
+	require.Positive(t, offset)
+
+	d.Update(PlanBrowserDataMsg{Result: manyPlansListing(40)})
+
+	assert.Equal(t, offset, d.scrollview.ScrollOffset(), "a same-shape refresh must keep the viewport position")
+	p, ok := d.selectedPlan()
+	require.True(t, ok)
+	assert.Equal(t, "plan-30", p.Name)
+}
+
+// TestPlanBrowserDataMsgClampsScrollOffsetWhenRowsShrink proves a refresh
+// that removes rows clamps the preserved offset instead of scrolling past
+// the end of the shorter list.
+func TestPlanBrowserDataMsgClampsScrollOffsetWhenRowsShrink(t *testing.T) {
+	t.Parallel()
+	d := newTestPlanBrowser(t, manyPlansListing(40))
+	viewport := d.scrollview.VisibleHeight()
+
+	d.selected = 19 // survives the shrink below
+	d.scrollview.SetScrollOffset(13)
+	require.Equal(t, 13, d.scrollview.ScrollOffset())
+
+	shrunk := manyPlansListing(20)
+	d.Update(PlanBrowserDataMsg{Result: shrunk})
+
+	wantMax := max(0, len(shrunk.Plans)-viewport)
+	assert.LessOrEqual(t, d.scrollview.ScrollOffset(), wantMax, "the offset must clamp to the shorter list")
+	p, ok := d.selectedPlan()
+	require.True(t, ok)
+	assert.Equal(t, "plan-19", p.Name)
+	// The selected row is still within the visible window.
+	assert.GreaterOrEqual(t, d.selected, d.scrollview.ScrollOffset())
+	assert.Less(t, d.selected, d.scrollview.ScrollOffset()+viewport)
+}
+
+// TestPlanBrowserFilterResetsScrollOffset pins that user-initiated filtering
+// still starts from the top: only live data refreshes preserve the offset.
+func TestPlanBrowserFilterResetsScrollOffset(t *testing.T) {
+	t.Parallel()
+	d := newTestPlanBrowser(t, manyPlansListing(40))
+	d.scrollview.SetScrollOffset(13)
+
+	d.Update(letterKey('/'))
+	d.Update(letterKey('p'))
+	assert.Zero(t, d.scrollview.ScrollOffset(), "filtering starts from the top of the matches")
+}
+
+// TestPlanBrowserUpdatedAgesAdvance proves relative "updated" ages are
+// rendered against the current time, not the time the dialog was opened, so
+// a plan can never stay "0s ago" forever.
+func TestPlanBrowserUpdatedAgesAdvance(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)
+	listing := plans.ListResult{Plans: []plans.Plan{
+		{Scope: plans.ScopeShared, Name: "release", Version: new(1), UpdatedAt: base},
+	}}
+	d := newTestPlanBrowser(t, listing)
+
+	d.now = func() time.Time { return base.Add(30 * time.Second) }
+	assert.Contains(t, d.View(), "30s ago")
+
+	d.now = func() time.Time { return base.Add(3 * time.Minute) }
+	assert.Contains(t, d.View(), "3m ago", "the age must advance with the clock, without any data message")
+}
+
 func TestPlanBrowserWarningsShown(t *testing.T) {
 	t.Parallel()
 	result := testPlanListing()
@@ -518,6 +613,23 @@ func TestPlanDetailDataMsgAppliesOnlyMatchingPlan(t *testing.T) {
 	assert.Contains(t, view, "done")
 	assert.Contains(t, view, "v4")
 	assert.Contains(t, view, "new content")
+}
+
+// TestPlanDetailUpdatedAgeAdvances proves the detail's relative "updated"
+// age is rendered against the current time, so it advances without a data
+// refresh.
+func TestPlanDetailUpdatedAgeAdvances(t *testing.T) {
+	t.Parallel()
+	p := sharedDetailPlan()
+	base := time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)
+	p.UpdatedAt = base
+	d := newTestPlanDetail(t, p)
+
+	d.now = func() time.Time { return base.Add(45 * time.Minute) }
+	assert.Contains(t, d.View(), "45m ago")
+
+	d.now = func() time.Time { return base.Add(2 * time.Hour) }
+	assert.Contains(t, d.View(), "2h ago", "the age must advance with the clock, without any data message")
 }
 
 func TestPlanDialogMarkers(t *testing.T) {

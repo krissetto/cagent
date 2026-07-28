@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -1058,12 +1060,79 @@ func TestPlanTool_UpdateFromFileTooLarge(t *testing.T) {
 	tool := newTestPlanTool(t)
 
 	src := filepath.Join(t.TempDir(), "big.md")
-	require.NoError(t, os.WriteFile(src, make([]byte, MaxPlanFileSize+1), 0o600))
+	require.NoError(t, os.WriteFile(src, make([]byte, MaxPlanContentSize+1), 0o600))
 
 	result, err := tool.updatePlanFromFile(t.Context(), UpdatePlanFromFileArgs{Name: "p", Path: src})
 	require.NoError(t, err)
 	assert.True(t, result.IsError)
 	assert.Contains(t, result.Output, "too large")
+}
+
+// TestPlanTool_UpdateFromFileAtSizeCap proves the advertised content cap is
+// inclusive end to end: a file of exactly MaxPlanContentSize is read and the
+// plan is persisted through the real storage.
+func TestPlanTool_UpdateFromFileAtSizeCap(t *testing.T) {
+	t.Parallel()
+	tool := newTestPlanTool(t)
+
+	src := filepath.Join(t.TempDir(), "exact.md")
+	content := bytes.Repeat([]byte("a"), MaxPlanContentSize)
+	require.NoError(t, os.WriteFile(src, content, 0o600))
+
+	result, err := tool.updatePlanFromFile(t.Context(), UpdatePlanFromFileArgs{Name: "p", Path: src})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "exactly the cap must be accepted: %s", result.Output)
+
+	got, ok, err := tool.storage.Get(t.Context(), "p")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Len(t, got.Content, MaxPlanContentSize)
+}
+
+// TestPlanTool_LargeMetadataAccepted proves metadata stays free-form through
+// the tool surface: title, author, and status beyond 4 KiB are written,
+// preserved across a content-only write, and read back intact. Labels have
+// no per-field cap (issue #3844: status semantics are user-defined).
+func TestPlanTool_LargeMetadataAccepted(t *testing.T) {
+	t.Parallel()
+	tool := newTestPlanTool(t)
+
+	bigTitle := strings.Repeat("t", 5<<10)
+	bigAuthor := strings.Repeat("a", 5<<10)
+	bigStatus := strings.Repeat("s", 5<<10)
+
+	result, err := tool.writePlan(t.Context(), WritePlanArgs{
+		Name: "p", Content: "body", Title: bigTitle, Author: bigAuthor, Status: bigStatus,
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "large metadata must be accepted: %s", result.Output)
+
+	// set_plan_status takes the same free-form labels.
+	biggerStatus := strings.Repeat("z", 6<<10)
+	result, err = tool.setPlanStatus(t.Context(), SetPlanStatusArgs{Name: "p", Status: biggerStatus})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "a large status must be accepted: %s", result.Output)
+
+	// A content-only write preserves the large labels.
+	result, err = tool.writePlan(t.Context(), WritePlanArgs{Name: "p", Content: "new body"})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	got, ok, err := tool.storage.Get(t.Context(), "p")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, bigTitle, got.Title)
+	assert.Equal(t, bigAuthor, got.Author)
+	assert.Equal(t, biggerStatus, got.Status)
+	assert.Equal(t, "new body", got.Content)
+}
+
+// TestMaxPlanFileSizeAlias pins the deprecated exported alias: embedders
+// built against the original MaxPlanFileSize export must keep compiling and
+// get the same bound as MaxPlanContentSize.
+func TestMaxPlanFileSizeAlias(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, MaxPlanContentSize, MaxPlanFileSize)
 }
 
 // TestPlanTool_ReadNormalizesNameFromFilename proves read_plan returns the name

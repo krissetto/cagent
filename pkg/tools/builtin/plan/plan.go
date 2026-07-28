@@ -49,17 +49,35 @@ const (
 	ToolNameGetPlanStatus      = "get_plan_status"
 )
 
-// MaxPlanFileSize caps how much update_plan_from_file will read from disk, so a
-// pathological or wrong path cannot make the agent pull an arbitrarily large
-// file into a plan (and into the model's context). 10 MiB is far above any
-// realistic plan while still bounding memory. The same cap bounds stored plan
-// files on both sides: FilesystemStorage refuses to persist a plan that would
-// encode past it and refuses to decode a file beyond it, so a corrupt or
-// foreign oversized file in the plans directory cannot cause unbounded
-// allocation. It is exported so host-side callers (e.g. the docker agent
-// plans CLI) bound plan content with the same limit instead of duplicating
-// the number.
-const MaxPlanFileSize = 10 << 20
+// MaxPlanContentSize caps a plan's content (its markdown body): it bounds how
+// much update_plan_from_file will read from disk, so a pathological or wrong
+// path cannot make the agent pull an arbitrarily large file into a plan (and
+// into the model's context), and FilesystemStorage refuses to persist content
+// beyond it. 10 MiB is far above any realistic plan while still bounding
+// memory, and content of exactly this size is accepted. It is exported so
+// host-side callers (e.g. the docker agent plans CLI) bound plan content with
+// the same limit instead of duplicating the number.
+const MaxPlanContentSize = 10 << 20
+
+// MaxPlanFileSize is the name MaxPlanContentSize was first exported under.
+//
+// Deprecated: use MaxPlanContentSize. Kept as an alias so external callers
+// built against the original export keep compiling and share the same bound.
+const MaxPlanFileSize = MaxPlanContentSize
+
+// maxEncodedPlanSize bounds a stored plan file on the way back in: load
+// refuses to decode anything beyond it, so a corrupt or foreign oversized
+// file in the plans directory cannot cause unbounded allocation. It is
+// deliberately larger than MaxPlanContentSize: JSON escaping expands a
+// content byte to at most 6 bytes (\u00XX), so content of exactly the cap
+// encodes to at most 6*MaxPlanContentSize. The additional 10 MiB budgets
+// the free-form metadata (title, author, status), the fixed fields, and the
+// envelope. Metadata deliberately has no per-field cap — labels are
+// free-form and plans stored by earlier builds must keep loading — so this
+// budget is at least the headroom metadata effectively had under the
+// previous 10 MiB whole-file bound; save re-checks the encoded size, so
+// only pathological aggregate metadata is ever refused, as a storage limit.
+const maxEncodedPlanSize = 6*MaxPlanContentSize + 10<<20
 
 // ErrPlanNotFound is returned by write operations that require an existing plan
 // (set_plan_status) when the named plan does not exist, so callers can tell a
@@ -661,18 +679,18 @@ func readPlanFile(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("path %q is not a regular file (e.g. a device or named pipe)", path)
 	}
-	if info.Size() > MaxPlanFileSize {
-		return "", fmt.Errorf("file %q is too large (%d bytes; max %d)", path, info.Size(), MaxPlanFileSize)
+	if info.Size() > MaxPlanContentSize {
+		return "", fmt.Errorf("file %q is too large (%d bytes; max %d)", path, info.Size(), MaxPlanContentSize)
 	}
 
 	// Read one byte past the cap so an over-cap file is detected even if it grew
 	// since the size check above.
-	data, err := io.ReadAll(io.LimitReader(f, MaxPlanFileSize+1))
+	data, err := io.ReadAll(io.LimitReader(f, MaxPlanContentSize+1))
 	if err != nil {
 		return "", fmt.Errorf("reading plan file: %w", err)
 	}
-	if len(data) > MaxPlanFileSize {
-		return "", fmt.Errorf("file %q is too large (max %d bytes)", path, MaxPlanFileSize)
+	if len(data) > MaxPlanContentSize {
+		return "", fmt.Errorf("file %q is too large (max %d bytes)", path, MaxPlanContentSize)
 	}
 	return string(data), nil
 }
@@ -838,10 +856,11 @@ func (s *FilesystemStorage) planPath(name string) (string, error) {
 // load reads and decodes the plan at path. It distinguishes a missing plan
 // (false, nil) from a real failure such as a permission error or corrupt JSON
 // (false, err), so callers can report the latter instead of masking it as
-// "not found". The read is bounded by MaxPlanFileSize: this package never
-// persists a larger plan (save enforces the same cap), so anything beyond it
-// is a foreign or damaged file and is reported as corrupt rather than being
-// slurped into memory whole.
+// "not found". The read is bounded by maxEncodedPlanSize: this package never
+// persists a larger file (save validates content and metadata against caps
+// that always encode within it), so anything beyond it is a foreign or
+// damaged file and is reported as corrupt rather than being slurped into
+// memory whole.
 func (s *FilesystemStorage) load(path string) (Plan, bool, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -854,12 +873,12 @@ func (s *FilesystemStorage) load(path string) (Plan, bool, error) {
 
 	// Read one byte past the cap so an over-cap file is detected without
 	// trusting a stat size that could change under us.
-	data, err := io.ReadAll(io.LimitReader(f, MaxPlanFileSize+1))
+	data, err := io.ReadAll(io.LimitReader(f, maxEncodedPlanSize+1))
 	if err != nil {
 		return Plan{}, false, fmt.Errorf("reading plan: %w", err)
 	}
-	if len(data) > MaxPlanFileSize {
-		return Plan{}, false, &CorruptPlanError{File: filepath.Base(path), Err: fmt.Errorf("file exceeds %d bytes", MaxPlanFileSize)}
+	if len(data) > maxEncodedPlanSize {
+		return Plan{}, false, &CorruptPlanError{File: filepath.Base(path), Err: fmt.Errorf("file exceeds %d bytes", maxEncodedPlanSize)}
 	}
 	var p Plan
 	if err := json.Unmarshal(data, &p); err != nil {
@@ -869,6 +888,15 @@ func (s *FilesystemStorage) load(path string) (Plan, bool, error) {
 }
 
 func (s *FilesystemStorage) save(path string, p Plan) error {
+	// Validate the content cap before marshaling so an oversized plan is
+	// refused with a precise message and without first allocating its
+	// encoding. Content of exactly MaxPlanContentSize is accepted. Metadata
+	// (title, author, status) is free-form and has no per-field cap: plans
+	// stored by earlier builds must keep loading and re-saving whatever
+	// labels they carry.
+	if len(p.Content) > MaxPlanContentSize {
+		return fmt.Errorf("plan %q content is too large to store (%d bytes; max %d)", p.Name, len(p.Content), MaxPlanContentSize)
+	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("creating plans directory: %w", err)
 	}
@@ -876,10 +904,12 @@ func (s *FilesystemStorage) save(path string, p Plan) error {
 	if err != nil {
 		return fmt.Errorf("marshaling plan: %w", err)
 	}
-	// Enforce the cap load applies on the way back in, so a plan is never
-	// persisted in a form this storage would then refuse to decode.
-	if len(data) > MaxPlanFileSize {
-		return fmt.Errorf("plan %q is too large to store (%d bytes; max %d)", p.Name, len(data), MaxPlanFileSize)
+	// Storage limit, not a semantic cap: valid content always fits (the
+	// bound absorbs its worst-case escaping), so only pathological aggregate
+	// metadata can land here, and a plan is never persisted in a form load
+	// would then refuse to decode.
+	if len(data) > maxEncodedPlanSize {
+		return fmt.Errorf("plan %q is too large to store (%d bytes; max %d)", p.Name, len(data), maxEncodedPlanSize)
 	}
 	// Atomic write (temp file + rename): readers in other agents or processes
 	// see either the old or the new content, never a partial file, and an

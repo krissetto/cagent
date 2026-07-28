@@ -428,16 +428,30 @@ func TestPlansCreate_StdinAtSizeLimit(t *testing.T) {
 	svc, _, _ := newPlansTestService(t)
 
 	// Exactly the cap is not "over" it: the bounded reader must pass the
-	// content through (no off-by-one). The create still fails — the stored
-	// JSON envelope around a 10 MiB body encodes past the storage's own cap —
-	// but as the storage's typed refusal, not the reader's input error.
-	content := strings.Repeat("a", plan.MaxPlanFileSize)
-	_, stderr, err := executePlansIn(t, svc, strings.NewReader(content), "create", "p", "--file", "-", "--json")
-	requirePlansStatusCode(t, err, 1)
-	body := decodePlansError(t, stderr)
-	assert.Equal(t, "storage", body.Code)
-	assert.Contains(t, body.Message, "too large to store")
-	assert.NotContains(t, body.Message, "exceeds the maximum plan size", "at-limit input must not trip the reader bound")
+	// content through (no off-by-one) and the real filesystem storage must
+	// persist it, since the advertised content cap is separate from the
+	// stored file's encoded bound.
+	content := strings.Repeat("a", plan.MaxPlanContentSize)
+	stdout, stderr, err := executePlansIn(t, svc, strings.NewReader(content), "create", "p", "--file", "-", "--json")
+	require.NoError(t, err, "stderr: %s", stderr)
+
+	var doc plansTestPlanDocument
+	require.NoError(t, json.Unmarshal([]byte(stdout), &doc))
+	require.NotNil(t, doc.Plan.Version)
+	assert.Equal(t, 1, *doc.Plan.Version)
+
+	p := mustGetPlan(t, svc, plans.SharedRef("p"))
+	assert.Len(t, p.Content, plan.MaxPlanContentSize)
+}
+
+func TestPlansCreate_FileAtSizeLimit(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+	file := writePlanContentFile(t, strings.Repeat("b", plan.MaxPlanContentSize))
+
+	_, stderr, err := executePlans(t, svc, "create", "p", "--file", file)
+	require.NoError(t, err, "stderr: %s", stderr)
+	assert.Len(t, mustGetPlan(t, svc, plans.SharedRef("p")).Content, plan.MaxPlanContentSize)
 }
 
 func TestPlansCreate_StdinOverSizeLimit(t *testing.T) {
@@ -445,7 +459,7 @@ func TestPlansCreate_StdinOverSizeLimit(t *testing.T) {
 	svc, _, _ := newPlansTestService(t)
 
 	// One byte over the cap must be detected and refused.
-	content := strings.Repeat("a", plan.MaxPlanFileSize+1)
+	content := strings.Repeat("a", plan.MaxPlanContentSize+1)
 	stdout, stderr, err := executePlansIn(t, svc, strings.NewReader(content), "create", "p", "--file", "-", "--json")
 	requirePlansStatusCode(t, err, 1)
 	assert.Empty(t, stdout)
@@ -475,7 +489,7 @@ func TestPlansCreate_OversizedFile(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := newPlansTestService(t)
 	big := filepath.Join(t.TempDir(), "big.md")
-	require.NoError(t, os.WriteFile(big, make([]byte, plan.MaxPlanFileSize+1), 0o600))
+	require.NoError(t, os.WriteFile(big, make([]byte, plan.MaxPlanContentSize+1), 0o600))
 
 	_, stderr, err := executePlans(t, svc, "create", "p", "--file", big, "--json")
 	requirePlansStatusCode(t, err, 1)
@@ -529,9 +543,28 @@ func TestPlansCreate_ExistingNameConflicts(t *testing.T) {
 	assert.Equal(t, "p", body.Name)
 	require.NotNil(t, body.CurrentVersion)
 	assert.Equal(t, 1, *body.CurrentVersion)
+	// The advice must be actionable for a create: there is no create --force,
+	// so the message points at a different name or an update instead.
+	assert.Contains(t, body.Message, "already exists")
+	assert.Contains(t, body.Message, "update")
+	assert.NotContains(t, body.Message, "force")
 
 	p := mustGetPlan(t, svc, plans.SharedRef("p"))
 	assert.Equal(t, "original", p.Content, "a conflicting create must not overwrite")
+}
+
+func TestPlansCreate_ExistingNameConflictHuman(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+	mustCreatePlan(t, svc, "p", "original")
+	file := writePlanContentFile(t, "clobber")
+
+	stdout, stderr, err := executePlans(t, svc, "create", "p", "--file", file)
+	requirePlansStatusCode(t, err, plansConflictExitCode)
+	assert.Empty(t, stdout)
+	assert.Contains(t, stderr, "already exists")
+	assert.Contains(t, stderr, "update")
+	assert.NotContains(t, stderr, "force", "create has no --force; the human message must not suggest one")
 }
 
 func TestPlansCreate_Validation(t *testing.T) {
@@ -731,6 +764,39 @@ func TestPlansStatus_Validation(t *testing.T) {
 	body = decodePlansError(t, stderr)
 	assert.Equal(t, "invalid_argument", body.Code)
 	assert.Contains(t, body.Message, "plans status <name> <status>")
+}
+
+// TestPlansMetadata_LargeLabelsAccepted proves metadata stays free-form
+// through the CLI: title, author, and status beyond 4 KiB are accepted by
+// create and status, preserved across a content-only update, and never
+// misclassified as invalid_argument (issue #3844: labels are user-defined).
+func TestPlansMetadata_LargeLabelsAccepted(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+
+	bigTitle := strings.Repeat("t", 5<<10)
+	bigAuthor := strings.Repeat("a", 5<<10)
+	bigStatus := strings.Repeat("s", 5<<10)
+
+	file := writePlanContentFile(t, "body")
+	_, stderr, err := executePlans(t, svc, "create", "p", "--file", file,
+		"--title", bigTitle, "--author", bigAuthor, "--status", bigStatus)
+	require.NoError(t, err, "large metadata must be accepted: %s", stderr)
+
+	biggerStatus := strings.Repeat("z", 6<<10)
+	_, stderr, err = executePlans(t, svc, "status", "p", biggerStatus, "--expected-version", "1")
+	require.NoError(t, err, "a large status must be accepted: %s", stderr)
+
+	// A content-only update preserves the large labels.
+	newFile := writePlanContentFile(t, "new body")
+	_, stderr, err = executePlans(t, svc, "update", "p", "--file", newFile, "--expected-version", "2")
+	require.NoError(t, err, "stderr: %s", stderr)
+
+	p := mustGetPlan(t, svc, plans.SharedRef("p"))
+	assert.Equal(t, bigTitle, p.Title)
+	assert.Equal(t, bigAuthor, p.Author)
+	assert.Equal(t, biggerStatus, p.Status)
+	assert.Equal(t, "new body", p.Content)
 }
 
 // --- Session mutations are unsupported -------------------------------------------

@@ -53,7 +53,9 @@ type planDetailDialog struct {
 	plan       plans.Plan
 	scrollview *scrollview.Model
 	keyMap     planDetailKeyMap
-	openedAt   time.Time
+	// now supplies the reference time for the relative "updated" age, so it
+	// advances on every render. Injectable for deterministic tests.
+	now func() time.Time
 
 	// Markdown render cache, invalidated on data refresh or width change.
 	contentLines []string
@@ -75,8 +77,8 @@ func NewPlanDetailDialog(p plans.Plan) Dialog {
 			scrollview.WithKeyMap(scrollview.ReadOnlyScrollKeyMap()),
 			scrollview.WithReserveScrollbarSpace(true),
 		),
-		keyMap:   defaultPlanDetailKeyMap(),
-		openedAt: time.Now(),
+		keyMap: defaultPlanDetailKeyMap(),
+		now:    time.Now,
 	}
 }
 
@@ -207,7 +209,7 @@ func (d *planDetailDialog) updatedLabel() string {
 	if d.plan.UpdatedAt.IsZero() {
 		return "-"
 	}
-	return fmt.Sprintf("%s (%s)", d.plan.UpdatedAt.Local().Format("2006-01-02 15:04"), planTimeAgo(d.openedAt, d.plan.UpdatedAt))
+	return fmt.Sprintf("%s (%s)", d.plan.UpdatedAt.Local().Format("2006-01-02 15:04"), planTimeAgo(d.now(), d.plan.UpdatedAt))
 }
 
 // renderContent returns the markdown-rendered plan body, cached per width.

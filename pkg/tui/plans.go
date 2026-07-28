@@ -2,14 +2,17 @@ package tui
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -22,6 +25,13 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/messages"
 )
 
+// defaultPlanMutationTimeout bounds every plan persistence call issued from
+// the TUI (create, update, set-status, delete). Those writes take a
+// cross-process file lock, so a lock wedged by another process must surface
+// as an actionable timeout notification instead of freezing the event loop
+// indefinitely. Reads never take that lock and stay unbounded.
+const defaultPlanMutationTimeout = 5 * time.Second
+
 // WithPlansService injects the plans host service, replacing the lazily
 // built default over plan.SharedStorage(). Intended for tests, which run
 // against temp-backed storage instead of the user's data directory.
@@ -31,6 +41,13 @@ func WithPlansService(svc plans.Service) Option {
 			m.plansSvc = svc
 		}
 	}
+}
+
+// planMutationTimeoutOrDefault returns the persistence timeout for this
+// model, falling back to the package default. Tests set the field to keep
+// timeout scenarios fast.
+func (m *appModel) planMutationTimeoutOrDefault() time.Duration {
+	return cmp.Or(m.planMutationTimeout, defaultPlanMutationTimeout)
 }
 
 // plansService returns the host-facing plan service, building it on first
@@ -61,11 +78,14 @@ func (m *appModel) loadPlanList() (plans.ListResult, error) {
 	return m.plansService().List(m.ctx(), plans.ListOptions{SessionID: m.currentPlanSessionID()})
 }
 
-// planDialogOpen reports whether the topmost dialog belongs to the /plans
-// flow, i.e. plan data is on screen and worth live-refreshing.
+// planDialogOpen reports whether any dialog of the /plans flow is on the
+// stack — topmost or buried under another dialog — i.e. plan data is on
+// screen and worth live-refreshing.
 func (m *appModel) planDialogOpen() bool {
-	_, ok := m.dialogMgr.TopDialog().(dialog.PlanDialog)
-	return ok
+	return m.dialogMgr.HasDialog(func(d dialog.Dialog) bool {
+		_, ok := d.(dialog.PlanDialog)
+		return ok
+	})
 }
 
 func (m *appModel) handleShowPlanBrowser() (tea.Model, tea.Cmd) {
@@ -103,23 +123,47 @@ func (m *appModel) planListRefreshCmds(notifyWarnings bool) []tea.Cmd {
 	return cmds
 }
 
-// planDetailRefreshCmds re-fetches the plan shown by an open detail dialog.
-// A plan that disappeared closes the detail instead of leaving stale content
-// on screen.
-func (m *appModel) planDetailRefreshCmds() []tea.Cmd {
-	viewer, ok := m.dialogMgr.TopDialog().(dialog.PlanDetailViewer)
-	if !ok {
-		return nil
-	}
-	p, err := m.plansService().Get(m.ctx(), viewer.PlanRef())
-	if err != nil {
-		var notFound *plans.NotFoundError
-		if errors.As(err, &notFound) {
-			return []tea.Cmd{core.CmdHandler(dialog.CloseDialogMsg{}), planErrorCmd(err)}
+// openPlanDetailRefs returns the refs shown by every open plan detail
+// dialog, including ones buried under other dialogs. The predicate never
+// matches: it is used as a visitor over the whole stack.
+func (m *appModel) openPlanDetailRefs() []plans.Ref {
+	var refs []plans.Ref
+	m.dialogMgr.HasDialog(func(d dialog.Dialog) bool {
+		if viewer, ok := d.(dialog.PlanDetailViewer); ok {
+			refs = append(refs, viewer.PlanRef())
 		}
-		return []tea.Cmd{planErrorCmd(err)}
+		return false
+	})
+	return refs
+}
+
+// planDetailRefreshCmds re-fetches the plan shown by every open detail
+// dialog, buried ones included; the data messages are broadcast and each
+// detail applies only its own plan. Read failures surface only for the
+// detail that is the topmost dialog: a plan that disappeared closes it,
+// with one notification, and any other failure notifies without closing. A
+// buried detail cannot be closed without popping the wrong dialog, and
+// notifying on every refresh would repeat the same warning indefinitely, so
+// a buried failing ref is skipped silently: it is notified (and closed if
+// gone) once it surfaces and the next refresh runs.
+func (m *appModel) planDetailRefreshCmds() []tea.Cmd {
+	var cmds []tea.Cmd
+	for _, ref := range m.openPlanDetailRefs() {
+		p, err := m.plansService().Get(m.ctx(), ref)
+		if err != nil {
+			if viewer, ok := m.dialogMgr.TopDialog().(dialog.PlanDetailViewer); !ok || viewer.PlanRef() != ref {
+				continue
+			}
+			var notFound *plans.NotFoundError
+			if errors.As(err, &notFound) {
+				cmds = append(cmds, core.CmdHandler(dialog.CloseDialogMsg{}))
+			}
+			cmds = append(cmds, planErrorCmd(err))
+			continue
+		}
+		cmds = append(cmds, core.CmdHandler(dialog.PlanDetailDataMsg{Plan: p}))
 	}
-	return []tea.Cmd{core.CmdHandler(dialog.PlanDetailDataMsg{Plan: p})}
+	return cmds
 }
 
 func (m *appModel) handleOpenPlanDetail(ref plans.Ref) (tea.Model, tea.Cmd) {
@@ -178,34 +222,91 @@ func (m *appModel) activeWorkingDir() string {
 	return "."
 }
 
+// planStatusResultMsg reports a completed asynchronous set-status write.
+type planStatusResultMsg struct {
+	plan plans.Plan
+	err  error
+}
+
+// planDeleteResultMsg reports a completed asynchronous delete.
+type planDeleteResultMsg struct {
+	ref             plans.Ref
+	expectedVersion int
+	err             error
+}
+
+// planWriteResultMsg reports a completed asynchronous editor-driven create
+// or update. draftPath is the draft file the content came from; it is only
+// removed after the service confirmed the write (or the draft turned out
+// empty) and is preserved on every error so no edit is ever lost.
+type planWriteResultMsg struct {
+	ref       plans.Ref
+	create    bool
+	draftPath string
+	plan      plans.Plan
+	// emptyDraft marks a draft with no content: nothing was written and the
+	// draft file was removed.
+	emptyDraft bool
+	// readErr reports a draft that could not be read (or was refused as
+	// non-regular or oversized); the write was never attempted.
+	readErr error
+	// err reports a failed persistence call for a successfully read draft.
+	err error
+}
+
+// handleSetPlanStatus starts the guarded status write in a command so a
+// contended plans lock can never freeze the event loop; the outcome arrives
+// as a planStatusResultMsg.
 func (m *appModel) handleSetPlanStatus(msg messages.SetPlanStatusMsg) (tea.Model, tea.Cmd) {
-	expected := msg.ExpectedVersion
-	p, err := m.plansService().SetStatus(m.ctx(), plans.SetStatusRequest{
-		Ref:             msg.Ref,
-		Status:          msg.Status,
-		ExpectedVersion: &expected,
-	})
-	if err != nil {
-		cmd := m.planWriteFailureCmd(err)
+	svc := m.plansService()
+	ctx, timeout := m.ctx(), m.planMutationTimeoutOrDefault()
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		expected := msg.ExpectedVersion
+		p, err := svc.SetStatus(ctx, plans.SetStatusRequest{
+			Ref:             msg.Ref,
+			Status:          msg.Status,
+			ExpectedVersion: &expected,
+		})
+		return planStatusResultMsg{plan: p, err: err}
+	}
+}
+
+func (m *appModel) handlePlanStatusResult(msg planStatusResultMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		cmd := m.planWriteFailureCmd(msg.err)
 		return m, cmd
 	}
-	cmds := []tea.Cmd{notification.SuccessCmd(fmt.Sprintf("Status of %q set to %q (now v%d)", p.Name, p.Status, planVersionOf(p)))}
+	cmds := []tea.Cmd{notification.SuccessCmd(fmt.Sprintf("Status of %q set to %q (now v%d)", msg.plan.Name, msg.plan.Status, planVersionOf(msg.plan)))}
 	cmds = append(cmds, m.planRefreshCmds(false)...)
 	return m, tea.Sequence(cmds...)
 }
 
+// handleDeletePlan starts the guarded delete in a command; the outcome
+// arrives as a planDeleteResultMsg.
 func (m *appModel) handleDeletePlan(msg messages.DeletePlanMsg) (tea.Model, tea.Cmd) {
-	expected := msg.ExpectedVersion
-	err := m.plansService().Delete(m.ctx(), plans.DeleteRequest{Ref: msg.Ref, ExpectedVersion: &expected})
-	if err != nil {
-		cmd := m.planWriteFailureCmd(err)
+	svc := m.plansService()
+	ctx, timeout := m.ctx(), m.planMutationTimeoutOrDefault()
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		expected := msg.ExpectedVersion
+		err := svc.Delete(ctx, plans.DeleteRequest{Ref: msg.Ref, ExpectedVersion: &expected})
+		return planDeleteResultMsg{ref: msg.Ref, expectedVersion: msg.ExpectedVersion, err: err}
+	}
+}
+
+func (m *appModel) handlePlanDeleteResult(msg planDeleteResultMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		cmd := m.planWriteFailureCmd(msg.err)
 		return m, cmd
 	}
-	cmds := []tea.Cmd{notification.SuccessCmd(fmt.Sprintf("Deleted shared plan %q (was v%d)", msg.Ref.Name, msg.ExpectedVersion))}
+	cmds := []tea.Cmd{notification.SuccessCmd(fmt.Sprintf("Deleted shared plan %q (was v%d)", msg.ref.Name, msg.expectedVersion))}
 	// A detail dialog showing the deleted plan has nothing left to show.
 	// The browser row is only removed by the refresh below — never before
 	// the service confirmed the delete.
-	if viewer, ok := m.dialogMgr.TopDialog().(dialog.PlanDetailViewer); ok && viewer.PlanRef() == msg.Ref {
+	if viewer, ok := m.dialogMgr.TopDialog().(dialog.PlanDetailViewer); ok && viewer.PlanRef() == msg.ref {
 		cmds = append(cmds, core.CmdHandler(dialog.CloseDialogMsg{}))
 	}
 	cmds = append(cmds, m.planListRefreshCmds(false)...)
@@ -304,46 +405,109 @@ func (m *appModel) handlePlanEditorClosed(msg planEditorClosedMsg) (tea.Model, t
 		_ = os.Remove(msg.path)
 		return m, notification.ErrorCmd(fmt.Sprintf("Editor error: %v", msg.err))
 	}
-	data, err := os.ReadFile(msg.path)
-	if err != nil {
-		return m, notification.ErrorCmd(fmt.Sprintf("Failed to read edited plan: %v", err))
+
+	// Both the draft read and the guarded write run in a command: reading in
+	// Update would stall the event loop on a draft path swapped for a FIFO
+	// or device and allocate unbounded memory for a runaway file, and a
+	// contended plans lock could freeze it just the same. The draft file
+	// outlives the command until the service confirms the write.
+	svc := m.plansService()
+	ctx, timeout := m.ctx(), m.planMutationTimeoutOrDefault()
+	return m, func() tea.Msg {
+		result := planWriteResultMsg{ref: msg.ref, create: msg.create, draftPath: msg.path}
+		content, err := readPlanDraft(msg.path)
+		if err != nil {
+			result.readErr = err
+			return result
+		}
+		if strings.TrimSpace(content) == "" {
+			_ = os.Remove(msg.path)
+			result.emptyDraft = true
+			return result
+		}
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		if msg.create {
+			result.plan, result.err = svc.Create(ctx, plans.CreateRequest{Ref: msg.ref, Content: content})
+		} else {
+			expected := msg.expectedVersion
+			result.plan, result.err = svc.Update(ctx, plans.UpdateRequest{Ref: msg.ref, Content: content, ExpectedVersion: &expected})
+		}
+		return result
 	}
-	content := string(data)
-	if strings.TrimSpace(content) == "" {
-		_ = os.Remove(msg.path)
+}
+
+// readPlanDraft reads the edited draft back, bounded and hang-safe: the open
+// cannot block on a FIFO with no writer (plan.OpenContentFile), only a
+// regular file is accepted — checked on the opened descriptor, so a
+// concurrent path swap cannot slip a device past the check — and the read is
+// capped at the plan content limit so a runaway draft can never exhaust
+// memory. The service would refuse over-cap content anyway; refusing here
+// skips reading and shipping megabytes that cannot be persisted.
+func readPlanDraft(path string) (string, error) {
+	f, err := plan.OpenContentFile(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("draft %s is not a regular file", path)
+	}
+	if info.Size() > plan.MaxPlanContentSize {
+		return "", fmt.Errorf("draft exceeds the maximum plan size (%d bytes; max %d)", info.Size(), plan.MaxPlanContentSize)
+	}
+
+	// Read one byte past the cap so a draft that grew since the size check
+	// is still detected without trusting the stat size.
+	data, err := io.ReadAll(io.LimitReader(f, plan.MaxPlanContentSize+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > plan.MaxPlanContentSize {
+		return "", fmt.Errorf("draft exceeds the maximum plan size (max %d bytes)", plan.MaxPlanContentSize)
+	}
+	return string(data), nil
+}
+
+func (m *appModel) handlePlanWriteResult(msg planWriteResultMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.readErr != nil:
+		return m, tea.Sequence(
+			notification.ErrorCmd(fmt.Sprintf("Failed to read edited plan: %v", msg.readErr)),
+			notification.InfoCmd("Your draft is kept at "+msg.draftPath))
+	case msg.emptyDraft:
 		if msg.create {
 			return m, notification.InfoCmd(fmt.Sprintf("Plan %q not created: the draft was empty.", msg.ref.Name))
 		}
 		return m, notification.InfoCmd(fmt.Sprintf("Plan %q left unchanged: an empty draft is never committed.", msg.ref.Name))
-	}
-
-	var p plans.Plan
-	if msg.create {
-		p, err = m.plansService().Create(m.ctx(), plans.CreateRequest{Ref: msg.ref, Content: content})
-	} else {
-		expected := msg.expectedVersion
-		p, err = m.plansService().Update(m.ctx(), plans.UpdateRequest{Ref: msg.ref, Content: content, ExpectedVersion: &expected})
-	}
-	if err != nil {
-		cmd := m.planEditorFailureCmd(err, msg.path)
+	case msg.err != nil:
+		cmd := m.planEditorFailureCmd(msg.err, msg.draftPath)
 		return m, cmd
 	}
-	_ = os.Remove(msg.path)
+	_ = os.Remove(msg.draftPath)
 
 	verb := "Updated"
 	if msg.create {
 		verb = "Created"
 	}
-	cmds := []tea.Cmd{notification.SuccessCmd(fmt.Sprintf("%s shared plan %q (now v%d)", verb, p.Name, planVersionOf(p)))}
+	cmds := []tea.Cmd{notification.SuccessCmd(fmt.Sprintf("%s shared plan %q (now v%d)", verb, msg.plan.Name, planVersionOf(msg.plan)))}
 	cmds = append(cmds, m.planRefreshCmds(false)...)
 	return m, tea.Sequence(cmds...)
 }
 
 // planEditorFailureCmd reports a failed editor-driven write. The draft file
-// is deliberately kept so a conflict or storage failure never loses the
-// user's edits; the newer plan content stays intact and is re-read into the
-// open dialogs.
+// is deliberately kept so a conflict, timeout, or storage failure never
+// loses the user's edits; the newer plan content stays intact and is re-read
+// into the open dialogs.
 func (m *appModel) planEditorFailureCmd(err error, draftPath string) tea.Cmd {
+	if timeout := m.planTimeoutCmd(err); timeout != nil {
+		return tea.Sequence(timeout, notification.InfoCmd("Your draft is kept at "+draftPath))
+	}
 	var conflict *plans.ConflictError
 	if errors.As(err, &conflict) {
 		text := fmt.Sprintf(
@@ -364,6 +528,9 @@ func (m *appModel) planEditorFailureCmd(err error, draftPath string) tea.Cmd {
 // planWriteFailureCmd reports a failed status/delete write. Conflicts
 // refresh the open dialogs so the newer version is visible right away.
 func (m *appModel) planWriteFailureCmd(err error) tea.Cmd {
+	if timeout := m.planTimeoutCmd(err); timeout != nil {
+		return timeout
+	}
 	var conflict *plans.ConflictError
 	if errors.As(err, &conflict) {
 		cmds := []tea.Cmd{notification.ErrorCmd(fmt.Sprintf(
@@ -373,6 +540,19 @@ func (m *appModel) planWriteFailureCmd(err error) tea.Cmd {
 		return tea.Sequence(cmds...)
 	}
 	return planErrorCmd(err)
+}
+
+// planTimeoutCmd returns the actionable notification for a persistence
+// operation that hit the bounded mutation timeout — most likely the
+// cross-process plans lock is held by a wedged process — or nil when err is
+// not a timeout.
+func (m *appModel) planTimeoutCmd(err error) tea.Cmd {
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	return notification.ErrorCmd(fmt.Sprintf(
+		"Plan write timed out after %s — the plan store may be locked by another process. Retry shortly.",
+		m.planMutationTimeoutOrDefault()))
 }
 
 // planVersionOf reads a shared plan's version defensively; the service

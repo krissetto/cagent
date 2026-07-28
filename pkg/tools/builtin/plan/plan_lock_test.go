@@ -3,6 +3,7 @@ package plan
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -490,15 +491,16 @@ func waitForFile(t *testing.T, path string) {
 // --- Bounded decoding --------------------------------------------------------
 
 // TestStorage_OversizedPlanFileReportedCorrupt proves a stored file beyond
-// MaxPlanFileSize is never slurped into memory whole: it surfaces as a typed
-// corrupt-plan error on Get, a warning on List, blocks guarded writes, and is
-// recoverable with an unguarded delete — exactly like undecodable JSON.
+// maxEncodedPlanSize is never slurped into memory whole: it surfaces as a
+// typed corrupt-plan error on Get, a warning on List, blocks guarded writes,
+// and is recoverable with an unguarded delete — exactly like undecodable
+// JSON.
 func TestStorage_OversizedPlanFileReportedCorrupt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	s := NewFilesystemStorage(dir)
 
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "big.json"), make([]byte, MaxPlanFileSize+1), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "big.json"), make([]byte, maxEncodedPlanSize+1), 0o600))
 
 	_, _, err := s.Get(t.Context(), "big")
 	var corrupt *CorruptPlanError
@@ -521,9 +523,116 @@ func TestStorage_OversizedPlanFileReportedCorrupt(t *testing.T) {
 	assert.True(t, deleted)
 }
 
+// TestStorage_ContentAtSizeCapIsStored proves the advertised content cap is
+// exact: content of exactly MaxPlanContentSize — including bytes JSON must
+// escape — is persisted and read back intact, because the stored-file bound
+// accounts for worst-case escaping instead of capping the encoded form at the
+// content limit.
+func TestStorage_ContentAtSizeCapIsStored(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := NewFilesystemStorage(dir)
+
+	// A quarter of escapable bytes (" expands to 2, \n to 2) proves escaping
+	// headroom without paying for the 6x worst case in test time.
+	content := strings.Repeat(`ab"`+"\n", MaxPlanContentSize/4)
+	require.Len(t, content, MaxPlanContentSize)
+
+	_, err := s.Upsert(t.Context(), UpsertRequest{Name: "big", Content: &content})
+	require.NoError(t, err, "content of exactly the advertised cap must be accepted")
+
+	got, ok, err := s.Get(t.Context(), "big")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, content, got.Content)
+}
+
+// TestStorage_WorstCaseEscapedContentAtSizeCapIsStored exercises the exact
+// worst case maxEncodedPlanSize is derived from: NUL bytes escape as \u0000
+// (6 bytes each, the maximum JSON expansion), so content of exactly
+// MaxPlanContentSize made entirely of them encodes to the full
+// 6*MaxPlanContentSize — and must still be persisted and read back intact.
+func TestStorage_WorstCaseEscapedContentAtSizeCapIsStored(t *testing.T) {
+	t.Parallel()
+
+	// Pin the 6x expansion formula the bound relies on before paying for the
+	// full-size write: every NUL encodes to exactly 6 bytes (plus quotes).
+	encoded, err := json.Marshal(strings.Repeat("\x00", 1024))
+	require.NoError(t, err)
+	require.Len(t, encoded, 6*1024+2, "a control byte must escape to exactly 6 bytes")
+
+	dir := t.TempDir()
+	s := NewFilesystemStorage(dir)
+	content := strings.Repeat("\x00", MaxPlanContentSize)
+
+	_, err = s.Upsert(t.Context(), UpsertRequest{Name: "worst", Content: &content})
+	require.NoError(t, err, "worst-case escaped content of exactly the cap must be accepted")
+
+	info, err := os.Stat(filepath.Join(dir, "worst.json"))
+	require.NoError(t, err)
+	assert.Greater(t, info.Size(), int64(6*MaxPlanContentSize), "the stored file must carry the 6x-escaped body")
+	assert.LessOrEqual(t, info.Size(), int64(maxEncodedPlanSize), "the stored file must fit the bound load applies")
+
+	got, ok, err := s.Get(t.Context(), "worst")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, content, got.Content)
+}
+
+// TestStorage_LargeMetadataBackwardCompatible proves free-form metadata has
+// no per-field cap: a plan stored by an earlier build with labels far beyond
+// any "reasonable" size keeps loading, survives a content-only update with
+// its metadata preserved, and new writes may carry equally large labels.
+func TestStorage_LargeMetadataBackwardCompatible(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := NewFilesystemStorage(dir)
+
+	// Plant a legacy plan file directly, as a previous build (whole-file
+	// bound only, no metadata cap) could have written it: every metadata
+	// field well past 4 KiB.
+	bigStatus := strings.Repeat("s", 8<<10)
+	bigTitle := strings.Repeat("t", 8<<10)
+	bigAuthor := strings.Repeat("a", 8<<10)
+	legacy, err := json.Marshal(Plan{
+		Name:      "legacy",
+		Title:     bigTitle,
+		Author:    bigAuthor,
+		Status:    bigStatus,
+		Content:   "legacy content",
+		Revision:  3,
+		UpdatedAt: "2024-01-02T03:04:05Z",
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "legacy.json"), legacy, 0o600))
+
+	got, ok, err := s.Get(t.Context(), "legacy")
+	require.NoError(t, err, "a legacy plan with large metadata must keep loading")
+	require.True(t, ok)
+	assert.Equal(t, bigStatus, got.Status)
+
+	// A content-only update must succeed and preserve the large metadata.
+	updated, err := s.Upsert(t.Context(), UpsertRequest{Name: "legacy", Content: new("new content")})
+	require.NoError(t, err, "updating only the content of a legacy plan must not trip any metadata cap")
+	assert.Equal(t, "new content", updated.Content)
+	assert.Equal(t, bigTitle, updated.Title)
+	assert.Equal(t, bigAuthor, updated.Author)
+	assert.Equal(t, bigStatus, updated.Status)
+	assert.Equal(t, 4, updated.Revision)
+
+	// New writes may set equally large labels.
+	_, err = s.Upsert(t.Context(), UpsertRequest{Name: "fresh", Content: new("body"), Status: &bigStatus})
+	require.NoError(t, err)
+	got, ok, err = s.Get(t.Context(), "fresh")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, bigStatus, got.Status)
+}
+
 // TestStorage_SaveRejectsPlanOverSizeCap proves the write side of the cap: a
-// plan that would encode past MaxPlanFileSize is rejected up front, so the
-// storage never persists a file it would then refuse to decode.
+// plan whose content exceeds the advertised bound is rejected up front, so
+// the storage never persists a file it would then refuse to decode.
 func TestStorage_SaveRejectsPlanOverSizeCap(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -532,12 +641,10 @@ func TestStorage_SaveRejectsPlanOverSizeCap(t *testing.T) {
 	_, err := s.Upsert(t.Context(), UpsertRequest{Name: "p", Content: new("v1")})
 	require.NoError(t, err)
 
-	// MaxPlanFileSize bytes of content always encode past the cap once the
-	// JSON envelope is added.
-	huge := strings.Repeat("x", MaxPlanFileSize)
+	huge := strings.Repeat("x", MaxPlanContentSize+1)
 	_, err = s.Upsert(t.Context(), UpsertRequest{Name: "p", Content: &huge})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "too large")
+	assert.Contains(t, err.Error(), "content is too large")
 
 	// The rejected write left the previous revision fully intact.
 	got, ok, err := s.Get(t.Context(), "p")

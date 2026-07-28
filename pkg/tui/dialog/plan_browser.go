@@ -115,7 +115,9 @@ type planBrowserDialog struct {
 
 	scrollview *scrollview.Model
 	keyMap     planBrowserKeyMap
-	openedAt   time.Time
+	// now supplies the reference time for relative "updated" ages, so they
+	// advance on every render. Injectable for deterministic tests.
+	now func() time.Time
 
 	// Double-click detection
 	lastClickTime  time.Time
@@ -140,7 +142,7 @@ func NewPlanBrowserDialog(result plans.ListResult) Dialog {
 		filterInput:    ti,
 		scrollview:     scrollview.New(scrollview.WithReserveScrollbarSpace(true)),
 		keyMap:         defaultPlanBrowserKeyMap(),
-		openedAt:       time.Now(),
+		now:            time.Now,
 		lastClickIndex: -1,
 	}
 	d.setData(result)
@@ -153,14 +155,17 @@ func (d *planBrowserDialog) Init() tea.Cmd {
 	return nil
 }
 
-// setData replaces the listing and re-applies the filter, keeping the
-// selection on the same plan when it still exists.
+// setData replaces the listing and re-applies the filter. When the selected
+// plan still exists the selection follows it and the viewport keeps its
+// scroll position (clamped if the list shrank), so a live refresh never
+// yanks the view back to the top mid-scroll.
 func (d *planBrowserDialog) setData(result plans.ListResult) {
 	var selectedRef *plans.Ref
 	if p, ok := d.selectedPlan(); ok {
 		ref := planRef(p)
 		selectedRef = &ref
 	}
+	offset := d.scrollview.ScrollOffset()
 
 	d.all = result.Plans
 	d.warnings = result.Warnings
@@ -170,6 +175,9 @@ func (d *planBrowserDialog) setData(result plans.ListResult) {
 		for i, p := range d.filtered {
 			if planRef(p) == *selectedRef {
 				d.selected = i
+				// SetScrollOffset clamps against the new row count, so a
+				// shrunken list can never leave the viewport past the end.
+				d.scrollview.SetScrollOffset(offset)
 				break
 			}
 		}
@@ -546,7 +554,7 @@ func (d *planBrowserDialog) renderPlan(p plans.Plan, selected bool, maxWidth int
 		mainStyle.Render(planCell(p.Name, planColName)) + gap +
 		metaStyle.Render(planCell(planLabel(p.Status), planColStatus)) + gap +
 		metaStyle.Render(planCell(planVersionLabel(p.Version), planColVersion)) + gap +
-		metaStyle.Render(planCell(planTimeAgo(d.openedAt, p.UpdatedAt), planColUpdated)) + gap +
+		metaStyle.Render(planCell(planTimeAgo(d.now(), p.UpdatedAt), planColUpdated)) + gap +
 		metaStyle.Render(toolcommon.TruncateText(planLabel(p.Title), titleWidth))
 
 	// Hard cap so a pathological row can never overflow the dialog.

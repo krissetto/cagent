@@ -98,6 +98,11 @@ type appModel struct {
 	// after path configuration; tests inject one via WithPlansService.
 	plansSvc plans.Service
 
+	// planMutationTimeout overrides the bounded timeout of plan persistence
+	// commands. Zero means defaultPlanMutationTimeout; tests set it per-model
+	// so timeout scenarios stay fast and parallel-safe.
+	planMutationTimeout time.Duration
+
 	// Per-session chat pages (kept alive for streaming continuity)
 	chatPages     map[string]chat.Page
 	sessionStates map[string]*service.SessionState
@@ -1304,6 +1309,16 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case planEditorClosedMsg:
 		return m.handlePlanEditorClosed(msg)
+
+	// Outcomes of the asynchronous plan persistence commands.
+	case planStatusResultMsg:
+		return m.handlePlanStatusResult(msg)
+
+	case planDeleteResultMsg:
+		return m.handlePlanDeleteResult(msg)
+
+	case planWriteResultMsg:
+		return m.handlePlanWriteResult(msg)
 
 	case dialog.PlanBrowserDataMsg, dialog.PlanDetailDataMsg:
 		return m.forwardDialog(msg)
