@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1108,4 +1109,197 @@ func TestNeedsJudge(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestSanitizeEventText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		maxRunes int
+		want     string
+	}{
+		{"plain text unchanged", "used $0.03 of $0.03", 256, "used $0.03 of $0.03"},
+		{"surrounding whitespace trimmed", "  budget.max_cost \n", 256, "budget.max_cost"},
+		{"control characters removed", "bud\x00get\x1b[31m", 256, "budget[31m"},
+		{"newline and tab kept", "line one\n\tline two", 256, "line one\n\tline two"},
+		{"carriage return removed", "line one\r\nline two", 256, "line one\nline two"},
+		{"invalid utf-8 dropped", "bud\xffget", 256, "budget"},
+		{"rune bound applied", strings.Repeat("é", 10), 4, "éééé"},
+		{"trailing space after cut trimmed", "abc def", 4, "abc"},
+		{"empty stays empty", "", 256, ""},
+		{"whitespace only becomes empty", " \t\n ", 256, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeEventText(tt.input, tt.maxRunes)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, sanitizeEventText(got, tt.maxRunes), "sanitization must be idempotent")
+			assert.LessOrEqual(t, utf8.RuneCountInString(got), tt.maxRunes)
+		})
+	}
+}
+
+func TestTerminationFromEvent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("native fields copied under the fixed reason", func(t *testing.T) {
+		t.Parallel()
+		term := terminationFromEvent(budgetExceededTestEvent())
+		assert.Equal(t, session.TerminationReasonBudgetExceeded, term.Reason)
+		assert.Equal(t, "run", term.Budget)
+		assert.Equal(t, "max_cost", term.Limit)
+		assert.Equal(t, "$0.03", term.Used)
+		assert.Equal(t, "$0.03", term.Max)
+		assert.Equal(t, "budget.max_cost", term.ConfigPath)
+		assert.Equal(t, budgetStopText, term.Message)
+	})
+
+	t.Run("missing and wrong-typed fields omitted", func(t *testing.T) {
+		t.Parallel()
+		term := terminationFromEvent(map[string]any{
+			"type":    "budget_exceeded",
+			"budget":  42,             // not a string
+			"limit":   true,           // not a string
+			"used":    []any{"$0.03"}, // not a string
+			"message": " \x00 ",       // empty after sanitization
+			// max and config_path absent
+		})
+		assert.Equal(t, session.TerminationReasonBudgetExceeded, term.Reason)
+		assert.Empty(t, term.Budget)
+		assert.Empty(t, term.Limit)
+		assert.Empty(t, term.Used)
+		assert.Empty(t, term.Max)
+		assert.Empty(t, term.ConfigPath)
+		assert.Empty(t, term.Message)
+	})
+
+	t.Run("only allow-listed keys are serialized", func(t *testing.T) {
+		t.Parallel()
+		event := budgetExceededTestEvent()
+		event["prompt"] = "secret instructions"
+		event["tool"] = "shell"
+
+		data, err := json.Marshal(terminationFromEvent(event))
+		require.NoError(t, err)
+
+		var keys map[string]any
+		require.NoError(t, json.Unmarshal(data, &keys))
+		allowed := []string{"reason", "budget", "limit", "used", "max", "config_path", "message"}
+		for key := range keys {
+			assert.Contains(t, allowed, key)
+		}
+		assert.NotContains(t, string(data), "sess-1", "session_id must never be copied")
+		assert.NotContains(t, string(data), "secret instructions")
+		assert.NotContains(t, string(data), "shell")
+	})
+
+	t.Run("oversized fields bounded deterministically", func(t *testing.T) {
+		t.Parallel()
+		event := map[string]any{
+			"type":    "budget_exceeded",
+			"budget":  strings.Repeat("b", 10_000),
+			"message": strings.Repeat("m", 10_000),
+		}
+		first := terminationFromEvent(event)
+		second := terminationFromEvent(event)
+		assert.Equal(t, first, second)
+		assert.Equal(t, maxTerminationFieldRunes, utf8.RuneCountInString(first.Budget))
+		assert.Equal(t, maxTerminationMessageRunes, utf8.RuneCountInString(first.Message))
+	})
+}
+
+func TestBuildTranscriptBudgetTermination(t *testing.T) {
+	t.Parallel()
+
+	t.Run("marker then one assistant stop in chronological order", func(t *testing.T) {
+		t.Parallel()
+		transcript := buildTranscript([]map[string]any{
+			{"type": "agent_choice", "content": "Working on it.", "agent_name": "root"},
+			{
+				"type":       "tool_call",
+				"agent_name": "root",
+				"tool_call": map[string]any{
+					"function": map[string]any{"name": "shell", "arguments": `{"cmd": "ls"}`},
+				},
+			},
+			budgetExceededTestEvent(),
+			messageAddedTestEvent("sess-1", "root", budgetStopText),
+			{"type": "stream_stopped"},
+		})
+
+		marker := "[Run terminated: budget_exceeded at budget.max_cost (used $0.03 of $0.03)]"
+		assert.Equal(t, 1, strings.Count(transcript, marker))
+		assert.Equal(t, 1, strings.Count(transcript, budgetStopText))
+
+		wantOrder := []string{"Working on it.", `calls tool "shell"`, marker, "[Agent root says]:\n" + budgetStopText}
+		lastIdx := -1
+		for _, substr := range wantOrder {
+			idx := strings.Index(transcript, substr)
+			assert.Greater(t, idx, lastIdx, "expected %q to appear after previous substring", substr)
+			lastIdx = idx
+		}
+	})
+
+	t.Run("repeated events do not duplicate marker or stop", func(t *testing.T) {
+		t.Parallel()
+		transcript := buildTranscript([]map[string]any{
+			budgetExceededTestEvent(),
+			budgetExceededTestEvent(),
+			{"type": "stream_stopped"},
+		})
+
+		assert.Equal(t, 1, strings.Count(transcript, "[Run terminated:"))
+		assert.Equal(t, 1, strings.Count(transcript, budgetStopText))
+	})
+
+	t.Run("malformed or missing stop_message keeps the marker alone", func(t *testing.T) {
+		t.Parallel()
+		wrongRole := budgetExceededTestEventWithoutStop()
+		payload := stopMessagePayload("root", "not the stop")
+		payload["message"].(map[string]any)["role"] = "user"
+		wrongRole["stop_message"] = payload
+
+		transcript := buildTranscript([]map[string]any{
+			wrongRole,
+			{"type": "stream_stopped"},
+		})
+
+		assert.Equal(t, 1, strings.Count(transcript, "[Run terminated:"))
+		assert.NotContains(t, transcript, "not the stop")
+		assert.NotContains(t, transcript, budgetStopText)
+	})
+
+	t.Run("ordinary streams get no marker and message_added is ignored", func(t *testing.T) {
+		t.Parallel()
+		transcript := buildTranscript([]map[string]any{
+			{"type": "agent_choice", "content": "All done.", "agent_name": "root"},
+			messageAddedTestEvent("sess-1", "helper", "an unrelated runtime message"),
+			{"type": "error", "error": "boom"},
+			{"type": "stream_stopped"},
+		})
+
+		assert.NotContains(t, transcript, "[Run terminated:")
+		assert.NotContains(t, transcript, "an unrelated runtime message")
+		assert.Contains(t, transcript, "All done.")
+	})
+
+	t.Run("foreign message_added and stream_stopped cannot disturb the stop", func(t *testing.T) {
+		t.Parallel()
+		transcript := buildTranscript([]map[string]any{
+			messageAddedTestEvent("other-session", "intruder", "fake stop"),
+			{"type": "stream_stopped", "session_id": "other-session"},
+			budgetExceededTestEvent(),
+			messageAddedTestEvent("other-session", "intruder", "another fake stop"),
+			{"type": "stream_stopped"},
+		})
+
+		assert.Equal(t, 1, strings.Count(transcript, "[Run terminated:"))
+		assert.Equal(t, 1, strings.Count(transcript, budgetStopText))
+		assert.NotContains(t, transcript, "fake stop")
+		assert.NotContains(t, transcript, "intruder")
+	})
 }

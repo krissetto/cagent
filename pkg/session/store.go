@@ -734,6 +734,15 @@ func (s *SQLiteSessionStore) loadSessionItems(ctx context.Context, q querier, se
 				}
 			}
 			items = append(items, Item{Error: &e})
+
+		case "termination":
+			var term Termination
+			if row.messageJSON.Valid && row.messageJSON.String != "" {
+				if err := json.Unmarshal([]byte(row.messageJSON.String), &term); err != nil {
+					return nil, fmt.Errorf("unmarshaling termination at position %d: %w", row.position, err)
+				}
+			}
+			items = append(items, Item{Termination: &term})
 		}
 	}
 
@@ -1143,6 +1152,19 @@ func (s *SQLiteSessionStore) addItemTx(ctx context.Context, tx *sql.Tx, sessionI
 			`INSERT INTO session_items (session_id, position, item_type, message_json)
 			 VALUES (?, ?, 'error', ?)`,
 			sessionID, position, string(errJSON))
+		return err
+
+	case item.Termination != nil:
+		// Terminations reuse the message_json column like error items;
+		// item_type discriminates the row, so no schema migration is needed.
+		termJSON, err := json.Marshal(item.Termination)
+		if err != nil {
+			return fmt.Errorf("marshaling termination: %w", err)
+		}
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO session_items (session_id, position, item_type, message_json)
+			 VALUES (?, ?, 'termination', ?)`,
+			sessionID, position, string(termJSON))
 		return err
 
 	default:

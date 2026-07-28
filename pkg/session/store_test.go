@@ -1157,3 +1157,60 @@ func TestResolveSessionID_InMemory(t *testing.T) {
 		assert.Equal(t, "some-uuid", id)
 	})
 }
+
+// TestAddSessionTerminationRoundTrip verifies that a termination marker
+// item written by AddSession survives a SQLite reload at its chronological
+// position, alongside the assistant stop message that follows it.
+func TestAddSessionTerminationRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tempDB := filepath.Join(t.TempDir(), "test_termination.db")
+
+	store, err := newSQLiteStoreForTest(t, tempDB)
+	require.NoError(t, err)
+	defer store.(*SQLiteSessionStore).Close()
+
+	term := &Termination{
+		Reason:     TerminationReasonBudgetExceeded,
+		Budget:     "run",
+		Limit:      "max_cost",
+		Used:       "$0.03",
+		Max:        "$0.03",
+		ConfigPath: "budget.max_cost",
+		Message:    "Execution stopped after reaching the configured budget.max_cost limit (used $0.03 of $0.03).",
+	}
+	sess := &Session{
+		ID:        "budget-session",
+		CreatedAt: time.Now(),
+		Messages: []Item{
+			{Message: UserMessage("do work")},
+			NewTerminationItem(term),
+			{Message: &Message{
+				AgentName: "root",
+				Message: chat.Message{
+					Role:      chat.MessageRoleAssistant,
+					Content:   term.Message,
+					CreatedAt: time.Now().UTC().Format(time.RFC3339),
+				},
+			}},
+		},
+	}
+	require.NoError(t, store.AddSession(t.Context(), sess))
+
+	retrieved, err := store.GetSession(t.Context(), "budget-session")
+	require.NoError(t, err)
+	require.Len(t, retrieved.Messages, 3)
+
+	require.True(t, retrieved.Messages[1].IsTermination())
+	assert.Equal(t, *term, *retrieved.Messages[1].Termination)
+	assert.Equal(t, *term, *retrieved.Termination())
+
+	stop := retrieved.Messages[2].Message
+	require.NotNil(t, stop)
+	assert.Equal(t, chat.MessageRoleAssistant, stop.Message.Role)
+	assert.Equal(t, term.Message, stop.Message.Content)
+	assert.Equal(t, "root", stop.AgentName)
+
+	// Termination markers are not conversation messages.
+	assert.Len(t, retrieved.GetAllMessages(), 2)
+}

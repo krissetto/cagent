@@ -576,6 +576,7 @@ func buildTranscript(events []map[string]any) string {
 	var transcript strings.Builder
 	var pendingText strings.Builder
 	var currentAgent string
+	terminations := &terminationTracker{}
 
 	flushText := func() {
 		if pendingText.Len() == 0 {
@@ -615,6 +616,22 @@ func buildTranscript(events []map[string]any) string {
 				response = response[:500] + "...(truncated)"
 			}
 			fmt.Fprintf(&transcript, "[Tool %q returns: %s]\n\n", name, response)
+
+		case "budget_exceeded":
+			// A budget stop is a structured termination, never an error. The
+			// marker lands at the event's chronological position, immediately
+			// followed by the assistant stop message the event embeds under
+			// stop_message. All message_added events are ignored: they carry
+			// no JSON payload, and regular assistant turns are already
+			// captured from agent_choice events.
+			flushText()
+			term, stop := terminations.observeBudgetExceeded(event)
+			if term != nil {
+				fmt.Fprintf(&transcript, "%s\n\n", terminationTranscriptMarker(term))
+			}
+			if stop != nil {
+				fmt.Fprintf(&transcript, "[Agent %s says]:\n%s\n\n", cmp.Or(stop.AgentName, currentAgent, "unknown"), stop.Message.Content)
+			}
 		}
 	}
 
