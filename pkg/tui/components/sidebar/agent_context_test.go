@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -27,7 +28,9 @@ func recordAgentUsage(m *model, sessionID, agentName string, contextLen, context
 
 // TestAgentRosterShowsPerAgentContextPercent verifies each card's metric line
 // carries the agent's own labeled context percentage once that agent has
-// emitted usage — and an explicit "—" for agents that have not run.
+// emitted usage — and an explicit "—" for agents that have not run. At the
+// default width this roster renders the compact vocabulary (root's preferred
+// wide joined metric line would overflow), so the label reads "Ctx".
 func TestAgentRosterShowsPerAgentContextPercent(t *testing.T) {
 	t.Parallel()
 
@@ -40,16 +43,16 @@ func TestAgentRosterShowsPerAgentContextPercent(t *testing.T) {
 	recordAgentUsage(m, "session-root", "root", 30_000, 100_000)
 	recordAgentUsage(m, "session-child", "developer", 42_000, 100_000)
 
-	assert.Contains(t, agentMetrics(m, "root"), "Context 30%",
+	assert.Contains(t, agentMetrics(m, "root"), "Ctx 30%",
 		"root's card shows its own labeled context percent")
 	_, rootLine2 := agentLines(m, "root")
 	assert.Contains(t, rootLine2, "anthropic/opus", "model text stays on line 2")
 
-	assert.Contains(t, agentMetrics(m, "developer"), "Context 42%",
+	assert.Contains(t, agentMetrics(m, "developer"), "Ctx 42%",
 		"developer's card shows its own labeled context percent")
 
 	idleMetrics := agentMetrics(m, "idle")
-	assert.Contains(t, idleMetrics, "Context —", "agents that never ran show an explicit —")
+	assert.Contains(t, idleMetrics, "Ctx —", "agents that never ran show an explicit —")
 	assert.NotContains(t, idleMetrics, "%", "agents that never ran show no percent")
 }
 
@@ -129,11 +132,12 @@ func TestAgentCardMetricLinesFitNarrowWidth(t *testing.T) {
 	card := agentCard(m, "root")
 	require.NotEmpty(t, card)
 	for _, line := range card {
-		assert.LessOrEqualf(t, len([]rune(line)), contentWidth,
+		assert.LessOrEqualf(t, lipgloss.Width(line), contentWidth,
 			"card line must fit the content width: %q", line)
 	}
 
 	metrics := strings.Join(card[2:], "\n")
-	assert.Contains(t, metrics, gaugePattern(4), "the full six-cell gauge survives the minimum width")
+	assert.Contains(t, metrics, "Eff high", "the compact effort label keeps its semantic value")
+	assert.NotContains(t, metrics, gaugePattern(4), "the decorative gauge is omitted at the minimum width")
 	assert.Contains(t, metrics, "Ctx 100%", "the compact context label keeps its percent")
 }
