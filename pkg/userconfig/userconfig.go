@@ -152,6 +152,9 @@ type LayoutSettings struct {
 	// agent: "compact" (default, two lines per agent) or "detailed"
 	// (mini-cards with labeled effort/context/cost metrics).
 	SidebarInfoMode string `yaml:"sidebar_info_mode,omitempty"`
+	// ActiveAgentsOnly filters the sidebar's Agents section to agents active
+	// in the current session instead of the whole configured team.
+	ActiveAgentsOnly bool `yaml:"active_agents_only,omitempty"`
 	// HideSessionPath hides the working directory (session path) line in the sidebar.
 	HideSessionPath bool `yaml:"hide_session_path,omitempty"`
 	// HideUsage hides the token usage section in the sidebar.

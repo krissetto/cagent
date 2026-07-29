@@ -111,6 +111,8 @@ The sidebar's **Agents** section lists every agent in the team and has two displ
 
 Agents are separated by a blank line so rows stay visually distinct. The effort **gauge** is the only visual language for thinking; the focus card and the Agent Inspector spell out the exact level alongside it. Left-click any agent to switch to it.
 
+On large teams the roster can be trimmed to the agents that matter right now: enable **Active agents only** (nested under **Agents** in `/settings` → Appearance → Sidebar sections, off by default) to list only agents active in the current session — the selected or working agent, participants of an in-flight transfer, and any agent with recorded participation (usage or attributed cost, including agents restored with a reloaded session). The filter also applies to the top/bottom band, is purely presentational — <kbd>Ctrl</kbd>+<kbd>number</kbd> shortcuts keep their original team positions and agent cycling still walks the whole team — and is unavailable while the Agents section itself is hidden.
+
 #### Agent inspector
 
 Open a read-only **Agent Inspector** to inspect any agent's full configuration combined with its live state. The instruction/system prompt is deliberately omitted; everything else the agent declares is shown:
@@ -439,6 +441,7 @@ settings:
     hide_session_path: false
     hide_usage: true
     hide_agents: false
+    active_agents_only: false # true to filter to session-active agents
     hide_tools: false
     hide_todos: false
 ```

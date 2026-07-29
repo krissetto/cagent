@@ -108,6 +108,10 @@ type Model interface {
 	// SetAgentInfoMode selects how the vertical Agents section renders each
 	// agent: the compact two-line roster (default) or detailed mini-cards.
 	SetAgentInfoMode(mode AgentInfoMode)
+	// SetActiveAgentsOnly filters the Agents roster (vertical panel and
+	// collapsed band) to agents active in the current session instead of the
+	// whole configured team.
+	SetActiveAgentsOnly(enabled bool)
 	GetSize() (width, height int)
 	LoadFromSession(sess *session.Session)
 	// ResetStreamTracking clears the active-stream stack so a new top-level run
@@ -328,6 +332,7 @@ type model struct {
 	sectionVisibility    SectionVisibility // which optional sections are rendered
 	sectionGap           int               // blank lines between sections in vertical mode
 	agentInfoMode        AgentInfoMode     // how the vertical Agents section renders each agent
+	activeAgentsOnly     bool              // filter the Agents roster to session-active agents
 
 	// Transfer-box animation: a single animation.Subscription drives the rail
 	// dot while any transfer_task hop is in flight. The frame counts shared
@@ -760,6 +765,16 @@ func (m *model) SetAgentInfoMode(mode AgentInfoMode) {
 		return
 	}
 	m.agentInfoMode = mode
+	m.invalidateCache()
+}
+
+// SetActiveAgentsOnly filters the Agents roster to agents active in the
+// current session (see rosterAgents).
+func (m *model) SetActiveAgentsOnly(enabled bool) {
+	if m.activeAgentsOnly == enabled {
+		return
+	}
+	m.activeAgentsOnly = enabled
 	m.invalidateCache()
 }
 
@@ -1522,7 +1537,8 @@ func (m *model) collapsedInfoLine(contentWidth int) string {
 // agentSummaryCollapsed renders the team roster for the band: the current
 // agent (in its accent color) with its model, then the other agents' names
 // in their own accent colors, so the whole team stays visible like in the
-// vertical Agents section.
+// vertical Agents section. The active-agents-only filter applies here too
+// (see rosterAgents).
 func (m *model) agentSummaryCollapsed() string {
 	name := m.sessionState.CurrentAgentName()
 	if name == "" {
@@ -1534,11 +1550,11 @@ func (m *model) agentSummaryCollapsed() string {
 	if m.agentModel != "" {
 		summary.WriteString(styles.MutedStyle.Render(" " + m.agentModel))
 	}
-	for _, agent := range m.availableAgents {
-		if agent.Name == name {
+	for _, entry := range m.rosterAgents() {
+		if entry.agent.Name == name {
 			continue
 		}
-		summary.WriteString(styles.MutedStyle.Render(" · ") + styles.AgentAccentStyleFor(agent.Name).Render(agent.Name))
+		summary.WriteString(styles.MutedStyle.Render(" · ") + styles.AgentAccentStyleFor(entry.agent.Name).Render(entry.agent.Name))
 	}
 	return summary.String()
 }
@@ -2052,7 +2068,9 @@ func (m *model) queueSection(contentWidth int) string {
 	return m.renderTab(title, strings.Join(lines, "\n"), contentWidth)
 }
 
-// agentInfo renders the Agents panel: every agent as a multi-line entry —
+// agentInfo renders the Agents panel: every roster agent (the whole team,
+// or only the session-active agents under the active-agents-only filter —
+// see rosterAgents) as a multi-line entry —
 // the compact two-line roster (see renderAgentLine) or a detailed mini-card
 // (see renderAgentCard), per the configured AgentInfoMode — with a blank
 // separator line between entries. The current agent is marked with ▶ (or the
@@ -2071,18 +2089,19 @@ func (m *model) agentInfo(contentWidth int) string {
 	if currentAgent == "" {
 		return ""
 	}
+	roster := m.rosterAgents()
 
 	agentTitle := "Agent"
-	if len(m.availableAgents) > 1 {
+	if len(roster) > 1 {
 		agentTitle = "Agents"
 	}
 	if m.delegationInFlight() {
 		agentTitle += " ↔"
 	}
 
-	renderAgent := m.compactAgentRenderer(contentWidth)
+	renderAgent := m.compactAgentRenderer(roster, contentWidth)
 	if m.agentInfoMode == AgentInfoDetailed {
-		renderAgent = m.detailedAgentRenderer(contentWidth)
+		renderAgent = m.detailedAgentRenderer(roster, contentWidth)
 	}
 
 	var bodyLines, owners []string
@@ -2090,15 +2109,15 @@ func (m *model) agentInfo(contentWidth int) string {
 		bodyLines = append(bodyLines, line)
 		owners = append(owners, owner)
 	}
-	for i, agent := range m.availableAgents {
+	for _, entry := range roster {
 		// Separate entries with a blank, unowned line so they stay visually
 		// distinct without being attributed to (or made clickable for) any agent.
 		if len(bodyLines) > 0 {
 			add("", "")
 		}
-		current := agent.Name == currentAgent
-		for _, line := range renderAgent(agent, i, current) {
-			add(line, agent.Name)
+		current := entry.agent.Name == currentAgent
+		for _, line := range renderAgent(entry.agent, entry.index, current) {
+			add(line, entry.agent.Name)
 		}
 	}
 	// The visible transfer presentation renders as a compact box below the
@@ -2119,12 +2138,60 @@ func (m *model) agentInfo(contentWidth int) string {
 // precomputed for the whole panel.
 type agentRenderer func(agent runtime.AgentDetails, index int, current bool) []string
 
+// rosterAgent is one Agents-roster entry: the agent's details plus its
+// original team index, preserved under filtering so the ^N switch shortcut
+// keeps addressing the same team position.
+type rosterAgent struct {
+	agent runtime.AgentDetails
+	index int
+}
+
+// rosterAgents returns the agents the Agents section presents, each with its
+// original team index. With the active-agents-only filter off this is the
+// whole team; with it on, only agents active in the current session (see
+// agentActiveInSession). Filtering is presentation-only: agent cycling and
+// switching still operate on the full team.
+func (m *model) rosterAgents() []rosterAgent {
+	roster := make([]rosterAgent, 0, len(m.availableAgents))
+	for i, agent := range m.availableAgents {
+		if m.activeAgentsOnly && !m.agentActiveInSession(agent.Name) {
+			continue
+		}
+		roster = append(roster, rosterAgent{agent: agent, index: i})
+	}
+	return roster
+}
+
+// agentActiveInSession reports whether the named agent counts as active for
+// the active-agents-only filter: the selected or working agent (so the
+// roster can never be empty), a participant of the in-flight transfer/return
+// presentation, or an agent with recorded participation in this session — a
+// usage snapshot or an attributed cost, live or restored.
+func (m *model) agentActiveInSession(name string) bool {
+	if name == m.sessionState.CurrentAgentName() || name == m.workingAgent {
+		return true
+	}
+	for _, hop := range m.agentTransfers {
+		if hop.from == name || hop.to == name {
+			return true
+		}
+	}
+	if r := m.agentReturn; r != nil && (r.from == name || r.to == name) {
+		return true
+	}
+	if _, ok := m.sessionState.AgentUsage(name); ok {
+		return true
+	}
+	_, ok := m.sessionState.AgentCost(name)
+	return ok
+}
+
 // compactAgentRenderer precomputes the compact roster's shared column widths
 // once — so every entry aligns and the badge width is not recomputed per
 // agent — and returns the per-agent two-line renderer (see renderAgentLine).
-func (m *model) compactAgentRenderer(contentWidth int) agentRenderer {
+func (m *model) compactAgentRenderer(roster []rosterAgent, contentWidth int) agentRenderer {
 	glyphOnly := contentWidth < rowGlyphOnlyMinWidth
-	badgeWidth := m.badgeColumnWidth(glyphOnly)
+	badgeWidth := badgeColumnWidth(roster, glyphOnly)
 	nameWidth := max(1, contentWidth-agentMarkerWidth-minGap-badgeWidth-1-agentShortcutWidth)
 	return func(agent runtime.AgentDetails, index int, current bool) []string {
 		return m.renderAgentLine(agent, index, contentWidth, nameWidth, badgeWidth, glyphOnly, current)
@@ -2141,11 +2208,11 @@ func (m *model) compactAgentRenderer(contentWidth int) agentRenderer {
 // If any agent's joined line would overflow, all cards use the compact
 // vocabulary (Eff/Ctx, no gauge) so the panel speaks one language and each
 // card stays as short as the width allows.
-func (m *model) detailedAgentRenderer(contentWidth int) agentRenderer {
+func (m *model) detailedAgentRenderer(roster []rosterAgent, contentWidth int) agentRenderer {
 	metricWidth := contentWidth - agentMarkerWidth
 	narrow := false
-	for _, agent := range m.availableAgents {
-		if lipgloss.Width(joinSegments(m.metricSegments(agent, false))) > metricWidth {
+	for _, entry := range roster {
+		if lipgloss.Width(joinSegments(m.metricSegments(entry.agent, false))) > metricWidth {
 			narrow = true
 			break
 		}
@@ -2233,10 +2300,10 @@ func thinkingBadge(label string) (badge, compact string) {
 // badgeColumnWidth returns the widest thinking badge across the roster so every
 // compact agent line reserves the same badge column and the badges stay
 // aligned. glyphOnly selects the single-cell compact form used near MinWidth.
-func (m *model) badgeColumnWidth(glyphOnly bool) int {
+func badgeColumnWidth(roster []rosterAgent, glyphOnly bool) int {
 	w := 0
-	for _, a := range m.availableAgents {
-		full, compact := thinkingBadge(a.Thinking)
+	for _, entry := range roster {
+		full, compact := thinkingBadge(entry.agent.Thinking)
 		b := full
 		if glyphOnly {
 			b = compact

@@ -404,13 +404,14 @@ func WithCommandParser(p *commands.Parser) PageOption {
 }
 
 // WithLayoutSettings applies initial layout customization (sidebar position,
-// section spacing, section visibility, and agent info mode).
+// section spacing, section visibility, agent info mode, and agent filtering).
 func WithLayoutSettings(settings msgtypes.LayoutSettings) PageOption {
 	return func(p *chatPage) {
 		p.layoutSettings = settings
 		p.sidebar.SetSectionVisibility(sectionVisibility(settings))
 		p.sidebar.SetSectionGap(settings.SectionSpacing.BlankLines())
 		p.sidebar.SetAgentInfoMode(agentInfoMode(settings.SidebarInfoMode))
+		p.sidebar.SetActiveAgentsOnly(settings.ActiveAgentsOnly)
 	}
 }
 
@@ -1281,6 +1282,7 @@ func (p *chatPage) SetLayoutSettings(settings msgtypes.LayoutSettings) tea.Cmd {
 	p.sidebar.SetSectionVisibility(sectionVisibility(settings))
 	p.sidebar.SetSectionGap(settings.SectionSpacing.BlankLines())
 	p.sidebar.SetAgentInfoMode(agentInfoMode(settings.SidebarInfoMode))
+	p.sidebar.SetActiveAgentsOnly(settings.ActiveAgentsOnly)
 	if p.width <= 0 || p.height <= 0 {
 		return nil
 	}

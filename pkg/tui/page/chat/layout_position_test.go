@@ -234,6 +234,33 @@ func TestWithLayoutSettingsAppliesInfoMode(t *testing.T) {
 		"the initial layout option applies the detailed mode")
 }
 
+// TestSetLayoutSettingsForwardsActiveAgentsOnlyToSidebar verifies the agent
+// filter reaches the sidebar's roster and can be switched live: an agent
+// without session participation disappears while the filter is on and
+// returns when it is turned off.
+func TestSetLayoutSettingsForwardsActiveAgentsOnlyToSidebar(t *testing.T) {
+	t.Parallel()
+
+	p := newLayoutTestPage(t, msgtypes.SidebarRight)
+	p.sessionState.SetCurrentAgentName("root")
+	p.sidebar.SetTeamInfo([]runtime.AgentDetails{
+		{Name: "root", Provider: "openai", Model: "gpt-4"},
+		{Name: "idle", Provider: "openai", Model: "gpt-4o"},
+	})
+	p.SetSize(160, 40)
+
+	require.Contains(t, ansi.Strip(p.View()), "idle",
+		"the default layout renders the whole team")
+
+	p.SetLayoutSettings(msgtypes.LayoutSettings{ActiveAgentsOnly: true})
+	assert.NotContains(t, ansi.Strip(p.View()), "idle",
+		"the filter hides agents without session participation")
+
+	p.SetLayoutSettings(msgtypes.LayoutSettings{})
+	assert.Contains(t, ansi.Strip(p.View()), "idle",
+		"switching the filter off live restores the whole team")
+}
+
 func TestSetLayoutSettingsBeforeSizingReturnsNil(t *testing.T) {
 	t.Parallel()
 
