@@ -15,14 +15,15 @@ import (
 	"github.com/docker/docker-agent/pkg/atomicfile"
 )
 
-// TestOpenContentFile_AllowsReplaceWhileOpen proves the Windows open shares
-// deletion: the atomic rename that publishes a new plan revision (the same
-// atomicfile.Write the storage uses, MoveFileEx with
-// MOVEFILE_REPLACE_EXISTING underneath) must succeed while a reader still
-// holds a descriptor on the destination, and that descriptor must keep
-// reading the complete old contents. os.Open's share mode omits
-// FILE_SHARE_DELETE, which made exactly this replace fail with "Access is
-// denied" under concurrent lock-free reads.
+// TestOpenContentFile_AllowsReplaceWhileOpen proves the reader's half of
+// the lock-free contract — the open shares deletion: the atomic rename
+// that publishes a new plan revision (the same atomicfile.Write the
+// storage uses, os.Root.Rename's POSIX-semantics rename underneath) must
+// succeed while a reader still holds a descriptor on the destination, and
+// that descriptor must keep reading the complete old contents. os.Open's
+// share mode omits FILE_SHARE_DELETE, so a descriptor opened that way
+// would make even that POSIX rename fail with a sharing violation under
+// concurrent lock-free reads.
 func TestOpenContentFile_AllowsReplaceWhileOpen(t *testing.T) {
 	t.Parallel()
 
