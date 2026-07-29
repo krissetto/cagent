@@ -3,10 +3,13 @@ package plans
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -855,6 +858,151 @@ func TestService_ExportValidation(t *testing.T) {
 	_, err = svc.Export(t.Context(), ExportRequest{Ref: SharedRef("p"), Path: t.TempDir()})
 	require.ErrorAs(t, err, &invalid)
 	assert.Contains(t, invalid.Message, "directory")
+}
+
+func TestService_ExportRefusesExistingDestination(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newTestService(t)
+	mustCreate(t, svc, "p", "new body")
+
+	dest := filepath.Join(t.TempDir(), "export.md")
+	require.NoError(t, os.WriteFile(dest, []byte("precious"), 0o600))
+
+	var invalid *ValidationError
+	_, err := svc.Export(t.Context(), ExportRequest{Ref: SharedRef("p"), Path: dest})
+	require.ErrorAs(t, err, &invalid)
+	assert.Contains(t, invalid.Message, "already exists")
+
+	data, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Equal(t, "precious", string(data), "a refused export must preserve the destination")
+}
+
+func TestService_ExportForceReplacesExistingFile(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newTestService(t)
+	mustCreate(t, svc, "p", "new body")
+
+	dest := filepath.Join(t.TempDir(), "export.md")
+	require.NoError(t, os.WriteFile(dest, []byte("old"), 0o600))
+
+	result, err := svc.Export(t.Context(), ExportRequest{Ref: SharedRef("p"), Path: dest, Force: true})
+	require.NoError(t, err)
+	assert.Equal(t, len("new body"), result.BytesWritten)
+
+	data, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Equal(t, "new body", string(data))
+}
+
+func TestService_ExportForceStillRefusesDirectory(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newTestService(t)
+	mustCreate(t, svc, "p", "body")
+
+	var invalid *ValidationError
+	_, err := svc.Export(t.Context(), ExportRequest{Ref: SharedRef("p"), Path: t.TempDir(), Force: true})
+	require.ErrorAs(t, err, &invalid)
+	assert.Contains(t, invalid.Message, "directory")
+}
+
+// TestService_ExportConcurrentNonForceSingleWinner proves the no-replace
+// hard-link publication closes the stat-then-write race: two non-force exports
+// racing to the same previously absent path yield exactly one success and one
+// typed already-exists *ValidationError, and the destination holds the
+// winner's full body. Which call wins is scheduler-dependent; the outcome
+// split is not.
+func TestService_ExportConcurrentNonForceSingleWinner(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newTestService(t)
+	const body = "# plan\nthe full body\n"
+	mustCreate(t, svc, "p", body)
+
+	destDir := t.TempDir()
+	dest := filepath.Join(destDir, "export.md")
+	ctx := t.Context()
+	start := make(chan struct{})
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Go(func() {
+			<-start
+			_, err := svc.Export(ctx, ExportRequest{Ref: SharedRef("p"), Path: dest})
+			errs[i] = err
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	var failures []error
+	for _, err := range errs {
+		if err != nil {
+			failures = append(failures, err)
+		}
+	}
+	require.Len(t, failures, 1, "exactly one of the two racing exports must succeed: %v", errs)
+	var invalid *ValidationError
+	require.ErrorAs(t, failures[0], &invalid, "the loser must fail as invalid input, not a storage failure")
+	assert.Contains(t, invalid.Message, "already exists")
+
+	data, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Equal(t, body, string(data), "the loser must not have truncated or torn the winner's export")
+
+	entries, err := os.ReadDir(destDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "the losing export must clean up its temp file")
+	assert.Equal(t, "export.md", entries[0].Name())
+}
+
+// TestPublishExportNoReplace pins the lower-level publication primitive of a
+// non-force export: the whole body appears at the destination as a hard link
+// to a fully written temp file, the temp link does not survive, and the
+// published mode matches the force path's 0600.
+func TestPublishExportNoReplace(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "export.md")
+
+	require.NoError(t, publishExportNoReplace(dest, "the body"))
+
+	data, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Equal(t, "the body", string(data))
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "the temp link must not survive publication")
+	assert.Equal(t, "export.md", entries[0].Name())
+
+	if runtime.GOOS != "windows" { // file modes are POSIX-only
+		info, err := os.Stat(dest)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+}
+
+// TestPublishExportNoReplaceRefusesExistingDestination pins the no-replace
+// guarantee at the publication step itself: an existing destination entry
+// fails with fs.ErrExist — the sentinel writeExportFile maps to the typed
+// already-exists error — is preserved byte-identical, and no temp file is
+// left behind.
+func TestPublishExportNoReplaceRefusesExistingDestination(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "export.md")
+	require.NoError(t, os.WriteFile(dest, []byte("precious"), 0o600))
+
+	err := publishExportNoReplace(dest, "clobber")
+	require.ErrorIs(t, err, fs.ErrExist)
+
+	data, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Equal(t, "precious", string(data), "the refused publication must preserve the destination")
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "the refused publication must clean up its temp file")
 }
 
 // --- Storage failures and injection -------------------------------------------

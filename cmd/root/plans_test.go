@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/docker/cli/cli"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -934,6 +935,42 @@ func TestPlansExport_RequiresOutput(t *testing.T) {
 	assert.Contains(t, err.Error(), `"output" not set`)
 }
 
+func TestPlansExport_RefusesExistingDestination(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+	mustCreatePlan(t, svc, "release", "new body")
+	dest := filepath.Join(t.TempDir(), "plan.md")
+	require.NoError(t, os.WriteFile(dest, []byte("precious"), 0o600))
+
+	stdout, stderr, err := executePlans(t, svc, "export", "release", "--output", dest, "--json")
+	requirePlansStatusCode(t, err, 1)
+	assert.Empty(t, stdout)
+	body := decodePlansError(t, stderr)
+	assert.Equal(t, "invalid_argument", body.Code)
+	assert.Contains(t, body.Message, "already exists")
+
+	data, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Equal(t, "precious", string(data), "a refused export must preserve the destination")
+}
+
+func TestPlansExport_ForceReplacesExistingFile(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newPlansTestService(t)
+	mustCreatePlan(t, svc, "release", "new body")
+	dest := filepath.Join(t.TempDir(), "plan.md")
+	require.NoError(t, os.WriteFile(dest, []byte("old"), 0o600))
+
+	stdout, stderr, err := executePlans(t, svc, "export", "release", "--output", dest, "--force")
+	require.NoError(t, err)
+	assert.Empty(t, stderr)
+	assert.Contains(t, stdout, "Exported shared plan \"release\"")
+
+	data, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Equal(t, "new body", string(data))
+}
+
 // --- Delete --------------------------------------------------------------------
 
 func TestPlansDelete_WithExpectedVersion(t *testing.T) {
@@ -1138,6 +1175,123 @@ func TestRootCommand_FlagErrorFuncStaysDefault(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown flag: --frobnicate")
 	assert.NotContains(t, errBuf.String(), "schema_version")
+}
+
+// --- PreRunE preservation ----------------------------------------------------------
+
+// newHardenedPreRunECmd builds a plans-style subcommand (a --json flag, a
+// required flag, its own PreRunE), hardened like the real subcommands. The
+// production subcommands define no PreRunE today; these tests pin that
+// hardenPlansValidation preserves one instead of silently replacing it.
+func newHardenedPreRunECmd(preRunE func(*cobra.Command, []string) error, order *[]string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "sub",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		PreRunE:      preRunE,
+		RunE: func(*cobra.Command, []string) error {
+			*order = append(*order, "run")
+			return nil
+		},
+	}
+	cmd.Flags().Bool("json", false, "")
+	cmd.Flags().String("file", "", "")
+	_ = cmd.MarkFlagRequired("file")
+	hardenPlansValidation(cmd)
+	return cmd
+}
+
+func TestHardenPlansValidation_RunsExistingPreRunE(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	cmd := newHardenedPreRunECmd(func(*cobra.Command, []string) error {
+		order = append(order, "prerun")
+		return nil
+	}, &order)
+
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--file", "x"})
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, []string{"prerun", "run"}, order, "the pre-existing PreRunE must run before RunE")
+}
+
+func TestHardenPlansValidation_PreRunEErrorShortCircuitsToJSON(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	cmd := newHardenedPreRunECmd(func(*cobra.Command, []string) error {
+		return errors.New("prerun boom")
+	}, &order)
+
+	var outBuf, errBuf bytes.Buffer
+	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
+	// --file is deliberately missing: the PreRunE failure must win over the
+	// required-flag check.
+	cmd.SetArgs([]string{"--json"})
+
+	err := cmd.Execute()
+	requirePlansStatusCode(t, err, 1)
+	assert.Empty(t, order, "RunE must not run after a failing PreRunE")
+	assert.Empty(t, outBuf.String())
+	body := decodePlansError(t, errBuf.String())
+	assert.Equal(t, "invalid_argument", body.Code)
+	assert.Contains(t, body.Message, "prerun boom")
+	assert.NotContains(t, body.Message, "not set", "the PreRunE failure must short-circuit the required-flag check")
+}
+
+func TestHardenPlansValidation_PreRunEErrorHumanModePassesThrough(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	cmd := newHardenedPreRunECmd(func(*cobra.Command, []string) error {
+		return errors.New("prerun boom")
+	}, &order)
+
+	var outBuf, errBuf bytes.Buffer
+	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs([]string{"--file", "x"})
+
+	err := cmd.Execute()
+	require.ErrorContains(t, err, "prerun boom")
+	assert.Empty(t, order)
+	assert.NotContains(t, errBuf.String(), "schema_version", "human mode must keep cobra's plain-text rendering")
+}
+
+// --- Telemetry sanitization ----------------------------------------------------------
+
+// TestPlansTelemetryError_ReducesToStableCode pins the telemetry
+// sanitization: the tracked error is exactly the stable machine-readable
+// code of the JSON error contract, so plan names, session IDs, and
+// filesystem paths embedded in error text never leave the machine.
+func TestPlansTelemetryError_ReducesToStableCode(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, plansTelemetryError(nil), "a success must stay untracked")
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"conflict", &plans.ConflictError{Name: "secret-plan", Expected: 1, Current: 2}, "conflict"},
+		{"not found", &plans.NotFoundError{Scope: plans.ScopeShared, Name: "secret-plan"}, "not_found"},
+		{"validation", &plans.ValidationError{Message: `invalid name "secret-plan"`}, "invalid_argument"},
+		{"usage with path", plansUsagef("reading plan content from %q: boom", "/home/user/secret.md"), "invalid_argument"},
+		{"storage with path", &plans.StorageError{Scope: plans.ScopeShared, Op: "list", Err: errors.New("open /home/user/.cagent/plans: denied")}, "storage"},
+		{"unknown", errors.New("read /home/user/notes.md: i/o error"), "error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := plansTelemetryError(tt.err)
+			require.Error(t, got)
+			assert.Equal(t, tt.want, got.Error(), "only the stable code may be tracked")
+		})
+	}
 }
 
 // --- Storage failures -------------------------------------------------------------

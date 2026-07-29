@@ -127,10 +127,13 @@ failures are then reported as a single JSON object on stderr.`,
 func (o *plansOptions) runPlans(sub string, jsonOut *bool, handler func(cmd *cobra.Command, svc plans.Service, args []string) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		trackArgs := append([]string{sub}, args...)
+		// Telemetry carries the subcommand only: positional args are plan and
+		// session names, and raw errors embed names and filesystem paths, so
+		// failures are reduced to their stable code by plansTelemetryError.
+		trackArgs := []string{sub}
 		telemetry.TrackCommand(ctx, "plans", trackArgs)
 		err := handler(cmd, o.resolveService(), args)
-		telemetry.TrackCommandError(ctx, "plans", trackArgs, err)
+		telemetry.TrackCommandError(ctx, "plans", trackArgs, plansTelemetryError(err))
 		if err == nil {
 			return nil
 		}
@@ -190,14 +193,23 @@ func plansValidationError(cmd *cobra.Command, err error) error {
 // through plansValidationError. Positional args are covered by wrapping the
 // command's Args; required flags and flag groups are checked from PreRunE,
 // immediately before cobra's own — then passing — checks, so nothing is
-// validated twice with two different renderings.
+// validated twice with two different renderings. A PreRunE the command
+// already had keeps running first — matching cobra's order, where PreRunE
+// precedes the required/group checks — with its errors routed through the
+// same rendering.
 func hardenPlansValidation(cmd *cobra.Command) {
 	if inner := cmd.Args; inner != nil {
 		cmd.Args = func(cmd *cobra.Command, args []string) error {
 			return plansValidationError(cmd, inner(cmd, args))
 		}
 	}
-	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+	innerPreRun := cmd.PreRunE
+	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		if innerPreRun != nil {
+			if err := innerPreRun(cmd, args); err != nil {
+				return plansValidationError(cmd, err)
+			}
+		}
 		if err := cmd.ValidateRequiredFlags(); err != nil {
 			return plansValidationError(cmd, err)
 		}
@@ -260,6 +272,17 @@ func plansErrorBodyFor(err error) plansErrorBody {
 	default:
 		return plansErrorBody{Code: plansErrCodeUnknown, Message: err.Error()}
 	}
+}
+
+// plansTelemetryError sanitizes a failure for telemetry by reducing it to
+// its stable machine-readable code (plansErrorBodyFor): raw error text
+// carries plan names, session IDs, and filesystem paths that must never be
+// sent. Nil stays nil so a success is never tracked as an error.
+func plansTelemetryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(plansErrorBodyFor(err).Code)
 }
 
 func printPlansError(w io.Writer, err error, jsonOut bool) {
@@ -803,6 +826,7 @@ func newPlansExportCmd(o *plansOptions) *cobra.Command {
 	var flags struct {
 		json   bool
 		output string
+		force  bool
 		ref    planRefFlags
 	}
 
@@ -811,9 +835,12 @@ func newPlansExportCmd(o *plansOptions) *cobra.Command {
 		Short: "Write a plan's content to a file",
 		Long: `Write a plan's content, byte-exact, to --output (required). Parent
 directories are created and the write is atomic, so a reader never observes
-a partial export. Works for both scopes: shared plans by name, a session's
-plan via --session <id>.`,
+a partial export. An existing destination is refused and left untouched
+unless --force is given, which replaces an existing regular file atomically.
+Works for both scopes: shared plans by name, a session's plan via
+--session <id>.`,
 		Example: `  docker-agent plans export release --output ./plan.md
+  docker-agent plans export release --output ./plan.md --force
   docker-agent plans export --session <session-id> --output ./plan.md`,
 		Args: cobra.MaximumNArgs(1),
 	}
@@ -822,7 +849,7 @@ plan via --session <id>.`,
 		if err != nil {
 			return err
 		}
-		result, err := svc.Export(cmd.Context(), plans.ExportRequest{Ref: ref, Path: flags.output})
+		result, err := svc.Export(cmd.Context(), plans.ExportRequest{Ref: ref, Path: flags.output, Force: flags.force})
 		if err != nil {
 			return err
 		}
@@ -836,6 +863,7 @@ plan via --session <id>.`,
 
 	flags.ref.register(cmd)
 	cmd.Flags().StringVar(&flags.output, "output", "", "Destination file for the plan content; required")
+	cmd.Flags().BoolVar(&flags.force, "force", false, "Replace the destination file when it already exists")
 	cmd.Flags().BoolVar(&flags.json, "json", false, "Output as JSON")
 	_ = cmd.MarkFlagRequired("output")
 

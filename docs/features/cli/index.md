@@ -620,7 +620,7 @@ $ docker agent plans <subcommand> [flags]
 | `create <name> --file <path>` | Create a new shared plan with content from `--file` (required — the CLI never prompts; `--file -` reads stdin). Create-only: an existing name fails with a version conflict instead of overwriting. `--title`, `--author`, and `--status` set metadata. |
 | `update <name> --file <path>` | Replace the content of an existing shared plan (never creates). Omitted `--title`/`--author`/`--status` flags preserve the current values; passing them (even empty) overwrites. |
 | `status <name> <status>` | Set a shared plan's free-form status without touching its body (bumps the version). |
-| `export <name> --output <path>` | Write a plan's content, byte-exact, to a file (parents created, atomic write). Works for both scopes: `export --session <id> --output <path>`. |
+| `export <name> --output <path>` | Write a plan's content, byte-exact, to a file (parents created, atomic write). An existing destination is refused (`invalid_argument`) and left untouched; add `--force` to replace an existing regular file atomically. Works for both scopes: `export --session <id> --output <path>`. |
 | `delete <name>` | Delete a shared plan. A `--force` delete also recovers a corrupt plan. |
 
 Plan content passed via `--file` (a regular file, or stdin with `--file -`) is capped at 10 MiB — the same limit the plan storage itself enforces — and a directory or non-regular file (device, named pipe) is rejected up front; violations fail with an `invalid_argument` error.
@@ -650,6 +650,7 @@ $ docker agent plans get release > plan.md            # content only; metadata o
 $ docker agent plans update release --file ./plan.md --expected-version 1
 $ docker agent plans status release done --expected-version 2
 $ docker agent plans export release --output ./plan.md
+$ docker agent plans export release --output ./plan.md --force   # replace an existing file
 $ docker agent plans delete release --expected-version 3
 $ docker agent plans delete scratch --force
 $ docker agent plans get --session <session-id>       # a session's plan
