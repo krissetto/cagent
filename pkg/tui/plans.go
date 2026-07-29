@@ -8,9 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -22,6 +20,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
 	"github.com/docker/docker-agent/pkg/tui/core"
 	"github.com/docker/docker-agent/pkg/tui/dialog"
+	"github.com/docker/docker-agent/pkg/tui/internal/editorname"
 	"github.com/docker/docker-agent/pkg/tui/messages"
 )
 
@@ -705,18 +704,7 @@ func planDraftFile(pattern, content string) (string, error) {
 // execPlanEditor opens result.path in $VISUAL/$EDITOR via tea.ExecProcess
 // and reports back with result once the editor exits.
 func (m *appModel) execPlanEditor(result planEditorClosedMsg) tea.Cmd {
-	parts := strings.Fields(cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR")))
-	if len(parts) == 0 {
-		if goruntime.GOOS == "windows" {
-			parts = []string{"notepad"}
-		} else {
-			parts = []string{"vi"}
-		}
-	}
-	args := append(parts[1:], result.path)
-	// The editor process is owned by tea.ExecProcess, so exec.Command is intentional.
-	cmd := exec.Command(parts[0], args...) //nolint:noctx // owned by tea.ExecProcess
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+	return tea.ExecProcess(editorname.Command(result.path), func(err error) tea.Msg {
 		result.err = err
 		return result
 	})

@@ -2,13 +2,10 @@
 package tui
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
-	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -3256,19 +3253,7 @@ func (m *appModel) openExternalEditor() (tea.Model, tea.Cmd) {
 	}
 	_ = tmpFile.Close()
 
-	editorCmd := cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR"))
-	parts := strings.Fields(editorCmd)
-	if len(parts) == 0 {
-		if goruntime.GOOS == "windows" {
-			parts = []string{"notepad"}
-		} else {
-			parts = []string{"vi"}
-		}
-	}
-
-	args := append(parts[1:], tmpPath)
-	// External editor is owned by tea.ExecProcess, so exec.Command is intentional.
-	cmd := exec.Command(parts[0], args...) //nolint:noctx // owned by tea.ExecProcess
+	cmd := editorname.Command(tmpPath)
 
 	ed := m.editor
 	return m, tea.ExecProcess(cmd, externalEditorCallback(ed, tmpPath))
