@@ -1,6 +1,11 @@
 package editorname
 
-import "testing"
+import (
+	goruntime "runtime"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
 
 func TestFromEnv(t *testing.T) {
 	t.Parallel()
@@ -143,4 +148,72 @@ func TestFromEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCommandFromEnv(t *testing.T) {
+	t.Parallel()
+
+	fallback := "vi"
+	if goruntime.GOOS == "windows" {
+		fallback = "notepad"
+	}
+
+	tests := []struct {
+		name      string
+		visual    string
+		editorEnv string
+		wantArgs  []string
+	}{
+		{
+			name:      "EDITOR only",
+			editorEnv: "nano",
+			wantArgs:  []string{"nano", "/tmp/draft.md"},
+		},
+		{
+			name:      "VISUAL takes precedence over EDITOR",
+			visual:    "code --wait",
+			editorEnv: "vim",
+			wantArgs:  []string{"code", "--wait", "/tmp/draft.md"},
+		},
+		{
+			name:      "extra tokens stay ordered before the path",
+			editorEnv: "emacs -nw -q",
+			wantArgs:  []string{"emacs", "-nw", "-q", "/tmp/draft.md"},
+		},
+		{
+			name:     "neither set falls back to the platform editor",
+			wantArgs: []string{fallback, "/tmp/draft.md"},
+		},
+		{
+			// cmp.Or picks the non-empty VISUAL even when it is only
+			// whitespace, so EDITOR is masked and the fallback launches.
+			name:      "whitespace-only VISUAL masks EDITOR",
+			visual:    "   ",
+			editorEnv: "vim",
+			wantArgs:  []string{fallback, "/tmp/draft.md"},
+		},
+		{
+			// strings.Fields, not a shell: quotes are ordinary characters.
+			name:      "no shell evaluation",
+			editorEnv: `vim -c "set ft"`,
+			wantArgs:  []string{"vim", "-c", `"set`, `ft"`, "/tmp/draft.md"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := CommandFromEnv(tt.visual, tt.editorEnv, "/tmp/draft.md")
+			assert.Equal(t, tt.wantArgs, cmd.Args)
+		})
+	}
+}
+
+func TestCommandReadsEnvironment(t *testing.T) {
+	t.Setenv("VISUAL", "code --wait")
+	t.Setenv("EDITOR", "vim")
+
+	cmd := Command("/tmp/draft.md")
+	assert.Equal(t, []string{"code", "--wait", "/tmp/draft.md"}, cmd.Args)
 }

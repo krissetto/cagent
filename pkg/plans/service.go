@@ -193,7 +193,7 @@ func (s *service) Export(ctx context.Context, req ExportRequest) (ExportResult, 
 	if err != nil {
 		return ExportResult{}, err
 	}
-	if err := writeExportFile(p.Scope, req.Path, p.Content); err != nil {
+	if err := writeExportFile(p.Scope, req.Path, p.Content, req.Force); err != nil {
 		return ExportResult{}, err
 	}
 	return ExportResult{
@@ -391,19 +391,80 @@ func parseUpdatedAt(s string) time.Time {
 	return t
 }
 
-// writeExportFile mirrors the plan toolset's export behaviour: parent
-// directories are created and the write is atomic (temp + rename), so a
-// reader never observes a partial export.
-func writeExportFile(scope Scope, path, content string) error {
+// writeExportFile mirrors the plan toolset's export behaviour — parent
+// directories are created and a reader never observes a partial body —
+// hardened with an overwrite policy. Without force the fully written content
+// is published by hard-linking a temp file into place (see
+// publishExportNoReplace): the link atomically refuses any existing
+// destination entry, so two racing non-force exports cannot clobber each
+// other and the destination only ever holds a complete export; a filesystem
+// without hard-link support surfaces that as a *StorageError. With force an
+// existing regular file is replaced atomically by rename; directories and
+// non-regular files are refused either way.
+func writeExportFile(scope Scope, path, content string, force bool) error {
 	clean := filepath.Clean(path)
-	if info, err := os.Stat(clean); err == nil && info.IsDir() {
-		return &ValidationError{Message: fmt.Sprintf("path %q is a directory, not a file", path)}
+	if info, err := os.Stat(clean); err == nil {
+		switch {
+		case info.IsDir():
+			return &ValidationError{Message: fmt.Sprintf("path %q is a directory, not a file", path)}
+		case !info.Mode().IsRegular():
+			return &ValidationError{Message: fmt.Sprintf("path %q exists and is not a regular file", path)}
+		case !force:
+			return exportExistsError(path)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(clean), 0o700); err != nil {
 		return &StorageError{Scope: scope, Op: "export", Err: err}
+	}
+	if !force {
+		if err := publishExportNoReplace(clean, content); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				return exportExistsError(path)
+			}
+			return &StorageError{Scope: scope, Op: "export", Err: err}
+		}
+		return nil
 	}
 	if err := atomicfile.Write(clean, strings.NewReader(content), 0o600); err != nil {
 		return &StorageError{Scope: scope, Op: "export", Err: err}
 	}
 	return nil
+}
+
+// publishExportNoReplace publishes content at dest without replacing
+// anything: the body is fully written, synced, and closed in a temp file
+// next to dest, then published with os.Link, which fails with fs.ErrExist
+// when any destination entry exists and otherwise exposes the complete inode
+// in a single step — a reader can never observe a partial or empty export.
+// The temp link is removed afterward; a successful publication leaves dest
+// as the inode's surviving name.
+func publishExportNoReplace(dest, content string) error {
+	f, err := os.CreateTemp(filepath.Dir(dest), filepath.Base(dest)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// CreateTemp's 0o600 is subject to the umask; pin the mode exactly so
+	// non-force and force exports publish identical permissions.
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return err
+	}
+	return os.Link(tmp, dest)
+}
+
+func exportExistsError(path string) error {
+	return &ValidationError{Message: fmt.Sprintf("path %q already exists; use force to replace it", path)}
 }

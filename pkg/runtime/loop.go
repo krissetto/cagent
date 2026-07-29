@@ -1338,6 +1338,14 @@ func (r *LocalRuntime) configureToolsetHandlers(a *agent.Agent, events EventSink
 // follows the AgentContext convention for events without a meaningful agent;
 // consumers read the plan's Author field for collaborative attribution.
 //
+// The fan-out is deliberately process-global: the registry plan toolset is
+// one process-wide notifier, so every active local runtime stream subscribed
+// to it — API/SSE streams of other sessions included — receives a
+// PlanChangedEvent for any session's mutation. The payload identifies the
+// plan by name (plus scope, action, and version), never the mutating
+// session; inventing a session attribution here would be false, and the
+// global reach is what keeps every open /plans view live.
+//
 // Non-blocking sink like the RAG forwarder: the callback fires from
 // another session's tool call, and a blocking send into this stream's
 // events channel could hang that session's tool call.

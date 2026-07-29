@@ -149,9 +149,14 @@ type DeleteRequest struct {
 
 // ExportRequest writes a plan's content to a file on disk. Export works for
 // both scopes.
+//
+// Force replaces an existing regular file at Path. Without it, Export
+// refuses any existing destination with a *ValidationError and leaves it
+// untouched.
 type ExportRequest struct {
-	Ref  Ref
-	Path string
+	Ref   Ref
+	Path  string
+	Force bool
 }
 
 // ExportResult reports a completed export. Version is the exported shared
@@ -189,6 +194,9 @@ type Service interface {
 	// missing plan is a *NotFoundError.
 	Delete(ctx context.Context, req DeleteRequest) error
 	// Export writes a plan's content to req.Path, creating parent directories
-	// as needed and replacing an existing file atomically.
+	// as needed. An existing destination is refused with a *ValidationError
+	// and preserved unless req.Force is set, which replaces an existing
+	// regular file atomically; directories and non-regular files are always
+	// refused.
 	Export(ctx context.Context, req ExportRequest) (ExportResult, error)
 }

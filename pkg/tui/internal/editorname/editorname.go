@@ -1,13 +1,17 @@
-// Package editorname maps the user's configured external editor (VISUAL or
-// EDITOR) to a friendly display name used in TUI key-binding hints.
+// Package editorname resolves the user's configured external editor (VISUAL
+// or EDITOR): a friendly display name used in TUI key-binding hints, and the
+// command that launches the editor over a file.
 //
-// The lookup is intentionally a pure function so that it is trivial to test
-// across platforms and editor configurations without touching the actual
-// process environment.
+// The environment-reading entry points are thin wrappers over pure functions
+// (FromEnv, CommandFromEnv) that take the raw variable values as parameters,
+// so every code path is testable across platforms and editor configurations
+// without touching the actual process environment.
 package editorname
 
 import (
 	"cmp"
+	"os"
+	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
@@ -80,4 +84,30 @@ func FromEnv(visual, editorEnv string) string {
 	}
 
 	return "$EDITOR"
+}
+
+// Command builds the *exec.Cmd that opens path in the configured external
+// editor, reading VISUAL and EDITOR from the process environment.
+func Command(path string) *exec.Cmd {
+	return CommandFromEnv(os.Getenv("VISUAL"), os.Getenv("EDITOR"), path)
+}
+
+// CommandFromEnv builds the editor command from raw environment values so
+// tests can exercise every code path without mutating os.Environ. VISUAL
+// wins over EDITOR; the chosen value is split on whitespace (strings.Fields,
+// deliberately no shell evaluation), extra tokens become leading arguments,
+// and path is appended last. When neither variable yields a command, the
+// platform default is launched ("notepad" on Windows, "vi" elsewhere).
+func CommandFromEnv(visual, editorEnv, path string) *exec.Cmd {
+	parts := strings.Fields(cmp.Or(visual, editorEnv))
+	if len(parts) == 0 {
+		if goruntime.GOOS == "windows" {
+			parts = []string{"notepad"}
+		} else {
+			parts = []string{"vi"}
+		}
+	}
+	args := append(parts[1:], path)
+	// The editor process is owned by tea.ExecProcess, so exec.Command is intentional.
+	return exec.Command(parts[0], args...) //nolint:noctx // owned by tea.ExecProcess
 }
