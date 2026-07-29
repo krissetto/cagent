@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin/backgroundjobs"
 	"github.com/docker/docker-agent/pkg/tools/builtin/handoff"
 	"github.com/docker/docker-agent/pkg/tools/builtin/modelpicker"
+	"github.com/docker/docker-agent/pkg/tools/builtin/plan"
 	"github.com/docker/docker-agent/pkg/tools/builtin/sessioncontext"
 	"github.com/docker/docker-agent/pkg/tools/builtin/sessionplan"
 	"github.com/docker/docker-agent/pkg/tools/builtin/skills"
@@ -333,6 +335,13 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 	// accepted request is processed before StreamStopped is emitted and
 	// the events channel closes, so it can never be stranded.
 	defer r.finishLiveSession(ctx, liveEntry)
+
+	// Subscribe this stream to shared-plan change notifications for its
+	// whole lifecycle. Registered once here rather than per iteration, and
+	// the deferred release runs (LIFO) before finalizeEventChannel closes
+	// the events channel — on every exit path, including errors and
+	// cancellation — so no subscription outlives its sink.
+	defer r.subscribePlanChanges(sess, sink)()
 
 	a := r.resolveSessionAgent(sess)
 
@@ -1311,6 +1320,85 @@ func (r *LocalRuntime) configureToolsetHandlers(a *agent.Agent, events EventSink
 			ragTool.SetEventCallback(ragEventForwarder(ragTool.Name(), r, nonBlocking(events).Emit))
 		}
 	}
+}
+
+// subscribePlanChanges subscribes this stream's event sink to every plan
+// ChangeNotifier reachable from the team's toolsets (plus the session's
+// skill-provided extra toolsets) so an open /plans browser refreshes live,
+// and returns a release function that unsubscribes them all. Called once per
+// stream from runStreamLoop — not per iteration — and released before the
+// events channel closes, so subscriptions never leak past the stream.
+// Notifier instances are deduplicated: the registry-created plan toolset is
+// a process-wide singleton shared by all agents, and one mutation must emit
+// one event per stream, not one per agent.
+//
+// The emitted event carries no agent attribution: the shared toolset
+// executes mutations for whichever session's agent is calling, so this
+// subscriber cannot know the mutator (see plan.Change). An empty agent name
+// follows the AgentContext convention for events without a meaningful agent;
+// consumers read the plan's Author field for collaborative attribution.
+//
+// Non-blocking sink like the RAG forwarder: the callback fires from
+// another session's tool call, and a blocking send into this stream's
+// events channel could hang that session's tool call.
+func (r *LocalRuntime) subscribePlanChanges(sess *session.Session, events EventSink) (release func()) {
+	sink := nonBlocking(events)
+	forward := func(c plan.Change) {
+		sink.Emit(PlanChanged("shared", c.Name, c.Action, c.Revision, ""))
+	}
+
+	toolsets := slices.Clone(sess.ExtraToolSets)
+	for _, name := range r.team.AgentNames() {
+		if a, err := r.team.Agent(name); err == nil {
+			toolsets = append(toolsets, a.ToolSets()...)
+		}
+	}
+
+	seen := make(map[notifierIdentity]struct{})
+	var unsubs []func()
+	for _, ts := range toolsets {
+		notifier, ok := tools.As[plan.ChangeNotifier](ts)
+		if !ok {
+			continue
+		}
+		if key, identifiable := notifierDedupKey(notifier); identifiable {
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		unsubs = append(unsubs, notifier.SubscribeChanges(forward))
+	}
+	return func() {
+		for _, unsub := range unsubs {
+			unsub()
+		}
+	}
+}
+
+// notifierIdentity keys subscribePlanChanges' dedup map: dynamic type plus
+// pointer, so two pointers of different types sharing an address (an outer
+// struct and its first field) stay distinct.
+type notifierIdentity struct {
+	typ reflect.Type
+	ptr uintptr
+}
+
+// notifierDedupKey derives a dedup identity for n, reporting ok=false when
+// none is safe. Interface map keys hash the dynamic value, which panics at
+// runtime for non-comparable implementations (e.g. a value struct with a
+// func field) — and even a comparable struct type panics when an interface
+// field holds a non-comparable value. Pointer identity is the only
+// universally hash-safe choice, and it covers the case dedup exists for:
+// the registry-created *plan.ToolSet singleton shared by every agent.
+// Non-pointer implementations skip dedup — a duplicate subscription is
+// benign, a panic is not.
+func notifierDedupKey(n plan.ChangeNotifier) (notifierIdentity, bool) {
+	v := reflect.ValueOf(n)
+	if v.Kind() != reflect.Pointer {
+		return notifierIdentity{}, false
+	}
+	return notifierIdentity{typ: v.Type(), ptr: v.Pointer()}, true
 }
 
 // emitAgentWarnings drains and emits any pending toolset warnings as

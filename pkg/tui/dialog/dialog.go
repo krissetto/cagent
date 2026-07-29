@@ -28,6 +28,14 @@ type CloseDialogMsg struct{}
 // CloseAllDialogsMsg is sent to close all dialogs in the stack
 type CloseAllDialogsMsg struct{}
 
+// Broadcastable marks messages the manager delivers to every dialog in the
+// stack instead of only the topmost one. Data-refresh messages implement it
+// so dialogs buried under another dialog (e.g. the plan browser under its
+// detail dialog) stay fresh.
+type Broadcastable interface {
+	BroadcastToDialogs()
+}
+
 // Dialog defines the interface that all dialogs must implement
 type Dialog interface {
 	layout.Model
@@ -54,6 +62,10 @@ type Manager interface {
 	// so the same instance (with any in-progress input) can be re-opened on
 	// return.
 	TopDialog() Dialog
+	// HasDialog reports whether pred matches any dialog in the stack,
+	// visiting bottom to top. Unlike TopDialog it also sees dialogs buried
+	// under other dialogs, e.g. a plan browser under a help dialog.
+	HasDialog(pred func(Dialog) bool) bool
 }
 
 // dialogEntry pairs a dialog with its drag offset so the two stay in sync.
@@ -112,6 +124,9 @@ func (d *manager) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	case CloseDialogMsg:
 		return d.handleClose()
 
+	case ClosePlanDetailMsg:
+		return d.handleClosePlanDetail(msg)
+
 	case CloseAllDialogsMsg:
 		return d.handleCloseAll()
 
@@ -140,6 +155,11 @@ func (d *manager) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		cmd := d.forwardToTop(d.adjustMouseMsg(msg))
+		return d, cmd
+	}
+
+	if _, ok := msg.(Broadcastable); ok {
+		cmd := d.broadcastToAll(msg)
 		return d, cmd
 	}
 
@@ -287,6 +307,18 @@ func (d *manager) handleClose() (layout.Model, tea.Cmd) {
 	return d, nil
 }
 
+// handleClosePlanDetail pops the top dialog only when it is a plan detail
+// viewer showing exactly msg.Ref; anything else (another dialog on top, a
+// detail for a different plan, an empty stack) is left untouched. Checking
+// at apply time makes the close idempotent: duplicates for the same vanished
+// plan cannot pop a second dialog.
+func (d *manager) handleClosePlanDetail(msg ClosePlanDetailMsg) (layout.Model, tea.Cmd) {
+	if viewer, ok := d.TopDialog().(PlanDetailViewer); ok && viewer.PlanRef() == msg.Ref {
+		return d.handleClose()
+	}
+	return d, nil
+}
+
 // handleCloseAll closes all dialogs in the stack
 func (d *manager) handleCloseAll() (layout.Model, tea.Cmd) {
 	d.stack = nil
@@ -337,6 +369,17 @@ func (d *manager) TopDialog() Dialog {
 		return nil
 	}
 	return d.stack[len(d.stack)-1].dialog
+}
+
+// HasDialog reports whether pred matches any dialog in the stack, bottom to
+// top.
+func (d *manager) HasDialog(pred func(Dialog) bool) bool {
+	for i := range d.stack {
+		if pred(d.stack[i].dialog) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *manager) SetSize(width, height int) tea.Cmd {

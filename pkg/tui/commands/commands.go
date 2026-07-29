@@ -300,6 +300,17 @@ func builtInSessionCommands() []Item {
 			},
 		},
 		{
+			ID:           "session.plans",
+			Label:        "Plans",
+			SlashCommand: "/plans",
+			Description:  "Browse and manage shared plans and this session's plan",
+			Category:     "Session",
+			Immediate:    true,
+			Execute: func(string) tea.Cmd {
+				return core.CmdHandler(messages.ShowPlanBrowserMsg{})
+			},
+		},
+		{
 			ID:           "session.history",
 			Label:        "Sessions",
 			SlashCommand: "/sessions",

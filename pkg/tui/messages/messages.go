@@ -7,6 +7,7 @@
 //   - toggle.go: UI state toggles (YOLO, sidebar)
 //   - input.go: Editor input, attachments, and speech
 //   - mcp.go: MCP prompt interactions
+//   - plans.go: Plan management (/plans browser)
 //
 // This organization follows the Elm Architecture principle of grouping
 // messages by the domain they affect, making it easier to understand

@@ -8,13 +8,14 @@
 //
 // Concurrency: agents that share one ToolSet instance also share its Storage,
 // which serializes their operations. The default FilesystemStorage guards its
-// read-modify-write revision bump with a mutex and writes atomically
-// (write-to-temp + rename), so a reader — including a separate docker-agent
-// process — never observes a partially written plan. Two distinct processes
-// writing the *same* plan at the very same instant can still race on the
-// revision bump (last writer wins); this is acceptable for the intended
-// in-process multi-agent collaboration. Other backends can make the bump
-// atomic.
+// read-modify-write revision bump with a mutex within the process and with an
+// exclusive advisory lock on a sentinel file in the plans directory across
+// processes, and writes atomically (write-to-temp + rename). A reader —
+// including a separate docker-agent process — never observes a partially
+// written plan, and two processes writing the *same* plan at the very same
+// instant cannot both pass an optimistic-lock check: exactly one wins and the
+// other gets a deterministic *VersionConflictError. Other backends own the
+// same guarantees through their Upsert/Delete implementations.
 package plan
 
 import (
@@ -48,11 +49,35 @@ const (
 	ToolNameGetPlanStatus      = "get_plan_status"
 )
 
-// maxPlanFileSize caps how much update_plan_from_file will read from disk, so a
-// pathological or wrong path cannot make the agent pull an arbitrarily large
-// file into a plan (and into the model's context). 10 MiB is far above any
-// realistic plan while still bounding memory.
-const maxPlanFileSize = 10 << 20
+// MaxPlanContentSize caps a plan's content (its markdown body): it bounds how
+// much update_plan_from_file will read from disk, so a pathological or wrong
+// path cannot make the agent pull an arbitrarily large file into a plan (and
+// into the model's context), and FilesystemStorage refuses to persist content
+// beyond it. 10 MiB is far above any realistic plan while still bounding
+// memory, and content of exactly this size is accepted. It is exported so
+// host-side callers (e.g. the docker agent plans CLI) bound plan content with
+// the same limit instead of duplicating the number.
+const MaxPlanContentSize = 10 << 20
+
+// MaxPlanFileSize is the name MaxPlanContentSize was first exported under.
+//
+// Deprecated: use MaxPlanContentSize. Kept as an alias so external callers
+// built against the original export keep compiling and share the same bound.
+const MaxPlanFileSize = MaxPlanContentSize
+
+// maxEncodedPlanSize bounds a stored plan file on the way back in: load
+// refuses to decode anything beyond it, so a corrupt or foreign oversized
+// file in the plans directory cannot cause unbounded allocation. It is
+// deliberately larger than MaxPlanContentSize: JSON escaping expands a
+// content byte to at most 6 bytes (\u00XX), so content of exactly the cap
+// encodes to at most 6*MaxPlanContentSize. The additional 10 MiB budgets
+// the free-form metadata (title, author, status), the fixed fields, and the
+// envelope. Metadata deliberately has no per-field cap — labels are
+// free-form and plans stored by earlier builds must keep loading — so this
+// budget is at least the headroom metadata effectively had under the
+// previous 10 MiB whole-file bound; save re-checks the encoded size, so
+// only pathological aggregate metadata is ever refused, as a storage limit.
+const maxEncodedPlanSize = 6*MaxPlanContentSize + 10<<20
 
 // ErrPlanNotFound is returned by write operations that require an existing plan
 // (set_plan_status) when the named plan does not exist, so callers can tell a
@@ -73,12 +98,37 @@ func (e *VersionConflictError) Error() string {
 	return fmt.Sprintf("version conflict on plan %q: last_known_revision %d does not match current revision %d; re-read the plan and retry", e.Name, e.Expected, e.Current)
 }
 
+// CorruptPlanError is returned when a plan file exists but cannot be decoded,
+// so callers can tell a damaged plan apart from a missing one or a plain I/O
+// failure without matching on error text.
+type CorruptPlanError struct {
+	// File is the base name of the plan file that failed to decode.
+	File string
+	Err  error
+}
+
+func (e *CorruptPlanError) Error() string {
+	return fmt.Sprintf("plan file %s is corrupt: %v", e.File, e.Err)
+}
+
+func (e *CorruptPlanError) Unwrap() error { return e.Err }
+
 // namePattern defines the accepted plan-name format: a lowercase slug made of
 // alphanumerics, '-' and '_'. Names are validated against it rather than being
 // silently rewritten, so two different inputs can never collapse onto the same
 // file (which would let one plan clobber another) and no input can escape the
 // plans directory via path separators or "..".
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// ValidateName rejects names that do not match namePattern. It is the
+// canonical plan-name rule, exported so host-side callers (e.g. pkg/plans)
+// validate exactly like the storage instead of duplicating the pattern.
+func ValidateName(name string) error {
+	if !namePattern.MatchString(name) {
+		return fmt.Errorf("invalid plan name %q: use only lowercase letters, digits, '-' and '_', starting with a letter or digit", name)
+	}
+	return nil
+}
 
 // Plan is a shared document collaborated on by the agents.
 type Plan struct {
@@ -139,7 +189,12 @@ type ExportResult struct {
 // enables optimistic locking: when non-nil, the write is rejected with a
 // *VersionConflictError unless it equals the plan's current revision. MustExist
 // makes the write fail with ErrPlanNotFound when the plan does not already
-// exist (used by set_plan_status, which must not create a plan).
+// exist (used by set_plan_status, which must not create a plan). MustNotExist
+// makes the write create-only by existence, not by revision: any existing
+// plan is rejected with a *VersionConflictError carrying Expected 0 and the
+// plan's current revision — including revision 0, which a stored plan can
+// legitimately carry (a hand-written or foreign file that omits the field),
+// so ExpectedRevision 0 alone is not a create-only guard.
 type UpsertRequest struct {
 	Name             string
 	Content          *string
@@ -148,6 +203,7 @@ type UpsertRequest struct {
 	Status           *string
 	ExpectedRevision *int
 	MustExist        bool
+	MustNotExist     bool
 }
 
 // ListResult is the output of list_plans. Warnings lists plan files that could
@@ -170,10 +226,11 @@ type Storage interface {
 	Get(ctx context.Context, name string) (Plan, bool, error)
 	// Upsert creates or updates a plan as described by req: nil fields are
 	// preserved from the previous revision, the optimistic-lock check and the
-	// must-exist guard are honoured atomically with the write, the revision is
+	// existence guards are honoured atomically with the write, the revision is
 	// bumped and UpdatedAt stamped. It returns a *VersionConflictError on a
-	// revision mismatch and ErrPlanNotFound when req.MustExist is set but the
-	// plan is absent.
+	// revision mismatch or when req.MustNotExist is set but the plan exists
+	// (Expected 0, Current the plan's revision — even revision 0), and
+	// ErrPlanNotFound when req.MustExist is set but the plan is absent.
 	Upsert(ctx context.Context, req UpsertRequest) (Plan, error)
 	// List returns a summary of every stored plan. Warnings carries entries
 	// that could not be read, so a caller can tell "no plans" apart from "some
@@ -186,15 +243,103 @@ type Storage interface {
 	Delete(ctx context.Context, name string, expectedRevision *int) (deleted bool, err error)
 }
 
+// Change action labels reported through ChangeNotifier subscriptions.
+const (
+	ChangeActionWrite  = "write"
+	ChangeActionStatus = "status"
+	ChangeActionDelete = "delete"
+)
+
+// Change describes one successful mutation of a shared plan. It carries
+// identity and version only — never content — so observers refresh through
+// their own storage view instead of trusting an event payload. Revision is
+// the version after a write, or the guard version of a guarded delete (0
+// when the delete was unguarded). It deliberately carries no mutator
+// identity: the shared singleton toolset executes tool calls for whichever
+// session's agent is running, so a subscriber must not attribute a change to
+// its own agent. The plan's Author field is the collaborative attribution.
+type Change struct {
+	Name     string
+	Action   string
+	Revision int
+}
+
+// ChangeNotifier is the optional host-notification capability of the plan
+// toolset: hosts (e.g. one runtime stream per TUI tab) subscribe callbacks
+// that fire after every successful mutation and never for failed ones.
+// Discover it through toolset wrappers with tools.As. Any number of
+// subscribers may be active at once — every one receives every change —
+// because the shared singleton toolset serves all sessions in the process.
+// Callbacks must be safe for concurrent use and must not block; they do not
+// alter tool schemas, outputs, or storage behavior in any way.
+type ChangeNotifier interface {
+	// SubscribeChanges registers cb and returns an idempotent unsubscribe
+	// function that removes exactly this subscription.
+	SubscribeChanges(cb func(Change)) (unsubscribe func())
+}
+
 type ToolSet struct {
 	storage Storage
+
+	// subsMu guards the subscriber registry. A mutex (not an atomic slot)
+	// because the shared singleton toolset serves several sessions at once:
+	// each active stream holds its own subscription, and subscriptions come
+	// and go while other sessions' tool calls are notifying concurrently.
+	subsMu      sync.Mutex
+	subscribers map[uint64]func(Change)
+	nextSubID   uint64
 }
 
 var (
 	_ tools.ToolSet      = (*ToolSet)(nil)
 	_ tools.Instructable = (*ToolSet)(nil)
 	_ tools.Describer    = (*ToolSet)(nil)
+	_ ChangeNotifier     = (*ToolSet)(nil)
 )
+
+// SubscribeChanges registers cb to run after every successful plan mutation
+// and returns an unsubscribe function. Every active subscriber receives every
+// change exactly once; unsubscribing removes only that subscription and is
+// idempotent. A nil cb registers nothing and returns a no-op unsubscribe.
+// Implements ChangeNotifier.
+func (t *ToolSet) SubscribeChanges(cb func(Change)) func() {
+	if cb == nil {
+		return func() {}
+	}
+
+	t.subsMu.Lock()
+	defer t.subsMu.Unlock()
+	if t.subscribers == nil {
+		t.subscribers = make(map[uint64]func(Change))
+	}
+	id := t.nextSubID
+	t.nextSubID++
+	t.subscribers[id] = cb
+	return func() {
+		t.subsMu.Lock()
+		defer t.subsMu.Unlock()
+		// Deleting a missing key is a no-op, which makes unsubscribe
+		// idempotent and safe to call from multiple teardown paths.
+		delete(t.subscribers, id)
+	}
+}
+
+// notifyChange fans change out to all current subscribers. The subscriber
+// set is copied under the lock and invoked outside it, so a callback can
+// subscribe or unsubscribe without deadlocking the registry and a slow
+// callback never blocks concurrent subscription changes.
+func (t *ToolSet) notifyChange(change Change) {
+	t.subsMu.Lock()
+	subs := make([]func(Change), 0, len(t.subscribers))
+	for _, cb := range t.subscribers {
+		subs = append(subs, cb)
+	}
+	t.subsMu.Unlock()
+
+	for _, cb := range subs {
+		cb(change)
+	}
+}
 
 // Option configures a ToolSet.
 type Option func(*ToolSet)
@@ -229,6 +374,14 @@ var sharedToolSet = sync.OnceValue(func() *ToolSet {
 // storage over the global plans folder.
 func CreateToolSet() (tools.ToolSet, error) {
 	return sharedToolSet(), nil
+}
+
+// SharedStorage returns the Storage behind the process-wide shared ToolSet
+// (CreateToolSet). Host code that manages plans outside agent tool calls
+// (e.g. a TUI) should use it so both sides serialize on the same instance
+// and mutex. ToolSets built with New keep their own independent storage.
+func SharedStorage() Storage {
+	return sharedToolSet().storage
 }
 
 // DefaultDir is the global shared folder where plans are stored, under the
@@ -335,6 +488,7 @@ func (t *ToolSet) writePlan(ctx context.Context, params WritePlanArgs) (*tools.T
 		return tools.ResultError(err.Error()), nil
 	}
 
+	t.notifyChange(Change{Name: plan.Name, Action: ChangeActionWrite, Revision: plan.Revision})
 	return tools.ResultJSON(plan), nil
 }
 
@@ -372,6 +526,7 @@ func (t *ToolSet) updatePlanFromFile(ctx context.Context, params UpdatePlanFromF
 		return tools.ResultError(err.Error()), nil
 	}
 
+	t.notifyChange(Change{Name: plan.Name, Action: ChangeActionWrite, Revision: plan.Revision})
 	return tools.ResultJSON(plan), nil
 }
 
@@ -428,6 +583,7 @@ func (t *ToolSet) setPlanStatus(ctx context.Context, params SetPlanStatusArgs) (
 		return tools.ResultError(err.Error()), nil
 	}
 
+	t.notifyChange(Change{Name: plan.Name, Action: ChangeActionStatus, Revision: plan.Revision})
 	return tools.ResultJSON(StatusView{Name: plan.Name, Status: plan.Status, Revision: plan.Revision}), nil
 }
 
@@ -491,25 +647,37 @@ func (t *ToolSet) deletePlan(ctx context.Context, params DeletePlanArgs) (*tools
 		return tools.ResultError(fmt.Sprintf("plan %q not found", params.Name)), nil
 	}
 
+	revision := 0
+	if params.LastKnownRevision != nil {
+		revision = *params.LastKnownRevision
+	}
+	t.notifyChange(Change{Name: params.Name, Action: ChangeActionDelete, Revision: revision})
 	return tools.ResultJSON(map[string]string{"deleted": params.Name}), nil
 }
 
 // readPlanFile reads plan content from a file for update_plan_from_file. It
-// rejects directories, non-regular files, and oversized files up front so a
-// wrong path fails with a clear message instead of pulling unexpected data into
-// a plan. The non-regular check matters for safety as well as clarity: a device
-// (e.g. /dev/zero) or a named pipe reports size 0 from stat yet would stream
-// unbounded data or block forever if opened, so it is rejected before any open.
-// The read itself goes through an io.LimitReader rather than trusting the stat
-// size, which closes the race where the file grows between stat and read.
+// rejects directories, non-regular files, and oversized files with a clear
+// message instead of pulling unexpected data into a plan. Every check runs on
+// the opened descriptor (File.Stat), never on the path, so the file that is
+// validated is exactly the file that is read and a concurrent path swap
+// cannot slip a directory, device, or named pipe past the checks. The open
+// itself is hang-safe for those cases too (see OpenContentFile), and a
+// device like /dev/zero, which would stream unbounded data, is rejected
+// before any read. The read goes through an io.LimitReader rather than
+// trusting the stat size, which closes the race where the file grows between
+// the size check and the read.
 func readPlanFile(path string) (string, error) {
-	clean := filepath.Clean(path)
-
-	info, err := os.Stat(clean)
+	f, err := OpenContentFile(filepath.Clean(path))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("file %q does not exist", path)
 		}
+		return "", fmt.Errorf("reading plan file: %w", err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
 		return "", fmt.Errorf("reading plan file: %w", err)
 	}
 	if info.IsDir() {
@@ -518,24 +686,18 @@ func readPlanFile(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("path %q is not a regular file (e.g. a device or named pipe)", path)
 	}
-	if info.Size() > maxPlanFileSize {
-		return "", fmt.Errorf("file %q is too large (%d bytes; max %d)", path, info.Size(), maxPlanFileSize)
+	if info.Size() > MaxPlanContentSize {
+		return "", fmt.Errorf("file %q is too large (%d bytes; max %d)", path, info.Size(), MaxPlanContentSize)
 	}
-
-	f, err := os.Open(clean)
-	if err != nil {
-		return "", fmt.Errorf("reading plan file: %w", err)
-	}
-	defer f.Close()
 
 	// Read one byte past the cap so an over-cap file is detected even if it grew
-	// since the stat above.
-	data, err := io.ReadAll(io.LimitReader(f, maxPlanFileSize+1))
+	// since the size check above.
+	data, err := io.ReadAll(io.LimitReader(f, MaxPlanContentSize+1))
 	if err != nil {
 		return "", fmt.Errorf("reading plan file: %w", err)
 	}
-	if len(data) > maxPlanFileSize {
-		return "", fmt.Errorf("file %q is too large (max %d bytes)", path, maxPlanFileSize)
+	if len(data) > MaxPlanContentSize {
+		return "", fmt.Errorf("file %q is too large (max %d bytes)", path, MaxPlanContentSize)
 	}
 	return string(data), nil
 }
@@ -658,9 +820,19 @@ func (t *ToolSet) Tools(context.Context) ([]tools.Tool, error) {
 
 // FilesystemStorage is the default Storage. It persists each plan as a JSON
 // file named <name>.json in a directory, with atomic temp+rename writes, plan
-// name validation, and unreadable-file warnings on List. A mutex serializes its
-// operations so the read-modify-write revision bump in Upsert is consistent
-// within a process.
+// name validation, and unreadable-file warnings on List. Upsert and Delete
+// hold an exclusive advisory lock on a persistent sentinel file
+// (lockFileName) in the same directory, so their check-and-mutate windows are
+// serialized against other processes sharing the directory and a stale
+// ExpectedRevision always fails deterministically instead of clobbering a
+// concurrent write. A mutex serializes the local check-and-mutate windows
+// within the process; mutations take it only after the sentinel lock is held,
+// so a writer waiting for a contended sentinel never blocks another local
+// mutation's chance to fail fast on the sentinel. Get and List take neither
+// the file lock nor the mutex: writes are atomic (temp + rename), so a
+// lock-free reader always sees a complete plan — either the previous or the
+// new revision, never a partial file — and a mutation blocked on wedged
+// storage can never stall readers.
 type FilesystemStorage struct {
 	mu  sync.Mutex
 	dir string
@@ -685,8 +857,8 @@ func (s *FilesystemStorage) String() string {
 // which guarantees a one-to-one mapping between names and files and prevents
 // path traversal.
 func (s *FilesystemStorage) planPath(name string) (string, error) {
-	if !namePattern.MatchString(name) {
-		return "", fmt.Errorf("invalid plan name %q: use only lowercase letters, digits, '-' and '_', starting with a letter or digit", name)
+	if err := ValidateName(name); err != nil {
+		return "", err
 	}
 	return filepath.Join(s.dir, name+".json"), nil
 }
@@ -694,29 +866,76 @@ func (s *FilesystemStorage) planPath(name string) (string, error) {
 // load reads and decodes the plan at path. It distinguishes a missing plan
 // (false, nil) from a real failure such as a permission error or corrupt JSON
 // (false, err), so callers can report the latter instead of masking it as
-// "not found".
+// "not found". The open is hang-safe (see OpenContentFile) and the descriptor
+// is validated before any read — a .json entry that is a directory, device,
+// or FIFO is a foreign file, reported as a typed *CorruptPlanError — so a
+// FIFO with no writer can never wedge Get, List, or an Upsert's pre-read.
+// Checking the opened descriptor (File.Stat), never the path, means a
+// concurrent path swap cannot slip a non-regular file past the check. The
+// read is bounded by maxEncodedPlanSize: this package never persists a
+// larger file (save validates content and metadata against caps that always
+// encode within it), so anything beyond it is a foreign or damaged file and
+// is reported as corrupt rather than being slurped into memory whole.
 func (s *FilesystemStorage) load(path string) (Plan, bool, error) {
-	data, err := os.ReadFile(path)
+	f, err := OpenContentFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Plan{}, false, nil
 	}
 	if err != nil {
 		return Plan{}, false, fmt.Errorf("reading plan: %w", err)
 	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return Plan{}, false, fmt.Errorf("reading plan: %w", err)
+	}
+	if info.IsDir() {
+		return Plan{}, false, &CorruptPlanError{File: filepath.Base(path), Err: errors.New("is a directory, not a plan file")}
+	}
+	if !info.Mode().IsRegular() {
+		return Plan{}, false, &CorruptPlanError{File: filepath.Base(path), Err: errors.New("not a regular file (e.g. a device or named pipe)")}
+	}
+
+	// Read one byte past the cap so an over-cap file is detected without
+	// trusting a stat size that could change under us.
+	data, err := io.ReadAll(io.LimitReader(f, maxEncodedPlanSize+1))
+	if err != nil {
+		return Plan{}, false, fmt.Errorf("reading plan: %w", err)
+	}
+	if len(data) > maxEncodedPlanSize {
+		return Plan{}, false, &CorruptPlanError{File: filepath.Base(path), Err: fmt.Errorf("file exceeds %d bytes", maxEncodedPlanSize)}
+	}
 	var p Plan
 	if err := json.Unmarshal(data, &p); err != nil {
-		return Plan{}, false, fmt.Errorf("plan file %s is corrupt: %w", filepath.Base(path), err)
+		return Plan{}, false, &CorruptPlanError{File: filepath.Base(path), Err: err}
 	}
 	return p, true, nil
 }
 
 func (s *FilesystemStorage) save(path string, p Plan) error {
+	// Validate the content cap before marshaling so an oversized plan is
+	// refused with a precise message and without first allocating its
+	// encoding. Content of exactly MaxPlanContentSize is accepted. Metadata
+	// (title, author, status) is free-form and has no per-field cap: plans
+	// stored by earlier builds must keep loading and re-saving whatever
+	// labels they carry.
+	if len(p.Content) > MaxPlanContentSize {
+		return fmt.Errorf("plan %q content is too large to store (%d bytes; max %d)", p.Name, len(p.Content), MaxPlanContentSize)
+	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("creating plans directory: %w", err)
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling plan: %w", err)
+	}
+	// Storage limit, not a semantic cap: valid content always fits (the
+	// bound absorbs its worst-case escaping), so only pathological aggregate
+	// metadata can land here, and a plan is never persisted in a form load
+	// would then refuse to decode.
+	if len(data) > maxEncodedPlanSize {
+		return fmt.Errorf("plan %q is too large to store (%d bytes; max %d)", p.Name, len(data), maxEncodedPlanSize)
 	}
 	// Atomic write (temp file + rename): readers in other agents or processes
 	// see either the old or the new content, never a partial file, and an
@@ -727,15 +946,22 @@ func (s *FilesystemStorage) save(path string, p Plan) error {
 	return nil
 }
 
-func (s *FilesystemStorage) Get(_ context.Context, name string) (Plan, bool, error) {
+func (s *FilesystemStorage) Get(ctx context.Context, name string) (Plan, bool, error) {
 	path, err := s.planPath(name)
 	if err != nil {
 		return Plan{}, false, err
 	}
+	// Observe cancellation before touching the filesystem. A blocked open on
+	// truly wedged storage (e.g. a dead NFS mount) cannot be interrupted, but
+	// a caller whose deadline already expired gets its context error instead
+	// of another read.
+	if err := ctx.Err(); err != nil {
+		return Plan{}, false, err
+	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	// Deliberately lock-free (no s.mu): writes are atomic (temp + rename), so
+	// this always reads a complete plan, and a mutation blocked on wedged
+	// storage while holding s.mu can never stall a reader.
 	plan, ok, err := s.load(path)
 	if ok {
 		// The filename is the authoritative key (List and Upsert key off it), so
@@ -747,11 +973,23 @@ func (s *FilesystemStorage) Get(_ context.Context, name string) (Plan, bool, err
 	return plan, ok, err
 }
 
-func (s *FilesystemStorage) Upsert(_ context.Context, req UpsertRequest) (Plan, error) {
+func (s *FilesystemStorage) Upsert(ctx context.Context, req UpsertRequest) (Plan, error) {
 	path, err := s.planPath(req.Name)
 	if err != nil {
 		return Plan{}, err
 	}
+
+	// Lock order: cross-process sentinel first, s.mu second, with s.mu held
+	// only around the local load/check/save window. s.mu serializes the
+	// check-and-mutate windows of same-process writers where the sentinel
+	// lock is a no-op (js/wasm, wasip1, plan9); Get and List are lock-free,
+	// so a mutation blocked here never stalls readers. Every mutation takes
+	// the locks in this order, so they cannot deadlock.
+	release, err := acquireFileLock(ctx, filepath.Join(s.dir, lockFileName))
+	if err != nil {
+		return Plan{}, err
+	}
+	defer release()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -763,9 +1001,19 @@ func (s *FilesystemStorage) Upsert(_ context.Context, req UpsertRequest) (Plan, 
 	if req.MustExist && !exists {
 		return Plan{}, fmt.Errorf("%w: %q", ErrPlanNotFound, req.Name)
 	}
+	// Create-only guard: any existing plan conflicts, whatever its revision.
+	// Existence is checked directly rather than through the optimistic lock
+	// below because revision 0 is not proof of absence — a stored plan file
+	// that omits the revision field legitimately reads back as revision 0
+	// and must not be overwritten by a create.
+	if req.MustNotExist && exists {
+		return Plan{}, &VersionConflictError{Name: req.Name, Expected: 0, Current: plan.Revision}
+	}
 	// Optimistic-lock check: reject the write if another writer bumped the
-	// revision since the caller last read it. Checked under the same lock as
-	// the load+save below so the compare-and-set is atomic within the process.
+	// revision since the caller last read it. Checked while both the mutex and
+	// the cross-process file lock are held, so the compare-and-set is atomic
+	// against writers in this process and in any other process sharing the
+	// directory.
 	if req.ExpectedRevision != nil && plan.Revision != *req.ExpectedRevision {
 		return Plan{}, &VersionConflictError{Name: req.Name, Expected: *req.ExpectedRevision, Current: plan.Revision}
 	}
@@ -796,9 +1044,13 @@ func (s *FilesystemStorage) Upsert(_ context.Context, req UpsertRequest) (Plan, 
 	return plan, nil
 }
 
-func (s *FilesystemStorage) List(_ context.Context) ([]Summary, []string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *FilesystemStorage) List(ctx context.Context) ([]Summary, []string, error) {
+	// Deliberately lock-free (no s.mu), like Get: every plan file is read
+	// through the same atomic-write guarantee, so holding the mutex across a
+	// whole directory walk would only let a wedged mutation stall listings.
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -811,6 +1063,12 @@ func (s *FilesystemStorage) List(_ context.Context) ([]Summary, []string, error)
 	plans := []Summary{}
 	var warnings []string
 	for _, entry := range entries {
+		// The directory is read file by file; observe cancellation between
+		// files so an expired deadline stops the walk instead of pointlessly
+		// finishing it.
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
@@ -847,20 +1105,30 @@ func (s *FilesystemStorage) List(_ context.Context) ([]Summary, []string, error)
 	return plans, warnings, nil
 }
 
-func (s *FilesystemStorage) Delete(_ context.Context, name string, expectedRevision *int) (bool, error) {
+func (s *FilesystemStorage) Delete(ctx context.Context, name string, expectedRevision *int) (bool, error) {
 	path, err := s.planPath(name)
 	if err != nil {
 		return false, err
 	}
 
+	// Same lock order as Upsert: sentinel first, s.mu only around the local
+	// load/check/remove window, so a delete blocked on the sentinel never
+	// stalls readers.
+	release, err := acquireFileLock(ctx, filepath.Join(s.dir, lockFileName))
+	if err != nil {
+		return false, err
+	}
+	defer release()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// With an optimistic-lock guard we must read the current revision first, so
-	// the compare-and-delete is atomic under the lock. This means a guarded
-	// delete of a corrupt plan fails (its revision can't be read to compare);
-	// recovering from a corrupt plan is done with an unguarded delete, which
-	// removes the file directly without pre-loading it.
+	// the compare-and-delete is atomic under the locks (in-process mutex plus
+	// cross-process file lock). This means a guarded delete of a corrupt plan
+	// fails (its revision can't be read to compare); recovering from a corrupt
+	// plan is done with an unguarded delete, which removes the file directly
+	// without pre-loading it.
 	if expectedRevision != nil {
 		plan, ok, err := s.load(path)
 		if err != nil {

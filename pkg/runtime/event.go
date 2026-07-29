@@ -467,6 +467,34 @@ func SessionPlanUpdated(sessionID, content, path, agentName string) Event {
 
 func (e *SessionPlanUpdatedEvent) GetSessionID() string { return e.SessionID }
 
+// PlanChangedEvent fires after an agent successfully mutates a shared plan
+// (write, status change, or delete) through the plan toolset. It carries
+// identity and version only — no content — so a UI refreshes through its own
+// plan service instead of trusting an event payload. It is deliberately not
+// session-scoped: shared plans are global across sessions.
+type PlanChangedEvent struct {
+	AgentContext
+
+	Type   string `json:"type"`
+	Scope  string `json:"scope"`
+	Name   string `json:"name"`
+	Action string `json:"action"`
+	// Version is the plan version after a write, or the guard version of a
+	// guarded delete (0 when unguarded).
+	Version int `json:"version,omitempty"`
+}
+
+func PlanChanged(scope, name, action string, version int, agentName string) Event {
+	return &PlanChangedEvent{
+		Type:         "plan_changed",
+		Scope:        scope,
+		Name:         name,
+		Action:       action,
+		Version:      version,
+		AgentContext: newAgentContext(agentName),
+	}
+}
+
 type SessionSummaryEvent struct {
 	AgentContext
 
