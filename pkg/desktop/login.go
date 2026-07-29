@@ -26,6 +26,8 @@ func GetToken(ctx context.Context) string {
 		return token
 	}
 
+	logExpiredToken(ctx, token)
+
 	if fresh := forceTokenRefresh(ctx); fresh != "" {
 		slog.InfoContext(ctx, "Recovered a fresh token from Docker Desktop",
 			"fingerprint", tokenFingerprint(fresh))
@@ -37,6 +39,17 @@ func GetToken(ctx context.Context) string {
 	return token
 }
 
+// logExpiredToken records evidence that Docker Desktop served an
+// already-expired token, so gateway 401s can be attributed to a stale Desktop
+// session rather than a rejection of a valid token.
+func logExpiredToken(ctx context.Context, token string) {
+	attrs := []any{"fingerprint", tokenFingerprint(token), "expired_for", expiredFor(token)}
+	if exp, ok := tokenExpiry(token); ok {
+		attrs = append(attrs, "expires_at", exp.UTC().Format(time.RFC3339))
+	}
+	slog.WarnContext(ctx, "Docker Desktop served an expired token", attrs...)
+}
+
 // tokenFingerprint returns a short non-reversible identifier, safe to log.
 func tokenFingerprint(token string) string {
 	sum := sha256.Sum256([]byte(token))
@@ -45,15 +58,25 @@ func tokenFingerprint(token string) string {
 
 // expiredFor returns how long ago the token's exp claim passed.
 func expiredFor(token string) string {
+	exp, ok := tokenExpiry(token)
+	if !ok {
+		return "unknown"
+	}
+	return time.Since(exp).Round(time.Second).String()
+}
+
+// tokenExpiry returns the token's exp claim, or false when the token doesn't
+// parse or carries no exp claim.
+func tokenExpiry(token string) (time.Time, bool) {
 	parsed, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
 	if err != nil {
-		return "unknown"
+		return time.Time{}, false
 	}
 	exp, err := parsed.Claims.GetExpirationTime()
 	if err != nil || exp == nil {
-		return "unknown"
+		return time.Time{}, false
 	}
-	return time.Since(exp.Time).Round(time.Second).String()
+	return exp.Time, true
 }
 
 func GetUserInfo(ctx context.Context) DockerHubInfo {
@@ -72,12 +95,8 @@ func fetchToken(ctx context.Context) string {
 // leeway for clock skew between this machine and the token issuer.
 // Tokens that don't parse or carry no exp claim are treated as valid.
 func tokenExpired(token string) bool {
-	parsed, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
-	if err != nil {
-		return false
-	}
-	exp, err := parsed.Claims.GetExpirationTime()
-	if err != nil || exp == nil {
+	exp, ok := tokenExpiry(token)
+	if !ok {
 		return false
 	}
 	return exp.Before(time.Now().Add(-expiryLeeway))
@@ -169,7 +188,7 @@ func awaitRefresh(ctx context.Context, done <-chan struct{}) string {
 }
 
 func runTokenRefresh(ctx context.Context) string {
-	slog.WarnContext(ctx, "Docker Desktop returned an expired token, forcing a refresh")
+	slog.WarnContext(ctx, "Forcing a Docker Desktop token refresh")
 	if err := postRefreshNudge(ctx); err != nil {
 		slog.WarnContext(ctx, "Failed to trigger Docker Desktop token refresh", "error", err)
 		return ""
