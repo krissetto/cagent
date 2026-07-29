@@ -359,14 +359,11 @@ mainLoop:
 
 	applyXMLFallback()
 
-	// If the stream completed without producing any usable content or tool
-	// calls, likely because of a token limit, stop to avoid breaking the request
-	// loop. Whitespace-only content counts as no output: it carries no answer,
-	// and runTurn's empty-turn detection uses the same trimmed-empty test, so
-	// treating it as stopped here guarantees that an empty-turn warning is always
-	// followed by a turn exit rather than an identical-message re-entry (#3145).
+	// Invariant: a bare-EOF turn (no per-choice finish_reason) is terminal
+	// whenever there are no tool calls — the outer loop has nothing to continue
+	// on. Turns with tool calls keep Stopped=false so the loop executes them.
 	// NOTE(krissetto): this can likely be removed once compaction works properly with all providers (aka dmr)
-	stoppedDueToNoOutput := strings.TrimSpace(fullContent.String()) == "" && len(toolCalls) == 0
+	stoppedNoToolCalls := len(toolCalls) == 0
 
 	// Prefer the provider's explicit finish reason when available (e.g.
 	// tool_calls).  Only fall back to inference when no explicit reason was
@@ -399,7 +396,7 @@ mainLoop:
 		ReasoningContent:  fullReasoningContent.String(),
 		ThinkingSignature: thinkingSignature,
 		ThoughtSignature:  thoughtSignature,
-		Stopped:           stoppedDueToNoOutput,
+		Stopped:           stoppedNoToolCalls,
 		FinishReason:      finishReason,
 		Usage:             messageUsage,
 	}, nil
