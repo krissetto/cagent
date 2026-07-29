@@ -73,30 +73,12 @@ jobs:
           task test
           task test-binary
 
-  # Plan storage relies on OS-specific file locking and path semantics, so its
-  # tests must actually run on Windows, not only cross-compile.
-  windows-plan-tests:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Run plan tests
-        run: go test ./pkg/tools/builtin/plan/ ./pkg/plans/
-
-  # Observation job: run the full Go test suite natively on Windows.
-  # Temporarily non-blocking (continue-on-error) while Windows failures are
-  # triaged; windows-plan-tests above remains the blocking gate meanwhile.
-  windows-all-tests:
+  # Native Windows tests. Plan storage relies on OS-specific file locking and
+  # path semantics, so its tests are a blocking gate; the remaining suite runs
+  # non-blocking (continue-on-error) while Windows failures are triaged.
+  windows-tests:
     runs-on: windows-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -110,7 +92,13 @@ jobs:
       - name: Go environment
         run: go env GOOS GOARCH CGO_ENABLED CC
 
-      - name: Run all tests
+      - name: Run plan tests
+        run: go test -count=1 ./pkg/tools/builtin/plan/ ./pkg/plans/
+
+      # Run everything except the plan packages covered above. Splatting the
+      # package list avoids command-line length limits and quoting ambiguity.
+      - name: Run remaining tests
+        continue-on-error: true
         env:
           # Mirror .env.test: blank out provider credentials on the runner.
           DOCKER_AGENT_MODELS_GATEWAY: ""
@@ -120,7 +108,17 @@ jobs:
           GOOGLE_GENAI_USE_VERTEXAI: ""
           MISTRAL_API_KEY: ""
           OPENROUTER_API_KEY: ""
-        run: go test -count=1 ./...
+        shell: pwsh
+        run: |
+          $exclude = @(
+            'github.com/docker/docker-agent/pkg/tools/builtin/plan'
+            'github.com/docker/docker-agent/pkg/plans'
+          )
+          $listed = @(go list ./...)
+          if ($LASTEXITCODE -ne 0) { throw "go list failed with exit code $LASTEXITCODE" }
+          $packages = @($listed | Where-Object { $_ -notin $exclude -and -not [string]::IsNullOrWhiteSpace($_) })
+          if ($packages.Count -eq 0) { throw 'go list returned no packages to test' }
+          go test -count=1 @packages
 
   license-check:
     runs-on: ubuntu-latest
@@ -193,7 +191,7 @@ jobs:
 
   build-and-push-image:
     if: github.event_name != 'pull_request' && !github.event.repository.fork
-    needs: [ lint, build-and-test, windows-plan-tests, license-check ]
+    needs: [ lint, build-and-test, windows-tests, license-check ]
     # Build each platform on its own native runner in parallel, push by digest,
     # then assemble the multi-arch manifest in the merge job below.
     strategy:
