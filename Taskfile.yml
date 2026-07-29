@@ -49,10 +49,10 @@ tasks:
       - CHECK_MODELS_SNAPSHOT_FRESHNESS=1 go test -run TestSnapshotDateIsFresh ./pkg/modelsdev/
 
   check-plan-cross:
-    desc: Cross-compile the plan storage and host plans packages for every file-lock build-tag variant
+    desc: Cross-compile the plan storage and host plans packages for every file-lock build-tag variant (plus the plan-consuming CLI and TUI packages on windows)
     cmds:
       - GOOS=linux GOARCH=amd64 go build ./pkg/tools/builtin/plan/ ./pkg/plans/
-      - GOOS=windows GOARCH=amd64 go build ./pkg/tools/builtin/plan/ ./pkg/plans/
+      - GOOS=windows GOARCH=amd64 go build ./pkg/tools/builtin/plan/ ./pkg/plans/ ./cmd/root/ ./pkg/tui/
       - GOOS=js GOARCH=wasm go build ./pkg/tools/builtin/plan/ ./pkg/plans/
       - GOOS=wasip1 GOARCH=wasm go build ./pkg/tools/builtin/plan/ ./pkg/plans/
       - GOOS=plan9 GOARCH=amd64 go build ./pkg/tools/builtin/plan/ ./pkg/plans/
