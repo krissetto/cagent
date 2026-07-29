@@ -39,6 +39,7 @@ const (
 	rowSessionPath
 	rowUsage
 	rowAgents
+	rowActiveAgents
 	rowTools
 	rowTodos
 	rowSplitDiff
@@ -161,6 +162,9 @@ func (d *settingsDialog) selectable(tab, row int) bool {
 	if tab == tabAppearance && !d.showVisuals && row >= rowPosition && row <= rowTodos {
 		return false
 	}
+	if tab == tabAppearance && row == rowActiveAgents && d.current.Layout.HideAgents {
+		return false
+	}
 	if tab == tabNotifications && row == rowSoundThreshold && !d.current.Sound {
 		return false
 	}
@@ -235,6 +239,10 @@ func (d *settingsDialog) changeValue(delta int) tea.Cmd {
 			d.current.Layout.HideUsage = !d.current.Layout.HideUsage
 		case rowAgents:
 			d.current.Layout.HideAgents = !d.current.Layout.HideAgents
+		case rowActiveAgents:
+			if !d.current.Layout.HideAgents {
+				d.current.Layout.ActiveAgentsOnly = !d.current.Layout.ActiveAgentsOnly
+			}
 		case rowTools:
 			d.current.Layout.HideTools = !d.current.Layout.HideTools
 		case rowTodos:
@@ -371,6 +379,7 @@ func (d *settingsDialog) renderAppearanceTab(content *Content, inner int) {
 			AddContent(d.renderToggleRow(rowSessionPath, "Session path", !d.current.Layout.HideSessionPath)).
 			AddContent(d.renderToggleRow(rowUsage, "Token usage", !d.current.Layout.HideUsage)).
 			AddContent(d.renderToggleRow(rowAgents, "Agents", !d.current.Layout.HideAgents)).
+			AddContent(d.renderNestedToggleRow(rowActiveAgents, "Active agents only", d.current.Layout.ActiveAgentsOnly, d.current.Layout.HideAgents)).
 			AddContent(d.renderToggleRow(rowTools, "Tools", !d.current.Layout.HideTools)).
 			AddContent(d.renderToggleRow(rowTodos, "Todos", !d.current.Layout.HideTodos))
 	}
@@ -448,6 +457,20 @@ func (d *settingsDialog) renderToggleRow(row int, label string, enabled bool) st
 		checkStyle = checkStyle.Foreground(styles.Success)
 	}
 	return prefix + checkStyle.Render(check) + " " + labelStyle.Render(label)
+}
+
+// renderNestedToggleRow renders a toggle row indented under its parent row.
+// A disabled row (its parent section is off) renders fully muted and is
+// skipped by navigation (see selectable).
+func (d *settingsDialog) renderNestedToggleRow(row int, label string, enabled, disabled bool) string {
+	if disabled {
+		check := "[ ]"
+		if enabled {
+			check = "[x]"
+		}
+		return "    " + styles.MutedStyle.Render(check+" "+label)
+	}
+	return "  " + d.renderToggleRow(row, label, enabled)
 }
 
 // visibleSectionLabels returns the sidebar section labels that are visible

@@ -965,14 +965,15 @@ func (m *appModel) applyLayoutSettings(settings messages.LayoutSettings) (tea.Mo
 // layoutSettingsFromConfig converts persisted layout settings to their runtime form.
 func layoutSettingsFromConfig(l userconfig.LayoutSettings) messages.LayoutSettings {
 	return messages.LayoutSettings{
-		SidebarPosition: messages.ParseSidebarPosition(l.SidebarPosition),
-		SectionSpacing:  messages.ParseSectionSpacing(l.SectionSpacing),
-		SidebarInfoMode: messages.ParseSidebarInfoMode(l.SidebarInfoMode),
-		HideSessionPath: l.HideSessionPath,
-		HideUsage:       l.HideUsage,
-		HideAgents:      l.HideAgents,
-		HideTools:       l.HideTools,
-		HideTodos:       l.HideTodos,
+		SidebarPosition:  messages.ParseSidebarPosition(l.SidebarPosition),
+		SectionSpacing:   messages.ParseSectionSpacing(l.SectionSpacing),
+		SidebarInfoMode:  messages.ParseSidebarInfoMode(l.SidebarInfoMode),
+		ActiveAgentsOnly: l.ActiveAgentsOnly,
+		HideSessionPath:  l.HideSessionPath,
+		HideUsage:        l.HideUsage,
+		HideAgents:       l.HideAgents,
+		HideTools:        l.HideTools,
+		HideTodos:        l.HideTodos,
 	}
 }
 
@@ -1033,7 +1034,8 @@ func savePreferences(p messages.Preferences) error {
 		}
 		s.Layout = &userconfig.LayoutSettings{
 			SidebarPosition: position, SectionSpacing: spacing, SidebarInfoMode: infoMode,
-			HideSessionPath: layout.HideSessionPath, HideUsage: layout.HideUsage,
+			ActiveAgentsOnly: layout.ActiveAgentsOnly,
+			HideSessionPath:  layout.HideSessionPath, HideUsage: layout.HideUsage,
 			HideAgents: layout.HideAgents, HideTools: layout.HideTools, HideTodos: layout.HideTodos,
 		}
 		return nil

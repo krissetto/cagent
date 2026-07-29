@@ -70,6 +70,7 @@ You rarely need to hand-edit this file. Most fields are managed from the TUI's `
 | `hide_session_path` | boolean | `false` | Hide the working-directory (session path) line, including its git branch. |
 | `hide_usage` | boolean | `false` | Hide the token-usage section. |
 | `hide_agents` | boolean | `false` | Hide the Agents section. |
+| `active_agents_only` | boolean | `false` | Show only agents active in the current session in the Agents section (and the top/bottom band), instead of the whole configured team. Ignored while the Agents section is hidden. |
 | `hide_tools` | boolean | `false` | Hide the Tools section. |
 | `hide_todos` | boolean | `false` | Hide the Todos section. |
 

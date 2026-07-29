@@ -33,24 +33,26 @@ func TestLayoutSettingsFromConfig(t *testing.T) {
 		"unknown values fall back to the defaults")
 
 	got := layoutSettingsFromConfig(userconfig.LayoutSettings{
-		SidebarPosition: "bottom",
-		SectionSpacing:  "compact",
-		SidebarInfoMode: "detailed",
-		HideSessionPath: true,
-		HideUsage:       true,
-		HideAgents:      true,
-		HideTools:       true,
-		HideTodos:       true,
+		SidebarPosition:  "bottom",
+		SectionSpacing:   "compact",
+		SidebarInfoMode:  "detailed",
+		ActiveAgentsOnly: true,
+		HideSessionPath:  true,
+		HideUsage:        true,
+		HideAgents:       true,
+		HideTools:        true,
+		HideTodos:        true,
 	})
 	assert.Equal(t, messages.LayoutSettings{
-		SidebarPosition: messages.SidebarBottom,
-		SectionSpacing:  messages.SpacingCompact,
-		SidebarInfoMode: messages.InfoModeDetailed,
-		HideSessionPath: true,
-		HideUsage:       true,
-		HideAgents:      true,
-		HideTools:       true,
-		HideTodos:       true,
+		SidebarPosition:  messages.SidebarBottom,
+		SectionSpacing:   messages.SpacingCompact,
+		SidebarInfoMode:  messages.InfoModeDetailed,
+		ActiveAgentsOnly: true,
+		HideSessionPath:  true,
+		HideUsage:        true,
+		HideAgents:       true,
+		HideTools:        true,
+		HideTodos:        true,
 	}, got)
 }
 
@@ -115,10 +117,11 @@ func TestSavePreferences_RoundTripAndPreservesExtra(t *testing.T) {
 
 	preferences := messages.Preferences{
 		Layout: messages.LayoutSettings{
-			SidebarPosition: messages.SidebarBottom,
-			SectionSpacing:  messages.SpacingCompact,
-			SidebarInfoMode: messages.InfoModeDetailed,
-			HideAgents:      true,
+			SidebarPosition:  messages.SidebarBottom,
+			SectionSpacing:   messages.SpacingCompact,
+			SidebarInfoMode:  messages.InfoModeDetailed,
+			ActiveAgentsOnly: true,
+			HideAgents:       true,
 		},
 		SendMode:           messages.SendModeQueue,
 		SplitDiffView:      false,
@@ -250,4 +253,32 @@ func TestSavePreferences_CompactInfoModeClearsEntry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, cfg.GetSettings().Layout,
 		"the default layout with an explicit compact info mode clears the config entry")
+}
+
+func TestSavePreferences_ActiveAgentsOnlyRoundTrip(t *testing.T) {
+	setupSettingsConfigTest(t)
+
+	saved := messages.LayoutSettings{
+		SidebarPosition:  messages.SidebarRight,
+		SectionSpacing:   messages.SpacingNormal,
+		SidebarInfoMode:  messages.InfoModeCompact,
+		ActiveAgentsOnly: true,
+	}
+	require.NoError(t, saveSettingsToUserConfig(saved, messages.SendModeSteer))
+
+	cfg, err := userconfig.Load()
+	require.NoError(t, err)
+	layout := cfg.GetSettings().Layout
+	require.NotNil(t, layout, "active_agents_only alone must keep the layout entry")
+	assert.True(t, layout.ActiveAgentsOnly)
+	assert.Empty(t, layout.SidebarPosition, "the default position is not written out")
+	assert.Equal(t, saved, layoutSettingsFromConfig(userconfig.Get().GetLayout()))
+
+	// Turning the filter back off restores the all-default layout and clears
+	// the entry entirely.
+	saved.ActiveAgentsOnly = false
+	require.NoError(t, saveSettingsToUserConfig(saved, messages.SendModeSteer))
+	cfg, err = userconfig.Load()
+	require.NoError(t, err)
+	assert.Nil(t, cfg.GetSettings().Layout, "the default (off) filter is not written out")
 }
