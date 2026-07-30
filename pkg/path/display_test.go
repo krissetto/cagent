@@ -13,8 +13,16 @@ func TestRelativeTo(t *testing.T) {
 
 	assert.Equal(t, filepath.Join("dir", "file.txt"), RelativeTo(filepath.Join(base, "dir", "file.txt"), base))
 	assert.Equal(t, filepath.Join("..", "sibling"), RelativeTo(filepath.Join(filepath.Dir(base), "sibling"), base))
-	assert.Equal(t, "relative/path", RelativeTo("relative/path", base))
+	assert.Equal(t, filepath.Clean("relative/path"), RelativeTo("relative/path", base))
 	assert.Equal(t, filepath.Join(base, "file.txt"), RelativeTo(filepath.Join(base, "file.txt"), "relative/base"))
+}
+
+func TestShortenHomeUsesHomeEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", filepath.Join(t.TempDir(), "profile"))
+
+	assert.Equal(t, filepath.Join("~", "file.txt"), ShortenHome(filepath.Join(home, "file.txt")))
 }
 
 func TestShortenHomeDir(t *testing.T) {

@@ -49,6 +49,16 @@ func TestGetHomeDir(t *testing.T) {
 	assert.NotEmpty(t, paths.GetHomeDir())
 }
 
+func TestGetHomeDirPrefersHomeEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", filepath.Join(t.TempDir(), "profile"))
+
+	assert.Equal(t, filepath.Clean(home), paths.GetHomeDir())
+	assert.Equal(t, filepath.Join(home, ".config", "cagent"), paths.GetConfigDir())
+	assert.Equal(t, filepath.Join(home, ".cagent"), paths.GetDataDir())
+}
+
 func TestSetRoot(t *testing.T) {
 	t.Cleanup(func() { paths.SetRoot("") })
 

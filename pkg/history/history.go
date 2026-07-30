@@ -5,12 +5,15 @@ package history
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/docker/portcullis"
+
+	"github.com/docker/docker-agent/pkg/paths"
 )
 
 // History is the in-memory view of a persistent message history. The cursor
@@ -27,9 +30,9 @@ type History struct {
 // empty, the user's home directory is used.
 func New(baseDir string) (*History, error) {
 	if baseDir == "" {
-		var err error
-		if baseDir, err = os.UserHomeDir(); err != nil {
-			return nil, err
+		baseDir = paths.GetHomeDir()
+		if baseDir == "" {
+			return nil, errors.New("failed to get user home directory")
 		}
 	}
 
