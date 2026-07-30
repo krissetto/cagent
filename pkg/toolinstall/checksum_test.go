@@ -205,7 +205,7 @@ func TestInstallE2E_ChecksumMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "checksum mismatch")
 
 	// Nothing should have been linked into BinDir on a failed verification.
-	_, statErr := os.Stat(filepath.Join(BinDir(), "rawtool"))
+	_, statErr := os.Stat(filepath.Join(BinDir(), executableName("rawtool")))
 	assert.True(t, os.IsNotExist(statErr), "binary must not be installed on checksum failure")
 }
 

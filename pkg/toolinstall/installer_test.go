@@ -81,21 +81,38 @@ func TestResolveForPlatform_DoesNotMutateSharedReplacements(t *testing.T) {
 		"base Replacements map must remain unmodified")
 }
 
+func assertExecutable(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.True(t, isExecutable(info), "binary should be executable")
+}
+
+func assertPublishedBinary(t *testing.T, binaryName, target string) {
+	t.Helper()
+	published := filepath.Join(BinDir(), executableName(binaryName))
+	info, err := os.Stat(published)
+	require.NoError(t, err)
+	assert.True(t, isExecutable(info))
+	if runtime.GOOS != "windows" {
+		linkTarget, err := os.Readlink(published)
+		require.NoError(t, err)
+		assert.Equal(t, target, linkTarget)
+	}
+}
+
 func TestEnsureSymlink(t *testing.T) {
 	t.Setenv("DOCKER_AGENT_TOOLS_DIR", t.TempDir())
 
-	binaryPath := filepath.Join(ToolsDir(), "packages", "cli", "cli", "v1", "gh")
+	binaryPath := filepath.Join(ToolsDir(), "packages", "cli", "cli", "v1", executableName("gh"))
 	require.NoError(t, os.MkdirAll(filepath.Dir(binaryPath), 0o755))
 	require.NoError(t, os.WriteFile(binaryPath, []byte("#!/bin/sh\necho test"), 0o755))
 
-	require.NoError(t, ensureSymlink("gh", binaryPath))
-
-	target, err := os.Readlink(filepath.Join(BinDir(), "gh"))
-	require.NoError(t, err)
-	assert.Equal(t, binaryPath, target)
+	require.NoError(t, publishBinary(executableName("gh"), binaryPath))
+	assertPublishedBinary(t, "gh", binaryPath)
 
 	// Idempotent.
-	require.NoError(t, ensureSymlink("gh", binaryPath))
+	require.NoError(t, publishBinary(executableName("gh"), binaryPath))
 }
 
 func TestInstall_AlreadyInstalled_GitHubRelease(t *testing.T) {
@@ -109,7 +126,7 @@ func TestInstall_AlreadyInstalled_GitHubRelease(t *testing.T) {
 
 	pkgDir := PackageDir("cli", "cli", "v2.50.0")
 	require.NoError(t, os.MkdirAll(pkgDir, 0o755))
-	binaryPath := filepath.Join(pkgDir, "gh")
+	binaryPath := filepath.Join(pkgDir, executableName("gh"))
 	require.NoError(t, os.WriteFile(binaryPath, []byte("binary"), 0o755))
 
 	result, err := (&Registry{httpClient: http.DefaultClient}).Install(t.Context(), pkg, "v2.50.0")
@@ -129,7 +146,7 @@ func TestInstall_AlreadyInstalled_GoPackage(t *testing.T) {
 	}
 
 	require.NoError(t, os.MkdirAll(BinDir(), 0o755))
-	binaryPath := filepath.Join(BinDir(), "gopls")
+	binaryPath := filepath.Join(BinDir(), executableName("gopls"))
 	require.NoError(t, os.WriteFile(binaryPath, []byte("binary"), 0o755))
 
 	result, err := (&Registry{httpClient: http.DefaultClient}).Install(t.Context(), pkg, "v0.21.1")
@@ -168,15 +185,8 @@ func TestInstall_RawFormat(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, binaryContent, string(data))
 
-	info, err := os.Stat(result)
-	require.NoError(t, err)
-	assert.NotZero(t, info.Mode()&0o111, "binary should be executable")
-
-	// Verify symlink was created.
-	link := filepath.Join(BinDir(), "raw-tool")
-	target, err := os.Readlink(link)
-	require.NoError(t, err)
-	assert.Equal(t, result, target)
+	assertExecutable(t, result)
+	assertPublishedBinary(t, "raw-tool", result)
 }
 
 // roundTripFunc adapts a function to http.RoundTripper for test HTTP mocking.
@@ -210,16 +220,8 @@ func assertInstalledBinary(t *testing.T, binaryPath, expectedContent, binaryName
 	require.NoError(t, err)
 	assert.Equal(t, expectedContent, string(data))
 
-	// Verify executable permissions.
-	info, err := os.Stat(binaryPath)
-	require.NoError(t, err)
-	assert.NotZero(t, info.Mode()&0o111, "binary should be executable")
-
-	// Verify symlink in BinDir.
-	link := filepath.Join(BinDir(), binaryName)
-	target, err := os.Readlink(link)
-	require.NoError(t, err)
-	assert.Equal(t, binaryPath, target)
+	assertExecutable(t, binaryPath)
+	assertPublishedBinary(t, binaryName, binaryPath)
 }
 
 // --- End-to-end Install tests: full download → extract → symlink flow ---

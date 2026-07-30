@@ -71,7 +71,7 @@ func TestWriteRawBinary(t *testing.T) {
 	t.Parallel()
 
 	destDir := t.TempDir()
-	destPath := filepath.Join(destDir, "mytool")
+	destPath := filepath.Join(destDir, executableName("mytool"))
 	content := "#!/bin/sh\necho hello"
 
 	err := defaultLimits().writeRawBinary(strings.NewReader(content), destPath)
@@ -80,9 +80,7 @@ func TestWriteRawBinary(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, content, string(data))
 
-	info, err := os.Stat(destPath)
-	require.NoError(t, err)
-	assert.NotZero(t, info.Mode()&0o111, "binary should be executable")
+	assertExecutable(t, destPath)
 }
 
 func TestWriteRawBinary_ErrorOnBadPath(t *testing.T) {
@@ -117,7 +115,7 @@ func TestExtractTarGz(t *testing.T) {
 
 	require.NoError(t, defaultLimits().extractTarGz(&buf, destDir, files, data))
 
-	extracted, err := os.ReadFile(filepath.Join(destDir, "mytool"))
+	extracted, err := os.ReadFile(filepath.Join(destDir, executableName("mytool")))
 	require.NoError(t, err)
 	assert.Equal(t, content, extracted)
 }
@@ -141,7 +139,7 @@ func TestExtractZip(t *testing.T) {
 
 	require.NoError(t, defaultLimits().extractZip(bytes.NewReader(buf.Bytes()), int64(buf.Len()), destDir, files, data))
 
-	extracted, err := os.ReadFile(filepath.Join(destDir, "mytool"))
+	extracted, err := os.ReadFile(filepath.Join(destDir, executableName("mytool")))
 	require.NoError(t, err)
 	assert.Equal(t, content, extracted)
 }
@@ -154,7 +152,7 @@ func TestBuildFileMap(t *testing.T) {
 
 	m, err := buildFileMap(files, data)
 	require.NoError(t, err)
-	assert.Equal(t, "gh", m["gh_2.50.0_macOS/bin/gh"])
+	assert.Equal(t, executableName("gh"), m["gh_2.50.0_macOS/bin/gh"])
 }
 
 func TestMatchFile(t *testing.T) {
@@ -180,7 +178,7 @@ func TestMatchFile(t *testing.T) {
 			name, ok := matchFile(tt.entry, tt.fileMap)
 			assert.Equal(t, tt.wantOK, ok)
 			if ok {
-				assert.Equal(t, tt.wantName, name)
+				assert.Equal(t, executableName(tt.wantName), name)
 			}
 		})
 	}
