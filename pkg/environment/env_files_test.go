@@ -51,6 +51,8 @@ func TestAbsolutePath(t *testing.T) {
 	t.Parallel()
 	homeDir, err := os.UserHomeDir()
 	require.NoError(t, err)
+	root := t.TempDir()
+	absolute := filepath.Join(t.TempDir(), "absolute", "path")
 
 	tests := []struct {
 		name        string
@@ -60,13 +62,13 @@ func TestAbsolutePath(t *testing.T) {
 	}{
 		{
 			name:     "no tilde",
-			input:    "/absolute/path",
-			expected: "/absolute/path",
+			input:    absolute,
+			expected: absolute,
 		},
 		{
 			name:     "relative path",
 			input:    "relative/path",
-			expected: "/root/relative/path",
+			expected: filepath.Join(root, "relative", "path"),
 		},
 		{
 			name:     "tilde only",
@@ -93,7 +95,7 @@ func TestAbsolutePath(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result, err := AbsolutePath("/root", test.input)
+			result, err := AbsolutePath(root, test.input)
 			if test.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "unsupported tilde expansion format")

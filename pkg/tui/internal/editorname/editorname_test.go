@@ -68,7 +68,7 @@ func TestFromEnv(t *testing.T) {
 			name:      "Empty (uses platform default)",
 			visual:    "",
 			editorEnv: "",
-			want:      "Vi", // On non-Windows platforms, falls back to vi
+			want:      map[bool]string{true: "Notepad", false: "Vi"}[goruntime.GOOS == "windows"],
 		},
 		{
 			name:      "VSCode Insiders",

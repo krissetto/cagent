@@ -1,6 +1,7 @@
 package session
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -75,13 +76,15 @@ func TestNewSession_ConsistencyBetweenInitialAndSpawned(t *testing.T) {
 
 func TestAddAttachedFile(t *testing.T) {
 	t.Parallel()
+	foo := filepath.Join(t.TempDir(), "abs", "foo.go")
+	bar := filepath.Join(t.TempDir(), "abs", "bar.go")
 	t.Run("deduplicates and preserves order", func(t *testing.T) {
 		t.Parallel()
 		s := New()
-		s.AddAttachedFile("/abs/foo.go")
-		s.AddAttachedFile("/abs/bar.go")
-		s.AddAttachedFile("/abs/foo.go") // duplicate
-		assert.Equal(t, []string{"/abs/foo.go", "/abs/bar.go"}, s.AttachedFilesSnapshot())
+		s.AddAttachedFile(foo)
+		s.AddAttachedFile(bar)
+		s.AddAttachedFile(foo) // duplicate
+		assert.Equal(t, []string{foo, bar}, s.AttachedFilesSnapshot())
 	})
 
 	t.Run("ignores empty paths", func(t *testing.T) {
@@ -103,10 +106,11 @@ func TestAddAttachedFile(t *testing.T) {
 	t.Run("snapshot is independent of session storage", func(t *testing.T) {
 		t.Parallel()
 		s := New()
-		s.AddAttachedFile("/abs/foo.go")
+		s.AddAttachedFile(foo)
 		snap := s.AttachedFilesSnapshot()
+		require.Len(t, snap, 1)
 		snap[0] = "mutated"
-		assert.Equal(t, []string{"/abs/foo.go"}, s.AttachedFilesSnapshot())
+		assert.Equal(t, []string{foo}, s.AttachedFilesSnapshot())
 	})
 }
 
@@ -151,6 +155,8 @@ func TestRemoveAttachedFile(t *testing.T) {
 
 func TestWithAttachedFiles(t *testing.T) {
 	t.Parallel()
-	s := New(WithAttachedFiles([]string{"/abs/foo.go", "", "relative/path.go", "/abs/bar.go", "/abs/foo.go"}))
-	assert.Equal(t, []string{"/abs/foo.go", "/abs/bar.go"}, s.AttachedFilesSnapshot())
+	foo := filepath.Join(t.TempDir(), "abs", "foo.go")
+	bar := filepath.Join(t.TempDir(), "abs", "bar.go")
+	s := New(WithAttachedFiles([]string{foo, "", "relative/path.go", bar, foo}))
+	assert.Equal(t, []string{foo, bar}, s.AttachedFilesSnapshot())
 }

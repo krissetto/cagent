@@ -3,17 +3,16 @@ package path
 import (
 	"bytes"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestExpandPath(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dataDir := filepath.Join(t.TempDir(), "testdata")
+	absolutePath := filepath.Join(t.TempDir(), "absolute", "path", "memory.db")
 
 	tests := []struct {
 		name     string
@@ -44,13 +43,13 @@ func TestExpandPath(t *testing.T) {
 		{
 			name:     "custom env var",
 			input:    "${MY_TEST_DATA_DIR}/memory.db",
-			envSetup: map[string]string{"MY_TEST_DATA_DIR": "/tmp/testdata"},
-			expected: "/tmp/testdata/memory.db",
+			envSetup: map[string]string{"MY_TEST_DATA_DIR": dataDir},
+			expected: filepath.Join(dataDir, "memory.db"),
 		},
 		{
 			name:     "absolute path unchanged",
-			input:    "/absolute/path/memory.db",
-			expected: "/absolute/path/memory.db",
+			input:    absolutePath,
+			expected: absolutePath,
 		},
 		{
 			name:     "relative path unchanged",
@@ -71,14 +70,14 @@ func TestExpandPath(t *testing.T) {
 		{
 			name:     "js env ref custom var",
 			input:    "${env.MY_TEST_DATA_DIR}/memory.db",
-			envSetup: map[string]string{"MY_TEST_DATA_DIR": "/tmp/testdata"},
-			expected: "/tmp/testdata/memory.db",
+			envSetup: map[string]string{"MY_TEST_DATA_DIR": dataDir},
+			expected: filepath.Join(dataDir, "memory.db"),
 		},
 		{
 			name:     "js env ref with surrounding whitespace",
 			input:    "${ env.MY_TEST_DATA_DIR }/memory.db",
-			envSetup: map[string]string{"MY_TEST_DATA_DIR": "/tmp/testdata"},
-			expected: "/tmp/testdata/memory.db",
+			envSetup: map[string]string{"MY_TEST_DATA_DIR": dataDir},
+			expected: filepath.Join(dataDir, "memory.db"),
 		},
 		{
 			name:     "tilde and js env ref combined",
@@ -89,8 +88,8 @@ func TestExpandPath(t *testing.T) {
 		{
 			name:     "shell and js env refs mixed",
 			input:    "${MY_TEST_DATA_DIR}/${env.MY_TEST_SUBDIR}/memory.db",
-			envSetup: map[string]string{"MY_TEST_DATA_DIR": "/tmp/testdata", "MY_TEST_SUBDIR": "data"},
-			expected: "/tmp/testdata/data/memory.db",
+			envSetup: map[string]string{"MY_TEST_DATA_DIR": dataDir, "MY_TEST_SUBDIR": "data"},
+			expected: filepath.Join(dataDir, "data", "memory.db"),
 		},
 		{
 			name:     "undefined js env ref expands to empty",

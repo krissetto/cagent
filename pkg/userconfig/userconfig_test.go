@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -423,7 +424,9 @@ func TestConfig_AtomicWrite_Permissions(t *testing.T) {
 	// Verify file permissions are 0600
 	info, err := os.Stat(configFile)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 }
 
 func TestConfig_AliasWithOptions(t *testing.T) {

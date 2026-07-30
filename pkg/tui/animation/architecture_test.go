@@ -23,9 +23,12 @@ func TestSingleGlobalTimingSourceArchitecture(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		if filepath.Clean(path) == filepath.Clean(file) {
+			return nil
+		}
 		text := string(data)
 		for _, symbol := range forbidden {
-			if strings.Contains(text, symbol) && path != file {
+			if strings.Contains(text, symbol) {
 				t.Errorf("%s contains forbidden alternate timing API %q", path, symbol)
 			}
 		}

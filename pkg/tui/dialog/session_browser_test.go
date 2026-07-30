@@ -320,10 +320,12 @@ func TestSessionBrowserClickOutsideListIgnored(t *testing.T) {
 }
 
 func workspaceTestSessions() []session.Summary {
+	project := filepath.Join(string(filepath.Separator), "work", "project")
+	other := filepath.Join(string(filepath.Separator), "work", "other")
 	return []session.Summary{
-		{ID: "here-1", Title: "Newest here", CreatedAt: time.Now(), WorkingDir: "/work/project"},
-		{ID: "away-1", Title: "Away one", CreatedAt: time.Now().Add(-1 * time.Hour), WorkingDir: "/work/other"},
-		{ID: "here-2", Title: "Older here", CreatedAt: time.Now().Add(-2 * time.Hour), WorkingDir: "/work/project"},
+		{ID: "here-1", Title: "Newest here", CreatedAt: time.Now(), WorkingDir: project},
+		{ID: "away-1", Title: "Away one", CreatedAt: time.Now().Add(-1 * time.Hour), WorkingDir: other},
+		{ID: "here-2", Title: "Older here", CreatedAt: time.Now().Add(-2 * time.Hour), WorkingDir: project},
 		{ID: "nodir", Title: "No dir recorded", CreatedAt: time.Now().Add(-3 * time.Hour)},
 	}
 }
@@ -338,7 +340,8 @@ func filteredIDs(d *sessionBrowserDialog) []string {
 
 func TestSessionBrowserWorkspaceGrouping(t *testing.T) {
 	t.Parallel()
-	dialog := NewSessionBrowserDialog(workspaceTestSessions(), "/work/project")
+	project := filepath.Join(string(filepath.Separator), "work", "project")
+	dialog := NewSessionBrowserDialog(workspaceTestSessions(), project)
 	d := dialog.(*sessionBrowserDialog)
 	d.Init()
 	d.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
@@ -361,7 +364,7 @@ func TestSessionBrowserWorkspaceGrouping(t *testing.T) {
 	view := d.View()
 	require.Contains(t, view, sessionBrowserHeaderWorkspace)
 	require.Contains(t, view, sessionBrowserHeaderElsewhere)
-	require.Contains(t, view, "/work/other", "sessions from another workspace should show their directory")
+	require.Contains(t, view, filepath.Join(string(filepath.Separator), "work", "other"), "sessions from another workspace should show their directory")
 }
 
 func TestSessionBrowserWorkspaceGroupingFlatWithoutWorkspace(t *testing.T) {
@@ -396,7 +399,7 @@ func TestSessionBrowserNoHeadersWhenSingleGroup(t *testing.T) {
 
 func TestSessionBrowserWorkspaceFilterCycle(t *testing.T) {
 	t.Parallel()
-	dialog := NewSessionBrowserDialog(workspaceTestSessions(), "/work/project")
+	dialog := NewSessionBrowserDialog(workspaceTestSessions(), filepath.Join(string(filepath.Separator), "work", "project"))
 	d := dialog.(*sessionBrowserDialog)
 	d.Init()
 	d.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
@@ -594,7 +597,7 @@ func TestSessionBrowserWorkspaceDisplayDirThroughSymlink(t *testing.T) {
 
 func TestSessionBrowserHeaderRowsNotSelectable(t *testing.T) {
 	t.Parallel()
-	dialog := NewSessionBrowserDialog(workspaceTestSessions(), "/work/project")
+	dialog := NewSessionBrowserDialog(workspaceTestSessions(), filepath.Join(string(filepath.Separator), "work", "project"))
 	d := dialog.(*sessionBrowserDialog)
 	d.Init()
 	d.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
@@ -625,7 +628,7 @@ func TestSessionBrowserHeaderRowsNotSelectable(t *testing.T) {
 
 func TestSessionBrowserNavigationSkipsHeaders(t *testing.T) {
 	t.Parallel()
-	dialog := NewSessionBrowserDialog(workspaceTestSessions(), "/work/project")
+	dialog := NewSessionBrowserDialog(workspaceTestSessions(), filepath.Join(string(filepath.Separator), "work", "project"))
 	d := dialog.(*sessionBrowserDialog)
 	d.Init()
 	d.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
