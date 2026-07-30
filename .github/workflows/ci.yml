@@ -74,8 +74,8 @@ jobs:
           task test-binary
 
   # Native Windows tests. Plan storage relies on OS-specific file locking and
-  # path semantics, so its tests are a blocking gate; the remaining suite runs
-  # non-blocking (continue-on-error) while Windows failures are triaged.
+  # path semantics, so its tests run first as a dedicated gate; the remaining
+  # suite runs afterwards and is blocking as well.
   windows-tests:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -98,7 +98,6 @@ jobs:
       # Run everything except the plan packages covered above. Splatting the
       # package list avoids command-line length limits and quoting ambiguity.
       - name: Run remaining tests
-        continue-on-error: true
         env:
           # Mirror .env.test: blank out provider credentials on the runner.
           DOCKER_AGENT_MODELS_GATEWAY: ""
