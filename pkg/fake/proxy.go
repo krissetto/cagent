@@ -293,7 +293,7 @@ func DefaultMatcher(onError func(err error)) recorder.MatcherFunc {
 	// recorded without it.
 	toolChoiceRegex := regexp.MustCompile(`"tool_choice":"[^"]*",?`)
 	// Normalize prompt-file paths (they are machine-specific absolute paths).
-	promptFileRegex := regexp.MustCompile(`Instructions from: [^\\"]+`)
+	promptFileRegex := regexp.MustCompile(`Instructions from: (?:[^\\"]|\\\\)+`)
 
 	return func(r *http.Request, i cassette.Request) bool {
 		if r.Body == nil || r.Body == http.NoBody {
