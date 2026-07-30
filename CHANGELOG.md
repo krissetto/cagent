@@ -3,6 +3,48 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.119.0] - 2026-07-30
+
+This release introduces first-class plan management with a new CLI command group and TUI browser, adds YAML safety mode defaults, and includes several bug fixes for runtime stability and structured output handling.
+
+## What's New
+
+- Adds `docker agent plans` CLI command group and a host-facing plan service package for managing plans from outside the agent runtime
+- Adds a `/plans` browser, detail view, and action dialogs to the TUI for interactive plan management
+- Adds YAML safety mode defaults to team runtime, individual agents, user settings, and aliases, with declarative precedence rules
+- Adds an `Active agents only` option in TUI settings to filter the sidebar to agents participating in the current session
+- Logs a warning when Docker Desktop serves an expired token to the models gateway
+
+## Bug Fixes
+
+- Fixes runtime re-entry loop when a content-only turn ends with a bare EOF and no `finish_reason` from the provider
+- Fixes structured output handling for Claude models served through OpenAI-compatible endpoints by reinforcing schema constraints in system instructions
+- Fixes evaluation budget termination outcomes so `budget_exceeded` results are preserved correctly across transcripts, SQLite, and session JSON
+- Hardens host plan management and stabilizes asynchronous TUI workflows for plans
+- Fixes atomic file replacement on Windows to allow plan storage reads during open file operations
+
+## Technical Changes
+
+- Exports `ValidateName`, `CorruptPlanError`, `SharedStorage`, and `ChangeNotifier` from the plan package
+- Adds `PlanChangedEvent` emission on shared plan mutations in the runtime
+- Centralizes plan editor handling in the TUI
+- Adds plan storage testing on Windows as a CI gate
+- Adds documentation for the Provider Credentials section in eval containers, clarifying `GITHUB_TOKEN` forwarding behavior
+### Pull Requests
+
+- [#3669](https://github.com/docker/docker-agent/pull/3669) - fix(runtime): stop content-only turns that end with a bare EOF (no `finish_reason`)
+- [#3844](https://github.com/docker/docker-agent/pull/3844) - Merge pull request #3853 from docker/feat/host-plan-management-3844
+- [#3853](https://github.com/docker/docker-agent/pull/3853) - feat: add first-class host UX for plan management (#3844)
+- [#3857](https://github.com/docker/docker-agent/pull/3857) - docs: explain GITHUB_TOKEN forwarding for eval containers
+- [#3860](https://github.com/docker/docker-agent/pull/3860) - feat(config): add YAML safety mode defaults
+- [#3861](https://github.com/docker/docker-agent/pull/3861) - docs: update CHANGELOG.md for v1.118.0
+- [#3862](https://github.com/docker/docker-agent/pull/3862) - fix(eval): preserve budget termination outcomes
+- [#3863](https://github.com/docker/docker-agent/pull/3863) - fix(openai): reinforce structured output for Claude proxies
+- [#3864](https://github.com/docker/docker-agent/pull/3864) - feat(tui): filter sidebar to active agents
+- [#3865](https://github.com/docker/docker-agent/pull/3865) - fix(plans): address review follow-ups from #3853
+- [#3867](https://github.com/docker/docker-agent/pull/3867) - feat(desktop): log when Docker Desktop serves an expired token
+
+
 ## [v1.118.0] - 2026-07-28
 
 This release brings TUI animation infrastructure improvements, several bug fixes for session isolation, credential security, and model discovery, plus a new desktop token staleness logging feature.
@@ -5210,3 +5252,5 @@ This release improves the terminal user interface with better error handling and
 [v1.117.0]: https://github.com/docker/docker-agent/releases/tag/v1.117.0
 
 [v1.118.0]: https://github.com/docker/docker-agent/releases/tag/v1.118.0
+
+[v1.119.0]: https://github.com/docker/docker-agent/releases/tag/v1.119.0
