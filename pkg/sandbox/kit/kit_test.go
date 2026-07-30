@@ -450,10 +450,12 @@ func TestBuild_PreservesExecutableBit(t *testing.T) {
 	staged := filepath.Join(res.HostDir, skills.KitSkillsSubdir, "with-script", "run.sh")
 	info, err := os.Stat(staged)
 	require.NoError(t, err)
-	if runtime.GOOS != "windows" {
-		assert.NotZero(t, info.Mode().Perm()&0o100,
-			"staged script %s must keep its executable bit (got %v)", staged, info.Mode())
+	if runtime.GOOS == "windows" {
+		assert.FileExists(t, staged)
+		return
 	}
+	assert.NotZero(t, info.Mode().Perm()&0o100,
+		"staged script %s must keep its executable bit (got %v)", staged, info.Mode())
 }
 
 func TestBuild_OnDiskManifestOmitsHostPaths(t *testing.T) {

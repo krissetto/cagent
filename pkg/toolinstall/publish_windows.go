@@ -21,7 +21,6 @@ func publishBinary(name, target string) error {
 	if err := os.Link(target, tmpLink); err != nil {
 		return fmt.Errorf("creating temp hard link %s -> %s: %w", tmpLink, target, err)
 	}
-	_ = os.Remove(link)
 	if err := os.Rename(tmpLink, link); err != nil {
 		_ = os.Remove(tmpLink)
 		return fmt.Errorf("renaming hard link %s -> %s: %w", tmpLink, link, err)

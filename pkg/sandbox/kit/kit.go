@@ -34,7 +34,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -726,9 +725,6 @@ func copyFile(kitRoot, src, dst string) (*Redaction, error) {
 	}
 
 	mode := srcInfo.Mode().Perm() & 0o700
-	if runtime.GOOS == "windows" && filepath.Ext(src) == ".sh" {
-		mode = 0o700
-	}
 	if mode == 0 {
 		mode = 0o600
 	}
