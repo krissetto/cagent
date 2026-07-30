@@ -442,7 +442,7 @@ func TestDefaultMatcherNormalizesPromptFilePaths(t *testing.T) {
 		`{"system":[{"text":"Instructions from: /tmp/repo/AGENTS.md\nbody"}]}`,
 		`{"system":[{"text":"Instructions from: C:\\Users\\runner\\repo\\AGENTS.md\nbody"}]}`,
 	} {
-		req := httptest.NewRequest(http.MethodPost, "https://example.test/v1", strings.NewReader(body))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://example.test/v1", strings.NewReader(body))
 		if !matcher(req, cassette.Request{Method: http.MethodPost, URL: "https://example.test/v1", Body: cassetteBody}) {
 			t.Fatalf("prompt path was not normalized: %s", body)
 		}
