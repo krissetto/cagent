@@ -52,9 +52,9 @@ func TestExpandPath(t *testing.T) {
 			expected: absolutePath,
 		},
 		{
-			name:     "relative path unchanged",
+			name:     "relative path cleaned",
 			input:    "relative/path/memory.db",
-			expected: "relative/path/memory.db",
+			expected: filepath.Clean("relative/path/memory.db"),
 		},
 		{
 			name:     "tilde and env var combined",
@@ -198,11 +198,12 @@ func TestExpandEnvRefsLogsUnset(t *testing.T) {
 }
 
 func TestExpandWorkingDir(t *testing.T) {
-	t.Setenv("MY_TEST_WD", "/tmp/wd")
+	wd := filepath.Join(t.TempDir(), "wd")
+	t.Setenv("MY_TEST_WD", wd)
 
 	// Expands like ExpandPath.
-	if got := ExpandWorkingDir("test", "${env.MY_TEST_WD}"); got != "/tmp/wd" {
-		t.Errorf("got %q, want /tmp/wd", got)
+	if got := ExpandWorkingDir("test", "${env.MY_TEST_WD}"); got != wd {
+		t.Errorf("got %q, want %q", got, wd)
 	}
 	// Empty input stays empty (no warning path).
 	if got := ExpandWorkingDir("test", ""); got != "" {

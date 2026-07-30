@@ -35,6 +35,10 @@ func envDumpCmd() string {
 	return "env"
 }
 
+func envDumpContainsName(output, name string) bool {
+	return strings.Contains(output, "name="+name)
+}
+
 // printEnvValueCmd returns a command printing the value of one
 // environment variable, without a trailing newline.
 func printEnvValueCmd(name string) string {

@@ -253,15 +253,16 @@ func (s *Store) ListArtifacts() ([]ArtifactMetadata, error) {
 
 	var artifacts []ArtifactMetadata
 	for _, file := range files {
-		if !file.IsDir() && strings.HasSuffix(file.Name(), ".tar") {
-			digest := strings.TrimSuffix(file.Name(), ".tar")
-			digest = strings.Replace(digest, "sha256-", "sha256:", 1)
-			metadata, err := s.loadMetadata(digest)
-			if err != nil {
-				continue
-			}
-			artifacts = append(artifacts, *metadata)
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".tar") {
+			continue
 		}
+		digest := strings.TrimSuffix(file.Name(), ".tar")
+		digest = strings.Replace(digest, "sha256-", "sha256:", 1)
+		metadata, err := s.loadMetadata(digest)
+		if err != nil {
+			continue
+		}
+		artifacts = append(artifacts, *metadata)
 	}
 
 	return artifacts, nil

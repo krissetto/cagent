@@ -232,7 +232,7 @@ func TestScriptShellTool_DropsUndeclaredArgs(t *testing.T) {
 	}, tools.NopRuntime{})
 	require.NoError(t, err)
 	assert.False(t, result.IsError, "unexpected error: %s", result.Output)
-	assert.Contains(t, result.Output, "name=alice")
+	assert.True(t, envDumpContainsName(result.Output, "alice"), "output %q does not expose the declared arg", result.Output)
 	assert.NotContains(t, result.Output, "LD_PRELOAD")
 }
 

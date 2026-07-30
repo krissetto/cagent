@@ -20,7 +20,7 @@ func wallClockRoot(tb testing.TB, width, height int) *appModel {
 	sess := &session.Session{ID: "profile", Title: "profile"}
 	a := app.New(tb.Context(), stubRuntime{}, sess)
 	m := New(tb.Context(), nil, a, "", func() {}, WithHideSidebar()).(*appModel)
-	if cleaner, ok := tb.(interface{ Cleanup(func()) }); ok {
+	if cleaner, ok := tb.(interface{ Cleanup(f func()) }); ok {
 		cleaner.Cleanup(m.cleanupManagedResources)
 	}
 	m.supervisor = supervisor.New(nil)

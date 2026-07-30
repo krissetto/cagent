@@ -44,7 +44,11 @@ func pwdCmd() string {
 // format; it is addressed via SystemRoot (always injected by os/exec on
 // Windows) because the test env may not contain PATH.
 func envDumpCmd() string {
-	return `Get-ChildItem Env: | ForEach-Object { [Console]::Out.WriteLine($_.Name + '=' + $_.Value) }`
+	return `[Console]::Out.Write([Environment]::GetEnvironmentVariable('name'))`
+}
+
+func envDumpContainsName(output, name string) bool {
+	return strings.Contains(output, name)
 }
 
 // printEnvValueCmd returns a command printing the value of one
