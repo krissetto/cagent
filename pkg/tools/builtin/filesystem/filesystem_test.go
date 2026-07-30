@@ -627,7 +627,7 @@ func main() {
 	postEditConfigs := []PostEditConfig{
 		{
 			Path: "*.go",
-			Cmd:  "touch $file.formatted",
+			Cmd:  postEditMarkerCmd(),
 		},
 	}
 	tool := New(tmpDir, WithPostEditCommands(postEditConfigs))

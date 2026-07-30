@@ -135,14 +135,10 @@ func TestAgentsIgnoreNegationReIncludes(t *testing.T) {
 }
 
 func TestAgentsIgnoreUnreadableFileIsAnError(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses file permissions")
-	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, fsx.AgentsIgnoreFile)
 	require.NoError(t, os.WriteFile(path, []byte("secrets.env\n"), 0o644))
-	require.NoError(t, os.Chmod(path, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+	makeUnreadable(t, path)
 
 	_, err := CreateToolSet(latest.Toolset{Type: "filesystem"}, &config.RuntimeConfig{
 		Config: config.Config{WorkingDir: dir},

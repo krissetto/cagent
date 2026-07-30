@@ -3,6 +3,7 @@ package editor
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -38,7 +39,8 @@ var supportedFileExtensions = []string{
 // ParsePastedFiles attempts to parse pasted content as file paths.
 // It handles different terminal formats:
 // - Unix: space-separated with backslash escaping
-// - Windows Terminal: quote-wrapped paths
+// - Windows: quoted and/or whitespace-separated paths, backslashes literal
+// - Windows Terminal (incl. WSL): quote-wrapped paths
 // - Single file: just the path
 //
 // Returns nil if the content doesn't look like file paths.
@@ -56,7 +58,16 @@ func ParsePastedFiles(s string) []string {
 		return strings.Split(s, "\n")
 	}
 
-	// Detect Windows Terminal format (quote-wrapped)
+	// Backslashes are path separators on Windows, so the Unix parser's
+	// escape handling would destroy C:\-style paths. Not every Windows
+	// terminal quote-wraps dropped paths the way Windows Terminal does,
+	// so the native parser accepts quoted and bare paths alike.
+	if runtime.GOOS == "windows" {
+		return windowsParsePastedFiles(s)
+	}
+
+	// Detect Windows Terminal format (quote-wrapped), e.g. WSL sessions
+	// where Windows Terminal pastes quoted Windows paths.
 	if os.Getenv("WT_SESSION") != "" {
 		return windowsTerminalParsePastedFiles(s)
 	}
@@ -84,6 +95,54 @@ func attemptStatAll(s string) bool {
 		}
 	}
 	return true
+}
+
+// windowsParsePastedFiles parses paths pasted by any Windows terminal.
+// Backslashes are path separators, never escape characters. Paths may be
+// quote-wrapped (Windows Terminal style, required for paths containing
+// spaces) or bare, separated by whitespace:
+//
+//	"C:\path\my file.png" C:\path\other.jpg
+func windowsParsePastedFiles(s string) []string {
+	var (
+		paths    []string
+		current  strings.Builder
+		inQuotes = false
+	)
+
+	flush := func() {
+		if current.Len() > 0 {
+			paths = append(paths, current.String())
+			current.Reset()
+		}
+	}
+
+	// Double quotes delimit paths; they cannot occur in Windows file names.
+	for i := range len(s) {
+		ch := s[i]
+
+		switch {
+		case ch == '"':
+			if inQuotes {
+				flush()
+			}
+			inQuotes = !inQuotes
+		case inQuotes:
+			current.WriteByte(ch)
+		case ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r':
+			flush()
+		default:
+			current.WriteByte(ch)
+		}
+	}
+
+	// An unclosed quote means malformed input, not a file list.
+	if inQuotes {
+		return nil
+	}
+	flush()
+
+	return paths
 }
 
 // windowsTerminalParsePastedFiles parses Windows Terminal format.
