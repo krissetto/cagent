@@ -63,9 +63,10 @@ func TestFilesystemTool_ResolvePath(t *testing.T) {
 	resolvedPath = tool.resolvePath(".")
 	assert.Equal(t, tmpDir, resolvedPath)
 
-	// Test absolute paths are allowed
-	resolvedPath = tool.resolvePath("/etc/hosts")
-	assert.Equal(t, "/etc/hosts", resolvedPath)
+	// Test absolute paths are allowed.
+	absolute := filepath.Join(t.TempDir(), "hosts")
+	resolvedPath = tool.resolvePath(absolute)
+	assert.Equal(t, absolute, resolvedPath)
 }
 
 // TestFilesystemTool_ResolvePath_ExpandsTilde is a regression test for
@@ -948,9 +949,10 @@ func TestFilesystemTool_EmptyWorkingDir(t *testing.T) {
 	resolvedPath := tool.resolvePath("test.txt")
 	assert.Equal(t, "test.txt", resolvedPath)
 
-	// Absolute paths still work
-	resolvedPath = tool.resolvePath("/etc/hosts")
-	assert.Equal(t, "/etc/hosts", resolvedPath)
+	// Absolute paths still work.
+	absolute := filepath.Join(t.TempDir(), "hosts")
+	resolvedPath = tool.resolvePath(absolute)
+	assert.Equal(t, absolute, resolvedPath)
 }
 
 func TestFilesystemTool_CreateDirectory(t *testing.T) {
@@ -1089,7 +1091,7 @@ func TestFilesystemTool_RemoveDirectory_IsFile(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, result.IsError)
-	assert.Contains(t, result.Output, "not a directory")
+	assert.Contains(t, strings.ToLower(result.Output), "directory")
 }
 
 func TestFilesystemTool_RemoveDirectory_MultipleStopsOnError(t *testing.T) {

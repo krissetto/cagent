@@ -178,7 +178,7 @@ func TestMatchFile(t *testing.T) {
 			name, ok := matchFile(tt.entry, tt.fileMap)
 			assert.Equal(t, tt.wantOK, ok)
 			if ok {
-				assert.Equal(t, executableName(tt.wantName), name)
+				assert.Equal(t, tt.wantName, name)
 			}
 		})
 	}

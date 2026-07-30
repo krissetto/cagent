@@ -94,7 +94,7 @@ func TestExpandPath(t *testing.T) {
 		{
 			name:     "undefined js env ref expands to empty",
 			input:    "/base/${env.MY_TEST_UNDEFINED}/memory.db",
-			expected: "/base//memory.db",
+			expected: filepath.Clean("/base/memory.db"),
 		},
 	}
 

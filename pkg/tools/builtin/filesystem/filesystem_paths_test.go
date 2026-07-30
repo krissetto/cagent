@@ -31,12 +31,13 @@ func newTestToolSet(t *testing.T, workingDir string, opts ...Opt) *ToolSet {
 func TestFilesystemTool_DefaultIsUnrestricted(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
 	tool := New(tmpDir)
 
 	// No allow_list, no deny_list: everything resolvable goes through.
-	resolved, err := tool.resolveAndCheckPath("/etc/hosts")
+	resolved, err := tool.resolveAndCheckPath(outside)
 	require.NoError(t, err)
-	assert.Equal(t, "/etc/hosts", resolved)
+	assert.Equal(t, outside, resolved)
 
 	resolved, err = tool.resolveAndCheckPath("../../some/escape")
 	require.NoError(t, err)
@@ -58,7 +59,8 @@ func TestFilesystemTool_AllowList_DotMeansWorkingDir(t *testing.T) {
 	require.NoError(t, err)
 
 	// Outside working dir is rejected.
-	_, err = tool.resolveAndCheckPath("/etc/hosts")
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	_, err = tool.resolveAndCheckPath(outside)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outside the allowed directories")
 
@@ -119,7 +121,8 @@ func TestFilesystemTool_AllowList_MultipleRoots(t *testing.T) {
 	_, err = tool.resolveAndCheckPath(filepath.Join(otherDir, "file.txt"))
 	require.NoError(t, err)
 
-	_, err = tool.resolveAndCheckPath("/etc/hosts")
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	_, err = tool.resolveAndCheckPath(outside)
 	require.Error(t, err)
 }
 
@@ -366,7 +369,10 @@ func TestExpandPathToken(t *testing.T) {
 	homeDir := t.TempDir()
 	resetHomeDir(t, homeDir)
 	wd := t.TempDir()
-	t.Setenv("MY_VAR", "/var/data")
+	absoluteDir := filepath.Join(t.TempDir(), "srv", "data")
+	envDir := filepath.Join(t.TempDir(), "var", "data")
+	t.Setenv("MY_VAR", envDir)
+	t.Setenv("MY_SUBDIR", filepath.Join("var", "data"))
 	t.Setenv("EMPTY_VAR", "")
 	os.Unsetenv("DEFINITELY_NOT_SET")
 
@@ -379,13 +385,13 @@ func TestExpandPathToken(t *testing.T) {
 		{name: "dot", token: ".", want: wd},
 		{name: "tilde", token: "~", want: homeDir},
 		{name: "tilde-subdir", token: "~/projects", want: filepath.Join(homeDir, "projects")},
-		{name: "absolute", token: "/srv/data", want: "/srv/data"},
+		{name: "absolute", token: absoluteDir, want: absoluteDir},
 		{name: "relative", token: "src", want: filepath.Join(wd, "src")},
-		{name: "env-var", token: "$MY_VAR", want: "/var/data"},
-		{name: "env-var-braces", token: "${MY_VAR}", want: "/var/data"},
-		{name: "env-var-js-alias", token: "${env.MY_VAR}", want: "/var/data"},
-		{name: "env-var-js-alias-inside-tilde", token: "~/${env.MY_VAR}", want: filepath.Join(homeDir, "var", "data")},
-		{name: "env-var-inside-tilde", token: "~/${MY_VAR}", want: filepath.Join(homeDir, "var", "data")},
+		{name: "env-var", token: "$MY_VAR", want: envDir},
+		{name: "env-var-braces", token: "${MY_VAR}", want: envDir},
+		{name: "env-var-js-alias", token: "${env.MY_VAR}", want: envDir},
+		{name: "env-var-js-alias-inside-tilde", token: "~/${env.MY_SUBDIR}", want: filepath.Join(homeDir, "var", "data")},
+		{name: "env-var-inside-tilde", token: "~/${MY_SUBDIR}", want: filepath.Join(homeDir, "var", "data")},
 		{name: "empty", token: "", wantErr: "empty"},
 		{name: "whitespace", token: "   ", wantErr: "empty"},
 		// Regression: an undefined env var must NOT silently expand to the

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -449,8 +450,10 @@ func TestBuild_PreservesExecutableBit(t *testing.T) {
 	staged := filepath.Join(res.HostDir, skills.KitSkillsSubdir, "with-script", "run.sh")
 	info, err := os.Stat(staged)
 	require.NoError(t, err)
-	assert.NotZero(t, info.Mode().Perm()&0o100,
-		"staged script %s must keep its executable bit (got %v)", staged, info.Mode())
+	if runtime.GOOS != "windows" {
+		assert.NotZero(t, info.Mode().Perm()&0o100,
+			"staged script %s must keep its executable bit (got %v)", staged, info.Mode())
+	}
 }
 
 func TestBuild_OnDiskManifestOmitsHostPaths(t *testing.T) {
@@ -625,9 +628,9 @@ models:
 	// Header + skills section.
 	assert.Contains(t, out, "Preparing docker-agent kit at "+res.HostDir)
 	assert.Contains(t, out, "skills:")
-	assert.Contains(t, out, "plain (from ~/.agents/skills/plain)",
+	assert.Contains(t, out, "plain (from "+filepath.Join("~", ".agents", "skills", "plain")+")",
 		"$HOME prefix should collapse to ~ in printed paths")
-	assert.Contains(t, out, "with-secret (from ~/.agents/skills/with-secret)")
+	assert.Contains(t, out, "with-secret (from "+filepath.Join("~", ".agents", "skills", "with-secret")+")")
 
 	// Every staged file appears, and only the redacted one carries the marker.
 	assert.Contains(t, out, "SKILL.md (redacted)", "redacted skill file must be tagged")
@@ -637,7 +640,7 @@ models:
 
 	// Prompt files section.
 	assert.Contains(t, out, "prompt files:")
-	assert.Contains(t, out, "AGENTS.md (from ~/AGENTS.md, redacted)")
+	assert.Contains(t, out, "AGENTS.md (from "+filepath.Join("~", "AGENTS.md")+", redacted)")
 
 	// Summary line.
 	assert.Contains(t, out, "summary: 2 skills, 1 prompt file, 2 secrets redacted")

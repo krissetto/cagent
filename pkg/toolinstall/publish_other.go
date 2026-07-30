@@ -11,7 +11,7 @@ import (
 
 func publishBinary(name, target string) error {
 	binDir := BinDir()
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
+	if err := os.MkdirAll(binDir, 0o755); err != nil { //nolint:gosec // executable search path must be traversable
 		return fmt.Errorf("creating bin directory: %w", err)
 	}
 

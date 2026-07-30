@@ -3,6 +3,7 @@ package path
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -66,12 +67,15 @@ func ExpandPath(p string) string {
 
 	// Expand environment variables
 	p = os.ExpandEnv(p)
-
-	if expanded, err := ExpandHomeDir(p); err == nil {
-		return expanded
+	if p == "" {
+		return ""
 	}
 
-	return p
+	if expanded, err := ExpandHomeDir(p); err == nil {
+		p = expanded
+	}
+
+	return filepath.Clean(p)
 }
 
 // ExpandWorkingDir expands a working-directory field like ExpandPath, and

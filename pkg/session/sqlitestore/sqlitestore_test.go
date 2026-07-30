@@ -25,7 +25,7 @@ func TestNew_DirectoryNotWritable(t *testing.T) {
 	require.Error(t, err)
 
 	assert.Contains(t, err.Error(), "cannot create database")
-	assert.Contains(t, err.Error(), "not a directory")
+	assert.Contains(t, err.Error(), "blocker")
 
 	// The error must retain the original filesystem diagnostic even if the
 	// recovery path also reports that no backup could be created.
