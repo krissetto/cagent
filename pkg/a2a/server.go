@@ -66,6 +66,11 @@ func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runCon
 	if err != nil {
 		return fmt.Errorf("failed to open session store: %w", err)
 	}
+	defer func() {
+		if err := sessStore.Close(); err != nil {
+			slog.ErrorContext(ctx, "Failed to close session store", "error", err)
+		}
+	}()
 
 	adkAgent, err := newDockerAgentAdapter(t, agentName, sessStore)
 	if err != nil {
@@ -137,6 +142,13 @@ func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runCon
 	)
 	e.GET(a2asrv.WellKnownAgentCardPath, echo.WrapHandler(cardHandler))
 	e.POST(agentPath, echo.WrapHandler(jsonrpcHandler))
+
+	// Stop serving when ctx is canceled so Run returns and the deferred
+	// cleanups (session store, tool sets) release their resources.
+	stop := context.AfterFunc(ctx, func() {
+		_ = e.Server.Close()
+	})
+	defer stop()
 
 	if err := e.Server.Serve(ln); err != nil && ctx.Err() == nil {
 		slog.ErrorContext(ctx, "Failed to start server", "error", err)
