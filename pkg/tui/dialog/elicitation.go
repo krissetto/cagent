@@ -167,8 +167,8 @@ func NewElicitationDialog(message string, schema any, meta map[string]any, elici
 		},
 		// Up/Down stay reserved for selection inside enum/boolean fields;
 		// the scrollview consumes mouse wheel/scrollbar plus PgUp/PgDn/Home/End.
-		scrollview: scrollview.New(scrollview.WithReserveScrollbarSpace(true)),
 	}
+	d.scrollview = d.newScrollview(scrollview.WithReserveScrollbarSpace(true))
 
 	// If no schema fields, add a free-form text input for the response
 	if len(fields) == 0 {
@@ -196,7 +196,7 @@ func (d *ElicitationDialog) Init() tea.Cmd {
 func (d *ElicitationDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// Let the scrollview consume mouse wheel/scrollbar drag and the
 	// PgUp/PgDn/Home/End keys before falling through to dialog handling.
-	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
+	if handled, cmd := d.scrollview.Update(msg); handled {
 		return d, cmd
 	}
 

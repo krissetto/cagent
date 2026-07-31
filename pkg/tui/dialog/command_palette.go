@@ -21,7 +21,7 @@ import (
 // It uses pickerCore for the shared filter/scroll/select skeleton and only
 // adds the bits that are specific to running commands.
 type commandPaletteDialog struct {
-	pickerCore
+	*pickerCore
 
 	categories []commands.Category
 	filtered   []commands.Item
@@ -69,7 +69,7 @@ func (d *commandPaletteDialog) Init() tea.Cmd { return textinput.Blink }
 
 func (d *commandPaletteDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// Scrollview handles mouse scrollbar, wheel, and pgup/pgdn/home/end
-	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
+	if handled, cmd := d.scrollview.Update(msg); handled {
 		return d, cmd
 	}
 

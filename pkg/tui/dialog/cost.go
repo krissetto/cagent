@@ -58,23 +58,24 @@ type costDialogKeyMap struct {
 }
 
 func NewCostDialog(sess *session.Session) Dialog {
-	return &costDialog{
+	d := &costDialog{
 		session: sess,
-		scrollview: scrollview.New(
-			scrollview.WithKeyMap(scrollview.ReadOnlyScrollKeyMap()),
-			scrollview.WithReserveScrollbarSpace(true),
-		),
 		keyMap: costDialogKeyMap{
 			Close: key.NewBinding(key.WithKeys("esc", "enter", "q"), key.WithHelp("Esc", "close")),
 			Copy:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy")),
 		},
 	}
+	d.scrollview = d.newScrollview(
+		scrollview.WithKeyMap(scrollview.ReadOnlyScrollKeyMap()),
+		scrollview.WithReserveScrollbarSpace(true),
+	)
+	return d
 }
 
 func (d *costDialog) Init() tea.Cmd { return nil }
 
 func (d *costDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
-	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
+	if handled, cmd := d.scrollview.Update(msg); handled {
 		return d, cmd
 	}
 	switch msg := msg.(type) {

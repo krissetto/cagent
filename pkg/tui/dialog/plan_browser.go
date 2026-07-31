@@ -159,11 +159,11 @@ func NewPlanBrowserDialog(result plans.ListResult) Dialog {
 
 	d := &planBrowserDialog{
 		filterInput:    ti,
-		scrollview:     scrollview.New(scrollview.WithReserveScrollbarSpace(true)),
 		keyMap:         defaultPlanBrowserKeyMap(),
 		now:            time.Now,
 		lastClickIndex: -1,
 	}
+	d.scrollview = d.newScrollview(scrollview.WithReserveScrollbarSpace(true))
 	d.setData(result)
 	return d
 }

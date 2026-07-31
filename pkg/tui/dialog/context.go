@@ -60,10 +60,6 @@ func NewContextDialog(breakdown *runtime.ContextBreakdown, liveSessions ...runti
 		breakdown:    breakdown,
 		liveSessions: liveSessions,
 		selected:     -1,
-		scrollview: scrollview.New(
-			scrollview.WithKeyMap(scrollview.ReadOnlyScrollKeyMap()),
-			scrollview.WithReserveScrollbarSpace(true),
-		),
 		keyMap: contextDialogKeyMap{
 			Close:   key.NewBinding(key.WithKeys("esc", "q"), key.WithHelp("Esc", "close")),
 			Copy:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy")),
@@ -73,6 +69,10 @@ func NewContextDialog(breakdown *runtime.ContextBreakdown, liveSessions ...runti
 			Compact: key.NewBinding(key.WithKeys("enter"), key.WithHelp("Enter", "compact")),
 		},
 	}
+	d.scrollview = d.newScrollview(
+		scrollview.WithKeyMap(scrollview.ReadOnlyScrollKeyMap()),
+		scrollview.WithReserveScrollbarSpace(true),
+	)
 	if d.selectableCount() > 0 {
 		d.selected = 0
 	}
@@ -111,7 +111,7 @@ func (d *contextDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 			return d, cmd
 		}
 	}
-	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
+	if handled, cmd := d.scrollview.Update(msg); handled {
 		return d, cmd
 	}
 	if msg, ok := msg.(tea.WindowSizeMsg); ok {

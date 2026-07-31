@@ -195,10 +195,10 @@ func NewWorkingDirPickerDialog(ctx context.Context, recentDirs, favoriteDirs []s
 		favoriteSet:  favSet,
 		tuiStore:     store,
 		keyMap:       defaultPickerKeyMap(),
-		pinnedScroll: scrollview.New(scrollview.WithReserveScrollbarSpace(true)),
-		recentScroll: scrollview.New(scrollview.WithReserveScrollbarSpace(true)),
-		browseScroll: scrollview.New(scrollview.WithReserveScrollbarSpace(true)),
 	}
+	d.pinnedScroll = d.newScrollview(scrollview.WithReserveScrollbarSpace(true))
+	d.recentScroll = d.newScrollview(scrollview.WithReserveScrollbarSpace(true))
+	d.browseScroll = d.newScrollview(scrollview.WithReserveScrollbarSpace(true))
 
 	d.rebuildPinnedEntries()
 	d.rebuildRecentEntries()
@@ -305,7 +305,7 @@ func (d *workingDirPickerDialog) Init() tea.Cmd {
 
 func (d *workingDirPickerDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	activeScroll := d.activeScrollview()
-	if handled, cmd := d.UpdateScrollview(activeScroll, msg); handled {
+	if handled, cmd := activeScroll.Update(msg); handled {
 		return d, cmd
 	}
 

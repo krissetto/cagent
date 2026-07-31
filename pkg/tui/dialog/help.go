@@ -14,7 +14,7 @@ import (
 
 // helpDialog displays all currently active key bindings in a scrollable dialog.
 type helpDialog struct {
-	readOnlyScrollDialog
+	*readOnlyScrollDialog
 
 	bindings []key.Binding
 }
@@ -142,7 +142,7 @@ func (d *helpDialog) Init() tea.Cmd {
 func (d *helpDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	model, cmd := d.readOnlyScrollDialog.Update(msg)
 	if rod, ok := model.(*readOnlyScrollDialog); ok {
-		d.readOnlyScrollDialog = *rod
+		d.readOnlyScrollDialog = rod
 	}
 	return d, cmd
 }

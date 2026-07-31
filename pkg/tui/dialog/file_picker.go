@@ -74,7 +74,7 @@ func defaultFilePickerKeyMap() filePickerKeyMap {
 }
 
 type filePickerDialog struct {
-	pickerCore
+	*pickerCore
 
 	fpKeyMap    filePickerKeyMap
 	currentDir  string
@@ -211,7 +211,7 @@ func (d *filePickerDialog) Init() tea.Cmd { return textinput.Blink }
 
 func (d *filePickerDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// Scrollview handles mouse click/motion/release, wheel, and pgup/pgdn/home/end.
-	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
+	if handled, cmd := d.scrollview.Update(msg); handled {
 		return d, cmd
 	}
 

@@ -14,7 +14,7 @@ import (
 )
 
 type skillsDialog struct {
-	readOnlyScrollDialog
+	*readOnlyScrollDialog
 
 	skills []skills.Skill
 }

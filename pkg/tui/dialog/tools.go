@@ -18,7 +18,7 @@ import (
 // by the Tools section grouping individual tools by their reported
 // Category.
 type toolsDialog struct {
-	readOnlyScrollDialog
+	*readOnlyScrollDialog
 
 	toolsets []tools.ToolsetStatus
 	tools    []tools.Tool

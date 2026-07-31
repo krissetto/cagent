@@ -21,7 +21,7 @@ const (
 )
 
 type agentDetailsDialog struct {
-	readOnlyScrollDialog
+	*readOnlyScrollDialog
 
 	agent runtime.AgentDetails
 	cfg   runtime.AgentConfigInfo

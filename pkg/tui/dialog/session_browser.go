@@ -194,7 +194,6 @@ func NewSessionBrowserDialog(sessions []session.Summary, workspaceDir string) Di
 	d := &sessionBrowserDialog{
 		textInput:    ti,
 		sessions:     nonEmptySessions,
-		scrollview:   scrollview.New(scrollview.WithReserveScrollbarSpace(true)),
 		workspace:    newWorkspaceMatcher(workspaceDir),
 		workspaceDir: workspaceDisplayDir(workspaceDir),
 		keyMap: sessionBrowserKeyMap{
@@ -210,6 +209,7 @@ func NewSessionBrowserDialog(sessions []session.Summary, workspaceDir string) Di
 		},
 		openedAt: time.Now(),
 	}
+	d.scrollview = d.newScrollview(scrollview.WithReserveScrollbarSpace(true))
 	// Initialize filtered list
 	d.filterSessions()
 	return d
@@ -221,7 +221,7 @@ func (d *sessionBrowserDialog) Init() tea.Cmd {
 
 func (d *sessionBrowserDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// Scrollview handles mouse click/motion/release, wheel, and pgup/pgdn/home/end
-	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
+	if handled, cmd := d.scrollview.Update(msg); handled {
 		return d, cmd
 	}
 

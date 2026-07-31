@@ -48,17 +48,18 @@ const fixedLines = 5
 func newReadOnlyScrollDialog(
 	size readOnlyScrollDialogSize,
 	render contentRenderer,
-) readOnlyScrollDialog {
-	return readOnlyScrollDialog{
-		scrollview: scrollview.New(
-			scrollview.WithKeyMap(scrollview.ReadOnlyScrollKeyMap()),
-			scrollview.WithReserveScrollbarSpace(true),
-		),
+) *readOnlyScrollDialog {
+	d := &readOnlyScrollDialog{
 		closeKey: key.NewBinding(key.WithKeys("esc", "enter", "q"), key.WithHelp("Esc", "close")),
 		size:     size,
 		render:   render,
 		helpKeys: []string{"↑↓", "scroll", "Esc", "close"},
 	}
+	d.scrollview = d.newScrollview(
+		scrollview.WithKeyMap(scrollview.ReadOnlyScrollKeyMap()),
+		scrollview.WithReserveScrollbarSpace(true),
+	)
+	return d
 }
 
 func (d *readOnlyScrollDialog) Init() tea.Cmd {
@@ -66,7 +67,7 @@ func (d *readOnlyScrollDialog) Init() tea.Cmd {
 }
 
 func (d *readOnlyScrollDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
-	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
+	if handled, cmd := d.scrollview.Update(msg); handled {
 		return d, cmd
 	}
 

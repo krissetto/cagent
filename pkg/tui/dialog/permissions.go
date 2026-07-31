@@ -9,7 +9,7 @@ import (
 
 // permissionsDialog displays the configured tool permissions (allow/deny patterns).
 type permissionsDialog struct {
-	readOnlyScrollDialog
+	*readOnlyScrollDialog
 
 	permissions *runtime.PermissionsInfo
 	yoloEnabled bool

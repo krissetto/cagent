@@ -104,9 +104,9 @@ type pickerCore struct {
 	lastClickIndex int
 }
 
-// newPickerCore returns a pickerCore initialised with a focused, blank text
+// newPickerCore returns a pickerCore pointer initialised with a focused, blank text
 // input, a scroll-bar-reserving scrollview, and the default key map.
-func newPickerCore(layout pickerLayout, placeholder string) pickerCore {
+func newPickerCore(layout pickerLayout, placeholder string) *pickerCore {
 	ti := textinput.New()
 	ti.SetStyles(styles.DialogInputStyle)
 	ti.Placeholder = placeholder
@@ -114,13 +114,14 @@ func newPickerCore(layout pickerLayout, placeholder string) pickerCore {
 	ti.CharLimit = 256
 	ti.SetWidth(50)
 
-	return pickerCore{
+	p := &pickerCore{
 		textInput:      ti,
-		scrollview:     scrollview.New(scrollview.WithReserveScrollbarSpace(true)),
 		keyMap:         defaultPickerKeyMap(),
 		layout:         layout,
 		lastClickIndex: -1,
 	}
+	p.scrollview = p.newScrollview(scrollview.WithReserveScrollbarSpace(true))
+	return p
 }
 
 // -----------------------------------------------------------------------------

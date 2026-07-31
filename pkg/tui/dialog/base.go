@@ -40,26 +40,44 @@ func DefaultConfirmKeyMap() ConfirmKeyMap {
 type BaseDialog struct {
 	width, height    int
 	visualGeneration uint64
+	scrollviews      []scrollviewRegistration
+}
+
+type scrollviewRegistration struct {
+	model      *scrollview.Model
+	generation uint64
+}
+
+// newScrollview constructs a scrollview owned by this dialog and includes its
+// visual generation in the dialog's generation.
+func (b *BaseDialog) newScrollview(opts ...scrollview.Option) *scrollview.Model {
+	view := scrollview.New(opts...)
+	b.scrollviews = append(b.scrollviews, scrollviewRegistration{
+		model:      view,
+		generation: view.VisualGeneration(),
+	})
+	return view
 }
 
 // VisualGeneration changes whenever a dialog's rendered output or position changes.
 func (b *BaseDialog) VisualGeneration() uint64 {
+	changed := false
+	for i := range b.scrollviews {
+		generation := b.scrollviews[i].model.VisualGeneration()
+		if generation != b.scrollviews[i].generation {
+			b.scrollviews[i].generation = generation
+			changed = true
+		}
+	}
+	if changed {
+		b.visualGeneration++
+	}
 	return b.visualGeneration
 }
 
 // InvalidateView records a visible dialog mutation.
 func (b *BaseDialog) InvalidateView() {
 	b.visualGeneration++
-}
-
-// UpdateScrollview forwards input and aggregates effective scrollview visual changes.
-func (b *BaseDialog) UpdateScrollview(view *scrollview.Model, msg tea.Msg) (bool, tea.Cmd) {
-	before := view.VisualGeneration()
-	handled, cmd := view.Update(msg)
-	if view.Changed(before) {
-		b.InvalidateView()
-	}
-	return handled, cmd
 }
 
 // visualModel is a dialog child whose generation reports visible mutations.
