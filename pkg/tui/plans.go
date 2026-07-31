@@ -615,10 +615,11 @@ func (m *appModel) handleEditPlan(msg messages.EditPlanMsg) (tea.Model, tea.Cmd)
 		ready.currentVersion = planVersionOf(p)
 		if ready.currentVersion != msg.ExpectedVersion {
 			// No draft for a drifted base; handlePlanEditReady refreshes
-			// instead of editing.
+			// instead of editing. Session plans never take this branch: they
+			// have no versions, so both sides are always 0.
 			return ready
 		}
-		ready.draftPath, ready.draftErr = planDraftFile("cagent-plan-"+msg.Ref.Name+"-*.md", p.Content)
+		ready.draftPath, ready.draftErr = planDraftFile(planDraftPattern(msg.Ref), p.Content)
 		return ready
 	}
 }
@@ -681,6 +682,17 @@ type planEditorClosedMsg struct {
 	err             error
 }
 
+// planDraftPattern names the temp draft of an editor-driven edit after the
+// plan's identity: the shared plan name, or a short session marker mirroring
+// planExportFilename. Both are service-validated identifiers by the time a
+// draft is created, so the pattern is filename-safe.
+func planDraftPattern(ref plans.Ref) string {
+	if ref.Scope == plans.ScopeSession {
+		return "cagent-plan-session-" + planShortSessionID(ref.SessionID) + "-*.md"
+	}
+	return "cagent-plan-" + ref.Name + "-*.md"
+}
+
 // planDraftFile writes content to a fresh temp markdown file and returns its
 // path.
 func planDraftFile(pattern, content string) (string, error) {
@@ -719,8 +731,8 @@ func (m *appModel) handlePlanEditorClosed(msg planEditorClosedMsg) (tea.Model, t
 			notification.InfoCmd("Your draft is kept at "+msg.path))
 	}
 
-	// Both the draft read and the guarded write run in a command: reading in
-	// Update would stall the event loop on a draft path swapped for a FIFO
+	// Both the draft read and the persistence call run in a command: reading
+	// in Update would stall the event loop on a draft path swapped for a FIFO
 	// or device and allocate unbounded memory for a runaway file, and a
 	// contended plans lock could freeze it just the same. The draft file
 	// outlives the command until the service confirms the write.
@@ -740,9 +752,14 @@ func (m *appModel) handlePlanEditorClosed(msg planEditorClosedMsg) (tea.Model, t
 		}
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		if msg.create {
+		switch {
+		case msg.create:
 			result.plan, result.err = svc.Create(ctx, plans.CreateRequest{Ref: msg.ref, Content: content})
-		} else {
+		case msg.ref.Scope == plans.ScopeSession:
+			// Session plans have no versions: the replace is deliberately
+			// unguarded, last-write-wins.
+			result.plan, result.err = svc.UpdateSession(ctx, msg.ref.SessionID, content)
+		default:
 			expected := msg.expectedVersion
 			result.plan, result.err = svc.Update(ctx, plans.UpdateRequest{Ref: msg.ref, Content: content, ExpectedVersion: &expected})
 		}
@@ -794,21 +811,31 @@ func (m *appModel) handlePlanWriteResult(msg planWriteResultMsg) (tea.Model, tea
 			notification.ErrorCmd(fmt.Sprintf("Failed to read edited plan: %v", msg.readErr)),
 			notification.InfoCmd("Your draft is kept at "+msg.draftPath))
 	case msg.emptyDraft:
-		if msg.create {
+		switch {
+		case msg.create:
 			return m, notification.InfoCmd(fmt.Sprintf("Plan %q not created: the draft was empty.", msg.ref.Name))
+		case msg.ref.Scope == plans.ScopeSession:
+			return m, notification.InfoCmd("Session plan left unchanged: an empty draft is never committed.")
+		default:
+			return m, notification.InfoCmd(fmt.Sprintf("Plan %q left unchanged: an empty draft is never committed.", msg.ref.Name))
 		}
-		return m, notification.InfoCmd(fmt.Sprintf("Plan %q left unchanged: an empty draft is never committed.", msg.ref.Name))
 	case msg.err != nil:
 		cmd := m.planEditorFailureCmd(msg.err, msg.draftPath)
 		return m, cmd
 	}
 	_ = os.Remove(msg.draftPath)
 
-	verb := "Updated"
-	if msg.create {
-		verb = "Created"
+	var text string
+	switch {
+	case msg.create:
+		text = fmt.Sprintf("Created shared plan %q (now v%d)", msg.plan.Name, planVersionOf(msg.plan))
+	case msg.ref.Scope == plans.ScopeSession:
+		// Session plans have no version to report.
+		text = "Updated the current session plan."
+	default:
+		text = fmt.Sprintf("Updated shared plan %q (now v%d)", msg.plan.Name, planVersionOf(msg.plan))
 	}
-	cmds := []tea.Cmd{notification.SuccessCmd(fmt.Sprintf("%s shared plan %q (now v%d)", verb, msg.plan.Name, planVersionOf(msg.plan)))}
+	cmds := []tea.Cmd{notification.SuccessCmd(text)}
 	cmds = m.appendPlanRefreshCmd(cmds)
 	return m, tea.Sequence(cmds...)
 }
