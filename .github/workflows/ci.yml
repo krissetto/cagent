@@ -74,8 +74,8 @@ jobs:
           task test-binary
 
   # Native Windows tests. Plan storage relies on OS-specific file locking and
-  # path semantics, so its tests run first as a dedicated gate; the remaining
-  # suite runs afterwards and is blocking as well.
+  # path semantics, so the full Go test suite runs natively on Windows in a
+  # single blocking `task test` step, mirroring the Linux job.
   windows-tests:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -89,35 +89,16 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Install Task
+        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        with:
+          version: 3.51.1
+
       - name: Go environment
         run: go env GOOS GOARCH CGO_ENABLED CC
 
-      - name: Run plan tests
-        run: go test -count=1 ./pkg/tools/builtin/plan/ ./pkg/plans/
-
-      # Run everything except the plan packages covered above. Splatting the
-      # package list avoids command-line length limits and quoting ambiguity.
-      - name: Run remaining tests
-        env:
-          # Mirror .env.test: blank out provider credentials on the runner.
-          DOCKER_AGENT_MODELS_GATEWAY: ""
-          OPENAI_API_KEY: ""
-          ANTHROPIC_API_KEY: ""
-          GOOGLE_API_KEY: ""
-          GOOGLE_GENAI_USE_VERTEXAI: ""
-          MISTRAL_API_KEY: ""
-          OPENROUTER_API_KEY: ""
-        shell: pwsh
-        run: |
-          $exclude = @(
-            'github.com/docker/docker-agent/pkg/tools/builtin/plan'
-            'github.com/docker/docker-agent/pkg/plans'
-          )
-          $listed = @(go list ./...)
-          if ($LASTEXITCODE -ne 0) { throw "go list failed with exit code $LASTEXITCODE" }
-          $packages = @($listed | Where-Object { $_ -notin $exclude -and -not [string]::IsNullOrWhiteSpace($_) })
-          if ($packages.Count -eq 0) { throw 'go list returned no packages to test' }
-          go test -count=1 @packages
+      - name: Run tests
+        run: task test
 
   license-check:
     runs-on: ubuntu-latest
