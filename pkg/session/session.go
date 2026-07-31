@@ -1824,7 +1824,10 @@ func (s *Session) LastSummary() string {
 // first kept message so that recent context is preserved after compaction.
 // Otherwise it is lastSummaryIndex+1 (i.e. right after the summary item), or
 // 0 when there is no summary.
-func (s *Session) buildSessionSummaryMessages(items []Item) ([]chat.Message, int) {
+//
+// summary is the raw text of the last summary item in items ("" when there
+// is none), i.e. exactly the text the synthetic message carries.
+func (s *Session) buildSessionSummaryMessages(items []Item) ([]chat.Message, int, string) {
 	var messages []chat.Message
 	// Find the last summary index to determine where conversation messages start
 	// and to include the summary in session summary messages
@@ -1836,10 +1839,12 @@ func (s *Session) buildSessionSummaryMessages(items []Item) ([]chat.Message, int
 		}
 	}
 
+	summary := ""
 	if lastSummaryIndex >= 0 && lastSummaryIndex < len(items) {
+		summary = items[lastSummaryIndex].Summary
 		messages = append(messages, chat.Message{
 			Role:      chat.MessageRoleUser,
-			Content:   SummaryMessageContent(items[lastSummaryIndex].Summary),
+			Content:   SummaryMessageContent(summary),
 			CreatedAt: s.now().Format(time.RFC3339),
 		})
 	}
@@ -1855,7 +1860,7 @@ func (s *Session) buildSessionSummaryMessages(items []Item) ([]chat.Message, int
 		}
 	}
 
-	return messages, startIndex
+	return messages, startIndex, summary
 }
 
 // CompactionInput returns the chat messages that the compactor should
@@ -1983,16 +1988,30 @@ func (s *Session) instructionMessages() ([]chat.Message, []InstructionUpdate) {
 }
 
 func (s *Session) GetMessages(a *agent.Agent, extraSystemMessages ...chat.Message) []chat.Message {
-	return s.getMessages(a, true, extraSystemMessages...)
+	messages, _ := s.getMessages(a, true, extraSystemMessages...)
+	return messages
 }
 
 // GetMessagesWithoutInstructionContext assembles the legacy prompt where
 // dynamic context is supplied directly as extra system messages.
 func (s *Session) GetMessagesWithoutInstructionContext(a *agent.Agent, extraSystemMessages ...chat.Message) []chat.Message {
-	return s.getMessages(a, false, extraSystemMessages...)
+	messages, _ := s.getMessages(a, false, extraSystemMessages...)
+	return messages
 }
 
-func (s *Session) getMessages(a *agent.Agent, includeInstructionContext bool, extraSystemMessages ...chat.Message) []chat.Message {
+// GetMessagesAndLastSummary is GetMessages plus the most recent compaction
+// summary that assembly used, both derived from the same snapshot of
+// s.Messages: the returned summary is exactly the text behind the synthetic
+// "Session Summary: ..." user message in the returned prompt ("" when the
+// snapshot holds no summary), even if a compaction lands concurrently.
+// Separate GetMessages and LastSummary calls cannot promise that. The
+// guarantee covers only the session-history snapshot, not the other state
+// read during assembly (instruction context, agent configuration).
+func (s *Session) GetMessagesAndLastSummary(a *agent.Agent, extraSystemMessages ...chat.Message) ([]chat.Message, string) {
+	return s.getMessages(a, true, extraSystemMessages...)
+}
+
+func (s *Session) getMessages(a *agent.Agent, includeInstructionContext bool, extraSystemMessages ...chat.Message) ([]chat.Message, string) {
 	slog.Debug("Getting messages for agent", "agent", a.Name(), "session_id", s.ID)
 
 	// Build invariant system messages (cacheable across sessions/users/projects)
@@ -2009,7 +2028,7 @@ func (s *Session) getMessages(a *agent.Agent, includeInstructionContext bool, ex
 	}
 
 	// Build session summary messages (vary per session)
-	summaryMessages, startIndex := s.buildSessionSummaryMessages(items)
+	summaryMessages, startIndex, summary := s.buildSessionSummaryMessages(items)
 
 	var messages []chat.Message
 	messages = append(messages, invariantMessages...)
@@ -2092,7 +2111,7 @@ func (s *Session) getMessages(a *agent.Agent, includeInstructionContext bool, ex
 		"conversation_messages", conversationCount,
 		"max_history_items", maxItems)
 
-	return messages
+	return messages, summary
 }
 
 // trimMessages ensures we don't exceed the maximum number of messages while maintaining

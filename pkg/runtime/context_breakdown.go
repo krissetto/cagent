@@ -74,6 +74,10 @@ type ContextBreakdown struct {
 	// the current on-disk content and are informational, not an extra
 	// bucket in TotalTokens.
 	AttachedFiles []ContextFile `json:"attached_files,omitempty"`
+	// LatestCompactionSummary is the verbatim text behind the
+	// CompactionSummary category: the most recent compaction summary
+	// stored on the session, or "" when it has never been compacted.
+	LatestCompactionSummary string `json:"latest_compaction_summary,omitempty"`
 
 	// ContextLimit is the resolved context window of the effective model,
 	// or 0 when it cannot be determined (harness-backed agents, models
@@ -112,8 +116,9 @@ func (b *ContextBreakdown) TotalTokens() int64 {
 }
 
 // ContextBreakdown computes the estimated context-window composition for
-// sess, categorizing the output of [session.Session.GetMessages] and adding
-// the tool definitions and prompt files that accompany every model call.
+// sess, categorizing the output of
+// [session.Session.GetMessagesAndLastSummary] and adding the tool
+// definitions and prompt files that accompany every model call.
 //
 // Tool listing failures and unreadable prompt files degrade gracefully: the
 // corresponding category is computed from whatever could be gathered and the
@@ -136,14 +141,15 @@ func (r *LocalRuntime) ContextBreakdown(ctx context.Context, sess *session.Sessi
 		}
 	}
 
-	messages := sess.GetMessages(a)
+	messages, summary := sess.GetMessagesAndLastSummary(a)
 	// Calibrate the heuristic against the provider-reported usage already
 	// recorded on this conversation, mirroring what the proactive
 	// compaction trigger does (see compactIfNeeded).
 	estimator := compaction.NewSliceEstimator(messages)
 
 	summaryContent := ""
-	if summary := sess.LastSummary(); summary != "" {
+	if summary != "" {
+		b.LatestCompactionSummary = summary
 		summaryContent = session.SummaryMessageContent(summary)
 	}
 
