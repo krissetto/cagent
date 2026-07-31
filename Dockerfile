@@ -90,7 +90,7 @@ USER agent
 ENV DOCKER_AGENT_NO_TOUR=1 \
     DOCKER_AGENT_HIDE_TELEMETRY_BANNER=1 \
     COLORTERM=truecolor \
-    LANG=en_US.UTF-8
+    LANG=C.UTF-8
 COPY --from=builder-linux --chmod=0755 /binaries/docker-agent-$TARGETOS-$TARGETARCH /usr/local/bin/docker-agent
 LABEL com.docker.sandboxes.flavor="docker-agent-docker"
 CMD [ "docker-agent" ]

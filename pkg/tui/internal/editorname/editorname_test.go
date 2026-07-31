@@ -1,6 +1,8 @@
 package editorname
 
 import (
+	"os"
+	"os/exec"
 	goruntime "runtime"
 	"testing"
 
@@ -206,6 +208,7 @@ func TestCommandFromEnv(t *testing.T) {
 
 			cmd := CommandFromEnv(tt.visual, tt.editorEnv, "/tmp/draft.md")
 			assert.Equal(t, tt.wantArgs, cmd.Args)
+			assertRealTerminalStdio(t, cmd)
 		})
 	}
 }
@@ -216,4 +219,16 @@ func TestCommandReadsEnvironment(t *testing.T) {
 
 	cmd := Command("/tmp/draft.md")
 	assert.Equal(t, []string{"code", "--wait", "/tmp/draft.md"}, cmd.Args)
+	assertRealTerminalStdio(t, cmd)
+}
+
+// assertRealTerminalStdio checks that the command's stdio is exactly the
+// process's OS files. Nil entries would let tea.ExecProcess substitute the
+// Program's image-writer output, which is not an *os.File — the editor then
+// runs against a pipe (#3873, "Vim: Warning: Output is not to a terminal").
+func assertRealTerminalStdio(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	assert.Same(t, os.Stdin, cmd.Stdin, "Stdin must be os.Stdin")
+	assert.Same(t, os.Stdout, cmd.Stdout, "Stdout must be os.Stdout")
+	assert.Same(t, os.Stderr, cmd.Stderr, "Stderr must be os.Stderr")
 }
