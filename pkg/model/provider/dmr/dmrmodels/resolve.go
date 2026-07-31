@@ -61,9 +61,9 @@ func defaultContainerURL() string {
 	return "http://model-runner.docker.internal" + dmrInferencePrefix + "/v1/"
 }
 
-// defaultHostURL is the default DMR URL when running on the host with no
+// DefaultHostURL is the default DMR URL when running on the host with no
 // explicit endpoint. It targets the standard local model-runner port.
-func defaultHostURL() string {
+func DefaultHostURL() string {
 	return defaultURL("127.0.0.1", dmrDefaultPort)
 }
 
@@ -73,7 +73,7 @@ func defaultForEnvironment() string {
 	if inContainer() {
 		return defaultContainerURL()
 	}
-	return defaultHostURL()
+	return DefaultHostURL()
 }
 
 func inContainer() bool {
@@ -121,7 +121,7 @@ func getDMRFallbackURLs(containerized bool) []string {
 			defaultURL("172.17.0.1", dmrDefaultPort),
 		}
 	}
-	return []string{defaultHostURL()}
+	return []string{DefaultHostURL()}
 }
 
 // ResolveBaseURL determines the correct base URL to talk to Docker Model
@@ -188,7 +188,7 @@ func resolvePrimaryDMRURL(endpoint string) (string, *http.Client) {
 
 	// Legacy bug workaround: old DMR versions <= 0.1.44 could report http://:0/engines/v1/.
 	if ep == "http://:0/engines/v1/" {
-		return defaultHostURL(), nil
+		return DefaultHostURL(), nil
 	}
 
 	if ep == "" {
