@@ -95,6 +95,7 @@ func TestContextBreakdown_CategorizesMessages(t *testing.T) {
 	// No compaction happened.
 	assert.Zero(t, b.CompactionSummary.Items)
 	assert.Zero(t, b.CompactionSummary.Tokens)
+	assert.Empty(t, b.LatestCompactionSummary)
 
 	total := b.SystemPrompt.Tokens + b.ToolDefinitions.Tokens + b.PromptFiles.Tokens +
 		b.Messages.Tokens + b.ToolResults.Tokens + b.CompactionSummary.Tokens
@@ -122,6 +123,31 @@ func TestContextBreakdown_CompactionSummary(t *testing.T) {
 	assert.Equal(t, 1, b.CompactionSummary.Items)
 	assert.Positive(t, b.CompactionSummary.Tokens)
 	assert.Equal(t, 1, b.Messages.Items)
+
+	// The verbatim summary text is exposed for display.
+	assert.Equal(t, "We discussed old things.", b.LatestCompactionSummary)
+}
+
+// TestContextBreakdown_LatestCompactionSummaryWins verifies that after
+// multiple compactions the exposed text is the most recent summary.
+func TestContextBreakdown_LatestCompactionSummaryWins(t *testing.T) {
+	t.Parallel()
+
+	rt := newBreakdownRuntime(t)
+
+	items := []session.Item{
+		session.NewMessageItem(&session.Message{Message: chat.Message{Role: chat.MessageRoleUser, Content: "first question"}}),
+		{Summary: "First summary."},
+		session.NewMessageItem(&session.Message{Message: chat.Message{Role: chat.MessageRoleUser, Content: "second question"}}),
+		{Summary: "Second summary."},
+		session.NewMessageItem(&session.Message{Message: chat.Message{Role: chat.MessageRoleUser, Content: "third question"}}),
+	}
+	sess := session.New(session.WithMessages(items))
+
+	b, err := rt.ContextBreakdown(t.Context(), sess)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Second summary.", b.LatestCompactionSummary)
 }
 
 // TestContextBreakdown_UserMessageLooksLikeSummary pins the exact-match

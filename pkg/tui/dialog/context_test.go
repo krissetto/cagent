@@ -621,3 +621,130 @@ func TestContextDialogViewScalesWithCappedHeader(t *testing.T) {
 	}
 	assert.Equal(t, 5, d.selected)
 }
+
+// ---------------------------------------------------------------------------
+// Latest compaction summary
+// ---------------------------------------------------------------------------
+
+func TestContextDialogViewCompactionSummaryText(t *testing.T) {
+	t.Parallel()
+
+	b := testBreakdown()
+	b.LatestCompactionSummary = "We refactored the parser and fixed the tokenizer bug."
+
+	dialog := NewContextDialog(b)
+	dialog.SetSize(100, 50)
+	view := dialog.View()
+
+	assert.Contains(t, view, "Latest compaction summary")
+	assert.Contains(t, view, "We refactored the parser")
+}
+
+// TestContextDialogCompactionSummaryWrapping pins the wrapping contract of
+// the summary section at a deliberately small width: the text soft-wraps
+// into more lines than its hard newlines alone produce, every line fits the
+// width, hard newlines survive verbatim, and no content is lost. It fails
+// if wrapTextLines stops wrapping (e.g. returns the text as one line).
+func TestContextDialogCompactionSummaryWrapping(t *testing.T) {
+	t.Parallel()
+
+	const width = 24
+	summary := "Goal: ship it.\n\nDecisions:\n" +
+		strings.TrimSpace(strings.Repeat("keep the line math exact ", 4))
+
+	b := testBreakdown()
+	b.LatestCompactionSummary = summary
+	d := &contextDialog{breakdown: b}
+
+	lines := d.appendCompactionSummary(nil, width)
+	require.Greater(t, len(lines), 2, "expected a spacer, the section title and the wrapped body")
+	assert.Empty(t, lines[0])
+	assert.Contains(t, lines[1], contextSummarySection)
+
+	body := lines[2:]
+	require.Greater(t, len(body), strings.Count(summary, "\n")+1,
+		"the long paragraph must soft-wrap into more lines than hard newlines alone produce")
+
+	trimmed := make([]string, len(body))
+	for i, line := range body {
+		assert.LessOrEqual(t, lipgloss.Width(line), width, "body line %d exceeds the wrap width", i)
+		// Wrapped lines are padded to the full width; drop the padding so
+		// the reassembly below only re-adds the spaces the wraps consumed.
+		trimmed[i] = strings.TrimRight(line, " ")
+	}
+
+	// Hard newlines survive: the short first paragraph, the blank separator
+	// and the "Decisions:" heading each keep their own line.
+	assert.Equal(t, []string{"Goal: ship it.", "", "Decisions:"}, trimmed[:3])
+
+	// No content is lost or reordered: undoing only the line breaks (each
+	// soft wrap consumed one space) restores the original text.
+	assert.Equal(t, strings.ReplaceAll(summary, "\n", " "), strings.Join(trimmed, " "))
+}
+
+func TestContextDialogViewNoCompactionSummaryText(t *testing.T) {
+	t.Parallel()
+
+	dialog := NewContextDialog(testBreakdown())
+	dialog.SetSize(100, 50)
+	view := dialog.View()
+
+	assert.NotContains(t, view, "Latest compaction summary")
+}
+
+// TestContextDialogCompactionSummaryKeepsRowLines pins the layout contract
+// behind #3870: the summary renders after the selectable sections, so with
+// identical live sessions and files the rowLines mapping stays exactly the
+// same with and without a long summary, covers every selectable row, and
+// still scrolls off-screen rows into a low viewport.
+func TestContextDialogCompactionSummaryKeepsRowLines(t *testing.T) {
+	t.Parallel()
+
+	render := func(summary string) *contextDialog {
+		b := testBreakdownWithFiles()
+		b.LatestCompactionSummary = summary
+		d := NewContextDialog(b, testLiveSessions()...).(*contextDialog)
+		d.SetSize(100, 16) // low window: the selectable rows start off screen
+		d.View()
+		return d
+	}
+
+	without := render("")
+	with := render(strings.Repeat("a long compaction summary ", 20))
+
+	require.Len(t, with.rowLines, with.selectableCount(),
+		"every selectable row must be mapped to a content line")
+	assert.Equal(t, without.rowLines, with.rowLines,
+		"a summary appended after the selectable sections must not shift their content lines")
+
+	// The mapping drives EnsureLineVisible: walking down to the last attached
+	// file must scroll its (initially off-screen) row into the viewport.
+	require.NotContains(t, with.View(), "deleted.txt", "the last attached row must start off screen")
+	for range 5 {
+		with.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	require.Equal(t, 5, with.selected)
+	assert.Contains(t, with.View(), "deleted.txt",
+		"navigating onto the row must bring it into view through rowLines")
+}
+
+func TestContextDialogPlainTextCompactionSummary(t *testing.T) {
+	t.Parallel()
+
+	b := testBreakdown()
+	b.LatestCompactionSummary = "Line one of the summary.\nLine two, kept verbatim."
+
+	d := &contextDialog{breakdown: b}
+	text := d.renderPlainText()
+
+	assert.Contains(t, text, "Latest compaction summary")
+	assert.Contains(t, text, "Line one of the summary.\nLine two, kept verbatim.")
+	assert.NotContains(t, text, "\x1b[", "plain text must carry no ANSI escapes")
+}
+
+func TestContextDialogPlainTextNoCompactionSummary(t *testing.T) {
+	t.Parallel()
+
+	d := &contextDialog{breakdown: testBreakdown()}
+	assert.NotContains(t, d.renderPlainText(), "Latest compaction summary")
+}

@@ -312,6 +312,10 @@ const contextDropNote = "Dropping a file removes it from the session's attachmen
 // at a safe point, so it never interrupts an in-flight model turn.
 const contextCompactNote = "Press Enter to compact the selected live session; sub-agent compactions run at the session's next safe point."
 
+// contextSummarySection titles the verbatim latest-compaction-summary text
+// in both the styled view and the plain-text copy.
+const contextSummarySection = "Latest compaction summary"
+
 // categoryColors returns the per-category accent colors, aligned with the
 // order of contextRows. Hues are used categorically (Error's rose tint
 // carries no alarm semantics here); each maps to a distinct color in the
@@ -358,6 +362,7 @@ func (d *contextDialog) renderContent(contentWidth, maxHeight int) string {
 	d.rowLines = d.rowLines[:0]
 	lines = d.appendLiveSessions(lines)
 	lines = d.appendInventory(lines, scale, contentWidth)
+	lines = d.appendCompactionSummary(lines, contentWidth)
 
 	lines = append(lines, "")
 	lines = append(lines, wrapMutedLines(contextEstimateNote, contentWidth)...)
@@ -459,6 +464,20 @@ func (d *contextDialog) appendInventory(lines []string, scale int64, contentWidt
 	return lines
 }
 
+// appendCompactionSummary renders the verbatim text of the latest
+// compaction summary, wrapped to the content width. Placed after the
+// selectable sections so the rowLines mapping built by appendLiveSessions/
+// appendInventory stays aligned with the selection indexes. Omitted
+// entirely (no ghost title) when the session has never been compacted.
+func (d *contextDialog) appendCompactionSummary(lines []string, contentWidth int) []string {
+	summary := d.breakdown.LatestCompactionSummary
+	if summary == "" {
+		return lines
+	}
+	lines = append(lines, "", sectionStyle().Render(contextSummarySection))
+	return append(lines, wrapTextLines(summary, contentWidth)...)
+}
+
 // fileLabelWidth returns the display width of the inventory file-name
 // column, sized to the longest base name across both sections and clamped
 // so one long name cannot push the token columns off screen.
@@ -540,6 +559,13 @@ func filePathSuffix(file *runtime.ContextFile, available int) string {
 // individual lines, so the scrollview's line accounting stays exact.
 func wrapMutedLines(text string, width int) []string {
 	return strings.Split(styles.MutedStyle.Width(width).Render(text), "\n")
+}
+
+// wrapTextLines wraps text to width in the default style, preserving hard
+// newlines, and returns the individual lines so the scrollview's line
+// accounting stays exact.
+func wrapTextLines(text string, width int) []string {
+	return strings.Split(lipgloss.NewStyle().Width(width).Render(text), "\n")
 }
 
 // markerColor picks the row's accent color: its category color, or muted
@@ -749,6 +775,10 @@ func (d *contextDialog) renderPlainText() string {
 		for i := range b.PromptFileItems {
 			lines = append(lines, plainFileLine(&b.PromptFileItems[i], scale))
 		}
+	}
+
+	if b.LatestCompactionSummary != "" {
+		lines = append(lines, "", contextSummarySection, b.LatestCompactionSummary)
 	}
 
 	lines = append(lines, "", contextEstimateNote)
