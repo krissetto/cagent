@@ -318,6 +318,55 @@ func TestAllowHosts_SkipsEmptyEntries(t *testing.T) {
 	require.NoError(t, backend.AllowHosts(t.Context(), "sandbox-x", []string{"", "   ", "\t"}))
 }
 
+// BuildExecCmd must inject LANG=C.UTF-8 — the only UTF-8 locale shipped
+// by the sandbox template image; a locale the image lacks (en_US.UTF-8)
+// silently degrades vim to latin1 and mangles non-ASCII input (#3874).
+// It must also hand the wrapper the real host stdio for the interactive
+// TUI session.
+func TestBuildExecCmd(t *testing.T) {
+	fakeDir := t.TempDir()
+	writeMockScript(t, fakeDir, "sbx", "exit 0")
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tests := []struct {
+		name       string
+		backend    *sandbox.Backend
+		wantPrefix []string
+	}{
+		{
+			name:       "docker",
+			backend:    sandbox.NewBackend(false),
+			wantPrefix: []string{"docker", "sandbox", "exec"},
+		},
+		{
+			name:       "sbx",
+			backend:    sandbox.NewBackend(true),
+			wantPrefix: []string{"sbx", "exec"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := tt.backend.BuildExecCmd(t.Context(), "my-sbx", "/my/project",
+				[]string{"agent.yaml", "--yolo"}, []string{"-e", "FOO"}, []string{"FOO=bar"})
+
+			want := append(tt.wantPrefix,
+				"-it", "-w", "/my/project",
+				"-e", "FOO",
+				"-e", "TERM=xterm-256color",
+				"-e", "COLORTERM=truecolor",
+				"-e", "LANG=C.UTF-8",
+				"my-sbx", "docker-agent", "run",
+				"agent.yaml", "--yolo",
+			)
+			assert.Equal(t, want, cmd.Args)
+			assert.Same(t, os.Stdin, cmd.Stdin, "Stdin must be os.Stdin")
+			assert.Same(t, os.Stdout, cmd.Stdout, "Stdout must be os.Stdout")
+			assert.Same(t, os.Stderr, cmd.Stderr, "Stderr must be os.Stderr")
+			assert.Contains(t, cmd.Env, "FOO=bar")
+		})
+	}
+}
+
 // writeMockScript writes a mock executable script to the given directory.
 // On Windows, it converts the POSIX shell script to a basic .bat script.
 //

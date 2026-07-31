@@ -241,11 +241,13 @@ func (b *Backend) BuildExecCmd(ctx context.Context, name, wd string, cagentArgs,
 	execExtra := []string{"-it", "-w", wd}
 	execExtra = append(execExtra, envFlags...)
 
-	// Improve the rendering of the TUI
+	// Improve the rendering of the TUI. C.UTF-8 is the only UTF-8 locale
+	// shipped by the template image; a locale it lacks (en_US.UTF-8) makes
+	// vim fall back to latin1 and mangle non-ASCII input.
 	execExtra = append(execExtra,
 		"-e", "TERM=xterm-256color",
 		"-e", "COLORTERM=truecolor",
-		"-e", "LANG=en_US.UTF-8",
+		"-e", "LANG=C.UTF-8",
 		name, "docker-agent", "run",
 	)
 	execExtra = append(execExtra, cagentArgs...)
