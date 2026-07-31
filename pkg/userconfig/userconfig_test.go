@@ -956,6 +956,7 @@ func TestConfig_DefaultModel_SaveAndLoad(t *testing.T) {
 func TestGet_Empty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// No config file exists
 	settings := Get()
@@ -967,6 +968,7 @@ func TestGet_Empty(t *testing.T) {
 func TestGet_WithHideToolResults(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up config with settings
 	cfg, err := Load()

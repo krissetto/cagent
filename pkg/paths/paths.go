@@ -86,13 +86,6 @@ func GetCacheDir() string {
 	})
 }
 
-func userHomeDir() (string, error) {
-	if home := os.Getenv("HOME"); home != "" {
-		return home, nil
-	}
-	return os.UserHomeDir()
-}
-
 // GetConfigDir returns the user's config directory for docker agent.
 //
 // If an override has been set via [SetConfigDir] it is returned instead.
@@ -102,7 +95,7 @@ func userHomeDir() (string, error) {
 // not intended to be a security boundary.
 func GetConfigDir() string {
 	return configDirOverride.get(func() string {
-		homeDir, err := userHomeDir()
+		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			return filepath.Clean(filepath.Join(os.TempDir(), ".cagent-config"))
 		}
@@ -118,7 +111,7 @@ func GetConfigDir() string {
 // under the system temporary directory.
 func GetDataDir() string {
 	return dataDirOverride.get(func() string {
-		homeDir, err := userHomeDir()
+		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			return filepath.Clean(filepath.Join(os.TempDir(), ".cagent"))
 		}
@@ -130,7 +123,7 @@ func GetDataDir() string {
 //
 // Returns an empty string if the home directory cannot be determined.
 func GetHomeDir() string {
-	homeDir, err := userHomeDir()
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}

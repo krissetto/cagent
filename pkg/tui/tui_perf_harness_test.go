@@ -15,7 +15,9 @@ import (
 func wallClockRoot(tb testing.TB, width, height int) *appModel {
 	tb.Helper()
 	if setter, ok := tb.(interface{ Setenv(key, value string) }); ok {
-		setter.Setenv("HOME", tb.TempDir())
+		home := tb.TempDir()
+		setter.Setenv("HOME", home)
+		setter.Setenv("USERPROFILE", home)
 	}
 	sess := &session.Session{ID: "profile", Title: "profile"}
 	a := app.New(tb.Context(), stubRuntime{}, sess)

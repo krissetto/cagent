@@ -164,7 +164,9 @@ func gatherExampleEnvVars(t *testing.T, examples []string) map[string]bool {
 }
 
 func TestLoadDefaultAgent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	agentSource, err := config.Resolve("default", nil)
 	require.NoError(t, err)
