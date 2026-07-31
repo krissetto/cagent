@@ -221,7 +221,7 @@ func (d *sessionBrowserDialog) Init() tea.Cmd {
 
 func (d *sessionBrowserDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// Scrollview handles mouse click/motion/release, wheel, and pgup/pgdn/home/end
-	if handled, cmd := d.scrollview.Update(msg); handled {
+	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
 		return d, cmd
 	}
 

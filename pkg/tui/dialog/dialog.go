@@ -40,6 +40,8 @@ type Broadcastable interface {
 type Dialog interface {
 	layout.Model
 	Position() (int, int) // Returns (row, col) for dialog placement
+	VisualGeneration() uint64
+	InvalidateView()
 }
 
 // Manager manages the dialog stack and rendering
@@ -66,6 +68,7 @@ type Manager interface {
 	// visiting bottom to top. Unlike TopDialog it also sees dialogs buried
 	// under other dialogs, e.g. a plan browser under a help dialog.
 	HasDialog(pred func(Dialog) bool) bool
+	VisualGeneration() uint64
 }
 
 // dialogEntry pairs a dialog with its drag offset so the two stay in sync.
@@ -90,9 +93,10 @@ type dragState struct {
 
 // manager implements Manager
 type manager struct {
-	width, height int
-	stack         []dialogEntry
-	drag          dragState
+	width, height    int
+	stack            []dialogEntry
+	drag             dragState
+	visualGeneration uint64
 }
 
 // New creates a new dialog component manager
@@ -182,9 +186,19 @@ func (d *manager) broadcastToAll(msg tea.Msg) tea.Cmd {
 	for i := range d.stack {
 		u, cmd := d.stack[i].dialog.Update(msg)
 		d.stack[i].dialog = u.(Dialog)
+		d.stack[i].dialog.InvalidateView()
 		cmds = append(cmds, cmd)
 	}
 	return tea.Batch(cmds...)
+}
+
+// VisualGeneration changes whenever any rendered dialog layer changes.
+func (d *manager) VisualGeneration() uint64 {
+	generation := d.visualGeneration
+	for i := range d.stack {
+		generation += d.stack[i].dialog.VisualGeneration()
+	}
+	return generation
 }
 
 // forwardToTop forwards a message to the topmost dialog and returns the resulting command.
@@ -195,6 +209,13 @@ func (d *manager) forwardToTop(msg tea.Msg) tea.Cmd {
 	top := len(d.stack) - 1
 	u, cmd := d.stack[top].dialog.Update(msg)
 	d.stack[top].dialog = u.(Dialog)
+	switch msg.(type) {
+	case messages.WheelCoalescedMsg, tea.MouseWheelMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
+		// High-frequency input invalidates through BaseDialog helpers only when
+		// it changes a viewport or drag state.
+	default:
+		d.stack[top].dialog.InvalidateView()
+	}
 	return cmd
 }
 
@@ -242,8 +263,13 @@ func (d *manager) handleDragMotion(x, y int) {
 		return
 	}
 	e := &d.stack[len(d.stack)-1]
-	e.offsetX = d.drag.origDX + (x - d.drag.startX)
-	e.offsetY = d.drag.origDY + (y - d.drag.startY)
+	offsetX := d.drag.origDX + (x - d.drag.startX)
+	offsetY := d.drag.origDY + (y - d.drag.startY)
+	if e.offsetX != offsetX || e.offsetY != offsetY {
+		e.offsetX = offsetX
+		e.offsetY = offsetY
+		d.visualGeneration++
+	}
 }
 
 // adjustMouseMsg adjusts mouse coordinates in a message to account for the drag offset
@@ -295,6 +321,7 @@ func (d *manager) handleOpen(msg OpenDialogMsg) (layout.Model, tea.Cmd) {
 	})
 	cmds = append(cmds, cmd)
 
+	d.visualGeneration++
 	return d, tea.Batch(cmds...)
 }
 
@@ -302,6 +329,7 @@ func (d *manager) handleOpen(msg OpenDialogMsg) (layout.Model, tea.Cmd) {
 func (d *manager) handleClose() (layout.Model, tea.Cmd) {
 	if len(d.stack) > 0 {
 		d.stack = d.stack[:len(d.stack)-1]
+		d.visualGeneration++
 	}
 	d.drag.active = false
 	return d, nil
@@ -321,7 +349,10 @@ func (d *manager) handleClosePlanDetail(msg ClosePlanDetailMsg) (layout.Model, t
 
 // handleCloseAll closes all dialogs in the stack
 func (d *manager) handleCloseAll() (layout.Model, tea.Cmd) {
-	d.stack = nil
+	if len(d.stack) > 0 {
+		d.stack = nil
+		d.visualGeneration++
+	}
 	d.drag.active = false
 	return d, nil
 }

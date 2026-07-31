@@ -349,6 +349,7 @@ type model struct {
 	cachedNeedsScrollbar bool     // Whether scrollbar is needed for cached render
 	cacheDirty           bool     // True when cache needs rebuild
 	layoutDirty          bool     // True when a change may alter line count/scrollbar visibility (not just an animation frame)
+	visualGeneration     uint64
 
 	// Agent click zones: maps content line index to agent name for click detection
 	agentClickZones map[int]string // content line -> agent name
@@ -446,11 +447,12 @@ func (m *model) stopSpinner() {
 // on the next View(). Use this for changes that may alter the rendered content
 // AND its line layout (todos, sizing, agents, theme, …): the next View()
 // re-probes scrollbar visibility via the two-pass render.
-func (m *model) VisualGeneration() uint64 { return 0 }
+func (m *model) VisualGeneration() uint64 { return m.visualGeneration }
 
 func (m *model) invalidateCache() {
 	m.cacheDirty = true
 	m.layoutDirty = true
+	m.visualGeneration++
 }
 
 // invalidateAnimation marks the cache dirty for an animation-only change, i.e. a
@@ -460,6 +462,7 @@ func (m *model) invalidateCache() {
 // the sections only once.
 func (m *model) invalidateAnimation() {
 	m.cacheDirty = true
+	m.visualGeneration++
 }
 
 func (m *model) SetTokenUsage(event *runtime.TokenUsageEvent) {
@@ -1175,7 +1178,11 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		return m, cmd
 	case tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg, messages.WheelCoalescedMsg:
 		if m.mode == ModeVertical {
+			before := m.scrollview.VisualGeneration()
 			_, cmd := m.scrollview.Update(msg)
+			if m.scrollview.Changed(before) {
+				m.visualGeneration++
+			}
 			return m, cmd
 		}
 		return m, nil

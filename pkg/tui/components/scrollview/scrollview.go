@@ -7,6 +7,7 @@
 package scrollview
 
 import (
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -88,6 +89,8 @@ type Model struct {
 	// scrollOffset tracks the desired scroll position independently of the
 	// scrollbar, so EnsureLineVisible works before SetContent is called.
 	scrollOffset int
+
+	visualGeneration uint64
 }
 
 // New creates a new scrollview with the given options.
@@ -106,9 +109,16 @@ func New(opts ...Option) *Model {
 
 // SetSize sets the total width and height of the scrollable region.
 func (m *Model) SetSize(width, height int) {
+	if m.width == width && m.height == height {
+		return
+	}
 	m.width = width
 	m.height = height
 	m.updateScrollbarPosition()
+	if m.totalHeight > 0 {
+		m.syncScrollbar()
+	}
+	m.invalidateView()
 }
 
 // SetPosition sets the absolute screen position (for mouse hit-testing).
@@ -123,12 +133,17 @@ func (m *Model) SetPosition(x, y int) {
 // The lines slice must not be mutated in place after being passed here;
 // callers rebuild a fresh slice when content changes.
 func (m *Model) SetContent(lines []string, totalHeight int) {
+	totalHeight = max(totalHeight, len(lines))
+	contentChanged := !slices.Equal(lines, m.lines) || totalHeight != m.totalHeight
 	if len(lines) != len(m.lines) || (len(lines) > 0 && &lines[0] != &m.lines[0]) {
 		m.lineWidths = nil
 	}
 	m.lines = lines
-	m.totalHeight = max(totalHeight, len(lines))
-	m.sb.SetDimensions(m.height, m.totalHeight)
+	m.totalHeight = totalHeight
+	m.syncScrollbar()
+	if contentChanged {
+		m.invalidateView()
+	}
 }
 
 // lineWidth returns the display width of content line i, memoized across frames.
@@ -170,13 +185,23 @@ func (m *Model) ScrollbarX() int { return m.xPos + m.width - scrollbar.Width }
 // ScrollOffset returns the current scroll offset.
 func (m *Model) ScrollOffset() int { return m.scrollOffset }
 
+// VisualGeneration changes whenever the scrollview's rendered presentation changes.
+func (m *Model) VisualGeneration() uint64 { return m.visualGeneration }
+
+// Changed reports whether the rendered presentation changed since generation.
+func (m *Model) Changed(generation uint64) bool { return m.visualGeneration != generation }
+
 // SetScrollOffset sets the scroll offset, clamped when content dimensions are known.
 func (m *Model) SetScrollOffset(offset int) {
+	before := m.scrollOffset
 	m.scrollOffset = max(0, offset)
 	if m.totalHeight > 0 && m.height > 0 {
 		m.scrollOffset = min(m.scrollOffset, max(0, m.totalHeight-m.height))
 	}
 	m.sb.SetScrollOffset(m.scrollOffset)
+	if m.scrollOffset != before {
+		m.invalidateView()
+	}
 }
 
 // ScrollBy adjusts the scroll offset by delta lines.
@@ -261,11 +286,15 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 
 // UpdateMouse delegates mouse events to the scrollbar. Low-level alternative to [Update].
 func (m *Model) UpdateMouse(msg tea.Msg) (handled bool, cmd tea.Cmd) {
-	prev := m.scrollOffset
+	beforeOffset := m.scrollOffset
+	beforeDragging := m.sb.IsDragging()
 	sb, c := m.sb.Update(msg)
 	m.sb = sb
 	m.scrollOffset = m.sb.GetScrollOffset()
-	return m.scrollOffset != prev || m.sb.IsDragging(), c
+	if m.scrollOffset != beforeOffset || m.sb.IsDragging() != beforeDragging {
+		m.invalidateView()
+	}
+	return m.scrollOffset != beforeOffset || m.sb.IsDragging(), c
 }
 
 // IsDragging returns whether the scrollbar thumb is being dragged.
@@ -395,4 +424,8 @@ func (m *Model) compose(lines []string, baseLine int) string {
 
 func (m *Model) updateScrollbarPosition() {
 	m.sb.SetPosition(m.ScrollbarX(), m.yPos)
+}
+
+func (m *Model) invalidateView() {
+	m.visualGeneration++
 }

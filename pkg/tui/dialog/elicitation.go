@@ -196,7 +196,7 @@ func (d *ElicitationDialog) Init() tea.Cmd {
 func (d *ElicitationDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// Let the scrollview consume mouse wheel/scrollbar drag and the
 	// PgUp/PgDn/Home/End keys before falling through to dialog handling.
-	if handled, cmd := d.scrollview.Update(msg); handled {
+	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
 		return d, cmd
 	}
 

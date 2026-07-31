@@ -144,7 +144,7 @@ func (d *modelPickerDialog) setQuery(query string) {
 
 func (d *modelPickerDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// Scrollview handles mouse scrollbar, wheel, and pgup/pgdn/home/end.
-	if handled, cmd := d.scrollview.Update(msg); handled {
+	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
 		return d, cmd
 	}
 

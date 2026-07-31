@@ -4,12 +4,14 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/tui/components/scrollbar"
+	"github.com/docker/docker-agent/pkg/tui/messages"
 )
 
 // composeReference reproduces the previous compose implementation (measure,
@@ -131,6 +133,66 @@ func TestSetContentInvalidatesWidthCache(t *testing.T) {
 
 	assert.NotEqual(t, before, after)
 	assert.Contains(t, after, "aaaaaaaa")
+}
+
+func TestVisualGenerationTracksEffectivePresentationChanges(t *testing.T) {
+	t.Parallel()
+
+	m := New()
+	generation := m.VisualGeneration()
+	require.False(t, m.Changed(generation))
+
+	m.SetSize(10, 4)
+	require.True(t, m.Changed(generation))
+	generation = m.VisualGeneration()
+	m.SetSize(10, 4)
+	require.False(t, m.Changed(generation), "identical size changed generation")
+
+	content := []string{"0", "1", "2", "3", "4", "5", "6", "7"}
+	m.SetContent(content, len(content))
+	require.True(t, m.Changed(generation))
+	generation = m.VisualGeneration()
+	m.SetContent(append([]string(nil), content...), len(content))
+	require.False(t, m.Changed(generation), "equivalent content changed generation")
+
+	m.SetScrollOffset(1)
+	require.True(t, m.Changed(generation))
+	generation = m.VisualGeneration()
+	m.SetScrollOffset(1)
+	require.False(t, m.Changed(generation), "identical offset changed generation")
+
+	m.SetScrollOffset(99)
+	generation = m.VisualGeneration()
+	m.SetSize(10, 6)
+	require.True(t, m.Changed(generation), "size and clamp did not change generation")
+	assert.Equal(t, 2, m.ScrollOffset())
+}
+
+func TestVisualGenerationIgnoresBoundaryInputAndTracksDrag(t *testing.T) {
+	t.Parallel()
+
+	m := New()
+	m.SetSize(10, 4)
+	content := []string{"0", "1", "2", "3", "4", "5", "6", "7"}
+	m.SetContent(content, len(content))
+
+	generation := m.VisualGeneration()
+	_, _ = m.Update(messages.WheelCoalescedMsg{Delta: -1})
+	require.False(t, m.Changed(generation), "top-boundary wheel changed generation")
+	_, _ = m.Update(tea.MouseMotionMsg{X: 9, Y: 2})
+	require.False(t, m.Changed(generation), "motion without a drag changed generation")
+
+	_, _ = m.Update(tea.MouseClickMsg{X: 9, Y: 0, Button: tea.MouseLeft})
+	require.True(t, m.Changed(generation), "starting a drag did not change generation")
+	generation = m.VisualGeneration()
+	_, _ = m.Update(tea.MouseMotionMsg{X: 9, Y: 0})
+	require.False(t, m.Changed(generation), "no-op drag motion changed generation")
+	_, _ = m.Update(tea.MouseMotionMsg{X: 9, Y: 2})
+	require.True(t, m.Changed(generation), "effective drag motion did not change generation")
+
+	generation = m.VisualGeneration()
+	_, _ = m.Update(tea.MouseReleaseMsg{X: 9, Y: 2, Button: tea.MouseLeft})
+	require.True(t, m.Changed(generation), "ending a drag did not change generation")
 }
 
 func TestComposeRemeasuresRestyledLines(t *testing.T) {

@@ -835,10 +835,18 @@ func tabVisualGeneration(tabBar *tabbar.TabBar) uint64 {
 	return tabBar.VisualGeneration()
 }
 
+func dialogVisualGeneration(manager dialog.Manager) uint64 {
+	if manager == nil {
+		return 0
+	}
+	return manager.VisualGeneration()
+}
+
 func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	beforeVisual := m.chatPage.VisualGeneration()
 	beforeSidebarVisual := sidebarVisualGeneration(m.chatPage)
 	beforeTabVisual := tabVisualGeneration(m.tabBar)
+	beforeDialogVisual := dialogVisualGeneration(m.dialogMgr)
 	beforeResizeHover := m.isHoveringHandle
 	wasCached := m.viewCacheValid
 	cached := m.viewCache
@@ -847,6 +855,7 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if canRestore && wasCached && m.chatPage.VisualGeneration() == beforeVisual &&
 			sidebarVisualGeneration(m.chatPage) == beforeSidebarVisual &&
 			tabVisualGeneration(m.tabBar) == beforeTabVisual &&
+			dialogVisualGeneration(m.dialogMgr) == beforeDialogVisual &&
 			m.isHoveringHandle == beforeResizeHover {
 			m.viewCache, m.viewCacheValid = cached, true
 		}
@@ -1078,14 +1087,14 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseClickMsg:
 		return m.handleMouseClick(msg)
 
-	case tea.MouseMotionMsg:
-		return m.handleMouseMotion(msg)
-
 	case tea.MouseReleaseMsg:
 		return m.handleMouseRelease(msg)
 
-	case messages.WheelCoalescedMsg:
-		return m.handleWheelCoalesced(msg)
+	case messages.PointerUpdateMsg:
+		return m.handlePointerUpdate(msg)
+
+	case messages.PointerBoundaryMsg:
+		return m.handlePointerBoundary(msg)
 
 	// --- Dialog lifecycle ---
 
@@ -2579,19 +2588,23 @@ func sidebarVisualGeneration(page chat.Page) uint64 {
 }
 
 func (m *appModel) canRestorePointerCache(msg tea.Msg) bool {
-	if !m.viewCacheValid || m.tabBar == nil || m.chatPage == nil || m.isDragging || m.dialogMgr == nil || m.dialogMgr.Open() ||
+	if !m.viewCacheValid || m.tabBar == nil || m.chatPage == nil || m.isDragging || m.dialogMgr == nil ||
 		m.chatPage.IsSelecting() || m.notification.Open() {
 		return false
 	}
-	var x, y int
+
 	switch msg := msg.(type) {
-	case tea.MouseMotionMsg:
-		if msg.Button == tea.MouseLeft && !m.tabBar.IsDragging() {
+	case messages.PointerUpdateMsg:
+		if msg.HasWheel {
+			return msg.Motion == nil
+		}
+		if msg.Motion == nil || msg.WheelDelta != 0 {
 			return false
 		}
-		x, y = msg.X, msg.Y
-	case messages.WheelCoalescedMsg:
-		x, y = msg.X, msg.Y
+		if msg.Motion.Button == tea.MouseLeft && !m.tabBar.IsDragging() {
+			return false
+		}
+		return true
 	case *runtime.AgentChoiceEvent:
 		return true
 	case messages.RoutedMsg:
@@ -2600,24 +2613,6 @@ func (m *appModel) canRestorePointerCache(msg tea.Msg) bool {
 	default:
 		return false
 	}
-	if m.hitTestRegion(y) != regionContent {
-		switch msg.(type) {
-		case tea.MouseMotionMsg:
-			return true
-		case messages.WheelCoalescedMsg:
-			return true
-		}
-		return false
-	}
-	_, motion := msg.(tea.MouseMotionMsg)
-	if motion {
-		return true
-	}
-	if _, wheel := msg.(messages.WheelCoalescedMsg); wheel {
-		return true
-	}
-	page, ok := m.chatPage.(interface{ PointerTargetsMessages(x, y int) bool })
-	return ok && page.PointerTargetsMessages(x, y)
 }
 
 // handleMouseClick routes mouse clicks to the appropriate component based on Y coordinate.
@@ -2692,6 +2687,14 @@ func (m *appModel) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) 
 
 // handleMouseMotion routes mouse motion events with adjusted coordinates.
 func (m *appModel) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
+	// A modal dialog owns pointer motion across the full window, including drag
+	// capture outside its bounds. Route it before any underlying hover or drag
+	// state so covered chat, sidebar, tab, notification, and resize controls
+	// cannot react.
+	if m.dialogMgr.Open() {
+		return m.forwardDialog(msg)
+	}
+
 	var cmds []tea.Cmd
 	batchWith := func(cmd tea.Cmd) tea.Cmd {
 		if cmd != nil {
@@ -2721,11 +2724,6 @@ func (m *appModel) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd
 			return m, batchWith(cmd)
 		}
 		return m, tea.Batch(cmds...)
-	}
-
-	if m.dialogMgr.Open() {
-		model, cmd := m.forwardDialog(msg)
-		return model, batchWith(cmd)
 	}
 
 	// A text-selection drag must keep receiving motion wherever the cursor
@@ -2791,6 +2789,32 @@ func (m *appModel) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.C
 	}
 
 	return m, nil
+}
+
+func (m *appModel) handlePointerUpdate(msg messages.PointerUpdateMsg) (tea.Model, tea.Cmd) {
+	if msg.HasWheel {
+		return m.handleWheelCoalesced(messages.WheelCoalescedMsg{Delta: msg.WheelDelta, X: msg.X, Y: msg.Y})
+	}
+	if msg.Motion != nil {
+		return m.handleMouseMotion(*msg.Motion)
+	}
+	return m, nil
+}
+
+// handlePointerBoundary applies pending input before the click or release.
+func (m *appModel) handlePointerBoundary(msg messages.PointerBoundaryMsg) (tea.Model, tea.Cmd) {
+	model, pendingCmd := m.handlePointerUpdate(msg.Pending)
+	m = model.(*appModel)
+	var boundaryCmd tea.Cmd
+	switch event := msg.Event.(type) {
+	case tea.MouseClickMsg:
+		model, boundaryCmd = m.handleMouseClick(event)
+	case tea.MouseReleaseMsg:
+		model, boundaryCmd = m.handleMouseRelease(event)
+	default:
+		return m, pendingCmd
+	}
+	return model, tea.Batch(pendingCmd, boundaryCmd)
 }
 
 // handleWheelCoalesced routes coalesced wheel events with adjusted coordinates.

@@ -1344,11 +1344,6 @@ func (p *chatPage) routedTimerCmd(timer sidebar.TransferTimer) tea.Cmd {
 	})
 }
 
-func (p *chatPage) PointerTargetsMessages(x, _ int) bool {
-	sl := p.computeSidebarLayout()
-	return sl.mode != sidebarVertical || p.sidebar.IsCollapsed() || !sl.isInSidebar(x-styles.AppPadding)
-}
-
 // handleSidebarClickType checks what was clicked in the sidebar area.
 // Returns the click type and, for ClickAgent, the agent name.
 func (p *chatPage) handleSidebarClickType(x, y int) (sidebar.ClickResult, string) {

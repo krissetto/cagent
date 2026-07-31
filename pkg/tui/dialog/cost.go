@@ -74,7 +74,7 @@ func NewCostDialog(sess *session.Session) Dialog {
 func (d *costDialog) Init() tea.Cmd { return nil }
 
 func (d *costDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
-	if handled, cmd := d.scrollview.Update(msg); handled {
+	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
 		return d, cmd
 	}
 	switch msg := msg.(type) {

@@ -305,7 +305,7 @@ func (d *workingDirPickerDialog) Init() tea.Cmd {
 
 func (d *workingDirPickerDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	activeScroll := d.activeScrollview()
-	if handled, cmd := activeScroll.Update(msg); handled {
+	if handled, cmd := d.UpdateScrollview(activeScroll, msg); handled {
 		return d, cmd
 	}
 

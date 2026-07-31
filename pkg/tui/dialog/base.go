@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tui/components/scrollview"
 	"github.com/docker/docker-agent/pkg/tui/core"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
 	"github.com/docker/docker-agent/pkg/tui/messages"
@@ -37,13 +38,53 @@ func DefaultConfirmKeyMap() ConfirmKeyMap {
 // BaseDialog provides common functionality for dialog implementations.
 // It handles size management, position calculation, and common UI patterns.
 type BaseDialog struct {
-	width, height int
+	width, height    int
+	visualGeneration uint64
+}
+
+// VisualGeneration changes whenever a dialog's rendered output or position changes.
+func (b *BaseDialog) VisualGeneration() uint64 {
+	return b.visualGeneration
+}
+
+// InvalidateView records a visible dialog mutation.
+func (b *BaseDialog) InvalidateView() {
+	b.visualGeneration++
+}
+
+// UpdateScrollview forwards input and aggregates effective scrollview visual changes.
+func (b *BaseDialog) UpdateScrollview(view *scrollview.Model, msg tea.Msg) (bool, tea.Cmd) {
+	before := view.VisualGeneration()
+	handled, cmd := view.Update(msg)
+	if view.Changed(before) {
+		b.InvalidateView()
+	}
+	return handled, cmd
+}
+
+// visualModel is a dialog child whose generation reports visible mutations.
+type visualModel interface {
+	Update(msg tea.Msg) (layout.Model, tea.Cmd)
+	VisualGeneration() uint64
+}
+
+// UpdateVisualModel forwards input and invalidates when the model's visual generation changes.
+func (b *BaseDialog) UpdateVisualModel(model visualModel, msg tea.Msg) (layout.Model, tea.Cmd) {
+	before := model.VisualGeneration()
+	updated, cmd := model.Update(msg)
+	if updated.(interface{ VisualGeneration() uint64 }).VisualGeneration() != before {
+		b.InvalidateView()
+	}
+	return updated, cmd
 }
 
 // SetSize updates the dialog dimensions.
 func (b *BaseDialog) SetSize(width, height int) tea.Cmd {
-	b.width = width
-	b.height = height
+	if b.width != width || b.height != height {
+		b.width = width
+		b.height = height
+		b.InvalidateView()
+	}
 	return nil
 }
 

@@ -66,7 +66,7 @@ func (d *readOnlyScrollDialog) Init() tea.Cmd {
 }
 
 func (d *readOnlyScrollDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
-	if handled, cmd := d.scrollview.Update(msg); handled {
+	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
 		return d, cmd
 	}
 

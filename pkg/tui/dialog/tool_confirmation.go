@@ -428,13 +428,13 @@ func (d *toolConfirmationDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 
 		// Forward scrolling keys to the scroll view
 		if _, isScrollKey := core.GetScrollDirection(msg); isScrollKey {
-			updatedScrollView, cmd := d.scrollView.Update(msg)
+			updatedScrollView, cmd := d.UpdateVisualModel(d.scrollView, msg)
 			d.scrollView = updatedScrollView.(messages.Model)
 			return d, cmd
 		}
 
 	case tuimessages.WheelCoalescedMsg:
-		updatedScrollView, cmd := d.scrollView.Update(msg)
+		updatedScrollView, cmd := d.UpdateVisualModel(d.scrollView, msg)
 		d.scrollView = updatedScrollView.(messages.Model)
 		return d, cmd
 	}

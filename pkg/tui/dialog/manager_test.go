@@ -3,10 +3,14 @@ package dialog
 import (
 	"testing"
 
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/plans"
+	"github.com/docker/docker-agent/pkg/tui/core/layout"
+	"github.com/docker/docker-agent/pkg/tui/messages"
 )
 
 // TestManagerBackgroundDialog verifies that opening a dialog with a non-nil
@@ -139,4 +143,56 @@ func TestManagerClosePlanDetail(t *testing.T) {
 			return ok && viewer.PlanRef() == ref
 		}), "the buried detail stays open")
 	})
+}
+
+type viewCountingDialog struct {
+	BaseDialog
+
+	viewCalls int
+}
+
+func (d *viewCountingDialog) Init() tea.Cmd { return nil }
+
+func (d *viewCountingDialog) Update(tea.Msg) (layout.Model, tea.Cmd) {
+	return d, nil
+}
+
+func (d *viewCountingDialog) View() string {
+	d.viewCalls++
+	return "dialog"
+}
+
+func (d *viewCountingDialog) Position() (int, int) { return 0, 0 }
+
+func TestManagerUpdateDoesNotRenderDialog(t *testing.T) {
+	t.Parallel()
+
+	d := &viewCountingDialog{}
+	mgr := New().(*manager)
+	_, _ = mgr.handleOpen(OpenDialogMsg{Model: d})
+	calls := d.viewCalls
+
+	_, _ = mgr.Update(messages.WheelCoalescedMsg{Delta: -1, X: 0, Y: 0})
+	require.Equal(t, calls, d.viewCalls, "dialog Update speculatively called View")
+}
+
+func TestManagerVisualGenerationTracksOnlyVisibleDialogChanges(t *testing.T) {
+	t.Parallel()
+
+	bindings := make([]key.Binding, 80)
+	for i := range bindings {
+		bindings[i] = key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "action"))
+	}
+
+	mgr := New().(*manager)
+	mgr.SetSize(80, 20)
+	_, _ = mgr.handleOpen(OpenDialogMsg{Model: NewHelpDialog(bindings)})
+	_ = mgr.GetLayers()
+	before := mgr.VisualGeneration()
+
+	_, _ = mgr.Update(messages.WheelCoalescedMsg{Delta: -1, X: 40, Y: 10})
+	require.Equal(t, before, mgr.VisualGeneration(), "top-boundary wheel changed the visual generation")
+
+	_, _ = mgr.Update(messages.WheelCoalescedMsg{Delta: 1, X: 40, Y: 10})
+	require.Greater(t, mgr.VisualGeneration(), before, "effective dialog scroll did not change the visual generation")
 }

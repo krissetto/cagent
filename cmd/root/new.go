@@ -111,16 +111,9 @@ func runTUIWrapped(ctx context.Context, rt runtime.Runtime, sess *session.Sessio
 
 	a := app.New(ctx, rt, sess, opts...)
 
-	coalescer := tuiinput.NewWheelCoalescer()
-	filter := func(model tea.Model, msg tea.Msg) tea.Msg {
-		wheelMsg, ok := msg.(tea.MouseWheelMsg)
-		if !ok {
-			return msg
-		}
-		if coalescer.Handle(wheelMsg) {
-			return nil
-		}
-		return msg
+	mouseCoalescer := tuiinput.NewMouseCoalescer()
+	filter := func(_ tea.Model, msg tea.Msg) tea.Msg {
+		return mouseCoalescer.Filter(msg)
 	}
 
 	if cleanup == nil {
@@ -144,7 +137,7 @@ func runTUIWrapped(ctx context.Context, rt runtime.Runtime, sess *session.Sessio
 	}
 
 	p := tea.NewProgram(model, tea.WithContext(ctx), tea.WithFilter(filter), tea.WithOutput(imageWriter))
-	coalescer.SetSender(p.Send)
+	mouseCoalescer.SetSender(p.Send)
 
 	if m, ok := model.(interface{ SetProgram(p *tea.Program) }); ok {
 		m.SetProgram(p)

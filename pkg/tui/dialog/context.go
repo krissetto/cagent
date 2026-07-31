@@ -111,7 +111,7 @@ func (d *contextDialog) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 			return d, cmd
 		}
 	}
-	if handled, cmd := d.scrollview.Update(msg); handled {
+	if handled, cmd := d.UpdateScrollview(d.scrollview, msg); handled {
 		return d, cmd
 	}
 	if msg, ok := msg.(tea.WindowSizeMsg); ok {
