@@ -98,6 +98,11 @@ func Command(path string) *exec.Cmd {
 // deliberately no shell evaluation), extra tokens become leading arguments,
 // and path is appended last. When neither variable yields a command, the
 // platform default is launched ("notepad" on Windows, "vi" elsewhere).
+//
+// Stdin/Stdout/Stderr are bound to the real terminal files: left nil,
+// tea.ExecProcess fills them from the Program, whose output is the
+// non-*os.File image-writer wrapper — the editor would then see a pipe
+// instead of a TTY ("Vim: Warning: Output is not to a terminal").
 func CommandFromEnv(visual, editorEnv, path string) *exec.Cmd {
 	parts := strings.Fields(cmp.Or(visual, editorEnv))
 	if len(parts) == 0 {
@@ -109,5 +114,9 @@ func CommandFromEnv(visual, editorEnv, path string) *exec.Cmd {
 	}
 	args := append(parts[1:], path)
 	// The editor process is owned by tea.ExecProcess, so exec.Command is intentional.
-	return exec.Command(parts[0], args...) //nolint:noctx // owned by tea.ExecProcess
+	cmd := exec.Command(parts[0], args...) //nolint:noctx // owned by tea.ExecProcess
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd
 }
