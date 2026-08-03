@@ -187,6 +187,9 @@ func (t *FilesystemToolset) handleReadFile(ctx context.Context, toolCall tools.T
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
 		return nil, fmt.Errorf("failed to parse arguments: %w", err)
 	}
+	if err := filesystem.ValidateReadFileRange(args.Line, args.Limit); err != nil {
+		return tools.ResultError(fmt.Sprintf("Error: %s", err)), nil
+	}
 
 	sessionID, ok := getSessionID(ctx)
 	if !ok {
@@ -204,6 +207,8 @@ func (t *FilesystemToolset) handleReadFile(ctx context.Context, toolCall tools.T
 	resp, err := t.agent.conn.ReadTextFile(ctx, acp.ReadTextFileRequest{
 		SessionId: acp.SessionId(sessionID),
 		Path:      resolvedPath,
+		Line:      args.Line,
+		Limit:     args.Limit,
 	})
 	if err != nil {
 		return tools.ResultError(fmt.Sprintf("Error reading file: %s", err)), nil

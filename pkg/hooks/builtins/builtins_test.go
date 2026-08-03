@@ -1,6 +1,7 @@
 package builtins_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -402,6 +403,227 @@ func TestLimitLargeToolResultsNoopsForSmallOutput(t *testing.T) {
 	assert.Nil(t, out)
 }
 
+// TestLimitLargeToolResultsReadFileKeepsHeadWithRangedReadNotice is a
+// regression test for issue #3889: a truncated read_file result must keep
+// the head of the file (front matter, imports, ...) instead of the tail,
+// and the notice must tell the model how to fetch the rest with a ranged
+// read_file call.
+func TestLimitLargeToolResultsReadFileKeepsHeadWithRangedReadNotice(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	var b strings.Builder
+	for i := range 3000 {
+		b.WriteString(strings.Repeat("x", 600))
+		b.WriteString(" line ")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteByte('\n')
+	}
+	original := b.String()
+
+	fn := lookup(t, builtins.LimitLargeToolResults)
+	out, err := fn(t.Context(), &hooks.Input{
+		SessionID:     "read-file-head-session",
+		HookEventName: hooks.EventToolResponseTransform,
+		ToolCategory:  "filesystem",
+		ToolName:      "read_file",
+		ToolInput:     map[string]any{"path": "big.txt"},
+		ToolResponse:  original,
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.HookSpecificOutput)
+	require.NotNil(t, out.HookSpecificOutput.UpdatedToolResponse)
+
+	updated := *out.HookSpecificOutput.UpdatedToolResponse
+	assert.Contains(t, updated, "Tool call result was too large")
+	assert.Contains(t, updated, "Showing the first")
+	assert.Contains(t, updated, "call read_file again")
+	assert.Contains(t, updated, `"limit"`)
+
+	// Head preserved, tail dropped — the opposite of the shell/tail case.
+	head := extractShownExcerpt(t, updated)
+	assert.True(t, strings.HasPrefix(head, strings.Repeat("x", 600)+" line 0\n"),
+		"head excerpt must start at the beginning of the result")
+	assert.NotContains(t, updated, " line 2999\n")
+
+	// The suggested continuation line is 1 (start of an unranged read)
+	// plus the number of complete lines shown.
+	assert.Contains(t, updated, fmt.Sprintf(`"line": %d`, 1+strings.Count(head, "\n")))
+
+	// The full result is still spilled for recovery.
+	stored, err := os.ReadFile(extractLargeResultPath(t, updated))
+	require.NoError(t, err)
+	assert.Equal(t, original, string(stored))
+}
+
+// TestLimitLargeToolResultsReadFileContinuationRespectsRequestedStartLine
+// verifies that when the truncated read_file call itself used a line offset,
+// the suggested continuation line is absolute in the file, not relative to
+// the returned range.
+func TestLimitLargeToolResultsReadFileContinuationRespectsRequestedStartLine(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	payload := strings.Repeat(strings.Repeat("y", 600)+"\n", 3000)
+
+	fn := lookup(t, builtins.LimitLargeToolResults)
+	out, err := fn(t.Context(), &hooks.Input{
+		SessionID:     "read-file-offset-session",
+		HookEventName: hooks.EventToolResponseTransform,
+		ToolCategory:  "filesystem",
+		ToolName:      "read_file",
+		ToolInput:     map[string]any{"path": "big.txt", "line": float64(101)},
+		ToolResponse:  payload,
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.HookSpecificOutput.UpdatedToolResponse)
+
+	updated := *out.HookSpecificOutput.UpdatedToolResponse
+	head := extractShownExcerpt(t, updated)
+	assert.Contains(t, updated, fmt.Sprintf(`"line": %d`, 101+strings.Count(head, "\n")))
+}
+
+// TestLimitLargeToolResultsReadFileSingleLongLineDoesNotSuggestLoopingRead
+// covers the pathological case for the head notice: the bounded head cuts
+// inside a single line longer than the byte cap, so it contains no complete
+// line and a "line"/"limit" continuation would restart at the same line
+// forever. The notice must state that line-based continuation cannot
+// advance within the first line instead of suggesting such a call.
+func TestLimitLargeToolResultsReadFileSingleLongLineDoesNotSuggestLoopingRead(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	original := "line1-start " + strings.Repeat("z", maxToolCallResultBytesForTest+largeToolCallResultTailBytesForTest)
+	require.NotContains(t, original, "\n", "payload must be a single line")
+
+	fn := lookup(t, builtins.LimitLargeToolResults)
+	out, err := fn(t.Context(), &hooks.Input{
+		SessionID:     "read-file-long-line-session",
+		HookEventName: hooks.EventToolResponseTransform,
+		ToolCategory:  "filesystem",
+		ToolName:      "read_file",
+		ToolInput:     map[string]any{"path": "big.txt"},
+		ToolResponse:  original,
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.HookSpecificOutput)
+	require.NotNil(t, out.HookSpecificOutput.UpdatedToolResponse)
+
+	updated := *out.HookSpecificOutput.UpdatedToolResponse
+	assert.Contains(t, updated, "Tool call result was too large")
+	assert.Contains(t, updated, fmt.Sprintf("Showing the first %d bytes", largeToolCallResultTailBytesForTest))
+
+	// No line-based continuation suggestion: any "line": N (including the
+	// misleading "line": 1) would re-read the same oversized line forever.
+	assert.NotContains(t, updated, `"line":`)
+	assert.NotContains(t, updated, "call read_file again")
+	assert.Contains(t, updated, "first line")
+	assert.Contains(t, updated, "cannot advance")
+
+	// The head excerpt is retained verbatim and stays valid UTF-8.
+	head := extractShownExcerpt(t, updated)
+	assert.Equal(t, original[:largeToolCallResultTailBytesForTest], head)
+	assert.Equal(t, updated, strings.ToValidUTF8(updated, ""))
+
+	// The full result is still spilled for recovery.
+	stored, err := os.ReadFile(extractLargeResultPath(t, updated))
+	require.NoError(t, err)
+	assert.Equal(t, original, string(stored))
+}
+
+// TestLimitLargeToolResultsReadFileHeadPreservesUTF8 mirrors the tail
+// UTF-8 test: a byte-boundary cut of the head must not leave a dangling
+// partial rune.
+func TestLimitLargeToolResultsReadFileHeadPreservesUTF8(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	payload := strings.Repeat("世", maxToolCallResultBytesForTest/len("世")+largeToolCallResultTailBytesForTest/len("世")+10)
+
+	fn := lookup(t, builtins.LimitLargeToolResults)
+	out, err := fn(t.Context(), &hooks.Input{
+		SessionID:     "read-file-utf8-session",
+		HookEventName: hooks.EventToolResponseTransform,
+		ToolCategory:  "filesystem",
+		ToolName:      "read_file",
+		ToolResponse:  payload,
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.HookSpecificOutput.UpdatedToolResponse)
+	updated := *out.HookSpecificOutput.UpdatedToolResponse
+	assert.Contains(t, updated, "世")
+	assert.Equal(t, updated, strings.ToValidUTF8(updated, ""))
+}
+
+// TestLimitLargeToolResultsShellKeepsTail pins that head-first truncation is
+// scoped to read_file: shell output keeps its tail, where exit diagnostics
+// live.
+func TestLimitLargeToolResultsShellKeepsTail(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	var b strings.Builder
+	for i := range 3000 {
+		b.WriteString(strings.Repeat("x", 600))
+		b.WriteString(" line ")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteByte('\n')
+	}
+
+	fn := lookup(t, builtins.LimitLargeToolResults)
+	out, err := fn(t.Context(), &hooks.Input{
+		SessionID:     "shell-tail-session",
+		HookEventName: hooks.EventToolResponseTransform,
+		ToolCategory:  "shell",
+		ToolName:      "shell",
+		ToolResponse:  b.String(),
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.HookSpecificOutput.UpdatedToolResponse)
+
+	updated := *out.HookSpecificOutput.UpdatedToolResponse
+	assert.Contains(t, updated, "Showing the last")
+	assert.Contains(t, updated, " line 2999\n")
+	assert.NotContains(t, updated, " line 0\n")
+}
+
+// TestLimitLargeToolResultsMCPReadFileKeepsTail pins that head-first
+// truncation requires the built-in filesystem category, not just the
+// read_file name: an mcp/a2a tool that happens to be called read_file has
+// no known line/limit contract, so it keeps the generic tail notice with
+// no local ranged-read advice.
+func TestLimitLargeToolResultsMCPReadFileKeepsTail(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	var b strings.Builder
+	for i := range 3000 {
+		b.WriteString(strings.Repeat("x", 600))
+		b.WriteString(" line ")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteByte('\n')
+	}
+
+	fn := lookup(t, builtins.LimitLargeToolResults)
+	out, err := fn(t.Context(), &hooks.Input{
+		SessionID:     "mcp-read-file-session",
+		HookEventName: hooks.EventToolResponseTransform,
+		ToolCategory:  "mcp",
+		ToolName:      "read_file",
+		ToolResponse:  b.String(),
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.HookSpecificOutput.UpdatedToolResponse)
+
+	updated := *out.HookSpecificOutput.UpdatedToolResponse
+	assert.Contains(t, updated, "Showing the last")
+	assert.Contains(t, updated, " line 2999\n")
+	assert.NotContains(t, updated, " line 0\n")
+	assert.NotContains(t, updated, "Showing the first")
+	assert.NotContains(t, updated, "call read_file again")
+	assert.NotContains(t, updated, `"line":`)
+}
+
 func extractLargeResultPath(t *testing.T, response string) string {
 	t.Helper()
 	const marker = "The full result is available in a file: "
@@ -411,6 +633,16 @@ func extractLargeResultPath(t *testing.T, response string) string {
 	pathEnd := strings.Index(response[pathStart:], "\n")
 	require.NotEqual(t, -1, pathEnd)
 	return response[pathStart : pathStart+pathEnd]
+}
+
+// extractShownExcerpt returns the excerpt following the limiter's notice,
+// which ends with ":\n\n" in both the head and tail message formats.
+func extractShownExcerpt(t *testing.T, response string) string {
+	t.Helper()
+	const sep = ":\n\n"
+	idx := strings.Index(response, sep)
+	require.NotEqual(t, -1, idx)
+	return response[idx+len(sep):]
 }
 
 // TestRegisterSnapshotInstallsBuiltin verifies that the dedicated
