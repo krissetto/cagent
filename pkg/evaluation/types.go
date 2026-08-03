@@ -1,6 +1,7 @@
 package evaluation
 
 import (
+	"cmp"
 	"fmt"
 	"time"
 
@@ -131,25 +132,37 @@ type RunOutput struct {
 
 // RunOutputConfig captures the evaluation run configuration.
 type RunOutputConfig struct {
-	Agent       string `json:"agent"`
-	JudgeModel  string `json:"judge_model,omitempty"`
-	Concurrency int    `json:"concurrency"`
-	EvalsDir    string `json:"evals_dir"`
-	BaseImage   string `json:"base_image,omitempty"`
+	Agent            string `json:"agent"`
+	JudgeModel       string `json:"judge_model,omitempty"`
+	Concurrency      int    `json:"concurrency"`
+	EvalsDir         string `json:"evals_dir"`
+	BaseImage        string `json:"base_image,omitempty"`
+	ContainerRuntime string `json:"container_runtime,omitempty"`
 }
 
 // Config holds configuration for evaluation runs.
 type Config struct {
-	AgentFilename  string   // Path to the agent configuration file
-	EvalsDir       string   // Directory containing evaluation files
-	JudgeModel     string   // Model for relevance checking (format: provider/model, optional)
-	Concurrency    int      // Number of concurrent runs (0 = number of CPUs)
-	TTYFd          int      // File descriptor for terminal size queries (e.g., int(os.Stdout.Fd()))
-	Only           []string // Only run evaluations matching these patterns
-	BaseImage      string   // Custom base Docker image for running evaluations
-	KeepContainers bool     // If true, don't remove containers after evaluation (skip --rm)
-	EnvVars        []string // Environment variables to pass: KEY (value from env) or KEY=VALUE (explicit)
-	Repeat         int      // Number of times to repeat each evaluation (default 1)
+	AgentFilename    string   // Path to the agent configuration file
+	EvalsDir         string   // Directory containing evaluation files
+	JudgeModel       string   // Model for relevance checking (format: provider/model, optional)
+	Concurrency      int      // Number of concurrent runs (0 = number of CPUs)
+	TTYFd            int      // File descriptor for terminal size queries (e.g., int(os.Stdout.Fd()))
+	Only             []string // Only run evaluations matching these patterns
+	BaseImage        string   // Custom base image for running evaluations
+	KeepContainers   bool     // If true, don't remove containers after evaluation (skip --rm)
+	EnvVars          []string // Environment variables to pass: KEY (value from env) or KEY=VALUE (explicit)
+	Repeat           int      // Number of times to repeat each evaluation (default 1)
+	ContainerRuntime string   // Docker-compatible container runtime executable (default "docker")
+}
+
+// DefaultContainerRuntime is the container runtime executable used when
+// Config.ContainerRuntime is empty, keeping the historical Docker behavior.
+const DefaultContainerRuntime = "docker"
+
+// containerRuntimeOrDefault returns the container runtime executable to
+// invoke, falling back to DefaultContainerRuntime when none is configured.
+func (c *Config) containerRuntimeOrDefault() string {
+	return cmp.Or(c.ContainerRuntime, DefaultContainerRuntime)
 }
 
 // Session helper functions

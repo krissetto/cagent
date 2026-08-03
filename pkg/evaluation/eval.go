@@ -37,7 +37,7 @@ type Runner struct {
 	judge       *Judge
 	runConfig   *config.RuntimeConfig
 
-	// imageCache caches built Docker images by (workingDir, image) pair.
+	// imageCache caches built container images by (workingDir, image) pair.
 	imageCache   map[imageKey]string
 	imageCacheMu sync.Mutex
 
@@ -132,7 +132,7 @@ func (r *Runner) Run(ctx context.Context, ttyOut, out io.Writer, isTTY bool) ([]
 		}
 	}
 
-	// Pre-build all unique Docker images in parallel before running evaluations.
+	// Pre-build all unique container images in parallel before running evaluations.
 	// This avoids serialized builds when multiple workers need the same image.
 	if err := r.preBuildImages(ctx, out, evals); err != nil {
 		return nil, fmt.Errorf("pre-building images: %w", err)
@@ -246,7 +246,7 @@ func (r *Runner) loadEvalSessions(ctx context.Context) ([]InputSession, error) {
 	return evals, nil
 }
 
-// preBuildImages pre-builds all unique Docker images needed for the evaluations.
+// preBuildImages pre-builds all unique container images needed for the evaluations.
 // Concurrent calls for the same (workingDir, image) pair are deduplicated by
 // getOrBuildImage's singleflight, so we simply iterate over all evals.
 func (r *Runner) preBuildImages(ctx context.Context, out io.Writer, evals []InputSession) error {
@@ -261,7 +261,7 @@ func (r *Runner) preBuildImages(ctx context.Context, out io.Writer, evals []Inpu
 		unique[imageKey{workingDir: criteria.WorkingDir, image: criteria.Image}] = struct{}{}
 	}
 
-	fmt.Fprintf(out, "Pre-building %d Docker image(s)...\n", len(unique))
+	fmt.Fprintf(out, "Pre-building %d container image(s)...\n", len(unique))
 
 	type buildResult struct {
 		title string
@@ -407,8 +407,8 @@ func (r *Runner) runDockerAgentInContainer(ctx context.Context, imageID string, 
 	)
 
 	var env []string
-	// addEnv forwards a variable to the container: "-e NAME" tells docker to
-	// pass it through, and NAME=VALUE sets it on the docker process.
+	// addEnv forwards a variable to the container: "-e NAME" tells the runtime
+	// CLI to pass it through, and NAME=VALUE sets it on the CLI process.
 	addEnv := func(name, value string) {
 		args = append(args, "-e", name)
 		env = append(env, name+"="+value)
@@ -465,13 +465,14 @@ func (r *Runner) runDockerAgentInContainer(ctx context.Context, imageID string, 
 	}
 	args = append(args, questions...)
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	containerRuntime := r.containerRuntimeOrDefault()
+	cmd := exec.CommandContext(ctx, containerRuntime, args...)
 	cmd.Env = append(env, os.Environ()...)
-	// On cancellation send SIGINT instead of the default SIGKILL: the docker
-	// CLI proxies SIGINT to the container (SIGKILL is never proxied and would
-	// leave the container running daemon-side). The container's exit also
-	// triggers --rm removal. WaitDelay force-kills the CLI if the container
-	// doesn't stop in time.
+	// On cancellation send SIGINT instead of the default SIGKILL: the
+	// Docker-compatible CLI proxies SIGINT to the container (SIGKILL is never
+	// proxied and would leave the container running daemon-side). The
+	// container's exit also triggers --rm removal. WaitDelay force-kills the
+	// CLI if the container doesn't stop in time.
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)
 	}
@@ -486,7 +487,7 @@ func (r *Runner) runDockerAgentInContainer(ctx context.Context, imageID string, 
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting docker run: %w", err)
+		return nil, fmt.Errorf("starting %s run: %w", containerRuntime, err)
 	}
 
 	var stderrData []byte

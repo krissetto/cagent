@@ -291,6 +291,48 @@ func TestSaveRunSessionsJSON(t *testing.T) {
 	assert.Equal(t, "no explanation given", sess2Loaded.EvalResult.Checks.Relevance.Results[1].Reason)
 }
 
+func TestSaveRunSessionsJSONContainerRuntime(t *testing.T) {
+	t.Parallel()
+
+	save := func(t *testing.T, cfg Config) []byte {
+		t.Helper()
+		run := &EvalRun{
+			Name:      "test-runtime-001",
+			Timestamp: time.Now(),
+			Config:    cfg,
+		}
+
+		sessionsPath, err := SaveRunSessionsJSON(run, t.TempDir())
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(sessionsPath)
+		require.NoError(t, err)
+		return data
+	}
+
+	t.Run("recorded when configured", func(t *testing.T) {
+		t.Parallel()
+
+		data := save(t, Config{ContainerRuntime: "podman"})
+
+		var output RunOutput
+		require.NoError(t, json.Unmarshal(data, &output))
+		assert.Equal(t, "podman", output.Config.ContainerRuntime)
+	})
+
+	t.Run("omitted when empty", func(t *testing.T) {
+		t.Parallel()
+
+		data := save(t, Config{})
+
+		var raw struct {
+			Config map[string]any `json:"config"`
+		}
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.NotContains(t, raw.Config, "container_runtime")
+	})
+}
+
 func TestSaveRunSessionsWithCost(t *testing.T) {
 	t.Parallel()
 

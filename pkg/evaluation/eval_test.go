@@ -1056,6 +1056,90 @@ func TestRunDockerAgentInContainerHelperProcess(*testing.T) {
 	}
 }
 
+func TestContainerRuntimeOrDefault(t *testing.T) {
+	t.Parallel()
+
+	empty := Config{}
+	assert.Equal(t, "docker", empty.containerRuntimeOrDefault(), "empty config must fall back to docker")
+
+	custom := Config{ContainerRuntime: "podman"}
+	assert.Equal(t, "podman", custom.containerRuntimeOrDefault())
+}
+
+// writeFakeContainerRuntime writes a POSIX shell script standing in for a
+// Docker-compatible container runtime CLI: it records its arguments to
+// argsFile and prints output on stdout. No daemon is involved.
+func writeFakeContainerRuntime(t *testing.T, path, argsFile, output string) {
+	t.Helper()
+	script := "#!/bin/sh\necho \"$@\" > \"" + argsFile + "\"\necho '" + output + "'\n"
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+}
+
+// TestRunDockerAgentInContainerUsesConfiguredRuntime proves that container
+// runs are executed with the configured runtime executable instead of the
+// docker CLI.
+func TestRunDockerAgentInContainerUsesConfiguredRuntime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake container runtime executable is a POSIX shell script")
+	}
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	argsFile := filepath.Join(tmpDir, "args")
+	fakeRuntime := filepath.Join(tmpDir, "fake-podman")
+	writeFakeContainerRuntime(t, fakeRuntime, argsFile, `{"type":"agent_choice","content":"ok"}`)
+
+	runner := newRunner(
+		config.NewFileSource(filepath.Join(tmpDir, "agent.yaml")),
+		&config.RuntimeConfig{EnvProviderForTests: environment.NewNoEnvProvider()},
+		nil,
+		Config{ContainerRuntime: fakeRuntime},
+	)
+
+	events, err := runner.runDockerAgentInContainer(t.Context(), "image-id", []string{"question"}, "")
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Equal(t, "agent_choice", events[0]["type"])
+
+	args, err := os.ReadFile(argsFile)
+	require.NoError(t, err)
+	got := string(args)
+	assert.True(t, strings.HasPrefix(got, "run "), "fake runtime must receive the run subcommand, got: %s", got)
+	assert.Contains(t, got, "image-id")
+}
+
+// TestBuildEvalImageUsesConfiguredRuntime proves that image builds shell out
+// to the configured runtime executable instead of the docker CLI.
+func TestBuildEvalImageUsesConfiguredRuntime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake container runtime executable is a POSIX shell script")
+	}
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	argsFile := filepath.Join(tmpDir, "args")
+	fakeRuntime := filepath.Join(tmpDir, "fake-podman")
+	writeFakeContainerRuntime(t, fakeRuntime, argsFile, "sha256:fake-image-id")
+
+	evalsDir := filepath.Join(tmpDir, "evals")
+	require.NoError(t, os.Mkdir(evalsDir, 0o755))
+
+	runner := newRunner(
+		config.NewFileSource(filepath.Join(tmpDir, "agent.yaml")),
+		&config.RuntimeConfig{EnvProviderForTests: environment.NewNoEnvProvider()},
+		nil,
+		Config{EvalsDir: evalsDir, ContainerRuntime: fakeRuntime},
+	)
+
+	imageID, err := runner.buildEvalImage(t.Context(), &session.EvalCriteria{})
+	require.NoError(t, err)
+	assert.Equal(t, "sha256:fake-image-id", imageID)
+
+	args, err := os.ReadFile(argsFile)
+	require.NoError(t, err)
+	assert.Equal(t, "build -q -f- .", strings.TrimSpace(string(args)))
+}
+
 func TestNeedsJudge(t *testing.T) {
 	t.Parallel()
 
