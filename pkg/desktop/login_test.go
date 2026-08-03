@@ -102,8 +102,45 @@ func TestGetToken(t *testing.T) {
 		assert.Equal(t, 0, backend.refreshes())
 	})
 
-	t.Run("empty token returned as-is", func(t *testing.T) {
+	t.Run("empty token while signed out returns without refresh", func(t *testing.T) {
 		backend := &fakeBackend{}
+		installFakeBackend(t, backend)
+
+		assert.Empty(t, GetToken(t.Context()))
+		assert.Equal(t, 0, backend.refreshes())
+	})
+
+	t.Run("empty token while signed in triggers forced refresh", func(t *testing.T) {
+		backend := &fakeBackend{loggedIn: true}
+		backend.onRefresh = func() { backend.setToken(valid) }
+		installFakeBackend(t, backend)
+
+		assert.Equal(t, valid, GetToken(t.Context()))
+		assert.Equal(t, 1, backend.refreshes())
+	})
+
+	t.Run("empty token stays empty when refresh does not help", func(t *testing.T) {
+		backend := &fakeBackend{loggedIn: true}
+		installFakeBackend(t, backend)
+
+		assert.Empty(t, GetToken(t.Context()))
+		assert.Equal(t, 1, backend.refreshes())
+	})
+
+	t.Run("failed token fetch while signed in triggers forced refresh", func(t *testing.T) {
+		backend := &fakeBackend{loggedIn: true, failTokenFetch: true}
+		backend.onRefresh = func() {
+			backend.setToken(valid)
+			backend.setFailTokenFetch(false)
+		}
+		installFakeBackend(t, backend)
+
+		assert.Equal(t, valid, GetToken(t.Context()))
+		assert.Equal(t, 1, backend.refreshes())
+	})
+
+	t.Run("failed token fetch while signed out returns empty without refresh", func(t *testing.T) {
+		backend := &fakeBackend{failTokenFetch: true}
 		installFakeBackend(t, backend)
 
 		assert.Empty(t, GetToken(t.Context()))
@@ -126,19 +163,28 @@ func makeToken(t *testing.T, exp time.Time) string {
 }
 
 // fakeBackend emulates Docker Desktop's backend API: GET /registry/token
-// serves the current token; POST /registry/credstore-updated triggers
-// onRefresh (Desktop's async AutoLogin).
+// serves the current token; GET /registry/is-logged-in reports session state;
+// POST /registry/credstore-updated triggers onRefresh (Desktop's async
+// AutoLogin).
 type fakeBackend struct {
-	mu           sync.Mutex
-	token        string
-	refreshCalls int
-	onRefresh    func()
+	mu             sync.Mutex
+	token          string
+	loggedIn       bool
+	failTokenFetch bool
+	refreshCalls   int
+	onRefresh      func()
 }
 
 func (b *fakeBackend) setToken(token string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.token = token
+}
+
+func (b *fakeBackend) setFailTokenFetch(fail bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.failTokenFetch = fail
 }
 
 func (b *fakeBackend) refreshes() int {
@@ -151,9 +197,19 @@ func (b *fakeBackend) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /registry/token", func(w http.ResponseWriter, _ *http.Request) {
 		b.mu.Lock()
-		token := b.token
+		token, fail := b.token, b.failTokenFetch
 		b.mu.Unlock()
+		if fail {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(token)
+	})
+	mux.HandleFunc("GET /registry/is-logged-in", func(w http.ResponseWriter, _ *http.Request) {
+		b.mu.Lock()
+		loggedIn := b.loggedIn
+		b.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(loggedIn)
 	})
 	mux.HandleFunc("POST /registry/credstore-updated", func(http.ResponseWriter, *http.Request) {
 		b.mu.Lock()
