@@ -129,23 +129,48 @@ func ParseSendMode(raw string) SendMode {
 	return SendModeSteer
 }
 
+// InterruptMode identifies how Esc interrupts a running stream.
+type InterruptMode string
+
+const (
+	// InterruptModeAlways shows a confirmation dialog on Esc.
+	InterruptModeAlways InterruptMode = "always"
+	// InterruptModeDoubleTap requires pressing Esc twice within 1 second.
+	InterruptModeDoubleTap InterruptMode = "double-tap"
+	// InterruptModeNone interrupts immediately on Esc.
+	InterruptModeNone InterruptMode = "none"
+)
+
+// ParseInterruptMode normalizes a raw interrupt mode string, falling back to
+// InterruptModeAlways for empty or unknown values so persisted configs can
+// never break the interrupt behavior.
+func ParseInterruptMode(raw string) InterruptMode {
+	switch InterruptMode(raw) {
+	case InterruptModeDoubleTap, InterruptModeNone:
+		return InterruptMode(raw)
+	default:
+		return InterruptModeAlways
+	}
+}
+
 // Preferences contains the persistent values managed by the settings dialog.
 type Preferences struct {
-	Layout             LayoutSettings
-	SendMode           SendMode
-	SplitDiffView      bool
-	ExpandThinking     bool
-	HideToolResults    bool
-	RenderImages       bool
-	YOLO               bool
-	RestoreTabs        bool
-	Snapshot           bool
-	CacheStablePrompts bool
-	WarnOnCacheMiss    bool
-	Lean               bool
-	TabTitleMaxLength  int
-	Sound              bool
-	SoundThreshold     int
+	Layout                LayoutSettings
+	SendMode              SendMode
+	SplitDiffView         bool
+	ExpandThinking        bool
+	HideToolResults       bool
+	RenderImages          bool
+	YOLO                  bool
+	RestoreTabs           bool
+	Snapshot              bool
+	CacheStablePrompts    bool
+	WarnOnCacheMiss       bool
+	Lean                  bool
+	TabTitleMaxLength     int
+	Sound                 bool
+	SoundThreshold        int
+	InterruptConfirmation InterruptMode
 }
 
 // Settings dialog messages.
