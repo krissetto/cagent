@@ -27,7 +27,7 @@ var (
 	dockerfileCustomTemplate = template.Must(template.New("DockerfileCustom").Parse(dockerfileCustomTmpl))
 )
 
-// imageKey uniquely identifies a Docker image build configuration.
+// imageKey uniquely identifies a container image build configuration.
 type imageKey struct {
 	workingDir string
 	image      string
@@ -79,7 +79,8 @@ func (r *Runner) resolveBaseImage(evals *session.EvalCriteria) string {
 	return r.BaseImage
 }
 
-// buildEvalImage builds a Docker image for an evaluation.
+// buildEvalImage builds a container image for an evaluation using the
+// configured container runtime.
 func (r *Runner) buildEvalImage(ctx context.Context, evals *session.EvalCriteria) (string, error) {
 	var buildContext string
 	var data struct {
@@ -110,16 +111,17 @@ func (r *Runner) buildEvalImage(ctx context.Context, evals *session.EvalCriteria
 		return "", fmt.Errorf("executing dockerfile template: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "docker", "build", "-q", "-f-", ".")
+	containerRuntime := r.containerRuntimeOrDefault()
+	cmd := exec.CommandContext(ctx, containerRuntime, "build", "-q", "-f-", ".")
 	cmd.Dir = buildContext
 	cmd.Stdin = &dockerfile
 
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			return "", fmt.Errorf("docker build failed: %s", string(exitErr.Stderr))
+			return "", fmt.Errorf("%s build failed: %s", containerRuntime, string(exitErr.Stderr))
 		}
-		return "", fmt.Errorf("docker build failed: %w", err)
+		return "", fmt.Errorf("%s build failed: %w", containerRuntime, err)
 	}
 
 	return strings.TrimSpace(string(output)), nil

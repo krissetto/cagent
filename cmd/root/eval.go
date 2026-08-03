@@ -43,7 +43,8 @@ func newEvalCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.JudgeModel, "judge-model", defaultJudgeModel, "Model to use for relevance checking (format: provider/model)")
 	cmd.Flags().StringVar(&flags.outputDir, "output", "", "Directory for results and logs (default: <eval-dir>/results)")
 	cmd.Flags().StringSliceVar(&flags.Only, "only", nil, "Only run evaluations with file names matching these patterns (can be specified multiple times)")
-	cmd.Flags().StringVar(&flags.BaseImage, "base-image", "", "Custom base Docker image for running evaluations")
+	cmd.Flags().StringVar(&flags.BaseImage, "base-image", "", "Custom base image for running evaluations")
+	cmd.Flags().StringVar(&flags.ContainerRuntime, "container-runtime", evaluation.DefaultContainerRuntime, "Container runtime executable for building and running evaluations")
 	cmd.Flags().BoolVar(&flags.KeepContainers, "keep-containers", false, "Keep containers after evaluation (don't use --rm)")
 	cmd.Flags().StringSliceVarP(&flags.EnvVars, "env", "e", nil, "Environment variables to pass to container (KEY or KEY=VALUE)")
 	cmd.Flags().IntVar(&flags.Repeat, "repeat", 1, "Number of times to repeat each evaluation (useful for computing baselines)")
@@ -101,6 +102,7 @@ func (f *evalFlags) runEvalCommand(cmd *cobra.Command, args []string) (commandEr
 	fmt.Fprintf(logFile, "Evals dir: %s\n", evalsDir)
 	fmt.Fprintf(logFile, "Judge model: %s\n", f.JudgeModel)
 	fmt.Fprintf(logFile, "Concurrency: %d\n", f.Concurrency)
+	fmt.Fprintf(logFile, "Container runtime: %s\n", f.ContainerRuntime)
 	fmt.Fprintf(logFile, "\n")
 
 	// Create tee writer to write to both console and log file
