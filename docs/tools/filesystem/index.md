@@ -17,7 +17,7 @@ The filesystem tool gives agents the ability to explore codebases, read and edit
 
 | Tool                   | Description                                                               |
 | ---------------------- | ------------------------------------------------------------------------- |
-| `read_file`            | Read the complete contents of a file                                      |
+| `read_file`            | Read the contents of a file (whole file, or a line range of a text file)  |
 | `read_multiple_files`  | Read several files in one call (more efficient than multiple `read_file`) |
 | `write_file`           | Create or overwrite a file with new content                               |
 | `edit_file`            | Make line-based edits (find-and-replace) in an existing file              |
