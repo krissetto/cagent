@@ -130,7 +130,6 @@ func TestGetToken(t *testing.T) {
 		assert.Equal(t, valid, GetToken(t.Context()))
 		assert.Equal(t, 1, backend.refreshes())
 	})
-
 }
 
 func TestTokenExpired(t *testing.T) {
