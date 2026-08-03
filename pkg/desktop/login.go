@@ -29,9 +29,8 @@ func GetToken(ctx context.Context) string {
 
 	logUnusableToken(ctx, token, err)
 
+	// Signed out: a forced refresh can't help and would delay every caller.
 	if token == "" && !isLoggedIn(ctx) {
-		// Signed out (or Desktop unreachable): a forced refresh can't
-		// produce a token, and its polling budget would delay every caller.
 		return ""
 	}
 
@@ -50,9 +49,8 @@ func GetToken(ctx context.Context) string {
 	return token
 }
 
-// logUnusableToken records evidence of why Docker Desktop's token can't be
-// used as-is, so gateway auth failures can be attributed to a stale or broken
-// Desktop session rather than a rejection of a valid token.
+// logUnusableToken records why Docker Desktop's token can't be used as-is,
+// so gateway auth failures can be attributed from logs.
 func logUnusableToken(ctx context.Context, token string, err error) {
 	switch {
 	case err != nil:

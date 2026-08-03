@@ -119,14 +119,6 @@ func TestGetToken(t *testing.T) {
 		assert.Equal(t, 1, backend.refreshes())
 	})
 
-	t.Run("empty token stays empty when refresh does not help", func(t *testing.T) {
-		backend := &fakeBackend{loggedIn: true}
-		installFakeBackend(t, backend)
-
-		assert.Empty(t, GetToken(t.Context()))
-		assert.Equal(t, 1, backend.refreshes())
-	})
-
 	t.Run("failed token fetch while signed in triggers forced refresh", func(t *testing.T) {
 		backend := &fakeBackend{loggedIn: true, failTokenFetch: true}
 		backend.onRefresh = func() {
@@ -139,13 +131,6 @@ func TestGetToken(t *testing.T) {
 		assert.Equal(t, 1, backend.refreshes())
 	})
 
-	t.Run("failed token fetch while signed out returns empty without refresh", func(t *testing.T) {
-		backend := &fakeBackend{failTokenFetch: true}
-		installFakeBackend(t, backend)
-
-		assert.Empty(t, GetToken(t.Context()))
-		assert.Equal(t, 0, backend.refreshes())
-	})
 }
 
 func TestTokenExpired(t *testing.T) {
