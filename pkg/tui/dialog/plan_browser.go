@@ -221,12 +221,28 @@ func planRef(p plans.Plan) plans.Ref {
 	return plans.SharedRef(p.Name)
 }
 
+// planCurrentSessionLabel is the browser-row identity of the listed session
+// plan. The service only ever lists the active session's plan, so labelling
+// it beats showing a bare session ID that means nothing at a glance; the
+// full ID stays visible in the footer and the detail dialog.
+const planCurrentSessionLabel = "current session"
+
+// planDisplayName is the identity a browser row shows: the shared plan's
+// name, or the current-session label for the session plan.
+func planDisplayName(p plans.Plan) string {
+	if p.Scope == plans.ScopeSession {
+		return planCurrentSessionLabel
+	}
+	return p.Name
+}
+
 func (d *planBrowserDialog) applyFilter() {
 	query := strings.ToLower(strings.TrimSpace(d.filterInput.Value()))
 	d.filtered = d.filtered[:0]
 	for _, p := range d.all {
 		if query == "" ||
 			strings.Contains(strings.ToLower(p.Name), query) ||
+			strings.Contains(strings.ToLower(planDisplayName(p)), query) ||
 			strings.Contains(strings.ToLower(p.Title), query) ||
 			strings.Contains(strings.ToLower(p.Status), query) ||
 			strings.Contains(string(p.Scope), query) {
@@ -388,10 +404,11 @@ func (d *planBrowserDialog) openDetailCmd() tea.Cmd {
 	return core.CmdHandler(messages.OpenPlanDetailMsg{Ref: planRef(p)})
 }
 
-// guardedSharedPlan returns the selected plan when the given mutation applies
-// to it: it must be a shared plan with a displayed version. Session plans get
-// an explanatory notification instead of a failed service call.
-func (d *planBrowserDialog) guardedSharedPlan(action string) (plans.Plan, tea.Cmd, bool) {
+// guardedPlan returns the selected plan when the given action applies to it:
+// session plans support only edit, and shared plans must carry a displayed
+// version. A refused action yields an explanatory notification instead of a
+// failed service call.
+func (d *planBrowserDialog) guardedPlan(action string) (plans.Plan, tea.Cmd, bool) {
 	p, ok := d.selectedPlan()
 	if !ok {
 		return plans.Plan{}, nil, false
@@ -403,7 +420,7 @@ func (d *planBrowserDialog) guardedSharedPlan(action string) (plans.Plan, tea.Cm
 }
 
 func (d *planBrowserDialog) statusCmd() tea.Cmd {
-	p, cmd, ok := d.guardedSharedPlan("status")
+	p, cmd, ok := d.guardedPlan("status")
 	if !ok {
 		return cmd
 	}
@@ -411,7 +428,7 @@ func (d *planBrowserDialog) statusCmd() tea.Cmd {
 }
 
 func (d *planBrowserDialog) deleteCmd() tea.Cmd {
-	p, cmd, ok := d.guardedSharedPlan("delete")
+	p, cmd, ok := d.guardedPlan("delete")
 	if !ok {
 		return cmd
 	}
@@ -419,21 +436,25 @@ func (d *planBrowserDialog) deleteCmd() tea.Cmd {
 }
 
 func (d *planBrowserDialog) editCmd() tea.Cmd {
-	p, cmd, ok := d.guardedSharedPlan("edit")
+	p, cmd, ok := d.guardedPlan("edit")
 	if !ok {
 		return cmd
 	}
-	return core.CmdHandler(messages.EditPlanMsg{Ref: planRef(p), ExpectedVersion: *p.Version})
+	return core.CmdHandler(messages.EditPlanMsg{Ref: planRef(p), ExpectedVersion: planVersionOrZero(p)})
 }
 
-// planMutationGuard returns an explanatory notification when the plan cannot
-// be mutated from the host: session plans are read-only here, and a shared
-// plan without a version (which the service always provides) is refused
-// rather than mutated unguarded.
+// planMutationGuard returns an explanatory notification when the plan does
+// not support the action from the host: session plans support only edit —
+// they belong to their session and carry no shared-plan metadata — and a
+// shared plan without a version (which the service always provides) is
+// refused rather than mutated unguarded.
 func planMutationGuard(p plans.Plan, action string) tea.Cmd {
 	if p.Scope == plans.ScopeSession {
+		if action == "edit" {
+			return nil
+		}
 		return notification.InfoCmd(fmt.Sprintf(
-			"Session plans don't support %s: they belong to their session. Change the plan from within its session, or use a shared plan.", action))
+			"Session plans don't support %s: they belong to their session and carry no shared-plan metadata. Press e to edit the plan body, or use a shared plan.", action))
 	}
 	if p.Version == nil {
 		return notification.ErrorCmd(fmt.Sprintf("Cannot %s %q: no version is known; refresh (r) and retry.", action, p.Name))
@@ -572,7 +593,7 @@ func (d *planBrowserDialog) renderPlan(p plans.Plan, selected bool, maxWidth int
 	titleWidth := max(0, maxWidth-fixed)
 
 	row := scopeStyle.Render(planCell(string(p.Scope), planColScope)) + gap +
-		mainStyle.Render(planCell(p.Name, planColName)) + gap +
+		mainStyle.Render(planCell(planDisplayName(p), planColName)) + gap +
 		metaStyle.Render(planCell(planLabel(p.Status), planColStatus)) + gap +
 		metaStyle.Render(planCell(planVersionLabel(p.Version), planColVersion)) + gap +
 		metaStyle.Render(planCell(planTimeAgo(d.now(), p.UpdatedAt), planColUpdated)) + gap +
@@ -603,6 +624,15 @@ func planVersionLabel(version *int) string {
 		return "-"
 	}
 	return "v" + strconv.Itoa(*version)
+}
+
+// planVersionOrZero reads a plan's displayed version, with 0 as the
+// no-version sentinel for session plans (shared versions start at 1).
+func planVersionOrZero(p plans.Plan) int {
+	if p.Version == nil {
+		return 0
+	}
+	return *p.Version
 }
 
 func planTimeAgo(now, t time.Time) string {

@@ -152,6 +152,48 @@ func (s *service) Update(ctx context.Context, req UpdateRequest) (Plan, error) {
 	return sharedPlan(p), nil
 }
 
+// UpdateSession replaces the session plan's markdown through
+// sessionplan.WriteContent, whose atomic rename means a reader observes the
+// old or the new content, never a partial write, and an existing symlink
+// entry is replaced rather than followed. Session plans have no revisions,
+// so concurrent valid writers are last-write-wins by design. The pre-check
+// enforces the edit-never-creates contract — a missing plan is a
+// *NotFoundError — and, like every session-plan read, refuses to treat a
+// non-regular file as a plan.
+func (s *service) UpdateSession(ctx context.Context, sessionID, content string) (Plan, error) {
+	if err := validateContent(content); err != nil {
+		return Plan{}, err
+	}
+	path, err := sessionplan.Path(s.sessionDir, sessionID)
+	if err != nil {
+		return Plan{}, sessionError("update", sessionID, err)
+	}
+	info, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return Plan{}, &NotFoundError{Scope: ScopeSession, Name: sessionID}
+	case err != nil:
+		return Plan{}, &StorageError{Scope: ScopeSession, Op: "update", Err: err}
+	case !info.Mode().IsRegular():
+		return Plan{}, &CorruptError{Scope: ScopeSession, Name: sessionID, Err: fmt.Errorf("%s is not a regular file", path)}
+	}
+	// Observe cancellation before persisting, mirroring the shared storage:
+	// a caller whose deadline already expired must not mutate the plan.
+	if err := ctx.Err(); err != nil {
+		return Plan{}, &StorageError{Scope: ScopeSession, Op: "update", Err: err}
+	}
+	// An external deletion can still land between the pre-check and this
+	// write, which would then recreate the plan. That narrow race is
+	// accepted; closing it would take platform-specific no-create
+	// publication machinery for little practical gain.
+	if _, err := sessionplan.WriteContent(s.sessionDir, sessionID, content); err != nil {
+		return Plan{}, sessionError("update", sessionID, err)
+	}
+	// Read the plan back so the caller gets the stored bytes and the real
+	// file modification time.
+	return s.getSession(sessionID)
+}
+
 func (s *service) SetStatus(ctx context.Context, req SetStatusRequest) (Plan, error) {
 	if err := checkSharedMutation("set_status", req.Ref); err != nil {
 		return Plan{}, err

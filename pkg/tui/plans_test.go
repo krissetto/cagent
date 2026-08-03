@@ -462,6 +462,107 @@ func TestHandleEditPlan_VersionDriftRefreshesInsteadOfEditing(t *testing.T) {
 	assert.True(t, refreshed, "version drift must refresh the data on screen")
 }
 
+// TestSessionPlanEdit_PersistsAndRefreshes drives the whole session edit:
+// the preparation reads the plan and seeds a session-named draft without any
+// drift warning (session plans have no versions), dispatching the prepared
+// edit launches the editor, and the closed editor's draft is persisted
+// last-write-wins, confirmed with a session-appropriate notification, and
+// refreshed into the open browser.
+func TestSessionPlanEdit_PersistsAndRefreshes(t *testing.T) {
+	t.Parallel()
+	m, svc, sess, sessionDir := newPlansTestModel(t)
+	_, err := sessionplan.WriteContent(sessionDir, sess.ID, "# session plan v1")
+	require.NoError(t, err)
+	openPlanBrowser(t, m, plans.ListResult{Plans: []plans.Plan{}})
+
+	_, cmd := m.Update(messages.EditPlanMsg{Ref: plans.SessionRef(sess.ID), ExpectedVersion: 0})
+	require.NotNil(t, cmd)
+	result := cmd()
+	ready, ok := result.(planEditReadyMsg)
+	require.True(t, ok, "got %T", result)
+	require.NoError(t, ready.err)
+	require.NoError(t, ready.draftErr)
+	require.NotEmpty(t, ready.draftPath, "a session edit must draft; there is no version to drift")
+	t.Cleanup(func() { _ = os.Remove(ready.draftPath) })
+	assert.Zero(t, ready.currentVersion, "session plans have no versions")
+	assert.Contains(t, filepath.Base(ready.draftPath), sess.ID[:8], "the draft is named after the session")
+
+	data, err := os.ReadFile(ready.draftPath)
+	require.NoError(t, err)
+	assert.Equal(t, "# session plan v1", string(data), "the draft must be seeded with the current body")
+
+	// Dispatching the prepared edit launches the editor — an exec command,
+	// not a drift or failure notification.
+	_, editorCmd := m.Update(result)
+	require.NotNil(t, editorCmd, "the prepared edit must launch the editor")
+	assert.Empty(t, notificationTexts(collectMsgs(editorCmd)), "the launch must not be a notification")
+
+	// The editor closed with new content: the plan is replaced and the
+	// browser refreshed.
+	require.NoError(t, os.WriteFile(ready.draftPath, []byte("# edited in the editor"), 0o600))
+	msgs := runPlanFlow(t, m, planEditorClosedMsg{ref: plans.SessionRef(sess.ID), path: ready.draftPath})
+	texts := notificationTexts(msgs)
+	require.NotEmpty(t, texts)
+	assert.Contains(t, texts[0], "session plan")
+	assert.NotContains(t, texts[0], "v0", "a session edit must not claim a shared-plan version")
+	assert.NotContains(t, texts[0], "shared")
+
+	stored, err := svc.Get(t.Context(), plans.SessionRef(sess.ID))
+	require.NoError(t, err)
+	assert.Equal(t, "# edited in the editor", stored.Content)
+
+	dataMsg, ok := firstOfType[dialog.PlanBrowserDataMsg](msgs)
+	require.True(t, ok, "a successful session edit must refresh the browser")
+	require.Len(t, dataMsg.Result.Plans, 1)
+	assert.Equal(t, sess.ID, dataMsg.Result.Plans[0].SessionID)
+
+	_, err = os.Stat(ready.draftPath)
+	assert.True(t, os.IsNotExist(err), "the draft is removed after a successful write")
+}
+
+func TestHandlePlanEditorClosed_SessionEmptyDraftLeavesPlan(t *testing.T) {
+	t.Parallel()
+	m, svc, sess, sessionDir := newPlansTestModel(t)
+	_, err := sessionplan.WriteContent(sessionDir, sess.ID, "# keep me")
+	require.NoError(t, err)
+
+	draft := filepath.Join(t.TempDir(), "draft.md")
+	require.NoError(t, os.WriteFile(draft, []byte("  \n \n"), 0o600))
+
+	msgs := runPlanFlow(t, m, planEditorClosedMsg{ref: plans.SessionRef(sess.ID), path: draft})
+	texts := notificationTexts(msgs)
+	require.NotEmpty(t, texts)
+	assert.Contains(t, texts[0], "Session plan left unchanged")
+	assert.NotContains(t, texts[0], `""`, "the message must not render the empty shared-plan name")
+
+	stored, err := svc.Get(t.Context(), plans.SessionRef(sess.ID))
+	require.NoError(t, err)
+	assert.Equal(t, "# keep me", stored.Content, "an empty draft must never be committed")
+}
+
+// TestHandlePlanEditorClosed_SessionPlanVanishedKeepsDraft proves a session
+// edit whose plan disappeared while the editor was open never turns into a
+// create: the write is refused as not-found, the plan stays missing, and the
+// draft is kept.
+func TestHandlePlanEditorClosed_SessionPlanVanishedKeepsDraft(t *testing.T) {
+	t.Parallel()
+	m, svc, sess, _ := newPlansTestModel(t) // no session plan on disk
+
+	draft := filepath.Join(t.TempDir(), "draft.md")
+	require.NoError(t, os.WriteFile(draft, []byte("edited content"), 0o600))
+
+	msgs := runPlanFlow(t, m, planEditorClosedMsg{ref: plans.SessionRef(sess.ID), path: draft})
+	texts := notificationTexts(msgs)
+	require.NotEmpty(t, texts)
+	assert.Contains(t, texts[0], "No session plan")
+	assert.Contains(t, strings.Join(texts, " "), draft, "the notification must point at the kept draft")
+
+	_, err := svc.Get(t.Context(), plans.SessionRef(sess.ID))
+	require.Error(t, err, "the refused edit must not create a session plan")
+	_, err = os.Stat(draft)
+	require.NoError(t, err, "the draft must be kept when the write is refused")
+}
+
 func TestSessionPlanUpdatedEvent_RefreshesOpenPlanDialogs(t *testing.T) {
 	t.Parallel()
 	m, _, sess, sessionDir := newPlansTestModel(t)

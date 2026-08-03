@@ -629,6 +629,123 @@ func TestService_UpdateEmptyContent(t *testing.T) {
 	assert.Contains(t, invalid.Message, "content must not be empty")
 }
 
+// --- UpdateSession -------------------------------------------------------------
+
+func TestService_UpdateSession(t *testing.T) {
+	t.Parallel()
+	svc, _, sessionDir := newTestService(t)
+	path := writeSessionPlan(t, sessionDir, "sess-1", "# old plan")
+
+	p, err := svc.UpdateSession(t.Context(), "sess-1", "# new plan\nstep 1\n")
+	require.NoError(t, err)
+	assert.Equal(t, ScopeSession, p.Scope)
+	assert.Equal(t, "sess-1", p.Name)
+	assert.Equal(t, "sess-1", p.SessionID)
+	assert.Equal(t, "# new plan\nstep 1\n", p.Content)
+	assert.Equal(t, path, p.Path)
+	assert.Nil(t, p.Version, "session plans must not expose a version")
+	assert.Empty(t, p.Status)
+	assert.False(t, p.UpdatedAt.IsZero())
+
+	got, err := svc.Get(t.Context(), SessionRef("sess-1"))
+	require.NoError(t, err)
+	assert.Equal(t, "# new plan\nstep 1\n", got.Content)
+}
+
+func TestService_UpdateSessionLastWriteWins(t *testing.T) {
+	t.Parallel()
+	svc, _, sessionDir := newTestService(t)
+	writeSessionPlan(t, sessionDir, "sess-1", "v1")
+
+	// Session plans have no versions: repeated writes simply replace.
+	_, err := svc.UpdateSession(t.Context(), "sess-1", "v2")
+	require.NoError(t, err)
+	p, err := svc.UpdateSession(t.Context(), "sess-1", "v3")
+	require.NoError(t, err)
+	assert.Equal(t, "v3", p.Content)
+	assert.Nil(t, p.Version)
+}
+
+func TestService_UpdateSessionInvalidID(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newTestService(t)
+
+	for _, id := range []string{"", "../escape", "a/b"} {
+		_, err := svc.UpdateSession(t.Context(), id, "content")
+		var invalid *ValidationError
+		require.ErrorAs(t, err, &invalid, "session ID %q should be invalid", id)
+	}
+}
+
+func TestService_UpdateSessionNeverCreates(t *testing.T) {
+	t.Parallel()
+	svc, _, sessionDir := newTestService(t)
+
+	_, err := svc.UpdateSession(t.Context(), "ghost", "content")
+	var notFound *NotFoundError
+	require.ErrorAs(t, err, &notFound)
+	assert.Equal(t, ScopeSession, notFound.Scope)
+	assert.Equal(t, "ghost", notFound.Name)
+
+	_, err = svc.Get(t.Context(), SessionRef("ghost"))
+	require.ErrorAs(t, err, &notFound, "the refused update must not have created the plan")
+	assert.NoFileExists(t, filepath.Join(sessionDir, "ghost.md"))
+}
+
+func TestService_UpdateSessionValidation(t *testing.T) {
+	t.Parallel()
+	svc, _, sessionDir := newTestService(t)
+	writeSessionPlan(t, sessionDir, "sess-1", "# old plan")
+	var invalid *ValidationError
+
+	_, err := svc.UpdateSession(t.Context(), "sess-1", "")
+	require.ErrorAs(t, err, &invalid)
+	assert.Contains(t, invalid.Message, "content must not be empty")
+
+	_, err = svc.UpdateSession(t.Context(), "sess-1", strings.Repeat("a", plan.MaxPlanContentSize+1))
+	require.ErrorAs(t, err, &invalid)
+	assert.Contains(t, invalid.Message, "maximum plan size")
+
+	got, err := svc.Get(t.Context(), SessionRef("sess-1"))
+	require.NoError(t, err)
+	assert.Equal(t, "# old plan", got.Content, "a refused update must leave the plan untouched")
+}
+
+// TestService_UpdateSessionNotRegularFile proves a directory squatting on the
+// session plan path refuses the update as a *CorruptError, mirroring Get.
+func TestService_UpdateSessionNotRegularFile(t *testing.T) {
+	t.Parallel()
+	svc, _, sessionDir := newTestService(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(sessionDir, "sess-1.md"), 0o700))
+
+	_, err := svc.UpdateSession(t.Context(), "sess-1", "content")
+	var corrupt *CorruptError
+	require.ErrorAs(t, err, &corrupt)
+	assert.Equal(t, ScopeSession, corrupt.Scope)
+	assert.Equal(t, "sess-1", corrupt.Name)
+}
+
+// TestService_UpdateSessionExpiredContext proves cancellation is observed
+// before persistence: an already-expired context never mutates the plan.
+func TestService_UpdateSessionExpiredContext(t *testing.T) {
+	t.Parallel()
+	svc, _, sessionDir := newTestService(t)
+	writeSessionPlan(t, sessionDir, "sess-1", "# old plan")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := svc.UpdateSession(ctx, "sess-1", "new content")
+	var storageErr *StorageError
+	require.ErrorAs(t, err, &storageErr)
+	assert.Equal(t, ScopeSession, storageErr.Scope)
+	assert.Equal(t, "update", storageErr.Op)
+	require.ErrorIs(t, err, context.Canceled)
+
+	got, err := svc.Get(t.Context(), SessionRef("sess-1"))
+	require.NoError(t, err)
+	assert.Equal(t, "# old plan", got.Content, "an expired context must not mutate the plan")
+}
+
 // --- SetStatus ---------------------------------------------------------------
 
 func TestService_SetStatusFreeForm(t *testing.T) {

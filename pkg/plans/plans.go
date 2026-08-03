@@ -7,10 +7,11 @@
 // The package wraps the existing storage rather than duplicating it. Shared
 // plans go through a caller-supplied plan.Storage — pass plan.SharedStorage()
 // to operate on the same store, and thus the same mutex, as the plan tools of
-// agents running in this process. The session plan is read through the
-// sessionplan helpers. Session plans have no revisions or optimistic locking
-// and belong to their session, so the Service exposes them read/export-only
-// and rejects mutations with a typed *UnsupportedError.
+// agents running in this process. The session plan is read and written
+// through the sessionplan helpers. Session plans have no revisions or
+// optimistic locking: the version-guarded mutations reject them with a typed
+// *UnsupportedError, and the one supported write is UpdateSession, which
+// replaces the body of an existing plan last-write-wins.
 package plans
 
 import (
@@ -26,14 +27,17 @@ const (
 	// collaborate on. Shared plans are versioned and fully mutable.
 	ScopeShared Scope = "shared"
 	// ScopeSession is the per-session plan of the "draft, review, execute"
-	// workflow. At most one exists per session; it has no versions and is
-	// read/export-only through the Service.
+	// workflow. At most one exists per session; it has no versions, so the
+	// Service reads, exports, and replaces its body through UpdateSession
+	// but rejects the version-guarded mutations.
 	ScopeSession Scope = "session"
 )
 
-// Mutable reports whether plans in this scope can be created, updated, and
-// deleted through the Service, so a frontend can disable editing up front
-// instead of provoking an *UnsupportedError.
+// Mutable reports whether plans in this scope support the full set of
+// version-guarded mutations (create, update, set-status, delete), so a
+// frontend can disable those actions up front instead of provoking an
+// *UnsupportedError. Session plans are not Mutable in this sense; their
+// body is still replaceable through UpdateSession.
 func (s Scope) Mutable() bool { return s == ScopeShared }
 
 // Plan is the host-facing view of a plan from either scope.
@@ -170,9 +174,11 @@ type ExportResult struct {
 }
 
 // Service is the host-facing contract for managing plans across both scopes.
-// Mutations address shared plans only; a mutation aimed at a session plan
-// fails with a typed *UnsupportedError. Failures are reported as the typed
-// errors of this package so frontends never classify by error text.
+// The version-guarded mutations address shared plans only; one aimed at a
+// session plan fails with a typed *UnsupportedError, and the session plan's
+// body is replaced through the dedicated UpdateSession instead. Failures are
+// reported as the typed errors of this package so frontends never classify
+// by error text.
 type Service interface {
 	// List returns plan metadata (Content is left empty): every shared plan
 	// sorted by name and, when opts.SessionID is set, that session's plan
@@ -187,6 +193,11 @@ type Service interface {
 	// Update replaces the content (and optionally metadata) of an existing
 	// shared plan, honouring req.ExpectedVersion.
 	Update(ctx context.Context, req UpdateRequest) (Plan, error)
+	// UpdateSession replaces the content of the session's existing plan.
+	// Session plans have no versions, so the write is unguarded and
+	// last-write-wins by design. A missing plan is a *NotFoundError:
+	// UpdateSession edits, it never creates.
+	UpdateSession(ctx context.Context, sessionID, content string) (Plan, error)
 	// SetStatus sets the free-form status of an existing shared plan,
 	// honouring req.ExpectedVersion.
 	SetStatus(ctx context.Context, req SetStatusRequest) (Plan, error)

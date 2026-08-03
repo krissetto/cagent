@@ -149,7 +149,7 @@ func (d *planDetailDialog) handleKeyPress(msg tea.KeyPressMsg) (layout.Model, te
 		if cmd := planMutationGuard(d.plan, "edit"); cmd != nil {
 			return d, cmd
 		}
-		return d, core.CmdHandler(messages.EditPlanMsg{Ref: d.PlanRef(), ExpectedVersion: *d.plan.Version})
+		return d, core.CmdHandler(messages.EditPlanMsg{Ref: d.PlanRef(), ExpectedVersion: planVersionOrZero(d.plan)})
 	}
 
 	return d, nil
@@ -183,7 +183,7 @@ func (d *planDetailDialog) headerLines(contentWidth int) []string {
 
 	if p.Scope == plans.ScopeSession {
 		lines = append(lines,
-			field("Scope", "session — owned by its session, read-only here"),
+			field("Scope", "session — owned by its session, body editable here"),
 			field("Session", p.SessionID),
 			field("Version", "- (session plans have no versions)"),
 		)
@@ -245,8 +245,12 @@ func (d *planDetailDialog) renderContent(contentWidth int) []string {
 
 func (d *planDetailDialog) helpKeys() []string {
 	keys := []string{"↑/↓", "scroll", "r", "refresh", "x", "export"}
-	if d.plan.Scope.Mutable() {
+	switch {
+	case d.plan.Scope.Mutable():
 		keys = append(keys, "s", "status", "e", "edit", "d", "delete")
+	case d.plan.Scope == plans.ScopeSession:
+		// Session plans support editing the body only.
+		keys = append(keys, "e", "edit")
 	}
 	return append(keys, "esc", "close")
 }

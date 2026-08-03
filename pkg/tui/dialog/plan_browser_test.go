@@ -95,7 +95,9 @@ func TestPlanBrowserRendersScopeIdentityStatusVersionTimeTitle(t *testing.T) {
 	view := d.View()
 	assert.Contains(t, view, "session", "scope column must name the session scope")
 	assert.Contains(t, view, "shared", "scope column must name the shared scope")
-	assert.Contains(t, view, "11112222-3333-4444-55", "session plan identity is its session ID")
+	assert.Contains(t, view, "current session", "the session plan row is labelled as the current session's")
+	assert.Contains(t, view, "11112222-3333-4444-5555-666677778888",
+		"the footer keeps the full session ID of the selected session plan")
 	assert.Contains(t, view, "release")
 	assert.Contains(t, view, "in-progress")
 	assert.Contains(t, view, "v3", "shared plan version must be shown")
@@ -179,6 +181,26 @@ func TestPlanBrowserFilterNoMatches(t *testing.T) {
 	assert.Contains(t, d.View(), "No plans match the filter")
 }
 
+// TestPlanBrowserSessionRowSearchable proves the session row matches its
+// "current session" label as well as its session ID.
+func TestPlanBrowserSessionRowSearchable(t *testing.T) {
+	t.Parallel()
+	d := newTestPlanBrowser(t, testPlanListing())
+
+	d.Update(letterKey('/'))
+	for _, r := range "current" {
+		d.Update(letterKey(r))
+	}
+	require.Len(t, d.filtered, 1, "filtering by the label must keep only the session row")
+	assert.Equal(t, plans.ScopeSession, d.filtered[0].Scope)
+
+	// The session ID itself stays searchable too.
+	d.filterInput.SetValue("11112222")
+	d.applyFilter()
+	require.Len(t, d.filtered, 1)
+	assert.Equal(t, plans.ScopeSession, d.filtered[0].Scope)
+}
+
 func TestPlanBrowserEnterOpensDetail(t *testing.T) {
 	t.Parallel()
 	d := newTestPlanBrowser(t, testPlanListing())
@@ -256,12 +278,13 @@ func TestPlanBrowserSessionMutationsUnsupported(t *testing.T) {
 	t.Parallel()
 	d := newTestPlanBrowser(t, testPlanListing()) // session plan selected
 
-	for _, r := range []rune{'s', 'd', 'e'} {
+	for _, r := range []rune{'s', 'd'} {
 		_, cmd := d.Update(letterKey(r))
 		msgs := collectMsgs(cmd)
 		note, ok := firstMsgOfType[notification.ShowMsg](msgs)
 		require.True(t, ok, "%c on a session plan must show an explanatory notification", r)
 		assert.Contains(t, note.Text, "Session plans")
+		assert.Contains(t, note.Text, "edit", "the notification must point at the supported edit action")
 		_, opened := firstMsgOfType[OpenDialogMsg](msgs)
 		assert.False(t, opened, "%c must not open an action dialog for session plans", r)
 		_, statusEmitted := firstMsgOfType[messages.SetPlanStatusMsg](msgs)
@@ -271,6 +294,22 @@ func TestPlanBrowserSessionMutationsUnsupported(t *testing.T) {
 		_, editEmitted := firstMsgOfType[messages.EditPlanMsg](msgs)
 		assert.False(t, editEmitted)
 	}
+}
+
+// TestPlanBrowserSessionEditEmitsIntent proves e on the session row edits the
+// current session plan with the no-version sentinel 0 instead of refusing.
+func TestPlanBrowserSessionEditEmitsIntent(t *testing.T) {
+	t.Parallel()
+	d := newTestPlanBrowser(t, testPlanListing()) // session plan selected
+
+	_, cmd := d.Update(letterKey('e'))
+	msgs := collectMsgs(cmd)
+	editMsg, ok := firstMsgOfType[messages.EditPlanMsg](msgs)
+	require.True(t, ok, "e must edit the current session plan")
+	assert.Equal(t, plans.SessionRef("11112222-3333-4444-5555-666677778888"), editMsg.Ref)
+	assert.Equal(t, 0, editMsg.ExpectedVersion, "session plans have no versions; 0 is the sentinel")
+	_, notified := firstMsgOfType[notification.ShowMsg](msgs)
+	assert.False(t, notified, "a supported edit must not produce an unsupported notification")
 }
 
 func TestPlanBrowserDeleteFlow(t *testing.T) {
