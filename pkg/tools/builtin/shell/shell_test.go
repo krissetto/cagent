@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,14 +24,14 @@ func TestNew(t *testing.T) {
 
 	assert.NotNil(t, tool)
 	assert.NotNil(t, tool.handler)
-	assert.Equal(t, "/bin/bash", tool.handler.shell)
+	assertPlatformDefaultShell(t, tool.handler, "/bin/bash")
 
 	t.Setenv("SHELL", "")
 	tool = New(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
 
 	assert.NotNil(t, tool)
 	assert.NotNil(t, tool.handler)
-	assert.Equal(t, "/bin/sh", tool.handler.shell, "Should default to /bin/sh when SHELL is not set")
+	assertPlatformDefaultShell(t, tool.handler, "/bin/sh")
 }
 
 func TestShellTool_HandlerEcho(t *testing.T) {
@@ -51,13 +52,11 @@ func TestShellTool_HandlerWithCwd(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	result, err := tool.handler.RunShell(t.Context(), RunShellArgs{
-		Cmd: "pwd",
+		Cmd: pwdCmd(),
 		Cwd: tmpDir,
 	}, tools.NopRuntime{})
 	require.NoError(t, err)
-	// The output might contain extra newlines or other characters,
-	// so we just check if it contains the temp dir path
-	assert.Contains(t, result.Output, tmpDir)
+	assertSamePath(t, tmpDir, strings.TrimSpace(result.Output))
 }
 
 func TestRunShellArgs_UnmarshalJSON_AcceptsCmdAndCommand(t *testing.T) {
@@ -207,7 +206,11 @@ func TestShellTool_Instructions(t *testing.T) {
 func TestResolveWorkDir(t *testing.T) {
 	t.Parallel()
 
-	workingDir := "/configured/project"
+	// resolveWorkDir is pure path manipulation; the directories need not
+	// exist. Deriving them from TempDir keeps the expectations portable
+	// (drive-letter absolutes on Windows, slash-rooted elsewhere).
+	workingDir := filepath.Join(t.TempDir(), "configured", "project")
+	other := filepath.Join(t.TempDir(), "other")
 	h := &shellHandler{workingDir: workingDir}
 
 	tests := []struct {
@@ -217,10 +220,10 @@ func TestResolveWorkDir(t *testing.T) {
 	}{
 		{name: "empty defaults to workingDir", cwd: "", expected: workingDir},
 		{name: "dot defaults to workingDir", cwd: ".", expected: workingDir},
-		{name: "absolute path unchanged", cwd: "/tmp/other", expected: "/tmp/other"},
-		{name: "relative path joined with workingDir", cwd: "src/pkg", expected: "/configured/project/src/pkg"},
-		{name: "relative with dot prefix", cwd: "./subdir", expected: "/configured/project/subdir"},
-		{name: "relative with parent traversal", cwd: "../sibling", expected: "/configured/sibling"},
+		{name: "absolute path unchanged", cwd: other, expected: other},
+		{name: "relative path joined with workingDir", cwd: "src/pkg", expected: filepath.Join(workingDir, "src", "pkg")},
+		{name: "relative with dot prefix", cwd: "./subdir", expected: filepath.Join(workingDir, "subdir")},
+		{name: "relative with parent traversal", cwd: "../sibling", expected: filepath.Join(filepath.Dir(workingDir), "sibling")},
 	}
 
 	for _, tt := range tests {
@@ -265,18 +268,19 @@ func TestShellTool_RelativeCwdResolvesAgainstWorkingDir(t *testing.T) {
 	t.Parallel()
 	// Create a directory structure: workingDir/subdir/
 	workingDir := t.TempDir()
-	subdir := workingDir + "/subdir"
+	subdir := filepath.Join(workingDir, "subdir")
 	require.NoError(t, os.Mkdir(subdir, 0o755))
 
 	tool := New(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: workingDir}})
 
 	result, err := tool.handler.RunShell(t.Context(), RunShellArgs{
-		Cmd: "pwd",
+		Cmd: pwdCmd(),
 		Cwd: "subdir",
 	}, tools.NopRuntime{})
 	require.NoError(t, err)
-	assert.Contains(t, result.Output, subdir,
-		"relative cwd must resolve against the configured workingDir, not the process cwd")
+	// The relative cwd must resolve against the configured workingDir,
+	// not the process cwd.
+	assertSamePath(t, subdir, strings.TrimSpace(result.Output))
 }
 
 // Regression test for a shell-tool hang caused by backgrounded grandchildren.

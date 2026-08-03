@@ -219,15 +219,15 @@ func TestCommandHookUsesPerHookEnvAndWorkingDir(t *testing.T) {
 
 	exec := NewExecutor(&Config{SessionStart: []Hook{{
 		Type:       HookTypeCommand,
-		Command:    `printf '{"hook_specific_output":{"additional_context":"%s:%s"}}' "$HOOK_VALUE" "$(pwd)"`,
+		Command:    emitContextEnvPwdCmd("HOOK_VALUE"),
 		Env:        map[string]string{"HOOK_VALUE": "from-hook"},
 		WorkingDir: "scripts",
 	}}}, baseDir, os.Environ())
 
 	result, err := exec.Dispatch(t.Context(), EventSessionStart, &Input{SessionID: "s"})
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(result.AdditionalContext, "from-hook:"), result.AdditionalContext)
-	assert.True(t, strings.HasSuffix(result.AdditionalContext, "/scripts"), result.AdditionalContext)
+	require.True(t, strings.HasPrefix(result.AdditionalContext, "from-hook:"), result.AdditionalContext)
+	assertSamePath(t, scriptsDir, strings.TrimPrefix(result.AdditionalContext, "from-hook:"))
 }
 
 // TestCommandHookExpandsEnvRefs pins the ${env.X} expansion contract for
@@ -244,7 +244,7 @@ func TestCommandHookExpandsEnvRefs(t *testing.T) {
 
 	exec := NewExecutor(&Config{SessionStart: []Hook{{
 		Type:    HookTypeCommand,
-		Command: `printf '{"hook_specific_output":{"additional_context":"%s:%s:%s"}}' "$HOOK_VALUE" "$HOOK_LITERAL" "$(pwd)"`,
+		Command: emitContextEnvPwdCmd("HOOK_VALUE", "HOOK_LITERAL"),
 		Env: map[string]string{
 			"HOOK_VALUE":   "v-${env.HOOK_TEST_TOKEN}",
 			"HOOK_LITERAL": "pa$$word",
@@ -254,8 +254,8 @@ func TestCommandHookExpandsEnvRefs(t *testing.T) {
 
 	result, err := exec.Dispatch(t.Context(), EventSessionStart, &Input{SessionID: "s"})
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(result.AdditionalContext, "v-tok:pa$$word:"), result.AdditionalContext)
-	assert.True(t, strings.HasSuffix(result.AdditionalContext, "/scripts"), result.AdditionalContext)
+	require.True(t, strings.HasPrefix(result.AdditionalContext, "v-tok:pa$$word:"), result.AdditionalContext)
+	assertSamePath(t, scriptsDir, strings.TrimPrefix(result.AdditionalContext, "v-tok:pa$$word:"))
 }
 
 // TestCommandHookDefaultsToExecutorWorkingDir pins that a hook WITHOUT a
@@ -267,21 +267,16 @@ func TestCommandHookExpandsEnvRefs(t *testing.T) {
 func TestCommandHookDefaultsToExecutorWorkingDir(t *testing.T) {
 	t.Parallel()
 
-	// Resolve symlinks so the comparison is stable on macOS, where
-	// TempDir lives under /var -> /private/var.
-	workDir, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
+	workDir := t.TempDir()
 
 	exec := NewExecutor(&Config{SessionStart: []Hook{{
 		Type:    HookTypeCommand,
-		Command: `printf '{"hook_specific_output":{"additional_context":"%s"}}' "$(pwd)"`,
+		Command: emitContextEnvPwdCmd(),
 	}}}, workDir, os.Environ())
 
 	result, err := exec.Dispatch(t.Context(), EventSessionStart, &Input{SessionID: "s"})
 	require.NoError(t, err)
-	got, err := filepath.EvalSymlinks(strings.TrimSpace(result.AdditionalContext))
-	require.NoError(t, err)
-	assert.Equal(t, workDir, got)
+	assertSamePath(t, workDir, strings.TrimSpace(result.AdditionalContext))
 }
 
 func TestHookOnErrorBlockCanDenyNonFailClosedEvent(t *testing.T) {

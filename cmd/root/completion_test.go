@@ -57,7 +57,7 @@ func TestCompleteAgentFilename(t *testing.T) {
 				require.NoError(t, os.Mkdir(filepath.Join(dir, "subdir"), 0o755))
 			},
 			toComplete:        "./sub",
-			wantCompletions:   []string{"./subdir/"},
+			wantCompletions:   []string{"./subdir" + string(filepath.Separator)},
 			wantNoSpace:       true, // directory completion should NOT add space
 			wantNoFileComp:    true,
 			useRelativePrefix: true,
@@ -70,7 +70,7 @@ func TestCompleteAgentFilename(t *testing.T) {
 				require.NoError(t, os.Mkdir(filepath.Join(dir, "mydir"), 0o755))
 			},
 			toComplete:        "./my",
-			wantCompletions:   []string{"./myagent.yaml", "./mydir/"},
+			wantCompletions:   []string{"./myagent.yaml", "./mydir" + string(filepath.Separator)},
 			wantNoSpace:       false, // multiple completions, no NoSpace
 			wantNoFileComp:    true,
 			useRelativePrefix: true,
@@ -82,7 +82,7 @@ func TestCompleteAgentFilename(t *testing.T) {
 				require.NoError(t, os.Mkdir(filepath.Join(dir, "onlydir"), 0o755))
 			},
 			toComplete:        "./only",
-			wantCompletions:   []string{"./onlydir/"},
+			wantCompletions:   []string{"./onlydir" + string(filepath.Separator)},
 			wantNoSpace:       true,
 			wantNoFileComp:    true,
 			useRelativePrefix: true,

@@ -1,9 +1,10 @@
 package path
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/docker/docker-agent/pkg/paths"
 )
 
 // RelativeTo returns p relative to baseDir when both paths are absolute and
@@ -27,8 +28,8 @@ func RelativeTo(p, baseDir string) string {
 
 // ShortenHome replaces the current user's home directory prefix with "~".
 func ShortenHome(p string) string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil || homeDir == "" {
+	homeDir := paths.GetHomeDir()
+	if homeDir == "" {
 		return p
 	}
 	return ShortenHomeDir(p, homeDir)

@@ -10,6 +10,8 @@ import (
 func TestResolve(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	workspace := t.TempDir()
+	absolute := filepath.Join(t.TempDir(), "app")
 
 	tests := []struct {
 		name              string
@@ -17,11 +19,11 @@ func TestResolve(t *testing.T) {
 		agentWorkingDir   string
 		want              string
 	}{
-		{name: "empty uses agent working dir", agentWorkingDir: "/workspace", want: "/workspace"},
-		{name: "absolute wins", toolsetWorkingDir: "/tmp/app", agentWorkingDir: "/workspace", want: "/tmp/app"},
-		{name: "relative joins agent dir", toolsetWorkingDir: "tools/mcp", agentWorkingDir: "/workspace", want: "/workspace/tools/mcp"},
-		{name: "relative without agent dir remains relative", toolsetWorkingDir: "tools/mcp", want: "tools/mcp"},
-		{name: "tilde expands", toolsetWorkingDir: "~/projects/app", agentWorkingDir: "/workspace", want: filepath.Join(home, "projects", "app")},
+		{name: "empty uses agent working dir", agentWorkingDir: workspace, want: workspace},
+		{name: "absolute wins", toolsetWorkingDir: absolute, agentWorkingDir: workspace, want: absolute},
+		{name: "relative joins agent dir", toolsetWorkingDir: "tools/mcp", agentWorkingDir: workspace, want: filepath.Join(workspace, "tools", "mcp")},
+		{name: "relative without agent dir remains relative", toolsetWorkingDir: "tools/mcp", want: filepath.Clean("tools/mcp")},
+		{name: "tilde expands", toolsetWorkingDir: "~/projects/app", agentWorkingDir: workspace, want: filepath.Join(home, "projects", "app")},
 	}
 
 	for _, tt := range tests {
@@ -33,8 +35,9 @@ func TestResolve(t *testing.T) {
 }
 
 func TestResolveEnvVarExpansion(t *testing.T) {
-	t.Setenv("TEST_WORKING_DIR_VAR", "/custom/path")
+	custom := t.TempDir()
+	t.Setenv("TEST_WORKING_DIR_VAR", custom)
 
-	got := Resolve("${TEST_WORKING_DIR_VAR}/app", "/workspace")
-	assert.Equal(t, "/custom/path/app", got)
+	got := Resolve("${TEST_WORKING_DIR_VAR}/app", t.TempDir())
+	assert.Equal(t, filepath.Join(custom, "app"), got)
 }

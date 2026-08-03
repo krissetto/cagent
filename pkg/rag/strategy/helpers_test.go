@@ -29,8 +29,10 @@ func newDBConfig(t *testing.T, value string) latest.RAGDatabaseConfig {
 
 func TestMakeAbsolute_WithParentDir(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "/parent/relative.go", makeAbsolute("relative.go", "/parent"))
-	assert.Equal(t, "/absolute/file.go", makeAbsolute("/absolute/file.go", "/parent"))
+	parent := t.TempDir()
+	absolute := filepath.Join(t.TempDir(), "absolute", "file.go")
+	assert.Equal(t, filepath.Join(parent, "relative.go"), makeAbsolute("relative.go", parent))
+	assert.Equal(t, absolute, makeAbsolute(absolute, parent))
 }
 
 func TestMakeAbsolute_EmptyParentDir(t *testing.T) {
@@ -54,16 +56,18 @@ func TestResolveDatabasePath_EmptyParentDir(t *testing.T) {
 
 func TestResolveDatabasePath_AbsolutePathIgnoresParentDir(t *testing.T) {
 	t.Parallel()
-	result, err := ResolveDatabasePath(newDBConfig(t, "/absolute/my.db"), "/parent", "default")
+	absolute := filepath.Join(t.TempDir(), "absolute", "my.db")
+	result, err := ResolveDatabasePath(newDBConfig(t, absolute), t.TempDir(), "default")
 	require.NoError(t, err)
-	assert.Equal(t, "/absolute/my.db", result)
+	assert.Equal(t, absolute, result)
 }
 
 func TestResolveDatabasePath_RelativeWithParentDir(t *testing.T) {
 	t.Parallel()
-	result, err := ResolveDatabasePath(newDBConfig(t, "./my.db"), "/parent", "default")
+	parent := t.TempDir()
+	result, err := ResolveDatabasePath(newDBConfig(t, "./my.db"), parent, "default")
 	require.NoError(t, err)
-	assert.Equal(t, "/parent/my.db", result)
+	assert.Equal(t, filepath.Join(parent, "my.db"), result)
 }
 
 func TestMergeDocPaths_EmptyParentDir(t *testing.T) {

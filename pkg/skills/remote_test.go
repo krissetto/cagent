@@ -248,7 +248,9 @@ func TestLoadWithMixedSources(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	skills := Load(t.Context(), []string{"local", srv.URL})
 

@@ -17,8 +17,10 @@ import (
 
 func TestGetAbsolutePaths_WithBasePath(t *testing.T) {
 	t.Parallel()
-	result := GetAbsolutePaths("/base", []string{"relative/file.go", "/absolute/file.go"})
-	assert.Equal(t, []string{"/base/relative/file.go", "/absolute/file.go"}, result)
+	base := t.TempDir()
+	absolute := filepath.Join(t.TempDir(), "absolute", "file.go")
+	result := GetAbsolutePaths(base, []string{"relative/file.go", absolute})
+	assert.Equal(t, []string{filepath.Join(base, "relative", "file.go"), absolute}, result)
 }
 
 func TestGetAbsolutePaths_EmptyBasePath(t *testing.T) {
@@ -29,15 +31,16 @@ func TestGetAbsolutePaths_EmptyBasePath(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 
-	result := GetAbsolutePaths("", []string{"relative/file.go", "/absolute/file.go"})
+	absolute := filepath.Join(t.TempDir(), "absolute", "file.go")
+	result := GetAbsolutePaths("", []string{"relative/file.go", absolute})
 
 	assert.Equal(t, filepath.Join(cwd, "relative", "file.go"), result[0])
-	assert.Equal(t, "/absolute/file.go", result[1])
+	assert.Equal(t, absolute, result[1])
 }
 
 func TestGetAbsolutePaths_NilInput(t *testing.T) {
 	t.Parallel()
-	result := GetAbsolutePaths("/base", nil)
+	result := GetAbsolutePaths(t.TempDir(), nil)
 	assert.Nil(t, result)
 }
 

@@ -67,7 +67,7 @@ func waitForStatus(t *testing.T, store *Store, want CardStatus) {
 	assert.Eventually(t, func() bool {
 		card, err := store.GetCard("c1")
 		return err == nil && card.Status == want
-	}, 3*time.Second, 10*time.Millisecond, "expected status %s", want)
+	}, 10*time.Second, 10*time.Millisecond, "expected status %s", want)
 }
 
 func TestControllerRunningThenWaiting(t *testing.T) {

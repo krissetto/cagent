@@ -15,7 +15,7 @@ func Resolve(toolsetWorkingDir, agentWorkingDir string) string {
 	}
 	toolsetWorkingDir = path.ExpandPath(toolsetWorkingDir)
 	if filepath.IsAbs(toolsetWorkingDir) {
-		return toolsetWorkingDir
+		return filepath.Clean(toolsetWorkingDir)
 	}
 	if agentWorkingDir != "" {
 		abs, err := filepath.Abs(filepath.Join(agentWorkingDir, toolsetWorkingDir))

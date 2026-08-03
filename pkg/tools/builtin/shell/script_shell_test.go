@@ -3,7 +3,6 @@ package shell
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -164,7 +163,7 @@ func TestNewScript_NumberArg(t *testing.T) {
 	shellTools := map[string]latest.ScriptShellToolConfig{
 		"repeat": {
 			Description: "Repeat a message N times",
-			Cmd:         "for i in $(seq 1 $count); do echo $message; done",
+			Cmd:         repeatMessageCmd(),
 			Args: map[string]any{
 				"message": map[string]any{
 					"description": "Message to repeat",
@@ -194,17 +193,19 @@ func TestNewScript_NumberArg(t *testing.T) {
 	}, tools.NopRuntime{})
 	require.NoError(t, err)
 	assert.False(t, result.IsError, "unexpected error: %s", result.Output)
-	assert.Equal(t, "hello\nhello\nhello\n", result.Output)
+	// PowerShell terminates lines with CRLF; normalize so the assertion
+	// checks the same three-line contract on every platform.
+	assert.Equal(t, "hello\nhello\nhello\n", strings.ReplaceAll(result.Output, "\r\n", "\n"))
 }
 
 func TestScriptShellTool_DropsUndeclaredArgs(t *testing.T) {
 	t.Parallel()
-	// `env` lists the spawned process's full environment. With base env
-	// set to an empty slice, the only entries should be those forwarded
+	// The command lists the spawned process's full environment. With base
+	// env set to an empty slice, the only entries should be those forwarded
 	// from declared args.
 	shellTools := map[string]latest.ScriptShellToolConfig{
 		"echo_name": {
-			Cmd: "env",
+			Cmd: envDumpCmd(),
 			Args: map[string]any{
 				"name": map[string]any{
 					"description": "who to greet",
@@ -231,7 +232,7 @@ func TestScriptShellTool_DropsUndeclaredArgs(t *testing.T) {
 	}, tools.NopRuntime{})
 	require.NoError(t, err)
 	assert.False(t, result.IsError, "unexpected error: %s", result.Output)
-	assert.Contains(t, result.Output, "name=alice")
+	assert.True(t, envDumpContainsName(result.Output, "alice"), "output %q does not expose the declared arg", result.Output)
 	assert.NotContains(t, result.Output, "LD_PRELOAD")
 }
 
@@ -242,7 +243,7 @@ func TestScriptShellTool_PerToolEnvAndWorkingDir(t *testing.T) {
 
 	shellTools := map[string]latest.ScriptShellToolConfig{
 		"show_env": {
-			Cmd: `printf '%s|%s|%s' "$TOOL_VALUE" "$TOOL_LITERAL" "$(pwd)"`,
+			Cmd: printEnvValuesAndPwdCmd("TOOL_VALUE", "TOOL_LITERAL"),
 			Env: map[string]string{
 				// Plain ${env.X} expands; $X stays literal (issue #2615).
 				"TOOL_VALUE":   "v-${env.SCRIPT_TEST_TOKEN}",
@@ -269,11 +270,7 @@ func TestScriptShellTool_PerToolEnvAndWorkingDir(t *testing.T) {
 	require.Len(t, parts, 3)
 	assert.Equal(t, "v-tok", parts[0])
 	assert.Equal(t, "pa$$word", parts[1])
-	got, err := filepath.EvalSymlinks(parts[2])
-	require.NoError(t, err)
-	want, err := filepath.EvalSymlinks(workDir)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
+	assertSamePath(t, workDir, strings.TrimSpace(parts[2]))
 }
 
 // TestCreateScriptToolSet_EnvPrecedence pins the effective env layering on
@@ -331,7 +328,7 @@ func TestScriptShellTool_PerToolEnvOverridesToolsetEnv(t *testing.T) {
 	t.Parallel()
 	shellTools := map[string]latest.ScriptShellToolConfig{
 		"show_env": {
-			Cmd: `printf '%s' "$SHARED"`,
+			Cmd: printEnvValueCmd("SHARED"),
 			Env: map[string]string{"SHARED": "per-tool"},
 		},
 	}

@@ -13,7 +13,9 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	h, err := New("")
 	require.NoError(t, err)
@@ -23,7 +25,9 @@ func TestNew(t *testing.T) {
 }
 
 func TestHistory_AddAndSave(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	h, err := New("")
 	require.NoError(t, err)
@@ -43,7 +47,9 @@ func TestHistory_AddAndSave(t *testing.T) {
 }
 
 func TestHistory_Navigation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	h, err := New("")
 	require.NoError(t, err)
@@ -67,7 +73,9 @@ func TestHistory_Navigation(t *testing.T) {
 }
 
 func TestHistory_EdgeCases(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	h, err := New("")
 	require.NoError(t, err)
@@ -83,7 +91,9 @@ func TestHistory_EdgeCases(t *testing.T) {
 }
 
 func TestHistory_StayAtTheBeginning(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	h, err := New("")
 	require.NoError(t, err)
@@ -95,7 +105,9 @@ func TestHistory_StayAtTheBeginning(t *testing.T) {
 }
 
 func TestHistory_NoDuplicateMessages(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	h, err := New("")
 	require.NoError(t, err)
@@ -110,7 +122,9 @@ func TestHistory_NoDuplicateMessages(t *testing.T) {
 }
 
 func TestHistory_MoveDuplicateLast(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	h, err := New("")
 	require.NoError(t, err)

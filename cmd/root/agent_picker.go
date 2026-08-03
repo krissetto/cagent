@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/path"
+	"github.com/docker/docker-agent/pkg/paths"
 	"github.com/docker/docker-agent/pkg/tui/components/scrollbar"
 	"github.com/docker/docker-agent/pkg/tui/components/toolcommon"
 	"github.com/docker/docker-agent/pkg/tui/dialog"
@@ -36,8 +37,8 @@ const agentPickerDefaultsSpec = "defaults"
 // agents plus any agent config files found in ~/.agents.
 func defaultAgentPickerRefs() []string {
 	refs := []string{"default", "coder"}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := paths.GetHomeDir()
+	if home == "" {
 		return refs
 	}
 	return append(refs, agentRefsInDir(filepath.Join(home, ".agents"))...)

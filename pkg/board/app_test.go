@@ -13,9 +13,10 @@ import (
 )
 
 func TestNormalizeProjectPath(t *testing.T) {
-	abs, err := normalizeProjectPath("/some/repo")
+	input := filepath.Join(t.TempDir(), "repo")
+	abs, err := normalizeProjectPath(input)
 	require.NoError(t, err)
-	assert.Equal(t, "/some/repo", abs)
+	assert.Equal(t, input, abs)
 
 	// Empty and blank paths are rejected: they would silently validate
 	// against the board's working directory.

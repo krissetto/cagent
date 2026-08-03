@@ -67,7 +67,7 @@ func TestEnsureCommand_FoundInBinDir(t *testing.T) {
 
 	binDir := filepath.Join(toolsDir, "bin")
 	require.NoError(t, os.MkdirAll(binDir, 0o755))
-	fakeBin := filepath.Join(binDir, "my-tool")
+	fakeBin := filepath.Join(binDir, executableName("my-tool"))
 	require.NoError(t, os.WriteFile(fakeBin, []byte("#!/bin/sh\necho test"), 0o755))
 
 	result, err := EnsureCommand(t.Context(), "my-tool", "")
@@ -110,7 +110,7 @@ func TestResolve_FoundInBinDir(t *testing.T) {
 
 	binDir := filepath.Join(toolsDir, "bin")
 	require.NoError(t, os.MkdirAll(binDir, 0o755))
-	fakeBin := filepath.Join(binDir, "my-custom-tool")
+	fakeBin := filepath.Join(binDir, executableName("my-custom-tool"))
 	require.NoError(t, os.WriteFile(fakeBin, []byte("#!/bin/sh\necho ok"), 0o755))
 
 	path, err := resolve(t.Context(), "my-custom-tool", "", doInstall)

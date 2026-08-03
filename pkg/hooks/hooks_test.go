@@ -570,7 +570,7 @@ func TestExecuteStopReceivesResponseContent(t *testing.T) {
 
 	config := &Config{
 		Stop: []Hook{
-			{Type: HookTypeCommand, Command: "cat | jq -r '.stop_response'", Timeout: 5},
+			{Type: HookTypeCommand, Command: printStdinJSONFieldCmd("stop_response"), Timeout: 5},
 		},
 	}
 
@@ -849,7 +849,7 @@ func TestExecuteBeforeCompactionBlocksWithExitCode2(t *testing.T) {
 
 	config := &Config{
 		BeforeCompaction: []Hook{
-			{Type: HookTypeCommand, Command: "echo 'no compaction please' >&2; exit 2", Timeout: 5},
+			{Type: HookTypeCommand, Command: stderrExit2Cmd("no compaction please"), Timeout: 5},
 		},
 	}
 

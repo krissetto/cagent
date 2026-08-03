@@ -73,10 +73,12 @@ jobs:
           task test
           task test-binary
 
-  # Plan storage relies on OS-specific file locking and path semantics, so its
-  # tests must actually run on Windows, not only cross-compile.
-  windows-plan-tests:
+  # Native Windows tests. Plan storage relies on OS-specific file locking and
+  # path semantics, so the full Go test suite runs natively on Windows in a
+  # single blocking `task test` step, mirroring the Linux job.
+  windows-tests:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -87,8 +89,16 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Run plan tests
-        run: go test ./pkg/tools/builtin/plan/ ./pkg/plans/
+      - name: Install Task
+        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        with:
+          version: 3.51.1
+
+      - name: Go environment
+        run: go env GOOS GOARCH CGO_ENABLED CC
+
+      - name: Run tests
+        run: task test
 
   license-check:
     runs-on: ubuntu-latest
@@ -161,7 +171,7 @@ jobs:
 
   build-and-push-image:
     if: github.event_name != 'pull_request' && !github.event.repository.fork
-    needs: [ lint, build-and-test, windows-plan-tests, license-check ]
+    needs: [ lint, build-and-test, windows-tests, license-check ]
     # Build each platform on its own native runner in parallel, push by digest,
     # then assemble the multi-arch manifest in the merge job below.
     strategy:

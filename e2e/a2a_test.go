@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2asrv"
@@ -173,9 +174,25 @@ func startA2AServer(t *testing.T, agentFile string, runConfig *config.RuntimeCon
 	ln, err := lc.Listen(t.Context(), "tcp", ":0")
 	require.NoError(t, err)
 
+	sessionDB := filepath.Join(t.TempDir(), "session.db")
+
+	done := make(chan struct{})
 	go func() {
-		_ = a2aserver.Run(t.Context(), agentFile, "root", filepath.Join(t.TempDir(), "session.db"), runConfig, ln)
+		defer close(done)
+		_ = a2aserver.Run(t.Context(), agentFile, "root", sessionDB, runConfig, ln)
 	}()
+	// Run stops when t.Context() is canceled (just before cleanups run);
+	// closing the listener also covers the window before Serve starts. Wait
+	// for Run to return so session.db is closed before t.TempDir cleanup
+	// removes it — Windows refuses to delete open files.
+	t.Cleanup(func() {
+		_ = ln.Close()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("A2A server did not stop during cleanup")
+		}
+	})
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	serverURL := fmt.Sprintf("http://localhost:%d", port)

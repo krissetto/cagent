@@ -3,17 +3,16 @@ package path
 import (
 	"bytes"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestExpandPath(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dataDir := filepath.Join(t.TempDir(), "testdata")
+	absolutePath := filepath.Join(t.TempDir(), "absolute", "path", "memory.db")
 
 	tests := []struct {
 		name     string
@@ -44,18 +43,18 @@ func TestExpandPath(t *testing.T) {
 		{
 			name:     "custom env var",
 			input:    "${MY_TEST_DATA_DIR}/memory.db",
-			envSetup: map[string]string{"MY_TEST_DATA_DIR": "/tmp/testdata"},
-			expected: "/tmp/testdata/memory.db",
+			envSetup: map[string]string{"MY_TEST_DATA_DIR": dataDir},
+			expected: filepath.Join(dataDir, "memory.db"),
 		},
 		{
 			name:     "absolute path unchanged",
-			input:    "/absolute/path/memory.db",
-			expected: "/absolute/path/memory.db",
+			input:    absolutePath,
+			expected: absolutePath,
 		},
 		{
-			name:     "relative path unchanged",
+			name:     "relative path cleaned",
 			input:    "relative/path/memory.db",
-			expected: "relative/path/memory.db",
+			expected: filepath.Clean("relative/path/memory.db"),
 		},
 		{
 			name:     "tilde and env var combined",
@@ -71,14 +70,14 @@ func TestExpandPath(t *testing.T) {
 		{
 			name:     "js env ref custom var",
 			input:    "${env.MY_TEST_DATA_DIR}/memory.db",
-			envSetup: map[string]string{"MY_TEST_DATA_DIR": "/tmp/testdata"},
-			expected: "/tmp/testdata/memory.db",
+			envSetup: map[string]string{"MY_TEST_DATA_DIR": dataDir},
+			expected: filepath.Join(dataDir, "memory.db"),
 		},
 		{
 			name:     "js env ref with surrounding whitespace",
 			input:    "${ env.MY_TEST_DATA_DIR }/memory.db",
-			envSetup: map[string]string{"MY_TEST_DATA_DIR": "/tmp/testdata"},
-			expected: "/tmp/testdata/memory.db",
+			envSetup: map[string]string{"MY_TEST_DATA_DIR": dataDir},
+			expected: filepath.Join(dataDir, "memory.db"),
 		},
 		{
 			name:     "tilde and js env ref combined",
@@ -89,13 +88,13 @@ func TestExpandPath(t *testing.T) {
 		{
 			name:     "shell and js env refs mixed",
 			input:    "${MY_TEST_DATA_DIR}/${env.MY_TEST_SUBDIR}/memory.db",
-			envSetup: map[string]string{"MY_TEST_DATA_DIR": "/tmp/testdata", "MY_TEST_SUBDIR": "data"},
-			expected: "/tmp/testdata/data/memory.db",
+			envSetup: map[string]string{"MY_TEST_DATA_DIR": dataDir, "MY_TEST_SUBDIR": "data"},
+			expected: filepath.Join(dataDir, "data", "memory.db"),
 		},
 		{
 			name:     "undefined js env ref expands to empty",
 			input:    "/base/${env.MY_TEST_UNDEFINED}/memory.db",
-			expected: "/base//memory.db",
+			expected: filepath.Clean("/base/memory.db"),
 		},
 	}
 
@@ -199,11 +198,12 @@ func TestExpandEnvRefsLogsUnset(t *testing.T) {
 }
 
 func TestExpandWorkingDir(t *testing.T) {
-	t.Setenv("MY_TEST_WD", "/tmp/wd")
+	wd := filepath.Join(t.TempDir(), "wd")
+	t.Setenv("MY_TEST_WD", wd)
 
 	// Expands like ExpandPath.
-	if got := ExpandWorkingDir("test", "${env.MY_TEST_WD}"); got != "/tmp/wd" {
-		t.Errorf("got %q, want /tmp/wd", got)
+	if got := ExpandWorkingDir("test", "${env.MY_TEST_WD}"); got != wd {
+		t.Errorf("got %q, want %q", got, wd)
 	}
 	// Empty input stays empty (no warning path).
 	if got := ExpandWorkingDir("test", ""); got != "" {

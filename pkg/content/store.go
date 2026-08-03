@@ -17,6 +17,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+
+	"github.com/docker/docker-agent/pkg/paths"
 )
 
 // ErrInvalidDigest indicates that an identifier shaped like a digest
@@ -73,9 +75,9 @@ func NewStore(opts ...Opt) (*Store, error) {
 	}
 
 	if store.baseDir == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("getting home directory: %w", err)
+		homeDir := paths.GetHomeDir()
+		if homeDir == "" {
+			return nil, errors.New("getting home directory: home directory is unavailable")
 		}
 
 		store.baseDir = filepath.Join(homeDir, ".cagent", "store")
@@ -86,6 +88,10 @@ func NewStore(opts ...Opt) (*Store, error) {
 	}
 
 	return store, nil
+}
+
+func digestFilename(digest, ext string) string {
+	return strings.ReplaceAll(digest, ":", "-") + ext
 }
 
 // StoreArtifact stores an artifact with the given reference and returns its digest
@@ -102,7 +108,7 @@ func (s *Store) StoreArtifact(img v1.Image, reference string) (string, error) {
 		return "", err
 	}
 
-	tarPath := filepath.Join(s.baseDir, digestStr+".tar")
+	tarPath := filepath.Join(s.baseDir, digestFilename(digestStr, ".tar"))
 
 	if err := crane.Save(img, reference, tarPath); err != nil {
 		return "", fmt.Errorf("saving image to tar: %w", err)
@@ -148,7 +154,7 @@ func (s *Store) GetArtifactImage(identifier string) (v1.Image, error) {
 	}
 
 	// Artifacts are stored locally as tarballs named by their digest.
-	artifactPath := filepath.Join(s.baseDir, digest+".tar")
+	artifactPath := filepath.Join(s.baseDir, digestFilename(digest, ".tar"))
 
 	// If the tarball is missing, the local store is considered corrupted.
 	// Callers can safely attempt to re-fetch the artifact from the remote source.
@@ -176,7 +182,7 @@ func (s *Store) GetArtifactPath(identifier string) (string, error) {
 		return "", err
 	}
 
-	artifactPath := filepath.Join(s.baseDir, digest+".tar")
+	artifactPath := filepath.Join(s.baseDir, digestFilename(digest, ".tar"))
 
 	if _, err := os.Stat(artifactPath); err != nil {
 		if os.IsNotExist(err) {
@@ -247,14 +253,16 @@ func (s *Store) ListArtifacts() ([]ArtifactMetadata, error) {
 
 	var artifacts []ArtifactMetadata
 	for _, file := range files {
-		if !file.IsDir() && strings.HasSuffix(file.Name(), ".tar") {
-			digest := strings.TrimSuffix(file.Name(), ".tar")
-			metadata, err := s.loadMetadata(digest)
-			if err != nil {
-				continue
-			}
-			artifacts = append(artifacts, *metadata)
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".tar") {
+			continue
 		}
+		digest := strings.TrimSuffix(file.Name(), ".tar")
+		digest = strings.Replace(digest, "sha256-", "sha256:", 1)
+		metadata, err := s.loadMetadata(digest)
+		if err != nil {
+			continue
+		}
+		artifacts = append(artifacts, *metadata)
 	}
 
 	return artifacts, nil
@@ -267,12 +275,12 @@ func (s *Store) DeleteArtifact(identifier string) error {
 		return err
 	}
 
-	tarPath := filepath.Join(s.baseDir, digest+".tar")
+	tarPath := filepath.Join(s.baseDir, digestFilename(digest, ".tar"))
 	if err := os.Remove(tarPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing tar file: %w", err)
 	}
 
-	metadataPath := filepath.Join(s.baseDir, digest+".json")
+	metadataPath := filepath.Join(s.baseDir, digestFilename(digest, ".json"))
 	if err := os.Remove(metadataPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing metadata file: %w", err)
 	}
@@ -392,7 +400,7 @@ func (s *Store) removeReferenceLinks(digest string) error {
 
 // saveMetadata saves metadata for an artifact
 func (s *Store) saveMetadata(digest string, metadata *ArtifactMetadata) error {
-	metadataPath := filepath.Join(s.baseDir, digest+".json")
+	metadataPath := filepath.Join(s.baseDir, digestFilename(digest, ".json"))
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling metadata: %w", err)
@@ -403,7 +411,7 @@ func (s *Store) saveMetadata(digest string, metadata *ArtifactMetadata) error {
 
 // loadMetadata loads metadata for an artifact
 func (s *Store) loadMetadata(digest string) (*ArtifactMetadata, error) {
-	metadataPath := filepath.Join(s.baseDir, digest+".json")
+	metadataPath := filepath.Join(s.baseDir, digestFilename(digest, ".json"))
 	data, err := os.ReadFile(metadataPath)
 	if err != nil {
 		if os.IsNotExist(err) {

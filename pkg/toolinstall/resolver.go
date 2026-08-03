@@ -61,8 +61,8 @@ func resolve(ctx context.Context, command, version string, install installFunc) 
 	}
 
 	// Check if already installed in our bin dir.
-	binPath := filepath.Join(BinDir(), command)
-	if info, err := os.Stat(binPath); err == nil && info.Mode()&0o111 != 0 {
+	binPath := filepath.Join(BinDir(), executableName(command))
+	if info, err := os.Stat(binPath); err == nil && isExecutable(info) {
 		return binPath, nil
 	}
 
@@ -97,8 +97,8 @@ func safeInstall(ctx context.Context, command, version string, install installFu
 func doInstall(ctx context.Context, command, versionRef string) (string, error) {
 	// Re-check bin dir under singleflight — another goroutine may have
 	// just finished installing while we were waiting.
-	binPath := filepath.Join(BinDir(), command)
-	if info, err := os.Stat(binPath); err == nil && info.Mode()&0o111 != 0 {
+	binPath := filepath.Join(BinDir(), executableName(command))
+	if info, err := os.Stat(binPath); err == nil && isExecutable(info) {
 		return binPath, nil
 	}
 

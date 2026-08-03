@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,13 +40,13 @@ func TestCagentAPI_ListSessions(t *testing.T) {
 		t.Run(tc.db, func(t *testing.T) {
 			socketPath := startCagentAPI(t, filepath.Join("testdata", "db", tc.db))
 
-			client := &http.Client{
-				Transport: &http.Transport{
-					DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-						return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
-					},
+			transport := &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 				},
 			}
+			client := &http.Client{Transport: transport}
+			t.Cleanup(transport.CloseIdleConnections)
 
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://localhost/api/sessions", http.NoBody)
 			require.NoError(t, err)
@@ -81,19 +82,31 @@ func startCagentAPI(t *testing.T, db string) string {
 
 	ln, err := server.Listen(t.Context(), "unix://cagent.sock")
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = ln.Close()
-	})
 
 	sessionStore, err := sqlitestore.New(t.Context(), dbCopy)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = sessionStore.Close()
+	})
 
 	srv, err := server.New(t.Context(), sessionStore, &config.RuntimeConfig{}, 0, nil, "")
 	require.NoError(t, err)
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_ = srv.Serve(t.Context(), ln)
 	}()
+	// Stop the server and wait for it before the store is closed and the
+	// temp dir removed — Windows refuses to delete files with open handles.
+	t.Cleanup(func() {
+		_ = ln.Close()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("API server did not stop during cleanup")
+		}
+	})
 
 	return "cagent.sock"
 }

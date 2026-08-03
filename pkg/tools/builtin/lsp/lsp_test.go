@@ -2,7 +2,10 @@ package lsp
 
 import (
 	"encoding/json"
+	"net/url"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -279,10 +282,11 @@ func TestLSPHandler_GetDiagnostics_NoDiagnostics(t *testing.T) {
 
 	ctx := t.Context()
 
+	testFile := filepath.Join(t.TempDir(), "nonexistent.go")
 	// Mark file as open to skip auto-open attempt
-	tool.handler.openFiles["file:///nonexistent.go"] = 1
+	tool.handler.openFiles[pathToURI(testFile)] = 1
 
-	result, err := tool.handler.getDiagnostics(ctx, FileArgs{File: "/nonexistent.go"})
+	result, err := tool.handler.getDiagnostics(ctx, FileArgs{File: testFile})
 	require.NoError(t, err)
 	assert.False(t, result.IsError)
 	assert.Contains(t, result.Output, "No diagnostics")
@@ -297,8 +301,11 @@ func TestLSPHandler_GetDiagnostics_WithDiagnostics(t *testing.T) {
 	// Pretend we have a running server
 	tool.handler.cmd = exec.CommandContext(t.Context(), "true")
 
+	testFile := filepath.Join(t.TempDir(), "test.go")
+	uri := pathToURI(testFile)
+
 	// Manually set some diagnostics
-	tool.handler.diagnostics["file:///test.go"] = []lspDiagnostic{
+	tool.handler.diagnostics[uri] = []lspDiagnostic{
 		{
 			Range:    lspRange{Start: lspPosition{Line: 5, Character: 0}},
 			Severity: 1,
@@ -306,10 +313,10 @@ func TestLSPHandler_GetDiagnostics_WithDiagnostics(t *testing.T) {
 		},
 	}
 	// Mark file as open to skip auto-open attempt
-	tool.handler.openFiles["file:///test.go"] = 1
+	tool.handler.openFiles[uri] = 1
 
 	ctx := t.Context()
-	result, err := tool.handler.getDiagnostics(ctx, FileArgs{File: "/test.go"})
+	result, err := tool.handler.getDiagnostics(ctx, FileArgs{File: testFile})
 	require.NoError(t, err)
 	assert.False(t, result.IsError)
 	assert.Contains(t, result.Output, "test error")
@@ -434,9 +441,98 @@ func TestLSPTool_HandlesFile(t *testing.T) {
 func TestPathToURI(t *testing.T) {
 	t.Parallel()
 
-	// Absolute path
-	uri := pathToURI("/home/user/project/main.go")
-	assert.Equal(t, "file:///home/user/project/main.go", uri)
+	path := filepath.Join(t.TempDir(), "project", "main.go")
+
+	uri := pathToURI(path)
+
+	assert.True(t, strings.HasPrefix(uri, "file:///"), "expected file:/// prefix, got %q", uri)
+	assert.NotContains(t, uri, `\`, "URI must not contain backslashes")
+
+	parsed, err := url.Parse(uri)
+	require.NoError(t, err, "pathToURI must produce a parseable URI")
+	assert.Equal(t, "file", parsed.Scheme)
+}
+
+func TestPathToURI_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	paths := []string{
+		filepath.Join(base, "main.go"),
+		filepath.Join(base, "dir with spaces", "my file.go"),
+		filepath.Join(base, "issue#42", "a#b.go"),
+	}
+
+	for _, path := range paths {
+		uri := pathToURI(path)
+
+		assert.NotContains(t, uri, " ", "spaces must be percent-encoded in %q", uri)
+		assert.NotContains(t, uri, "#", "'#' must be percent-encoded in %q", uri)
+
+		got, err := uriToPath(uri)
+		require.NoError(t, err)
+		assert.Equal(t, path, got)
+	}
+}
+
+func TestURIToPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		uri  string
+		want string // slash form, converted per-platform with filepath.FromSlash
+	}{
+		{"unix path", "file:///home/user/main.go", "/home/user/main.go"},
+		{"windows drive", "file:///C:/Users/dev/main.go", "C:/Users/dev/main.go"},
+		{"windows drive as authority", "file://C:/Users/dev/main.go", "C:/Users/dev/main.go"},
+		{"percent encoding", "file:///home/user/my%20file%23v2.go", "/home/user/my file#v2.go"},
+		{"unc path", "file://server/share/main.go", "//server/share/main.go"},
+		{"localhost authority", "file://localhost/etc/hosts", "/etc/hosts"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := uriToPath(tt.uri)
+			require.NoError(t, err)
+			assert.Equal(t, filepath.FromSlash(tt.want), got)
+		})
+	}
+}
+
+func TestURIToPath_Errors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		uri  string
+	}{
+		{"non-file scheme", "https://example.com/main.go"},
+		{"plain path", "/home/user/main.go"},
+		{"empty", ""},
+		{"no path", "file:"},
+		{"legacy backslash form", `file://C:\Users\dev\main.go`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := uriToPath(tt.uri)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestURIToDisplayPath(t *testing.T) {
+	t.Parallel()
+
+	// Valid file URIs are decoded, keeping slash separators for stable output.
+	assert.Equal(t, "/home/user/my file.go", uriToDisplayPath("file:///home/user/my%20file.go"))
+	assert.Equal(t, "C:/Users/dev/main.go", uriToDisplayPath("file:///C:/Users/dev/main.go"))
+
+	// Anything that cannot be converted is shown as-is.
+	assert.Equal(t, "untitled:Untitled-1", uriToDisplayPath("untitled:Untitled-1"))
 }
 
 func TestLSPHandler_IsFileOpen(t *testing.T) {
