@@ -3,6 +3,41 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.120.0] - 2026-08-03
+
+This release improves Windows compatibility across the full test suite, adds new TUI features for context compaction and session plan editing, and fixes several platform-specific and sandbox issues.
+
+## What's New
+
+- Adds compaction summary display to the `/context` dialog, showing the verbatim summary text when a session has been compacted
+- Makes the current session plan editable from the `/plans` browser and detail views, labeling it as `current session` and distinguishing it from shared workspace-global plans
+
+## Bug Fixes
+
+- Fixes external editors (e.g., Vim) not attaching to the real terminal when editing a plan in sandbox mode
+- Fixes sandbox plan editor to use the available `C.UTF-8` locale, preserving non-ASCII (e.g., German) input
+- Fixes `HOME` environment variable handling to be honored correctly across platforms
+- Fixes Windows executable support in tool installation
+- Fixes handling of Windows file URIs in the LSP implementation
+- Fixes Windows home directory path normalization
+- Logs and recovers from empty or failed Docker Desktop token fetches, rather than silently discarding the error
+
+## Technical Changes
+
+- Runs the full Go test suite natively on Windows as a blocking CI gate
+- Consolidates Windows test jobs and uses the Task-based test entry point consistently across platforms
+- Adds portable filesystem expectations and Windows-specific shell behavior tests
+### Pull Requests
+
+- [#3866](https://github.com/docker/docker-agent/pull/3866) - ci: run full test suite on Windows
+- [#3868](https://github.com/docker/docker-agent/pull/3868) - docs: update CHANGELOG.md for v1.119.0
+- [#3876](https://github.com/docker/docker-agent/pull/3876) - fix: preserve terminal and UTF-8 in sandbox plan editor
+- [#3877](https://github.com/docker/docker-agent/pull/3877) - feat(tui): show compaction summary in context dialog
+- [#3878](https://github.com/docker/docker-agent/pull/3878) - feat(tui): make current session plans editable
+- [#3880](https://github.com/docker/docker-agent/pull/3880) - docs: auto-update for merged PRs (2026-08-01)
+- [#3890](https://github.com/docker/docker-agent/pull/3890) - desktop: log and recover empty or failed token fetches
+
+
 ## [v1.119.0] - 2026-07-30
 
 This release introduces first-class plan management with a new CLI command group and TUI browser, adds YAML safety mode defaults, and includes several bug fixes for runtime stability and structured output handling.
@@ -5254,3 +5289,5 @@ This release improves the terminal user interface with better error handling and
 [v1.118.0]: https://github.com/docker/docker-agent/releases/tag/v1.118.0
 
 [v1.119.0]: https://github.com/docker/docker-agent/releases/tag/v1.119.0
+
+[v1.120.0]: https://github.com/docker/docker-agent/releases/tag/v1.120.0
