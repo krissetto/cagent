@@ -58,12 +58,13 @@ func (m *mockChatPage) SetSidebarSettings(chat.SidebarSettings)  {}
 func (m *mockChatPage) SetLayoutSettings(messages.LayoutSettings) tea.Cmd {
 	return nil
 }
-func (m *mockChatPage) SetSendMode(messages.SendMode) {}
-func (m *mockChatPage) SetRoutingID(string)           {}
-func (m *mockChatPage) TakeRoutedTimers() tea.Cmd     { return nil }
-func (m *mockChatPage) VisualGeneration() uint64      { return 0 }
-func (m *mockChatPage) Bindings() []key.Binding       { return nil }
-func (m *mockChatPage) Help() help.KeyMap             { return nil }
+func (m *mockChatPage) SetSendMode(messages.SendMode)           {}
+func (m *mockChatPage) SetInterruptMode(messages.InterruptMode) {}
+func (m *mockChatPage) SetRoutingID(string)                     {}
+func (m *mockChatPage) TakeRoutedTimers() tea.Cmd               { return nil }
+func (m *mockChatPage) VisualGeneration() uint64                { return 0 }
+func (m *mockChatPage) Bindings() []key.Binding                 { return nil }
+func (m *mockChatPage) Help() help.KeyMap                       { return nil }
 
 type countingChatPage struct {
 	mockChatPage

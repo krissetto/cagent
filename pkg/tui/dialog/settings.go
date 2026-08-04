@@ -57,6 +57,7 @@ const (
 	rowCacheStablePrompts
 	rowLean
 	rowTabTitleLength
+	rowInterruptConfirmation
 	behaviorRowCount
 )
 
@@ -105,6 +106,16 @@ var sendModeOptions = []sendModeOption{
 	{messages.SendModeQueue, "Queue", "hold until the current turn ends"},
 }
 
+var interruptConfirmationModes = []messages.InterruptMode{
+	messages.InterruptModeAlways, messages.InterruptModeDoubleTap, messages.InterruptModeNone,
+}
+
+var interruptConfirmationLabels = map[messages.InterruptMode]string{
+	messages.InterruptModeAlways:    "Always (confirm dialog)",
+	messages.InterruptModeDoubleTap: "Double-tap (press Esc twice)",
+	messages.InterruptModeNone:      "None (immediate)",
+}
+
 type settingsDialog struct {
 	BaseDialog
 
@@ -126,6 +137,9 @@ func NewSettingsDialog(preferences messages.Preferences, showVisuals bool) Dialo
 	}
 	if preferences.SoundThreshold <= 0 {
 		preferences.SoundThreshold = 10
+	}
+	if preferences.InterruptConfirmation == "" {
+		preferences.InterruptConfirmation = messages.InterruptModeAlways
 	}
 	return &settingsDialog{original: preferences, current: preferences, showVisuals: showVisuals}
 }
@@ -284,6 +298,8 @@ func (d *settingsDialog) changeValue(delta int) tea.Cmd {
 			d.current.Lean = !d.current.Lean
 		case rowTabTitleLength:
 			d.current.TabTitleMaxLength = stepValue(d.current.TabTitleMaxLength, delta, 1, 5, 100)
+		case rowInterruptConfirmation:
+			d.current.InterruptConfirmation = cycleValue(interruptConfirmationModes, d.current.InterruptConfirmation, delta)
 		}
 	case tabNotifications:
 		switch d.selected[d.tab] {
@@ -402,6 +418,7 @@ func (d *settingsDialog) renderBehaviorTab(content *Content, inner int) {
 		AddContent(d.renderToggleRow(rowCacheStablePrompts, "Cache-stable dynamic prompts", d.current.CacheStablePrompts)).
 		AddContent(d.renderToggleRow(rowLean, "Lean UI by default", d.current.Lean)).
 		AddContent(d.renderStepperRow(rowTabTitleLength, "Tab title max length", d.current.TabTitleMaxLength, "chars", inner, false))
+	content.AddContent(d.renderSelectorRow(rowInterruptConfirmation, "Interrupt confirmation", interruptConfirmationLabels[d.current.InterruptConfirmation], inner))
 	if d.confirmYOLO {
 		content.AddSpace().AddContent(styles.MutedStyle.Render("Auto-approve can run tools without confirmation. Press again to enable."))
 	}

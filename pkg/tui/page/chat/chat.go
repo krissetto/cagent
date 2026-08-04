@@ -21,6 +21,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
 	"github.com/docker/docker-agent/pkg/tui/core"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
+	"github.com/docker/docker-agent/pkg/tui/dialog"
 	msgtypes "github.com/docker/docker-agent/pkg/tui/messages"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/styles"
@@ -157,6 +158,8 @@ type Page interface {
 	// SetSendMode sets what happens to messages sent while the agent is
 	// working: steer into the ongoing stream or queue until the turn ends.
 	SetSendMode(mode msgtypes.SendMode)
+	// SetInterruptMode sets how Esc interrupts a running stream.
+	SetInterruptMode(mode msgtypes.InterruptMode)
 	// SetRoutingID records the tab identity used to address this page's
 	// one-shot UI timers back to it (messages.RoutedMsg.SessionID). The
 	// appModel keys its chat pages — and the supervisor its event routing —
@@ -235,6 +238,14 @@ type chatPage struct {
 
 	// Key map
 	keyMap KeyMap
+
+	// interruptMode controls how Esc interrupts a running stream.
+	interruptMode msgtypes.InterruptMode
+	// lastInterruptTime tracks when the last Esc was pressed for double-tap mode.
+	lastInterruptTime time.Time
+	// waitingForDoubleTap indicates the user pressed Esc once and is waiting
+	// for a second press to confirm the interrupt.
+	waitingForDoubleTap bool
 
 	ctx func() context.Context
 
@@ -423,6 +434,12 @@ func WithSendMode(mode msgtypes.SendMode) PageOption {
 	}
 }
 
+func WithInterruptMode(mode msgtypes.InterruptMode) PageOption {
+	return func(p *chatPage) {
+		p.interruptMode = mode
+	}
+}
+
 // sectionVisibility maps layout settings to the sidebar's visibility config.
 func sectionVisibility(settings msgtypes.LayoutSettings) sidebar.SectionVisibility {
 	return sidebar.SectionVisibility{
@@ -590,6 +607,10 @@ func (p *chatPage) update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		cmds = append(cmds, sidebarCmd)
 
 		return p, tea.Batch(cmds...)
+
+	case dialog.InterruptConfirmedMsg:
+		cmd := p.cancelStream(true)
+		return p, cmd
 
 	default:
 		// Try to handle as a runtime event
@@ -837,6 +858,7 @@ func (p *chatPage) cancelStream(showCancelMessage bool) tea.Cmd {
 	p.streamCancelled = true
 	p.streamDepth = 0
 	p.agentStack = nil
+	p.waitingForDoubleTap = false
 	p.setPendingResponse(false)
 	// Send StreamCancelledMsg to all components to handle cleanup
 	return tea.Batch(
@@ -847,6 +869,32 @@ func (p *chatPage) cancelStream(showCancelMessage bool) tea.Cmd {
 
 func isBangCommand(content string) bool {
 	return strings.HasPrefix(content, "!")
+}
+
+// handleInterrupt processes an Esc key press during a running stream.
+// The behavior depends on interruptMode:
+//   - "always": opens a confirmation dialog
+//   - "double-tap": requires two Esc presses within 500ms
+//   - "none": cancels immediately
+func (p *chatPage) handleInterrupt() tea.Cmd {
+	switch p.interruptMode {
+	case "double-tap":
+		now := time.Now()
+		if !p.lastInterruptTime.IsZero() && now.Sub(p.lastInterruptTime) <= time.Second {
+			p.lastInterruptTime = time.Time{}
+			p.waitingForDoubleTap = false
+			return p.cancelStream(true)
+		}
+		p.lastInterruptTime = now
+		p.waitingForDoubleTap = true
+		return nil
+	case "none":
+		return p.cancelStream(true)
+	default:
+		return func() tea.Msg {
+			return dialog.OpenDialogMsg{Model: dialog.NewInterruptConfirmationDialog()}
+		}
+	}
 }
 
 func (p *chatPage) parseImmediateCommand(content string) tea.Cmd {
@@ -1292,6 +1340,10 @@ func (p *chatPage) SetLayoutSettings(settings msgtypes.LayoutSettings) tea.Cmd {
 // SetSendMode sets the behavior of messages sent while the agent is working.
 func (p *chatPage) SetSendMode(mode msgtypes.SendMode) {
 	p.sendMode = mode
+}
+
+func (p *chatPage) SetInterruptMode(mode msgtypes.InterruptMode) {
+	p.interruptMode = mode
 }
 
 // SetRoutingID records the tab identity this page's routed UI timers are
