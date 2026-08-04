@@ -67,6 +67,13 @@ func TestClassify_TransportByMessage(t *testing.T) {
 		"connection refused",
 		"write tcp ...: broken pipe",
 		"unexpected EOF",
+		// The MCP SDK's synthesized response error for a call whose SSE
+		// stream ended without a response and without event IDs to resume
+		// from. Must classify as transport so callTool's reconnect-and-retry
+		// path picks it up; before this pattern it read as an application
+		// error and every post-handshake stream termination failed the tool
+		// call outright.
+		`calling "tools/call": request terminated without response`,
 	}
 	for _, msg := range cases {
 		got := lifecycle.Classify(errors.New(msg))

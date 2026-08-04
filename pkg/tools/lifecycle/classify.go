@@ -74,6 +74,14 @@ func classifyByMessage(err error) error {
 	case strings.Contains(lower, "connection reset"),
 		strings.Contains(lower, "connection refused"),
 		strings.Contains(lower, "broken pipe"),
+		// The MCP SDK's streamable client synthesizes this JSON-RPC response
+		// error when the server (or an intermediary) ends a call's SSE stream
+		// without delivering the response and the stream carries no event IDs
+		// to resume from. It reaches the caller as a plain response error —
+		// not ErrSessionMissing, not io.EOF — so without this pattern the
+		// call is treated as an application failure and never retried, even
+		// though a reconnect gives it a fresh stream that typically succeeds.
+		strings.Contains(lower, "request terminated without response"),
 		strings.Contains(msg, "EOF"):
 		return wrap(ErrTransport, err)
 	// Map server-side OAuth token rejection to ErrAuthRequired. We match
