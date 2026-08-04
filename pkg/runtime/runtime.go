@@ -1296,7 +1296,14 @@ func (r *LocalRuntime) resolveSessionAgent(sess *session.Session) *agent.Agent {
 
 // CurrentAgentSkillsToolset returns the skills toolset for the current agent, or nil if not enabled.
 func (r *LocalRuntime) CurrentAgentSkillsToolset() *skills.ToolSet {
-	a := r.CurrentAgent()
+	return agentSkillsToolset(r.CurrentAgent())
+}
+
+// agentSkillsToolset returns the skills toolset configured on a, or nil if
+// a is nil or has none. Session-aware callers (e.g. RunSkillFork) use it
+// directly so a pinned session's agent is honoured instead of the shared
+// current agent.
+func agentSkillsToolset(a *agent.Agent) *skills.ToolSet {
 	if a == nil {
 		return nil
 	}

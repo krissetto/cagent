@@ -369,6 +369,14 @@ type Session struct {
 	// within the parent session's Messages array.
 	ParentID string `json:"-"`
 
+	// DelegationLineage records the names of the agents that delegated,
+	// transitively, to produce this sub-session (root caller first), not
+	// including the agent running the session itself. The runtime uses it to
+	// reject delegation cycles and excessive nesting across transfer_task and
+	// run_background_agent. Not persisted: a restored session starts as a
+	// fresh delegation root.
+	DelegationLineage []string `json:"-"`
+
 	// InstructionContext keeps the cache-stable snapshot and chronological
 	// updates for dynamic system context.
 	InstructionContext *InstructionContextState `json:"instruction_context,omitempty"`
@@ -1237,6 +1245,15 @@ func (s *Session) AttachedFilesSnapshot() []string {
 	return slices.Clone(s.AttachedFiles)
 }
 
+// DelegationLineageSnapshot returns a copy of the session's delegation
+// lineage. Callers may freely mutate the returned slice without affecting
+// the session.
+func (s *Session) DelegationLineageSnapshot() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return slices.Clone(s.DelegationLineage)
+}
+
 type Opt func(s *Session)
 
 func WithUserMessage(content string) Opt {
@@ -1376,6 +1393,16 @@ func WithAgentName(name string) Opt {
 func WithParentID(parentID string) Opt {
 	return func(s *Session) {
 		s.ParentID = parentID
+	}
+}
+
+// WithDelegationLineage records the chain of agents that delegated to produce
+// this sub-session (root caller first, excluding the session's own agent).
+// The slice is cloned so the session never shares backing storage with the
+// caller — required for concurrent delegation fan-out from one parent.
+func WithDelegationLineage(names []string) Opt {
+	return func(s *Session) {
+		s.DelegationLineage = slices.Clone(names)
 	}
 }
 

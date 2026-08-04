@@ -18,14 +18,32 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
-// mockRunner implements Runner for testing.
+// mockRunner implements Runner plus the optional SessionSubAgentResolver,
+// mirroring production LocalRuntime which implements both.
 type mockRunner struct {
 	subAgentNames []string
 	runResult     *RunResult
 	runDelay      time.Duration // optional delay to simulate work
+
+	mu            sync.Mutex
+	validatedSess *session.Session // session SubAgentNames resolved against
+	legacyCalls   int              // CurrentAgentSubAgentNames invocations
 }
 
-func (m *mockRunner) CurrentAgentSubAgentNames() []string { return m.subAgentNames }
+func (m *mockRunner) CurrentAgentSubAgentNames() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.legacyCalls++
+	return m.subAgentNames
+}
+
+func (m *mockRunner) SubAgentNames(sess *session.Session) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.validatedSess = sess
+	return m.subAgentNames
+}
+
 func (m *mockRunner) RunAgent(ctx context.Context, params RunParams) *RunResult {
 	if m.runDelay > 0 {
 		select {
@@ -38,6 +56,25 @@ func (m *mockRunner) RunAgent(ctx context.Context, params RunParams) *RunResult 
 	if m.runResult != nil && m.runResult.Result != "" && params.OnContent != nil {
 		params.OnContent(m.runResult.Result)
 	}
+	if m.runResult != nil {
+		return m.runResult
+	}
+	return &RunResult{}
+}
+
+// legacyRunner implements only the base Runner contract — no
+// SessionSubAgentResolver — standing in for out-of-tree Runner
+// implementations that predate the session-aware resolver.
+type legacyRunner struct {
+	subAgentNames []string
+	runResult     *RunResult
+}
+
+func (m *legacyRunner) CurrentAgentSubAgentNames() []string {
+	return m.subAgentNames
+}
+
+func (m *legacyRunner) RunAgent(context.Context, RunParams) *RunResult {
 	if m.runResult != nil {
 		return m.runResult
 	}
@@ -541,6 +578,62 @@ func TestHandleRun_WithExpectedOutput(t *testing.T) {
 	result, err := h.HandleRun(t.Context(), session.New(), tc)
 	require.NoError(t, err)
 	assert.False(t, result.IsError)
+
+	h.wg.Wait()
+
+	h.tasks.Range(func(_ string, tk *task) bool {
+		assert.Equal(t, taskCompleted, tk.loadStatus())
+		return true
+	})
+}
+
+// TestHandleRun_ValidatesAgainstCallingSession pins the #3886 contract:
+// target validation receives the calling session, so the Runner can resolve
+// a pinned background caller instead of shared current-agent state.
+func TestHandleRun_ValidatesAgainstCallingSession(t *testing.T) {
+	t.Parallel()
+	m := &mockRunner{subAgentNames: []string{"sub"}, runResult: &RunResult{Result: "done"}}
+	h := newTestHandlerWithRunner(m)
+
+	sess := session.New()
+	tc := makeToolCall(t, RunBackgroundAgentArgs{Agent: "sub", Task: "do something"})
+	result, err := h.HandleRun(t.Context(), sess, tc)
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+
+	h.wg.Wait()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	assert.Same(t, sess, m.validatedSess,
+		"HandleRun must validate the target against the calling session")
+	assert.Zero(t, m.legacyCalls,
+		"the session-aware resolver must be preferred over the legacy method")
+}
+
+// TestHandleRun_LegacyRunnerFallback pins source compatibility: a Runner
+// without SessionSubAgentResolver still validates and dispatches through
+// the legacy CurrentAgentSubAgentNames fallback.
+func TestHandleRun_LegacyRunnerFallback(t *testing.T) {
+	t.Parallel()
+	h := newTestHandlerWithRunner(&legacyRunner{
+		subAgentNames: []string{"sub"},
+		runResult:     &RunResult{Result: "done"},
+	})
+
+	// The fallback is the only source of names, so a rejected unknown
+	// target proves validation flowed through it.
+	bad := makeToolCall(t, RunBackgroundAgentArgs{Agent: "nonexistent", Task: "do something"})
+	result, err := h.HandleRun(t.Context(), session.New(), bad)
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Output, "not in the sub-agents list")
+
+	good := makeToolCall(t, RunBackgroundAgentArgs{Agent: "sub", Task: "do something"})
+	result, err = h.HandleRun(t.Context(), session.New(), good)
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Output, "agent_task_")
 
 	h.wg.Wait()
 
