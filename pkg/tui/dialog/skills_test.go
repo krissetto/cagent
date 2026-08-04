@@ -42,12 +42,12 @@ func TestNewSkillsDialog_RendersSkills(t *testing.T) {
 	assert.Contains(t, out, "Skills (2)")
 	assert.Contains(t, out, "commit")
 	assert.Contains(t, out, "Commit local changes")
-	assert.Contains(t, out, "from: skills/commit")
+	assert.Contains(t, out, filepath.FromSlash("from: skills/commit"))
 	assert.Contains(t, out, "local")
 	assert.Contains(t, out, "fork")
 	assert.Contains(t, out, "poem")
 	assert.Contains(t, out, "Prints a poem")
-	assert.Contains(t, out, "from: cache/skills/poem")
+	assert.Contains(t, out, filepath.FromSlash("from: cache/skills/poem"))
 	assert.Contains(t, out, "remote")
 }
 

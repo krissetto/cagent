@@ -361,7 +361,7 @@ func TestSessionBrowserWorkspaceGrouping(t *testing.T) {
 	view := d.View()
 	require.Contains(t, view, sessionBrowserHeaderWorkspace)
 	require.Contains(t, view, sessionBrowserHeaderElsewhere)
-	require.Contains(t, view, "/work/other", "sessions from another workspace should show their directory")
+	require.Contains(t, view, filepath.FromSlash("/work/other"), "sessions from another workspace should show their directory")
 }
 
 func TestSessionBrowserWorkspaceGroupingFlatWithoutWorkspace(t *testing.T) {
