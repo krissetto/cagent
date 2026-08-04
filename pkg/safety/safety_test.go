@@ -17,6 +17,17 @@ func TestClassifyCommand_DestructivePatterns(t *testing.T) {
 		{"docker compose down -v", "high"},
 		{"rm file.txt", "low"},
 		{"cd /tmp && rm -rf foo", "high"},
+		{"docker rm web", "medium"},
+		{"docker rm -f web", "high"},
+		{"docker stop web", "low"},
+		{"docker volume prune --all", "high"},
+		{"docker builder prune", "medium"},
+		{"sed -i 's/a/b/' config.yml", "medium"},
+		{"git reset --hard origin/main", "high"},
+		{"git clean -fd", "high"},
+		{"git checkout -- src/", "high"},
+		{"git push --force origin main", "medium"},
+		{"git stash clear", "high"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.command, func(t *testing.T) {
@@ -33,7 +44,9 @@ func TestClassifyCommand_SafePatterns(t *testing.T) {
 	for _, command := range []string{
 		"ls -la",
 		"git status",
+		"git branch",
 		"docker ps",
+		"docker ps -a",
 		"pwd",
 	} {
 		t.Run(command, func(t *testing.T) {
