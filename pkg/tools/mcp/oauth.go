@@ -28,6 +28,7 @@ import (
 	otelmcp "github.com/docker/docker-agent/pkg/telemetry/mcp"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/mcp/oauthflow"
+	"github.com/docker/docker-agent/pkg/upstream"
 )
 
 // resourceMetadataFromWWWAuth extracts resource metadata URL from WWW-Authenticate header.
@@ -107,13 +108,13 @@ func (o *oauth) getAuthorizationServerMetadata(ctx context.Context, authServerUR
 		switch {
 		case err != nil:
 			slog.DebugContext(ctx, "Metadata discovery candidate failed, trying next",
-				"url", u, "error", err)
+				"url", sanitizeURLForLog(u), "error", err)
 			if notableErr == nil && notableStatus == 0 {
 				notableErr, notableURL = err, u
 			}
 		case status != http.StatusNotFound:
 			slog.DebugContext(ctx, "Metadata discovery candidate returned unexpected status, trying next",
-				"url", u, "status", status)
+				"url", sanitizeURLForLog(u), "status", status)
 			if notableStatus == 0 {
 				notableStatus, notableURL = status, u
 				notableErr = nil
@@ -123,13 +124,13 @@ func (o *oauth) getAuthorizationServerMetadata(ctx context.Context, authServerUR
 
 	switch {
 	case notableErr != nil:
-		return nil, fmt.Errorf("failed to fetch authorization server metadata from %s: %w", notableURL, notableErr)
+		return nil, fmt.Errorf("failed to fetch authorization server metadata from %s: %w", sanitizeURLForLog(notableURL), notableErr)
 	case notableStatus != 0:
-		return nil, fmt.Errorf("unexpected status %d from %s", notableStatus, notableURL)
+		return nil, fmt.Errorf("unexpected status %d from %s", notableStatus, sanitizeURLForLog(notableURL))
 	}
 
 	slog.DebugContext(ctx, "All metadata discovery URLs returned 404, returning default metadata",
-		"authServerURL", authServerURL)
+		"authServerURL", sanitizeURLForLog(authServerURL))
 	return createDefaultMetadata(authServerURL), nil
 }
 
@@ -138,15 +139,16 @@ func (o *oauth) getAuthorizationServerMetadata(ctx context.Context, authServerUR
 // the caller should consider for fallback, or (nil, 0, err) on transport
 // or decode failure.
 func (o *oauth) fetchAuthorizationServerMetadata(ctx context.Context, metadataURL string) (*AuthorizationServerMetadata, int, error) {
+	safeURL := sanitizeURLForLog(metadataURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, http.NoBody)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("creating metadata request for %s: %w", safeURL, err)
 	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := o.metadataClient.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("fetching metadata from %s: request failed", safeURL)
 	}
 	defer resp.Body.Close()
 
@@ -160,7 +162,7 @@ func (o *oauth) fetchAuthorizationServerMetadata(ctx context.Context, metadataUR
 
 	var metadata AuthorizationServerMetadata
 	if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
-		return nil, 0, fmt.Errorf("failed to decode metadata from %s: %w", metadataURL, err)
+		return nil, 0, fmt.Errorf("failed to decode metadata from %s: %w", safeURL, err)
 	}
 	return &metadata, resp.StatusCode, nil
 }
@@ -405,32 +407,32 @@ func (t *oauthTransport) handleServerRejectedToken(ctx context.Context, prev *OA
 	// Coalesce: if another goroutine already refreshed successfully, the
 	// stored token is now different. Return nil so the caller replays.
 	if current, err := t.tokenStore.GetToken(t.baseURL); err == nil && current.AccessToken != prev.AccessToken {
-		slog.DebugContext(ctx, "Token already refreshed by concurrent request; reusing", "url", t.baseURL)
+		slog.DebugContext(ctx, "Token already refreshed by concurrent request; reusing", "url", sanitizeURLForLog(t.baseURL))
 		return nil
 	}
 
 	// Evict the stale token; the refresh or interactive flow will store a
 	// fresh one.
 	if err := t.tokenStore.RemoveToken(t.baseURL); err != nil {
-		slog.DebugContext(ctx, "Failed to evict stale token", "url", t.baseURL, "error", err)
+		slog.DebugContext(ctx, "Failed to evict stale token", "url", sanitizeURLForLog(t.baseURL), "error", err)
 	}
 
 	// Attempt a silent refresh when we have a refresh token.
 	if prev.RefreshToken != "" {
 		_, err := t.refreshStoredToken(ctx, prev)
 		if err == nil {
-			slog.DebugContext(ctx, "Silently refreshed server-rejected token", "url", t.baseURL)
+			slog.DebugContext(ctx, "Silently refreshed server-rejected token", "url", sanitizeURLForLog(t.baseURL))
 			t.notifyOAuthSuccess()
 			return nil
 		}
 		slog.DebugContext(ctx, "Refresh failed after server-side token rejection; falling back to interactive auth",
-			"url", t.baseURL, "error", err)
+			"url", sanitizeURLForLog(t.baseURL), "error", err)
 	}
 
 	// Refresh not possible or failed: fall back to interactive OAuth if the
 	// context allows it.
 	if !InteractivePromptsAllowed(ctx) {
-		slog.DebugContext(ctx, "Non-interactive context: deferring re-auth after server-side token rejection", "url", t.baseURL)
+		slog.DebugContext(ctx, "Non-interactive context: deferring re-auth after server-side token rejection", "url", sanitizeURLForLog(t.baseURL))
 		t.mu.Lock()
 		t.lastAuthRequired = true
 		t.mu.Unlock()
@@ -465,7 +467,7 @@ func (t *oauthTransport) startInteractiveFlowLocked(ctx context.Context, authSer
 	declined := t.lastOAuthDeclined
 	t.mu.Unlock()
 	if declined {
-		slog.DebugContext(ctx, "OAuth flow short-circuited: user already declined on this transport", "url", t.baseURL)
+		slog.DebugContext(ctx, "OAuth flow short-circuited: user already declined on this transport", "url", sanitizeURLForLog(t.baseURL))
 		return &OAuthDeclinedError{URL: t.baseURL}
 	}
 
@@ -521,11 +523,14 @@ func (t *oauthTransport) roundTrip(req *http.Request, isRetry bool) (*http.Respo
 
 	reqClone := req.Clone(req.Context())
 
-	// Attach a valid token if available, silently refreshing if expired.
+	// Attach a valid token only to the configured MCP origin. Redirects to
+	// another origin must never receive bearer credentials.
 	var attachedToken *OAuthToken
-	if token := t.getValidToken(req.Context()); token != nil {
-		reqClone.Header.Set("Authorization", "Bearer "+token.AccessToken)
-		attachedToken = token
+	if upstream.SameOrigin(t.baseURL, reqClone.URL) {
+		if token := t.getValidToken(req.Context()); token != nil {
+			reqClone.Header.Set("Authorization", "Bearer "+token.AccessToken)
+			attachedToken = token
+		}
 	}
 
 	resp, err := t.base.RoundTrip(reqClone)
@@ -580,7 +585,7 @@ func (t *oauthTransport) roundTrip(req *http.Request, isRetry bool) (*http.Respo
 			// the agent and without making Ctrl-C wait for a user response
 			// that will never come.
 			if !InteractivePromptsAllowed(req.Context()) {
-				slog.Debug("Skipping OAuth elicitation in non-interactive context", "url", t.baseURL)
+				slog.Debug("Skipping OAuth elicitation in non-interactive context", "url", sanitizeURLForLog(t.baseURL))
 				resp.Body.Close()
 				t.mu.Lock()
 				t.lastAuthRequired = true
@@ -603,7 +608,7 @@ func (t *oauthTransport) roundTrip(req *http.Request, isRetry bool) (*http.Respo
 				// the next conversation turn with a properly-wired bridge.
 				var authErr *AuthorizationRequiredError
 				if errors.As(err, &authErr) {
-					slog.Debug("OAuth flow deferred: elicitation bridge not ready", "url", t.baseURL)
+					slog.Debug("OAuth flow deferred: elicitation bridge not ready", "url", sanitizeURLForLog(t.baseURL))
 					if authErr.URL == "" {
 						authErr.URL = t.baseURL
 					}
@@ -621,7 +626,7 @@ func (t *oauthTransport) roundTrip(req *http.Request, isRetry bool) (*http.Respo
 				// pattern this mirrors.
 				var declinedErr *OAuthDeclinedError
 				if errors.As(err, &declinedErr) {
-					slog.Debug("OAuth flow declined by user", "url", t.baseURL)
+					slog.Debug("OAuth flow declined by user", "url", sanitizeURLForLog(t.baseURL))
 					if declinedErr.URL == "" {
 						declinedErr.URL = t.baseURL
 					}
@@ -676,7 +681,7 @@ func (t *oauthTransport) logErrorResponse(req *http.Request, resp *http.Response
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
 		slog.Warn("Authenticated MCP request failed; could not read response body",
-			"url", req.URL.String(),
+			"url", sanitizeURLForLog(req.URL.String()),
 			"status", resp.StatusCode,
 			"error", err,
 		)
@@ -699,7 +704,7 @@ func (t *oauthTransport) logErrorResponse(req *http.Request, resp *http.Response
 	t.mu.Unlock()
 
 	slog.Warn("Authenticated MCP request was rejected by the server",
-		"url", req.URL.String(),
+		"url", sanitizeURLForLog(req.URL.String()),
 		"status", resp.StatusCode,
 		"www_authenticate", resp.Header.Get("WWW-Authenticate"),
 		"content_type", resp.Header.Get("Content-Type"),
@@ -811,12 +816,12 @@ func (t *oauthTransport) getValidToken(ctx context.Context) *OAuthToken {
 
 	if !t.tokenCoversConfiguredScopes(token) {
 		slog.DebugContext(ctx, "Stored token scopes no longer cover configured scopes; discarding to force re-auth",
-			"url", t.baseURL,
+			"url", sanitizeURLForLog(t.baseURL),
 			"stored", token.RequestedScopes,
 			"configured", configuredScopes(t.oauthConfig),
 		)
 		if err := t.tokenStore.RemoveToken(t.baseURL); err != nil {
-			slog.DebugContext(ctx, "Failed to remove stale token", "url", t.baseURL, "error", err)
+			slog.DebugContext(ctx, "Failed to remove stale token", "url", sanitizeURLForLog(t.baseURL), "error", err)
 		}
 		return nil
 	}
@@ -853,7 +858,7 @@ func (t *oauthTransport) refreshStoredToken(ctx context.Context, prev *OAuthToke
 		return nil, fmt.Errorf("skipping refresh: last attempt failed %s ago", time.Since(failedAt).Round(time.Second))
 	}
 
-	slog.DebugContext(ctx, "Attempting silent token refresh", "url", t.baseURL)
+	slog.DebugContext(ctx, "Attempting silent token refresh", "url", sanitizeURLForLog(t.baseURL))
 
 	// Wrap the refresh path in a span so the latency and failure
 	// rate of silent OAuth token refreshes are visible — the user
@@ -861,7 +866,7 @@ func (t *oauthTransport) refreshStoredToken(ctx context.Context, prev *OAuthToke
 	// cause. Pull conversation id from baggage so observability-svc
 	// can attribute the refresh to the spawning session.
 	refreshAttrs := []attribute.KeyValue{
-		attribute.String("cagent.oauth.base_url", t.baseURL),
+		attribute.String("cagent.oauth.base_url", sanitizeURLForLog(t.baseURL)),
 	}
 	if convID := otelmcp.ConversationIDFromBaggage(ctx); convID != "" {
 		refreshAttrs = append(refreshAttrs, attribute.String("gen_ai.conversation.id", convID))
@@ -878,7 +883,7 @@ func (t *oauthTransport) refreshStoredToken(ctx context.Context, prev *OAuthToke
 	authServer := cmp.Or(prev.AuthServer, t.baseURL)
 	metadata, err := o.getAuthorizationServerMetadata(ctx, authServer)
 	if err != nil {
-		slog.DebugContext(ctx, "Failed to fetch auth server metadata for refresh", "auth_server", authServer, "error", err)
+		slog.DebugContext(ctx, "Failed to fetch auth server metadata for refresh", "auth_server", sanitizeURLForLog(authServer), "error", err)
 		refreshSpan.RecordError(err)
 		refreshSpan.SetStatus(codes.Error, "metadata fetch failed")
 		refreshSpan.SetAttributes(attribute.String("error.type", "metadata"))
@@ -914,7 +919,7 @@ func (t *oauthTransport) refreshStoredToken(ctx context.Context, prev *OAuthToke
 		slog.WarnContext(ctx, "Failed to store refreshed token", "error", err)
 	}
 
-	slog.DebugContext(ctx, "Token refreshed successfully", "url", t.baseURL)
+	slog.DebugContext(ctx, "Token refreshed successfully", "url", sanitizeURLForLog(t.baseURL))
 	return newToken, nil
 }
 
@@ -968,7 +973,7 @@ func (t *oauthTransport) handleOAuthFlow(ctx context.Context, authServer, wwwAut
 	// back). The span makes that latency attributable and gives
 	// dashboards a way to count auth-failure rates by managed kind.
 	flowAttrs := []attribute.KeyValue{
-		attribute.String("cagent.oauth.base_url", t.baseURL),
+		attribute.String("cagent.oauth.base_url", sanitizeURLForLog(t.baseURL)),
 		attribute.String("cagent.oauth.kind", kind),
 	}
 	if convID := otelmcp.ConversationIDFromBaggage(ctx); convID != "" {
@@ -995,7 +1000,7 @@ func (t *oauthTransport) handleOAuthFlow(ctx context.Context, authServer, wwwAut
 }
 
 func (t *oauthTransport) handleManagedOAuthFlow(ctx context.Context, authServer, wwwAuth string) error {
-	slog.DebugContext(ctx, "Starting OAuth flow for server", "url", t.baseURL)
+	slog.DebugContext(ctx, "Starting OAuth flow for server", "url", sanitizeURLForLog(t.baseURL))
 	span := trace.SpanFromContext(ctx)
 
 	resourceURL := cmp.Or(resourceMetadataFromWWWAuth(wwwAuth), authServer+"/.well-known/oauth-protected-resource")
@@ -1102,7 +1107,7 @@ func (t *oauthTransport) handleManagedOAuthFlow(ctx context.Context, authServer,
 		return errors.New("user declined OAuth authorization")
 	}
 
-	slog.DebugContext(ctx, "Requesting authorization code", "url", authURL)
+	slog.DebugContext(ctx, "Requesting authorization code", "url", sanitizeURLForLog(authURL))
 	span.AddEvent("oauth.step", trace.WithAttributes(attribute.String("cagent.oauth.step", "request_authorization_code")))
 
 	code, receivedState, err := RequestAuthorizationCode(ctx, authURL, callbackServer, state)
@@ -1272,7 +1277,7 @@ func (t *oauthTransport) unmanagedRedirectURI() string {
 // receives an authorize_url but still wants to do the exchange itself is
 // free to return an access token.
 func (t *oauthTransport) handleUnmanagedOAuthFlow(ctx context.Context, authServer, wwwAuth string) error {
-	slog.DebugContext(ctx, "Starting unmanaged OAuth flow for server", "url", t.baseURL)
+	slog.DebugContext(ctx, "Starting unmanaged OAuth flow for server", "url", sanitizeURLForLog(t.baseURL))
 	span := trace.SpanFromContext(ctx)
 
 	// Extract resource URL from WWW-Authenticate header

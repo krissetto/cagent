@@ -67,7 +67,7 @@ Before marking work as complete:
 
 - `./bin/docker-agent run <config.yaml>` — Run agent with configuration (launches TUI by default)
 - `./bin/docker-agent run <config.yaml> -a <agent_name>` — Run specific agent from multi-agent config
-- `./bin/docker-agent run agentcatalog/pirate` — Run agent directly from OCI registry
+- `./bin/docker-agent run myorg/agent:tag` — Run agent directly from OCI registry
 - `./bin/docker-agent run --exec <config.yaml>` — Execute agent without TUI (non-interactive)
 - `./bin/docker-agent new` — Generate new agent configuration interactively
 - `./bin/docker-agent new --model openai/gpt-5` — Generate with specific model

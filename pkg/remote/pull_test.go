@@ -471,23 +471,23 @@ func TestNormalizeReference(t *testing.T) {
 	}{
 		{
 			name:     "short reference gets normalized",
-			ref:      "agentcatalog/review-pr",
-			expected: "agentcatalog/review-pr:latest",
+			ref:      "myorg/review-pr",
+			expected: "myorg/review-pr:latest",
 		},
 		{
 			name:     "fully qualified reference gets normalized to same key",
-			ref:      "index.docker.io/agentcatalog/review-pr:latest",
-			expected: "agentcatalog/review-pr:latest",
+			ref:      "index.docker.io/myorg/review-pr:latest",
+			expected: "myorg/review-pr:latest",
 		},
 		{
 			name:     "tagged reference preserves tag",
-			ref:      "agentcatalog/review-pr:v1",
-			expected: "agentcatalog/review-pr:v1",
+			ref:      "myorg/review-pr:v1",
+			expected: "myorg/review-pr:v1",
 		},
 		{
 			name:     "digest reference preserves digest",
-			ref:      "agentcatalog/review-pr@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-			expected: "agentcatalog/review-pr@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+			ref:      "myorg/review-pr@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+			expected: "myorg/review-pr@sha256:0000000000000000000000000000000000000000000000000000000000000000",
 		},
 		{
 			name:     "non-docker-hub registry",
@@ -521,10 +521,10 @@ func TestIsDigestReference(t *testing.T) {
 		ref      string
 		expected bool
 	}{
-		{"tag reference", "agentcatalog/review-pr:latest", false},
-		{"implicit tag", "agentcatalog/review-pr", false},
-		{"digest reference", "agentcatalog/review-pr@sha256:0000000000000000000000000000000000000000000000000000000000000000", true},
-		{"fully qualified digest", "index.docker.io/agentcatalog/review-pr@sha256:0000000000000000000000000000000000000000000000000000000000000000", true},
+		{"tag reference", "myorg/review-pr:latest", false},
+		{"implicit tag", "myorg/review-pr", false},
+		{"digest reference", "myorg/review-pr@sha256:0000000000000000000000000000000000000000000000000000000000000000", true},
+		{"fully qualified digest", "index.docker.io/myorg/review-pr@sha256:0000000000000000000000000000000000000000000000000000000000000000", true},
 		{"invalid reference", ":::invalid", false},
 	}
 

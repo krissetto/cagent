@@ -147,13 +147,10 @@ func TestGatewayFlags_RunsParentBeforeMaterialisingEnvProvider(t *testing.T) {
 	// used to call runConfig.EnvProvider() before invoking the parent
 	// PersistentPreRunE that overrides --config-dir / --cache-dir /
 	// --data-dir. Because EnvProvider() caches its result, the parent
-	// override never landed in the cached chain — in particular the
-	// in-sandbox SandboxTokenProvider was constructed with the wrong
-	// path (~/.config/cagent inside the sandbox image instead of the
-	// host config dir bind-mounted at the same location), causing the
-	// inner agent to fail with "sorry, you first need to sign in
-	// Docker Desktop to use the Docker AI Gateway" even when the
-	// host-side token writer was working.
+	// override never landed in the cached chain — providers reading
+	// from the config dir were constructed with the wrong path
+	// (~/.config/cagent inside the sandbox image instead of the host
+	// config dir bind-mounted at the same location).
 	parentRanFirst := false
 	envProviderConsulted := false
 

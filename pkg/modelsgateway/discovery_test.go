@@ -1,9 +1,11 @@
 package modelsgateway
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -130,4 +132,57 @@ func TestListModels_InvalidURL(t *testing.T) {
 	_, err := ListModels(t.Context(), "http://[::1", tokenEnv())
 
 	require.Error(t, err)
+}
+
+// hostRewriteTransport redirects every request to a local test server,
+// letting tests exercise non-trusted hostnames without touching the network.
+type hostRewriteTransport struct {
+	host string
+}
+
+func (t hostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r2 := req.Clone(req.Context())
+	r2.URL.Scheme = "http"
+	r2.URL.Host = t.host
+	return http.DefaultTransport.RoundTrip(r2)
+}
+
+func TestListModels_GenericGatewayNeedsNoDockerToken(t *testing.T) {
+	t.Parallel()
+
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o"}]}`))
+	}))
+	defer server.Close()
+
+	// models.example.com is not a trusted Docker URL, so discovery must
+	// neither require the Docker token nor send any Authorization header.
+	client := &http.Client{Transport: hostRewriteTransport{host: server.Listener.Addr().String()}}
+	ids, err := listModelsWith(t.Context(), "https://models.example.com", environment.NewMapEnvProvider(nil), client)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"gpt-4o"}, ids)
+	assert.Empty(t, gotAuth, "a generic gateway must not receive the Docker token")
+}
+
+func TestListModels_CallerContextDeadlineWins(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		// Hold the response until the client gives up, so the test measures
+		// which deadline fires without leaving a stuck handler behind.
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := ListModels(ctx, server.URL, tokenEnv())
+
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), listTimeout, "a caller deadline shorter than the internal timeout must win")
 }

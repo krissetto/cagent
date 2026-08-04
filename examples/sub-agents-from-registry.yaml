@@ -1,16 +1,16 @@
-# This example demonstrates using agents from the catalog as sub-agents.
+# This example demonstrates using agents from OCI registries as sub-agents.
 # Sub-agents can be defined locally in the same config, or referenced from
-# external sources such as OCI registries (e.g., the Docker agent catalog).
+# external sources such as any OCI-compatible registry.
 #
 # External sub-agents are automatically named after their last path segment
-# (e.g., "agentcatalog/pirate" becomes "pirate"). You can also give them
-# an explicit name using the "name:reference" syntax:
-#   - reviewer:agentcatalog/review-pr
+# without the tag (e.g., "myorg/agent:tag" becomes "agent"). You can also give
+# them an explicit name using the "name:reference" syntax:
+#   - reviewer:myorg/review-pr
 #
-# Tag references (like "agentcatalog/pirate" below) are re-resolved against the
+# Tag references (like "myorg/agent:tag" below) are re-resolved against the
 # registry on every run, even when the sub-agent is never used. Pin to a digest
 # to serve from cache and skip that lookup:
-#   - agentcatalog/pirate@sha256:<digest>
+#   - myorg/agent@sha256:<digest>
 
 models:
   model:
@@ -20,17 +20,17 @@ models:
 agents:
   root:
     model: model
-    description: Coordinator that delegates to local and catalog sub-agents
+    description: Coordinator that delegates to local and external sub-agents
     instruction: |
       You are a coordinator agent. You have access to both local and external sub-agents.
 
       - Use the "local_helper" agent for simple tasks.
-      - Use the "pirate" agent when users want responses in a pirate style.
+      - Use the "agent" sub-agent (pulled from the registry) for everything else.
 
       Delegate tasks to the most appropriate sub-agent based on the user's request.
     sub_agents:
       - local_helper
-      - agentcatalog/pirate
+      - myorg/agent:tag
 
   local_helper:
     model: model

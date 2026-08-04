@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -529,6 +531,28 @@ func runStorageConformance(t *testing.T, s Storage) {
 	require.True(t, ok)
 	assert.Equal(t, p, got)
 
+	// MustNotExist is the create-only guard: it conflicts with any existing
+	// plan — deterministically carrying Expected 0 and the current revision —
+	// and leaves it untouched.
+	var conflict *VersionConflictError
+	_, err = s.Upsert(ctx, UpsertRequest{Name: "release", Content: new("clobber"), MustNotExist: true})
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, 0, conflict.Expected)
+	assert.Equal(t, 1, conflict.Current)
+	got, ok, err = s.Get(ctx, "release")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, p, got, "the refused create must not touch the plan")
+
+	// A MustNotExist write of a plan that does not exist yet succeeds like
+	// any first write, and the guarded delete below cleans it up again.
+	fresh, err := s.Upsert(ctx, UpsertRequest{Name: "fresh", Content: new("f"), MustNotExist: true})
+	require.NoError(t, err)
+	assert.Equal(t, 1, fresh.Revision)
+	freshDeleted, err := s.Delete(ctx, "fresh", new(1))
+	require.NoError(t, err)
+	assert.True(t, freshDeleted)
+
 	// Upsert with nil fields bumps the revision and preserves title, author,
 	// and status; only the content changes.
 	p2, err := s.Upsert(ctx, UpsertRequest{Name: "release", Content: new("v2")})
@@ -563,7 +587,6 @@ func runStorageConformance(t *testing.T, s Storage) {
 
 	_, err = s.Upsert(ctx, UpsertRequest{Name: "release", Content: new("stale"), ExpectedRevision: new(4)})
 	require.Error(t, err)
-	var conflict *VersionConflictError
 	require.ErrorAs(t, err, &conflict)
 	assert.Equal(t, 4, conflict.Expected)
 	assert.Equal(t, 5, conflict.Current)
@@ -608,6 +631,156 @@ func runStorageConformance(t *testing.T, s Storage) {
 	assert.False(t, deleted)
 }
 
+// TestFilesystemStorage_MustNotExistRejectsRevisionZeroFile proves the
+// create-only guard is existence-driven, not revision-driven: a valid stored
+// plan whose revision field is omitted (reading back as revision 0) still
+// conflicts — with Expected 0 and Current 0 — and stays byte-identical,
+// where an ExpectedRevision-0 guard alone would have overwritten it.
+func TestFilesystemStorage_MustNotExistRejectsRevisionZeroFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := NewFilesystemStorage(dir)
+
+	original := `{"name":"planted","content":"precious content"}`
+	path := filepath.Join(dir, "planted.json")
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o600))
+
+	_, err := s.Upsert(t.Context(), UpsertRequest{Name: "planted", Content: new("clobber"), MustNotExist: true})
+	var conflict *VersionConflictError
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, 0, conflict.Expected)
+	assert.Equal(t, 0, conflict.Current)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, original, string(data), "the refused create must leave the existing file byte-identical")
+}
+
+// TestFilesystemStorage_DirectoryPlanFileIsCorrupt proves a directory
+// squatting on <name>.json is a typed corrupt plan on Get — validated on the
+// opened descriptor, never read — and a warning on List, so it is never
+// mistaken for a missing plan or a plain I/O failure.
+func TestFilesystemStorage_DirectoryPlanFileIsCorrupt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := NewFilesystemStorage(dir)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "squatter.json"), 0o700))
+
+	_, ok, err := s.Get(t.Context(), "squatter")
+	assert.False(t, ok)
+	var corrupt *CorruptPlanError
+	require.ErrorAs(t, err, &corrupt)
+	assert.Contains(t, corrupt.Error(), "directory")
+
+	plans, warnings, err := s.List(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, plans)
+	// ReadDir-level directory entries are skipped before load, so no warning
+	// is required here; the point is that List neither fails nor lists it.
+	assert.Empty(t, warnings)
+}
+
+// TestFilesystemStorage_ReadsObserveContext proves Get and List honour an
+// already-expired context instead of starting filesystem work: the refresh
+// pipelines above them pass bounded contexts and rely on reads not outliving
+// their deadline when storage is healthy enough to return at all.
+func TestFilesystemStorage_ReadsObserveContext(t *testing.T) {
+	t.Parallel()
+	s := NewFilesystemStorage(t.TempDir())
+	_, err := s.Upsert(t.Context(), UpsertRequest{Name: "p", Content: new("x")})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, _, err = s.Get(ctx, "p")
+	require.ErrorIs(t, err, context.Canceled)
+	_, _, err = s.List(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+// TestFilesystemStorage_LockFreeReadsUnderConcurrentWrites hammers the
+// lock-free Get and List with concurrent mutations. Writes are atomic
+// (temp + rename), so every read must observe a complete, decodable plan —
+// never a partial file, a temp file in the listing, or a spurious warning —
+// and the race detector proves the in-process consistency of dropping the
+// reader mutex.
+func TestFilesystemStorage_LockFreeReadsUnderConcurrentWrites(t *testing.T) {
+	t.Parallel()
+	s := NewFilesystemStorage(t.TempDir())
+	ctx := t.Context()
+	_, err := s.Upsert(ctx, UpsertRequest{Name: "p", Content: new("content-seed")})
+	require.NoError(t, err)
+
+	const writes = 25
+	done := make(chan struct{})
+	var writeErr error
+	go func() {
+		defer close(done)
+		for i := range writes {
+			content := fmt.Sprintf("content-%d", i)
+			if _, err := s.Upsert(ctx, UpsertRequest{Name: "p", Content: &content}); err != nil {
+				writeErr = err
+				return
+			}
+		}
+	}()
+
+	// Readers report violations as errors; all assertions run on the test
+	// goroutine after the workers join.
+	readOnce := func() error {
+		plan, ok, err := s.Get(ctx, "p")
+		switch {
+		case err != nil:
+			return fmt.Errorf("lock-free Get failed: %w", err)
+		case !ok:
+			return errors.New("lock-free Get lost the plan")
+		case !strings.Contains(plan.Content, "content-"):
+			return fmt.Errorf("Get observed a torn plan: %q", plan.Content)
+		}
+		plans, warnings, err := s.List(ctx)
+		switch {
+		case err != nil:
+			return fmt.Errorf("lock-free List failed: %w", err)
+		case len(warnings) != 0:
+			return fmt.Errorf("List surfaced warnings despite atomic writes: %v", warnings)
+		case len(plans) != 1:
+			return fmt.Errorf("List observed %d plans; temp files must never be listed", len(plans))
+		}
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	readerErrs := make([]error, 4)
+	for i := range readerErrs {
+		wg.Go(func() {
+			for {
+				if err := readOnce(); err != nil {
+					readerErrs[i] = err
+					return
+				}
+				select {
+				case <-done:
+					return
+				default:
+				}
+			}
+		})
+	}
+	wg.Wait()
+	<-done
+	require.NoError(t, writeErr)
+	for i, err := range readerErrs {
+		require.NoError(t, err, "reader %d", i)
+	}
+
+	plan, ok, err := s.Get(ctx, "p")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, writes+1, plan.Revision)
+	assert.Equal(t, fmt.Sprintf("content-%d", writes-1), plan.Content)
+}
+
 // memoryStorage is an in-memory Storage used to exercise the toolset through a
 // custom backend. It mirrors the filesystem default's contract: Upsert owns the
 // revision bump and preserves title/author when omitted.
@@ -635,6 +808,9 @@ func (s *memoryStorage) Upsert(_ context.Context, req UpsertRequest) (Plan, erro
 	p, exists := s.plans[req.Name]
 	if req.MustExist && !exists {
 		return Plan{}, fmt.Errorf("%w: %q", ErrPlanNotFound, req.Name)
+	}
+	if req.MustNotExist && exists {
+		return Plan{}, &VersionConflictError{Name: req.Name, Expected: 0, Current: p.Revision}
 	}
 	if req.ExpectedRevision != nil && p.Revision != *req.ExpectedRevision {
 		return Plan{}, &VersionConflictError{Name: req.Name, Expected: *req.ExpectedRevision, Current: p.Revision}
@@ -1058,12 +1234,79 @@ func TestPlanTool_UpdateFromFileTooLarge(t *testing.T) {
 	tool := newTestPlanTool(t)
 
 	src := filepath.Join(t.TempDir(), "big.md")
-	require.NoError(t, os.WriteFile(src, make([]byte, maxPlanFileSize+1), 0o600))
+	require.NoError(t, os.WriteFile(src, make([]byte, MaxPlanContentSize+1), 0o600))
 
 	result, err := tool.updatePlanFromFile(t.Context(), UpdatePlanFromFileArgs{Name: "p", Path: src})
 	require.NoError(t, err)
 	assert.True(t, result.IsError)
 	assert.Contains(t, result.Output, "too large")
+}
+
+// TestPlanTool_UpdateFromFileAtSizeCap proves the advertised content cap is
+// inclusive end to end: a file of exactly MaxPlanContentSize is read and the
+// plan is persisted through the real storage.
+func TestPlanTool_UpdateFromFileAtSizeCap(t *testing.T) {
+	t.Parallel()
+	tool := newTestPlanTool(t)
+
+	src := filepath.Join(t.TempDir(), "exact.md")
+	content := bytes.Repeat([]byte("a"), MaxPlanContentSize)
+	require.NoError(t, os.WriteFile(src, content, 0o600))
+
+	result, err := tool.updatePlanFromFile(t.Context(), UpdatePlanFromFileArgs{Name: "p", Path: src})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "exactly the cap must be accepted: %s", result.Output)
+
+	got, ok, err := tool.storage.Get(t.Context(), "p")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Len(t, got.Content, MaxPlanContentSize)
+}
+
+// TestPlanTool_LargeMetadataAccepted proves metadata stays free-form through
+// the tool surface: title, author, and status beyond 4 KiB are written,
+// preserved across a content-only write, and read back intact. Labels have
+// no per-field cap (issue #3844: status semantics are user-defined).
+func TestPlanTool_LargeMetadataAccepted(t *testing.T) {
+	t.Parallel()
+	tool := newTestPlanTool(t)
+
+	bigTitle := strings.Repeat("t", 5<<10)
+	bigAuthor := strings.Repeat("a", 5<<10)
+	bigStatus := strings.Repeat("s", 5<<10)
+
+	result, err := tool.writePlan(t.Context(), WritePlanArgs{
+		Name: "p", Content: "body", Title: bigTitle, Author: bigAuthor, Status: bigStatus,
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "large metadata must be accepted: %s", result.Output)
+
+	// set_plan_status takes the same free-form labels.
+	biggerStatus := strings.Repeat("z", 6<<10)
+	result, err = tool.setPlanStatus(t.Context(), SetPlanStatusArgs{Name: "p", Status: biggerStatus})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "a large status must be accepted: %s", result.Output)
+
+	// A content-only write preserves the large labels.
+	result, err = tool.writePlan(t.Context(), WritePlanArgs{Name: "p", Content: "new body"})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	got, ok, err := tool.storage.Get(t.Context(), "p")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, bigTitle, got.Title)
+	assert.Equal(t, bigAuthor, got.Author)
+	assert.Equal(t, biggerStatus, got.Status)
+	assert.Equal(t, "new body", got.Content)
+}
+
+// TestMaxPlanFileSizeAlias pins the deprecated exported alias: embedders
+// built against the original MaxPlanFileSize export must keep compiling and
+// get the same bound as MaxPlanContentSize.
+func TestMaxPlanFileSizeAlias(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, MaxPlanContentSize, MaxPlanFileSize)
 }
 
 // TestPlanTool_ReadNormalizesNameFromFilename proves read_plan returns the name
@@ -1299,4 +1542,50 @@ func TestPlanTool_NewToolsRegistered(t *testing.T) {
 	} {
 		assert.True(t, names[want], "tool %q should be registered", want)
 	}
+}
+
+// --- Host-facing surface (pkg/plans) -----------------------------------------
+
+func TestValidateName(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"release", "release-2025", "db_migration", "a", "1plan"} {
+		require.NoError(t, ValidateName(name), "name %q should be valid", name)
+	}
+	for _, name := range []string{"", "///", "Has Space", "UPPER", "../escape", "a/b", "-leading", "with.dot"} {
+		err := ValidateName(name)
+		require.Error(t, err, "name %q should be rejected", name)
+		assert.Contains(t, err.Error(), "invalid plan name")
+	}
+}
+
+func TestSharedStorage(t *testing.T) {
+	t.Parallel()
+	first := SharedStorage()
+	require.NotNil(t, first)
+	// Stable across calls, so every host-side caller shares one mutex.
+	assert.Same(t, first, SharedStorage())
+
+	// Identical to the storage behind the process-wide toolset singleton.
+	ts, err := CreateToolSet()
+	require.NoError(t, err)
+	assert.Same(t, ts.(*ToolSet).storage, first)
+
+	// Per-instance toolsets built with New keep their own storage.
+	assert.NotSame(t, first, New().storage)
+}
+
+// TestStorage_CorruptErrorIsTyped proves a corrupt plan surfaces as a
+// *CorruptPlanError (with its historical message) so callers can classify it
+// without matching on error text.
+func TestStorage_CorruptErrorIsTyped(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	storage := NewFilesystemStorage(dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.json"), []byte("{not json"), 0o600))
+
+	_, _, err := storage.Get(t.Context(), "broken")
+	var corrupt *CorruptPlanError
+	require.ErrorAs(t, err, &corrupt)
+	assert.Equal(t, "broken.json", corrupt.File)
+	assert.Contains(t, err.Error(), "plan file broken.json is corrupt")
 }

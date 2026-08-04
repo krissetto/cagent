@@ -769,7 +769,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "OCI reference in sub_agents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"agentcatalog/pirate"}},
+					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"myorg/agent:tag"}},
 				},
 			},
 		},
@@ -785,7 +785,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "mix of local and external sub_agents",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"helper", "agentcatalog/pirate"}},
+					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"helper", "myorg/agent:tag"}},
 					{Name: "helper", Model: "openai/gpt-4o"},
 				},
 			},
@@ -811,7 +811,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "OCI reference in handoffs is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", Handoffs: []string{"agentcatalog/pirate"}},
+					{Name: "root", Model: "openai/gpt-4o", Handoffs: []string{"myorg/agent:tag"}},
 				},
 			},
 		},
@@ -828,7 +828,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "named OCI reference in sub_agents is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"reviewer:agentcatalog/review-pr"}},
+					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"reviewer:myorg/review-pr"}},
 				},
 			},
 		},
@@ -844,7 +844,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "named OCI reference in handoffs is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", Handoffs: []string{"reviewer:agentcatalog/review-pr"}},
+					{Name: "root", Model: "openai/gpt-4o", Handoffs: []string{"reviewer:myorg/review-pr"}},
 				},
 			},
 		},
@@ -852,8 +852,8 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "external sub-agent name collides with local agent",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"pirate", "agentcatalog/pirate"}},
-					{Name: "pirate", Model: "openai/gpt-4o"},
+					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"agent", "myorg/agent:tag"}},
+					{Name: "agent", Model: "openai/gpt-4o"},
 				},
 			},
 			wantErr: "conflicts with a locally-defined agent",
@@ -862,7 +862,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "named external sub-agent collides with local agent",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"helper", "helper:agentcatalog/review-pr"}},
+					{Name: "root", Model: "openai/gpt-4o", SubAgents: []string{"helper", "helper:myorg/review-pr"}},
 					{Name: "helper", Model: "openai/gpt-4o"},
 				},
 			},
@@ -872,8 +872,8 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "external handoff name collides with local agent",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", Handoffs: []string{"agentcatalog/pirate"}},
-					{Name: "pirate", Model: "openai/gpt-4o"},
+					{Name: "root", Model: "openai/gpt-4o", Handoffs: []string{"myorg/agent:tag"}},
+					{Name: "agent", Model: "openai/gpt-4o"},
 				},
 			},
 			wantErr: "conflicts with a locally-defined agent",
@@ -949,7 +949,7 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "external force_handoff reference is allowed",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", ForceHandoff: "agentcatalog/pirate"},
+					{Name: "root", Model: "openai/gpt-4o", ForceHandoff: "myorg/agent:tag"},
 				},
 			},
 		},
@@ -957,8 +957,8 @@ func TestValidateConfig_ExternalSubAgentReferences(t *testing.T) {
 			name: "external force_handoff name collides with local agent",
 			cfg: &latest.Config{
 				Agents: []latest.AgentConfig{
-					{Name: "root", Model: "openai/gpt-4o", ForceHandoff: "agentcatalog/pirate"},
-					{Name: "pirate", Model: "openai/gpt-4o"},
+					{Name: "root", Model: "openai/gpt-4o", ForceHandoff: "myorg/agent:tag"},
+					{Name: "agent", Model: "openai/gpt-4o"},
 				},
 			},
 			wantErr: "conflicts with a locally-defined agent",

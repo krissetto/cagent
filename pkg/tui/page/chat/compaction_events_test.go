@@ -10,6 +10,7 @@ import (
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -31,7 +32,7 @@ func TestSubSessionCompactionKeepsRootWorkState(t *testing.T) {
 	t.Parallel()
 
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
 
 	_, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -53,7 +54,7 @@ func TestRootSessionCompactionResetsWorkState(t *testing.T) {
 	t.Parallel()
 
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
 
 	_, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -87,7 +88,7 @@ func TestIsSubSessionEvent(t *testing.T) {
 	t.Parallel()
 
 	sess := session.New()
-	p := New(t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), queueTestRuntime{}, sess), service.NewSessionState(sess)).(*chatPage)
 
 	assert.False(t, p.isSubSessionEvent(""), "events without a session ID belong to the root")
 	assert.False(t, p.isSubSessionEvent(sess.ID))

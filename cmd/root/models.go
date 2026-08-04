@@ -21,6 +21,8 @@ import (
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/httpclient"
 	"github.com/docker/docker-agent/pkg/model/provider"
+	"github.com/docker/docker-agent/pkg/modelsdev"
+	"github.com/docker/docker-agent/pkg/modelsgateway"
 	"github.com/docker/docker-agent/pkg/telemetry"
 	"github.com/docker/docker-agent/pkg/userconfig"
 )
@@ -128,28 +130,10 @@ func (f *modelsListFlags) runModelsListCommand(cmd *cobra.Command, args []string
 	env := f.runConfig.EnvProvider()
 
 	// Normalize the provider filter to lowercase so case-sensitive map lookups
-	// in AvailableProviders, db.Providers and IsCatalogProvider all match the
-	// same way strings.EqualFold does in the outer row filter below.
+	// in db.Providers and IsCatalogProvider all match the same way
+	// strings.EqualFold does in the outer row filter below.
 	if f.providerFilter != "" {
 		f.providerFilter = strings.ToLower(f.providerFilter)
-	}
-
-	// Determine which providers the user has credentials for.
-	availableProviders := make(map[string]bool)
-	for _, p := range config.AvailableProviders(ctx, f.runConfig.ModelsGateway, env) {
-		availableProviders[p] = true
-	}
-
-	// User-defined custom providers are available when they need no API key
-	// or their token variable is set.
-	for name, p := range f.runConfig.Providers {
-		if p.TokenKey == "" {
-			availableProviders[strings.ToLower(name)] = true
-			continue
-		}
-		if token, _ := env.Get(ctx, p.TokenKey); token != "" {
-			availableProviders[strings.ToLower(name)] = true
-		}
 	}
 
 	// Determine which model auto-selection would pick. DMR discovery is left
@@ -158,7 +142,21 @@ func (f *modelsListFlags) runModelsListCommand(cmd *cobra.Command, args []string
 	// default rather than a locally-pulled DMR model.
 	autoModel := config.AutoModelConfig(ctx, f.runConfig.ModelsGateway, env, f.runConfig.DefaultModel, nil)
 
-	rows := f.collectModels(ctx, env, availableProviders, autoModel)
+	// When a models gateway is configured, the models it actually serves are
+	// authoritative. Discovery failures (or an unusable list) fall back to
+	// the non-gateway sources below.
+	var rows []modelRow
+	if f.runConfig.ModelsGateway != "" {
+		rows = f.collectGatewayModels(ctx, env, autoModel)
+	}
+	if rows == nil {
+		availableProviders := config.DiscoveryAvailableProviders(ctx, env)
+		// DMR needs no credentials.
+		availableProviders["dmr"] = true
+		maps.Copy(availableProviders, f.customProviderAvailability(ctx, env))
+
+		rows = f.collectModels(ctx, env, availableProviders, autoModel)
+	}
 
 	// Apply provider filter
 	if f.providerFilter != "" {
@@ -195,6 +193,80 @@ func (f *modelsListFlags) runModelsListCommand(cmd *cobra.Command, args []string
 	}
 
 	return nil
+}
+
+// collectGatewayModels queries the configured models gateway for the models
+// it actually serves and returns them as rows, plus any usable user-defined
+// custom providers (which serve their models from their own endpoints, not
+// through the gateway). It returns nil when discovery fails (endpoint
+// unsupported, unreachable, invalid response, missing Docker token, …) or
+// when normalization leaves no usable model, so the caller falls back to the
+// non-gateway sources.
+//
+// The gateway list replaces the static per-provider defaults and the
+// models.dev catalog: it must neither hide providers the gateway really
+// exposes nor invent models the gateway does not serve. The default marker
+// is only set when the auto-selected model's ref is genuinely in the list.
+func (f *modelsListFlags) collectGatewayModels(ctx context.Context, env environment.Provider, autoModel latest.ModelConfig) []modelRow {
+	ids, err := modelsgateway.ListModels(ctx, f.runConfig.ModelsGateway, env)
+	if err != nil {
+		slog.WarnContext(ctx, "models gateway discovery failed, falling back to directly configured providers",
+			"gateway", f.runConfig.ModelsGateway, "error", err)
+		return nil
+	}
+
+	refs := modelsgateway.NormalizeIDs(ctx, ids, f.catalogMetadataLookup())
+	if len(refs) == 0 {
+		slog.WarnContext(ctx, "models gateway served no usable model, falling back to directly configured providers",
+			"gateway", f.runConfig.ModelsGateway)
+		return nil
+	}
+
+	seen := make(map[string]bool, len(refs))
+	rows := make([]modelRow, 0, len(refs))
+	for _, ref := range refs {
+		seen[ref.String()] = true
+		rows = append(rows, modelRow{
+			Provider: ref.Provider,
+			Model:    ref.Model,
+			Default:  ref.Provider == autoModel.Provider && ref.Model == autoModel.Model,
+		})
+	}
+
+	return append(rows, f.collectCustomProviderModels(ctx, env, f.customProviderAvailability(ctx, env), seen)...)
+}
+
+// catalogMetadataLookup adapts the models.dev store into the metadata
+// callback NormalizeIDs uses to filter embedding and non-text models. It
+// returns nil (no metadata filtering) when the store is unavailable.
+func (f *modelsListFlags) catalogMetadataLookup() modelsgateway.MetadataFunc {
+	store, err := f.runConfig.ModelsDevStore()
+	if err != nil {
+		return nil
+	}
+	return func(ctx context.Context, providerID, modelID string) (modelsgateway.Metadata, bool) {
+		m, err := store.GetModel(ctx, modelsdev.NewID(providerID, modelID))
+		if err != nil {
+			return modelsgateway.Metadata{}, false
+		}
+		return modelsgateway.Metadata{Family: m.Family, OutputModalities: m.Modalities.Output}, true
+	}
+}
+
+// customProviderAvailability reports which user-defined custom providers are
+// usable: those that need no API key or whose token variable is set.
+func (f *modelsListFlags) customProviderAvailability(ctx context.Context, env environment.Provider) map[string]bool {
+	available := make(map[string]bool, len(f.runConfig.Providers))
+	for name, p := range f.runConfig.Providers {
+		if p.TokenKey == "" {
+			available[strings.ToLower(name)] = true
+			continue
+		}
+		if token, _ := env.Get(ctx, p.TokenKey); token != "" {
+			available[strings.ToLower(name)] = true
+		}
+	}
+	return available
 }
 
 // collectModels returns all models from the catalog, filtered by credential

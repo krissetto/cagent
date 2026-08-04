@@ -1,13 +1,23 @@
 package acp
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
+	"time"
 
+	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
 )
 
 func TestResolvePath(t *testing.T) {
@@ -204,4 +214,187 @@ func TestResolvePath_NonExistentPathWithSymlinkAncestor(t *testing.T) {
 	_, err := ts.resolvePath("escape/nonexistent.txt")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "escapes the working directory")
+}
+
+// readTextFileResponder plays the ACP client side of the connection for
+// fs/read_text_file requests: each decoded request is recorded and answered
+// with the configured content. Any other JSON-RPC request fails the test
+// immediately instead of deadlocking the sender.
+type readTextFileResponder struct {
+	t       *testing.T
+	peer    io.Writer // write half of the connection's inbound peer pipe
+	content string
+
+	mu       sync.Mutex
+	requests []acpsdk.ReadTextFileRequest
+}
+
+func (p *readTextFileResponder) Write(b []byte) (int, error) {
+	var msg struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(b, &msg); err != nil {
+		p.t.Errorf("peer received malformed JSON-RPC message %q: %v", b, err)
+		return 0, err
+	}
+	if len(msg.ID) == 0 || msg.Method != acpsdk.ClientMethodFsReadTextFile {
+		err := fmt.Errorf("peer cannot answer JSON-RPC message %q (id %s)", msg.Method, msg.ID)
+		p.t.Error(err)
+		return 0, err
+	}
+
+	var req acpsdk.ReadTextFileRequest
+	if err := json.Unmarshal(msg.Params, &req); err != nil {
+		p.t.Errorf("peer failed to decode %s params: %v", msg.Method, err)
+		return 0, err
+	}
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	p.mu.Unlock()
+
+	response, err := json.Marshal(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  any             `json:"result"`
+	}{JSONRPC: "2.0", ID: msg.ID, Result: acpsdk.ReadTextFileResponse{Content: p.content}})
+	if err != nil {
+		return 0, fmt.Errorf("marshal response: %w", err)
+	}
+	if _, err := p.peer.Write(append(response, '\n')); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+func (p *readTextFileResponder) recordedRequests() []acpsdk.ReadTextFileRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]acpsdk.ReadTextFileRequest(nil), p.requests...)
+}
+
+// TestFilesystemToolset_ReadFileForwardsLineRange verifies that the ACP
+// read_file override forwards the optional line/limit arguments to the
+// client's fs/read_text_file request and leaves them unset for a path-only
+// call.
+func TestFilesystemToolset_ReadFileForwardsLineRange(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	const sessionID = "read-range-session"
+
+	acpAgent := &Agent{
+		sessions: map[string]*Session{sessionID: {id: sessionID, workingDir: workingDir}},
+		clientFS: acpsdk.FileSystemCapabilities{ReadTextFile: true},
+	}
+
+	peerReader, peerWriter := io.Pipe()
+	responder := &readTextFileResponder{t: t, peer: peerWriter, content: "two\nthree\n"}
+	conn := acpsdk.NewAgentSideConnection(acpAgent, responder, peerReader)
+	conn.SetLogger(slog.New(slog.DiscardHandler))
+	acpAgent.SetAgentConnection(conn)
+	t.Cleanup(func() {
+		_ = peerWriter.Close()
+		select {
+		case <-conn.Done():
+		case <-time.After(5 * time.Second):
+			t.Error("timed out waiting for ACP connection shutdown")
+		}
+	})
+
+	ts := NewFilesystemToolset(acpAgent, workingDir)
+	ctx := withSessionID(t.Context(), sessionID)
+
+	result, err := ts.handleReadFile(ctx, tools.ToolCall{
+		Function: tools.FunctionCall{
+			Name:      filesystem.ToolNameReadFile,
+			Arguments: `{"path": "notes.txt", "line": 2, "limit": 2}`,
+		},
+	}, nil)
+	require.NoError(t, err)
+	require.False(t, result.IsError, result.Output)
+	assert.Equal(t, "two\nthree\n", result.Output)
+
+	result, err = ts.handleReadFile(ctx, tools.ToolCall{
+		Function: tools.FunctionCall{
+			Name:      filesystem.ToolNameReadFile,
+			Arguments: `{"path": "notes.txt"}`,
+		},
+	}, nil)
+	require.NoError(t, err)
+	require.False(t, result.IsError, result.Output)
+
+	reqs := responder.recordedRequests()
+	require.Len(t, reqs, 2)
+
+	ranged := reqs[0]
+	assert.Equal(t, acpsdk.SessionId(sessionID), ranged.SessionId)
+	assert.Equal(t, "notes.txt", filepath.Base(ranged.Path))
+	assert.True(t, filepath.IsAbs(ranged.Path), "ACP read requests must carry absolute paths")
+	require.NotNil(t, ranged.Line)
+	assert.Equal(t, 2, *ranged.Line)
+	require.NotNil(t, ranged.Limit)
+	assert.Equal(t, 2, *ranged.Limit)
+
+	pathOnly := reqs[1]
+	assert.Nil(t, pathOnly.Line, "path-only read must not invent a line")
+	assert.Nil(t, pathOnly.Limit, "path-only read must not invent a limit")
+}
+
+// TestFilesystemToolset_ReadFileRejectsInvalidRange verifies that the ACP
+// read_file override applies the same line/limit contract as the builtin
+// filesystem toolset: explicitly invalid values are rejected with a tool
+// error before any fs/read_text_file request reaches the client.
+func TestFilesystemToolset_ReadFileRejectsInvalidRange(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	const sessionID = "invalid-range-session"
+
+	acpAgent := &Agent{
+		sessions: map[string]*Session{sessionID: {id: sessionID, workingDir: workingDir}},
+		clientFS: acpsdk.FileSystemCapabilities{ReadTextFile: true},
+	}
+
+	peerReader, peerWriter := io.Pipe()
+	responder := &readTextFileResponder{t: t, peer: peerWriter, content: "unreachable"}
+	conn := acpsdk.NewAgentSideConnection(acpAgent, responder, peerReader)
+	conn.SetLogger(slog.New(slog.DiscardHandler))
+	acpAgent.SetAgentConnection(conn)
+	t.Cleanup(func() {
+		_ = peerWriter.Close()
+		select {
+		case <-conn.Done():
+		case <-time.After(5 * time.Second):
+			t.Error("timed out waiting for ACP connection shutdown")
+		}
+	})
+
+	ts := NewFilesystemToolset(acpAgent, workingDir)
+	ctx := withSessionID(t.Context(), sessionID)
+
+	for _, tc := range []struct {
+		name      string
+		arguments string
+		wantErr   string
+	}{
+		{"zero line", `{"path": "notes.txt", "line": 0}`, "invalid line 0"},
+		{"negative line", `{"path": "notes.txt", "line": -3}`, "invalid line -3"},
+		{"zero limit", `{"path": "notes.txt", "limit": 0}`, "invalid limit 0"},
+		{"negative limit", `{"path": "notes.txt", "limit": -1}`, "invalid limit -1"},
+	} {
+		result, err := ts.handleReadFile(ctx, tools.ToolCall{
+			Function: tools.FunctionCall{
+				Name:      filesystem.ToolNameReadFile,
+				Arguments: tc.arguments,
+			},
+		}, nil)
+		require.NoError(t, err, tc.name)
+		require.NotNil(t, result, tc.name)
+		assert.True(t, result.IsError, tc.name)
+		assert.Contains(t, result.Output, tc.wantErr, tc.name)
+	}
+
+	assert.Empty(t, responder.recordedRequests(), "invalid ranges must be rejected before any RPC")
 }

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/docker/docker-agent/blob/main/agent-schema.json",
   "title": "Docker Agent Configuration",
-  "description": "Configuration schema for Docker Agent v14",
+  "description": "Configuration schema for Docker Agent v15",
   "type": "object",
   "properties": {
     "version": {
@@ -23,7 +23,8 @@
         "11",
         "12",
         "13",
-        "14"
+        "14",
+        "15"
       ],
       "examples": [
         "0",
@@ -40,7 +41,8 @@
         "11",
         "12",
         "13",
-        "14"
+        "14",
+        "15"
       ]
     },
     "providers": {
@@ -156,11 +158,11 @@
         },
         "startup_timeout": {
           "type": "string",
-          "description": "Cap on the initial Connect+initialize duration. NOTE: not yet enforced; documented for forward compatibility. Go duration format (e.g. '30s', '2m'). 0 means no timeout."
+          "description": "Cap on the initial Connect+initialize duration. Enforced since v1.94.0: on expiry the toolset stays stopped and the runtime retries on the next turn. Go duration format (e.g. '30s', '2m'). 0 means no timeout."
         },
         "call_timeout": {
           "type": "string",
-          "description": "Default per-call timeout. Informational today; the runtime currently uses the caller's context for cancellation."
+          "description": "Cap on an individual tool call, including one reconnect-retry. Enforced: on expiry the call is cancelled and surfaced to the model as a tool error; cancellation is propagated to the server. The budget includes any nested sampling/elicitation time. Go duration format (e.g. '30s', '2m'). 0/unset means no timeout (opt-in; no profile default)."
         },
         "restart": {
           "type": "string",
@@ -629,14 +631,14 @@
         },
         "sub_agents": {
           "type": "array",
-          "description": "List of sub-agents. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:agentcatalog/review-pr'). External agents without an explicit name are named after their last path segment. Pin external OCI references to an immutable digest (e.g. 'namespace/repo@sha256:...') to serve them from cache; tag references (including the implicit ':latest') are re-resolved against the registry on every run, even when the sub-agent is never invoked.",
+          "description": "List of sub-agents. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:myorg/review-pr'). External agents without an explicit name are named after their last path segment. Pin external OCI references to an immutable digest (e.g. 'namespace/repo@sha256:...') to serve them from cache; tag references (including the implicit ':latest') are re-resolved against the registry on every run, even when the sub-agent is never invoked.",
           "items": {
             "type": "string"
           }
         },
         "handoffs": {
           "type": "array",
-          "description": "List of agents this agent can hand off the conversation to. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:agentcatalog/review-pr'). External agents without an explicit name are named after their last path segment. Pin external OCI references to an immutable digest (e.g. 'namespace/repo@sha256:...') to serve them from cache; tag references are re-resolved against the registry on every run.",
+          "description": "List of agents this agent can hand off the conversation to. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:myorg/review-pr'). External agents without an explicit name are named after their last path segment. Pin external OCI references to an immutable digest (e.g. 'namespace/repo@sha256:...') to serve them from cache; tag references are re-resolved against the registry on every run.",
           "items": {
             "type": "string"
           }
@@ -656,6 +658,15 @@
         "readonly": {
           "type": "boolean",
           "description": "When true, makes every one of this agent's toolsets read-only: only tools whose annotations carry a read-only hint are listed and callable, and all other (mutating) tools are filtered out. Equivalent to setting 'readonly: true' on each toolset. A sub-agent or handoff agent is made read-only by setting this flag on that agent's own definition."
+        },
+        "safety": {
+          "type": "string",
+          "enum": [
+            "strict",
+            "balanced",
+            "autonomous"
+          ],
+          "description": "Safety mode new sessions started on this agent default to when the user has not chosen one (no --safety/--yolo flag, no alias option, no user-config setting). Takes precedence over the config-wide runtime.safety. A default only: it never overrides a user choice and never replaces the mode stored on a resumed session. Trust warning: 'autonomous' auto-approves every tool call — review configs from URLs or OCI registries before running them."
         },
         "redact_secrets": {
           "type": "boolean",
@@ -1171,7 +1182,7 @@
         },
         "permission_request": {
           "type": "array",
-          "description": "Hooks that run just before the runtime prompts the user to approve a tool call (i.e. when --yolo and permission rules did not short-circuit the decision). Hooks may auto-allow or auto-deny via hook_specific_output.permission_decision; otherwise control falls through to the interactive confirmation. Tool-matched, like pre_tool_use.",
+          "description": "Hooks that run just before the runtime prompts the user to approve a tool call (i.e. when the safety mode and permission rules did not short-circuit the decision). Hooks may auto-allow or auto-deny via hook_specific_output.permission_decision; otherwise control falls through to the interactive confirmation. Tool-matched, like pre_tool_use.",
           "items": {
             "$ref": "#/definitions/HookMatcherConfig"
           }
@@ -1304,7 +1315,7 @@
         },
         "on_tool_approval_decision": {
           "type": "array",
-          "description": "Hooks that run after the runtime's tool approval chain (yolo / permissions / readonly / ask) resolves a verdict for a tool call, before the call is executed (allow) or its error response is recorded (deny / canceled). Receives approval_decision (\"allow\" | \"deny\" | \"canceled\") and approval_source (a stable classifier of which step decided). Observational; gives audit pipelines a single \"who approved what\" record without re-implementing the chain.",
+          "description": "Hooks that run after the runtime's tool approval chain (custom rules / safety mode / hooks / ask) resolves a verdict for a tool call, before the call is executed (allow) or its error response is recorded (deny / canceled). Receives approval_decision (\"allow\" | \"deny\" | \"canceled\"), approval_source (a stable classifier of which step decided), and safety_label (the runtime classifier's safe / destructive / unknown verdict). Observational; gives audit pipelines a single \"who approved what\" record without re-implementing the chain.",
           "items": {
             "$ref": "#/definitions/HookDefinition"
           }
@@ -1363,7 +1374,7 @@
         },
         "preempt_yolo": {
           "type": "boolean",
-          "description": "Opt a pre_tool_use entry into firing BEFORE the deterministic approval pipeline (--yolo, permission allow/deny patterns). A deny/ask verdict from a preempting hook cannot be bypassed by --yolo or permission allow-rules; an allow verdict is advisory (the pipeline still runs Decide() and the rest of pre_tool_use). Default pre_tool_use entries fire AFTER Decide(). Only meaningful on pre_tool_use; ignored on other events. Used by the safer_shell builtin (auto-registered with this flag when a shell toolset has `safer: true`)."
+          "description": "Opt a pre_tool_use entry into firing BEFORE the deterministic approval pipeline (custom allow/ask/deny rules + safety mode). A deny/ask verdict from a preempting hook cannot be bypassed by any safety mode (including autonomous) or permission allow-rules; an allow verdict is advisory (the pipeline still runs Decide() and the rest of pre_tool_use). Default pre_tool_use entries fire AFTER Decide(). Only meaningful on pre_tool_use; ignored on other events. Set it on hooks that implement a security-critical check that must not be bypassed by auto-approval."
         }
       },
       "required": [
@@ -1838,6 +1849,15 @@
           "items": {
             "type": "string"
           }
+        },
+        "safety": {
+          "type": "string",
+          "enum": [
+            "strict",
+            "balanced",
+            "autonomous"
+          ],
+          "description": "Safety mode new sessions default to when the user has not chosen one (no --safety/--yolo flag, no alias option, no user-config setting). A per-agent 'safety' takes precedence over this config-wide default. A default only: it never overrides a user choice and never replaces the mode stored on a resumed session. Trust warning: 'autonomous' auto-approves every tool call — review configs from URLs or OCI registries before running them."
         }
       },
       "additionalProperties": false
@@ -2332,7 +2352,7 @@
         },
         "safer": {
           "type": "boolean",
-          "description": "Opt in to the safer_shell classifier for the shell toolset (only valid for type 'shell'). When enabled, the agent auto-registers the safer_shell builtin under pre_tool_use with preempt_yolo:true. Verdict adapts to the session's SafetyPolicy (unsafe / safer / safe-auto / strict). See docs/configuration/hooks/index.md for the per-policy behaviour matrix. Default false."
+          "description": "Deprecated and ignored (only valid for type 'shell'). The runtime now classifies every shell command natively (safe / destructive / unknown) and gates it through the session's safety mode (strict / balanced / autonomous), so the opt-in is meaningless. Kept so existing YAMLs with safer: true still parse."
         },
         "url": {
           "type": "string",
@@ -3089,11 +3109,11 @@
     },
     "RemoteOAuthConfig": {
       "type": "object",
-      "description": "OAuth configuration for remote MCP servers that do not support Dynamic Client Registration (RFC 7591)",
+      "description": "OAuth configuration for remote MCP servers. Set clientId for servers that do not support Dynamic Client Registration (RFC 7591); other fields tune the flow and also apply when the client is registered dynamically",
       "properties": {
         "clientId": {
           "type": "string",
-          "description": "OAuth client ID"
+          "description": "OAuth client ID. When omitted, docker-agent uses Dynamic Client Registration or prompts interactively"
         },
         "clientSecret": {
           "type": "string",
@@ -3116,10 +3136,7 @@
           "type": "string",
           "description": "Optional OAuth redirect URI used in place of http://127.0.0.1:{callbackPort}/callback. The literal placeholder ${callbackPort} is replaced with the actual local callback port at runtime. The external URL is expected to redirect the browser back to the local callback server."
         }
-      },
-      "required": [
-        "clientId"
-      ]
+      }
     }
   }
 }

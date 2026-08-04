@@ -37,6 +37,27 @@ func TestEmbeddedSnapshotIncludesGPT56Family(t *testing.T) {
 	}
 }
 
+// TestEmbeddedSnapshotIncludesClaudeOpus5 is the regression test for the
+// Claude Opus 5 snapshot refresh (released 2026-07-24): it guards against a
+// stale embedded snapshot silently dropping offline model resolution /
+// pricing / context limits, the same way TestEmbeddedSnapshotIncludesGPT56Family
+// spot-checks the gpt-5.6 family.
+func TestEmbeddedSnapshotIncludesClaudeOpus5(t *testing.T) {
+	t.Parallel()
+
+	db := embeddedSnapshot()
+	require.NotNil(t, db)
+	anthropic, ok := db.Providers["anthropic"]
+	require.True(t, ok, "embedded snapshot must contain the anthropic provider")
+
+	m, ok := anthropic.Models["claude-opus-5"]
+	require.True(t, ok, "embedded snapshot must contain anthropic/claude-opus-5")
+	assert.Equal(t, 1000000, m.Limit.Context, "claude-opus-5 must report the 1M context window")
+	assert.Equal(t, int64(128000), m.Limit.Output, "claude-opus-5 must report the 128k max output")
+	assert.True(t, m.Reasoning, "claude-opus-5 must be marked as a reasoning model")
+	assert.Equal(t, "claude-opus", m.Family, "claude-opus-5 must belong to the claude-opus family")
+}
+
 // TestEmbeddedSnapshotParses ensures the snapshot baked into the binary is
 // valid JSON and carries a non-trivial catalog. A broken snapshot would
 // silently degrade every offline lookup, so we guard it at build time.

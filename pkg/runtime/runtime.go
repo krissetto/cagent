@@ -1575,11 +1575,24 @@ func (r *LocalRuntime) emitAgentAndTeamInfo(ctx context.Context, a *agent.Agent,
 	modelID := r.getEffectiveModelID(ctx, a)
 	modelLabel := modelID.String()
 	contextLimit := r.contextLimitForAgentModel(ctx, a, modelID)
+	var compactionModel string
+	var primaryLimit int64
+	if a.CompactionModel() != nil {
+		var compactionLimit int64
+		compactionModel, primaryLimit, compactionLimit = r.compactionCapAttribution(ctx, a, modelID)
+		if !compactionCaps(primaryLimit, compactionLimit) {
+			compactionModel, primaryLimit = "", 0
+		}
+	}
 	if a.HasHarness() {
 		modelLabel = agentModelLabel(ctx, a)
 		contextLimit = 0
+		compactionModel, primaryLimit = "", 0
 	}
-	if !send(AgentInfo(a.Name(), modelLabel, a.Description(), a.WelcomeMessage(), contextLimit)) {
+	info := AgentInfo(a.Name(), modelLabel, a.Description(), a.WelcomeMessage(), contextLimit).(*AgentInfoEvent)
+	info.CompactionModel = compactionModel
+	info.PrimaryContextLimit = primaryLimit
+	if !send(info) {
 		return false
 	}
 	return send(TeamInfo(r.agentDetailsFromTeam(ctx), r.currentAgentName()))
@@ -1942,6 +1955,9 @@ func (r *LocalRuntime) Resume(_ context.Context, req ResumeRequest) {
 		)
 		return
 	}
+	// Normalize legacy verbs (approve-session, approve-safe,
+	// approve-safer) so every downstream consumer sees the current set.
+	req.Type = NormalizeResumeType(req.Type)
 
 	// Attempt to deliver the resume signal to the execution loop.
 	//

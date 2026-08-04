@@ -87,7 +87,12 @@ func (c *diskCache) Get(baseURL, skillName, filePath string) (string, bool) {
 		return "", false
 	}
 
-	if time.Now().After(meta.ExpiresAt) {
+	// Stale at ExpiresAt itself (now >= ExpiresAt): zero-freshness entries
+	// (max-age=0, no-store, no-cache) set ExpiresAt to the store time, and
+	// coarse wall clocks (e.g. Windows; the JSON round-trip drops the
+	// monotonic reading) can make Now equal ExpiresAt. Strict After() would
+	// wrongly treat that instant as fresh.
+	if !time.Now().Before(meta.ExpiresAt) {
 		return "", false
 	}
 

@@ -1,12 +1,13 @@
 ---
 title: "Local Models (Ollama, vLLM, LocalAI)"
 description: "Run Docker Agent with locally hosted models for privacy, offline use, or cost savings."
-keywords: docker agent, ai agents, model providers, llm, local models (ollama, vllm, localai)
+keywords: docker agent, ai agents, model providers, llm, local models, ollama, vllm, localai, offline models
 linkTitle: "Local Models"
 weight: 150
 canonical: https://docs.docker.com/ai/docker-agent/providers/local/
 aliases:
   - /ai/docker-agent/local-models/
+  - /ai/docker-agent/providers/ollama/
 ---
 
 _Run Docker Agent with locally hosted models for privacy, offline use, or cost savings._

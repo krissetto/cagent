@@ -24,7 +24,7 @@ func newA2ACmd() *cobra.Command {
 		Short: "Start an agent as an A2A (Agent-to-Agent) server",
 		Long:  "Start an A2A server that exposes the agent via the Agent-to-Agent protocol",
 		Example: `  docker-agent serve a2a ./agent.yaml
-  docker-agent serve a2a agentcatalog/pirate --listen 127.0.0.1:9090`,
+  docker-agent serve a2a myorg/agent:tag --listen 127.0.0.1:9090`,
 		Args: cobra.ExactArgs(1),
 		RunE: flags.runA2ACommand,
 	}

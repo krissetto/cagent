@@ -98,18 +98,21 @@ type setupWizard struct {
 func newSetupCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "setup",
-		Short: "Interactively set up a model (API key, local, custom endpoint, or Claude Code)",
+		Short: "Interactively set up a model (built-in provider, local, custom endpoint, or Claude Code)",
 		Long: `Set up a model for docker agent, interactively.
 
 Four paths:
-  - Cloud provider: pick a provider, paste its API key, and store it in the
-    docker agent env file (~/.config/cagent/.env). Picking chatgpt signs in
-    with your ChatGPT account in the browser instead of asking for an API key.
+  - Built-in cloud provider: pick a provider docker agent already knows
+    (Anthropic, OpenAI, Google, Groq, Hugging Face, ...) and connect it.
+    Credentials vary by provider: most paste an API key or token, stored in
+    the docker agent env file (~/.config/cagent/.env), while chatgpt signs
+    in with your ChatGPT account in the browser instead.
   - Local model: check Docker Model Runner and pull a model. No API key needed.
-  - OpenAI-compatible provider: register a custom endpoint (vLLM, LiteLLM,
-    a corporate gateway, ...) with its API format and API key variable. The
-    provider is saved to your user configuration and its models become
-    usable everywhere via --model <name>/<model>.
+  - Custom OpenAI-compatible endpoint: for endpoints that are not built in
+    (vLLM, LiteLLM, a corporate gateway, ...). Register the endpoint with
+    its base URL, API format, and API key variable; the provider is saved
+    to your user configuration and its models become usable everywhere via
+    --model <name>/<model>.
   - Claude Code harness: use your Claude subscription through the official
     'claude' CLI. Checks that the CLI is installed and logged in (offering
     'claude auth login --claudeai'), then writes a ready-to-run agent file.
@@ -159,7 +162,7 @@ func newTerminalSetupWizard(in io.Reader, out io.Writer) *setupWizard {
 			value, err := term.ReadPassword(int(os.Stdin.Fd()))
 			fmt.Fprintln(out)
 			if err != nil {
-				return "", fmt.Errorf("reading the API key: %w", err)
+				return "", fmt.Errorf("reading the credential: %w", err)
 			}
 			return string(value), nil
 		},
@@ -185,9 +188,9 @@ func (w *setupWizard) run(ctx context.Context) (*setupResult, error) {
 	fmt.Fprintln(w.out, "Let's set up a model for docker agent.")
 	fmt.Fprintln(w.out)
 	fmt.Fprintln(w.out, "How do you want to run models?")
-	fmt.Fprintln(w.out, "  1. Cloud provider (needs an API key)")
+	fmt.Fprintln(w.out, "  1. Built-in cloud provider (Anthropic, OpenAI, Groq, Hugging Face, ...)")
 	fmt.Fprintln(w.out, "  2. Local model via Docker Model Runner (no API key)")
-	fmt.Fprintln(w.out, "  3. OpenAI-compatible provider (custom endpoint, e.g. vLLM, LiteLLM)")
+	fmt.Fprintln(w.out, "  3. Custom OpenAI-compatible endpoint (your own base URL, e.g. vLLM, LiteLLM)")
 	fmt.Fprintln(w.out, "  4. Claude Code harness (Claude subscription via the official `claude` CLI)")
 
 	choice, err := w.promptChoice(ctx, 4, 1)
@@ -252,7 +255,7 @@ func (w *setupWizard) setupCloudProvider(ctx context.Context) (*setupResult, err
 		return &setupResult{Model: selected.Provider + "/" + config.DefaultModels[selected.Provider]}, nil
 	}
 
-	key, err := w.promptSecret(ctx, fmt.Sprintf("\nPaste your %s API key (%s, input hidden): ", selected.Provider, envVar))
+	key, err := w.promptSecret(ctx, fmt.Sprintf("\nPaste your %s credential (%s, input hidden): ", selected.Provider, envVar))
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +267,7 @@ func (w *setupWizard) setupCloudProvider(ctx context.Context) (*setupResult, err
 	return &setupResult{EnvVar: envVar, Value: key, Model: selected.Provider + "/" + config.DefaultModels[selected.Provider]}, nil
 }
 
-// promptSecret asks for the API key until a non-empty value is entered.
+// promptSecret asks for the secret until a non-empty value is entered.
 func (w *setupWizard) promptSecret(ctx context.Context, prompt string) (string, error) {
 	for {
 		if err := ctx.Err(); err != nil {

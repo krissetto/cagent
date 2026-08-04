@@ -219,11 +219,11 @@ func TestLocalhostOnlyRedirects(t *testing.T) {
 }
 
 func TestNewSSRFSafeTransport_RefusesPrivateIP(t *testing.T) {
-	t.Parallel()
-
-	// Drive the SSRF check end-to-end through an http.Client. We don't
-	// need a server: the dial-time hook fires before any TCP handshake.
-	client := &http.Client{Transport: NewSSRFSafeTransport()}
+	// ProxyFromEnvironment is process-cached, so force direct dialing: this
+	// test exercises the SSRF guard rather than ambient developer proxy state.
+	transport := NewSSRFSafeTransport()
+	transport.Proxy = nil
+	client := &http.Client{Transport: transport}
 
 	tests := []string{
 		"http://127.0.0.1/",
@@ -329,13 +329,16 @@ func TestProxyHostPort(t *testing.T) {
 // that can never resolve — must land in the allowlist verbatim, proving
 // the allowlist is built without DNS. Matching happens pre-resolution at
 // dial time instead.
+func clearProxyEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"} {
+		t.Setenv(name, "")
+	}
+}
+
 func TestProxyDialAllowlist_NoDNSAtConstruction(t *testing.T) {
+	clearProxyEnv(t)
 	t.Setenv("HTTP_PROXY", "http://proxy.invalid:3128")
-	t.Setenv("HTTPS_PROXY", "")
-	t.Setenv("ALL_PROXY", "")
-	t.Setenv("http_proxy", "")
-	t.Setenv("https_proxy", "")
-	t.Setenv("all_proxy", "")
 
 	assert.Contains(t, proxyDialAllowlist(), "proxy.invalid:3128")
 }
@@ -358,10 +361,8 @@ func TestNewSSRFSafeTransport_AllowsConfiguredProxy(t *testing.T) {
 	addr := ln.Addr().String()
 	require.NoError(t, ln.Close())
 
+	clearProxyEnv(t)
 	t.Setenv("HTTP_PROXY", "http://"+addr)
-	t.Setenv("HTTPS_PROXY", "")
-	t.Setenv("http_proxy", "")
-	t.Setenv("https_proxy", "")
 
 	// Override the transport's Proxy directly so the test does not
 	// depend on http.ProxyFromEnvironment's sync.Once-cached env
@@ -445,12 +446,11 @@ func TestNewSSRFSafeTransport_WrappedDefaultTransport(t *testing.T) {
 // dial. Changing the env after construction has no effect — acceptable
 // because proxy env vars are set at process start.
 func TestNewSSRFSafeTransport_AllowlistFrozenAtConstruction(t *testing.T) {
-	t.Setenv("HTTP_PROXY", "")
-	t.Setenv("HTTPS_PROXY", "")
-	t.Setenv("http_proxy", "")
-	t.Setenv("https_proxy", "")
+	clearProxyEnv(t)
 
-	client := &http.Client{Transport: NewSSRFSafeTransport()}
+	transport := NewSSRFSafeTransport()
+	transport.Proxy = nil
+	client := &http.Client{Transport: transport}
 
 	t.Setenv("HTTP_PROXY", "http://10.0.0.1:3128")
 

@@ -29,7 +29,7 @@ func newMCPCmd() *cobra.Command {
 		Long:  "Start an MCP server that exposes the agent via the Model Context Protocol. By default, uses stdio transport. Use --http to start a streaming HTTP server instead. Use --attach to expose a running TUI's session instead of an agent file.",
 		Example: `  docker-agent serve mcp ./agent.yaml
   docker-agent serve mcp ./team.yaml
-  docker-agent serve mcp agentcatalog/pirate
+  docker-agent serve mcp myorg/agent:tag
   docker-agent serve mcp ./agent.yaml --http --listen 127.0.0.1:9090
   docker-agent serve mcp --attach`,
 		Args: cobra.MaximumNArgs(1),

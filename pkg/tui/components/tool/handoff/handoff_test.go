@@ -8,6 +8,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/tools"
 	handofftool "github.com/docker/docker-agent/pkg/tools/builtin/handoff"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
@@ -23,7 +24,7 @@ func TestHandoffFallsBackToToolHeaderWhenArgumentsCannotParse(t *testing.T) {
 		},
 	}, tools.Tool{Name: handofftool.ToolNameHandoff}, types.ToolStatusPending)
 
-	view := New(msg, service.StaticSessionState{})
+	view := New(animation.NewRuntime(), msg, service.StaticSessionState{})
 	_ = view.SetSize(80, 0)
 
 	assert.Contains(t, ansi.Strip(view.View()), handofftool.ToolNameHandoff)

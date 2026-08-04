@@ -95,7 +95,7 @@ Starting a new session starts a fresh budget. It is a per-session ceiling, not a
 Crossing any limit — run-wide or named — stops the run and produces:
 
 - an assistant message in the transcript naming the limit and the amounts,
-- a `budget_exceeded` event carrying `budget`, `limit`, `used`, `max` and `config_path`,
+- a `budget_exceeded` event carrying `budget`, `limit`, `used`, `max`, `config_path` and, under `stop_message`, the assistant stop message itself (agent name, role, content and timestamp only),
 - a `notification` hook at `warning` level,
 - a stream end reason of `budget_exceeded`, so a stopped run is distinguishable from a completed one in telemetry.
 
@@ -107,6 +107,29 @@ limit (used $0.0312 of $0.0300).
 ```
 
 Unlike [`max_iterations`](../agents/index.md), a budget stop is **terminal** — there is no prompt offering to continue. A budget is a ceiling you set deliberately, so raising it means editing the config rather than answering a dialog.
+
+## Budget stops in evaluation output
+
+When a budgeted agent is exercised with `docker agent eval`, a budget stop is recorded as a structured termination. It is not an error, and it is distinct from an ordinary stream stop: the run output JSON exposes it as an optional `eval_result.termination` object on the affected session.
+
+```json
+"eval_result": {
+  "passed": true,
+  "termination": {
+    "reason": "budget_exceeded",
+    "budget": "run",
+    "limit": "max_cost",
+    "used": "$0.0312",
+    "max": "$0.0300",
+    "config_path": "budget.max_cost",
+    "message": "Execution stopped after reaching the configured budget.max_cost limit (used $0.0312 of $0.0300)."
+  }
+}
+```
+
+- `reason` is always `budget_exceeded`. The other fields are optional and are copied from the runtime's `budget_exceeded` event through an allow-list: only `budget`, `limit`, `used`, `max`, `config_path`, and `message` are ever taken, each sanitized (invalid UTF-8 and control characters stripped, bounded length) and omitted when missing or unusable.
+- The stored session (SQLite database and sessions JSON) keeps the stop marker at its chronological position, followed exactly once by the assistant stop message rebuilt from the event's embedded `stop_message` (again only agent name, role, content, and timestamp are taken, sanitized the same way). When the event carries no usable `stop_message`, the marker stands alone; nothing is invented from `termination.message`.
+- The termination is informational: it does not change `passed`, `failures`, or `error`. A run that completed normally or failed with an error simply has no `termination` field, and older outputs written before the field existed load unchanged.
 
 ## Tracking spend in the TUI
 

@@ -26,8 +26,13 @@ import (
 type Alias struct {
 	// Path is the agent file path or OCI reference
 	Path string `yaml:"path" json:"path"`
-	// Yolo enables auto-approve mode for all tool calls
+	// Yolo enables auto-approve mode for all tool calls. Legacy alias for
+	// Safety: autonomous; when both are set, Safety wins.
 	Yolo bool `yaml:"yolo,omitempty" json:"yolo,omitempty"`
+	// Safety is the default safety mode applied when the alias is run and
+	// no explicit --safety/--yolo flag was passed: strict, balanced, or
+	// autonomous. Wins over the legacy Yolo flag.
+	Safety latest.SafetyMode `yaml:"safety,omitempty" json:"safety,omitempty"`
 	// Model overrides the agent's model (format: [agent=]provider/model)
 	Model string `yaml:"model,omitempty" json:"model,omitempty"`
 	// HideToolResults hides tool call results in the TUI
@@ -38,7 +43,22 @@ type Alias struct {
 
 // HasOptions returns true if the alias has any runtime options set
 func (a *Alias) HasOptions() bool {
-	return a != nil && (a.Yolo || a.Model != "" || a.HideToolResults || a.Sandbox)
+	return a != nil && (a.Yolo || a.Safety != "" || a.Model != "" || a.HideToolResults || a.Sandbox)
+}
+
+// GetSafety returns the alias's safety-mode default: Safety when set,
+// otherwise autonomous when the legacy Yolo flag is set, otherwise empty.
+func (a *Alias) GetSafety() latest.SafetyMode {
+	if a == nil {
+		return ""
+	}
+	if a.Safety != "" {
+		return a.Safety
+	}
+	if a.Yolo {
+		return latest.SafetyModeAutonomous
+	}
+	return ""
 }
 
 // Settings represents global user settings
@@ -65,8 +85,13 @@ type Settings struct {
 	// ThemeLight is the theme applied when Theme is "auto" and the terminal
 	// background is light. Defaults to "default-light".
 	ThemeLight string `yaml:"theme_light,omitempty"`
-	// YOLO enables auto-approve mode for all tool calls globally
+	// YOLO enables auto-approve mode for all tool calls globally. Legacy
+	// alias for Safety: autonomous; when both are set, Safety wins.
 	YOLO bool `yaml:"YOLO,omitempty"`
+	// Safety is the global default safety mode applied when no explicit
+	// --safety/--yolo flag and no alias safety option was given: strict,
+	// balanced, or autonomous. Wins over the legacy YOLO flag.
+	Safety latest.SafetyMode `yaml:"safety,omitempty"`
 	// Lean makes the simplified TUI with minimal chrome the default UI.
 	Lean bool `yaml:"lean,omitempty"`
 	// TabTitleMaxLength is the maximum display length for tab titles in the TUI.
@@ -127,6 +152,9 @@ type LayoutSettings struct {
 	// agent: "compact" (default, two lines per agent) or "detailed"
 	// (mini-cards with labeled effort/context/cost metrics).
 	SidebarInfoMode string `yaml:"sidebar_info_mode,omitempty"`
+	// ActiveAgentsOnly filters the sidebar's Agents section to agents active
+	// in the current session instead of the whole configured team.
+	ActiveAgentsOnly bool `yaml:"active_agents_only,omitempty"`
 	// HideSessionPath hides the working directory (session path) line in the sidebar.
 	HideSessionPath bool `yaml:"hide_session_path,omitempty"`
 	// HideUsage hides the token usage section in the sidebar.
@@ -232,6 +260,21 @@ func (s *Settings) GetRestoreTabs() bool {
 // SnapshotsEnabled returns whether global snapshot auto-injection is enabled.
 func (s *Settings) SnapshotsEnabled() bool {
 	return s != nil && s.Snapshot != nil && *s.Snapshot
+}
+
+// GetSafety returns the global safety-mode default: Safety when set,
+// otherwise autonomous when the legacy YOLO flag is set, otherwise empty.
+func (s *Settings) GetSafety() latest.SafetyMode {
+	if s == nil {
+		return ""
+	}
+	if s.Safety != "" {
+		return s.Safety
+	}
+	if s.YOLO {
+		return latest.SafetyModeAutonomous
+	}
+	return ""
 }
 
 // CacheStablePromptsEnabled reports whether chronological instruction updates are enabled.
@@ -402,7 +445,32 @@ func readConfig(configPath string) (*Config, error) {
 			"path", configPath, "version", config.Version)
 	}
 
+	if err := config.validateSafety(); err != nil {
+		return nil, fmt.Errorf("invalid config file %s: %w", configPath, err)
+	}
+
 	return config, nil
+}
+
+// validateSafety rejects non-canonical safety modes in settings and
+// aliases. YAML parsing is lenient about unknown values, so this is the
+// only place a typo like `safety: yolo` gets a clear error instead of
+// silently behaving as "unset".
+func (c *Config) validateSafety() error {
+	if c.Settings != nil {
+		if err := c.Settings.Safety.Validate(); err != nil {
+			return fmt.Errorf("settings.safety: %w", err)
+		}
+	}
+	for name, alias := range c.Aliases {
+		if alias == nil {
+			continue
+		}
+		if err := alias.Safety.Validate(); err != nil {
+			return fmt.Errorf("aliases.%s.safety: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // migrateFromLegacy migrates aliases from the legacy aliases.yaml file.
@@ -564,6 +632,9 @@ func (c *Config) SetAlias(name string, alias *Alias) error {
 	}
 	if alias == nil || alias.Path == "" {
 		return errors.New("agent path cannot be empty")
+	}
+	if err := alias.Safety.Validate(); err != nil {
+		return fmt.Errorf("safety: %w", err)
 	}
 
 	c.mu.Lock()

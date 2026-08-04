@@ -85,6 +85,8 @@ func (s *Session) Clone() *Session {
 		EvalResult:              cloneEvalResult(s.EvalResult),
 		CreatedAt:               s.CreatedAt,
 		ToolsApproved:           s.ToolsApproved,
+		SafetyPolicy:            s.SafetyPolicy,
+		PriorSafetyPolicy:       s.PriorSafetyPolicy,
 		NonInteractive:          s.NonInteractive,
 		HideToolResults:         s.HideToolResults,
 		WorkingDir:              s.WorkingDir,
@@ -128,6 +130,10 @@ func (s *Session) Clone() *Session {
 			errCopy := *item.Error
 			clone.Messages[i].Error = &errCopy
 		}
+		if item.Termination != nil {
+			termCopy := *item.Termination
+			clone.Messages[i].Termination = &termCopy
+		}
 		if item.Usage != nil {
 			usageCopy := *item.Usage
 			clone.Messages[i].Usage = &usageCopy
@@ -160,6 +166,9 @@ func cloneSessionItem(item Item) (Item, error) {
 	case item.Error != nil:
 		errCopy := *item.Error
 		return Item{Error: &errCopy}, nil
+	case item.Termination != nil:
+		termCopy := *item.Termination
+		return Item{Termination: &termCopy}, nil
 	default:
 		return Item{}, errors.New("cannot clone empty session item")
 	}
@@ -197,6 +206,8 @@ func copySessionMetadata(dst, src *Session, title string) {
 	}
 	dst.SetTitle(title)
 	dst.ToolsApproved = src.ToolsApproved
+	dst.SafetyPolicy = src.SafetyPolicy
+	dst.PriorSafetyPolicy = src.PriorSafetyPolicy
 	dst.HideToolResults = src.HideToolResults
 	dst.WorkingDir = src.WorkingDir
 	dst.SendUserMessage = src.SendUserMessage
@@ -319,6 +330,10 @@ func cloneEvalResult(src *EvalResult) *EvalResult {
 	cp.Successes = cloneStringSlice(src.Successes)
 	cp.Failures = cloneStringSlice(src.Failures)
 	cp.Checks = cloneEvalResultChecks(src.Checks)
+	if src.Termination != nil {
+		term := *src.Termination
+		cp.Termination = &term
+	}
 	return &cp
 }
 

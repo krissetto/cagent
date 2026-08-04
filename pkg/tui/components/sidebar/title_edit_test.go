@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
@@ -15,7 +16,7 @@ func TestSidebar_TitleEditStateTransitions(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	// Initially not editing
 	assert.False(t, sb.IsEditingTitle(), "should not be editing initially")
@@ -43,7 +44,7 @@ func TestSidebar_TitleEditPreservesInput(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	// Set initial title by simulating session load
 	m := sb.(*model)
@@ -65,7 +66,7 @@ func TestSidebar_TitleEditCancelRestoresOriginal(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	// Set initial title
 	m := sb.(*model)
@@ -87,7 +88,7 @@ func TestSidebar_HandleClickType(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true // Enable star visibility
@@ -125,7 +126,7 @@ func TestSidebar_TitleRegenerating(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionTitle = "Original Title"
@@ -156,7 +157,7 @@ func TestSidebar_HandleClickType_WrappedTitle_Collapsed(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -193,7 +194,7 @@ func TestSidebar_HandleClickType_WrappedTitle_Vertical(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -231,7 +232,7 @@ func TestSidebar_HandleClickType_NoWrap(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -264,7 +265,7 @@ func TestSidebar_HandleClickType_WorkingDir_Vertical(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -298,7 +299,7 @@ func TestSidebar_HandleClickType_WorkingDir_Collapsed(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -328,7 +329,7 @@ func TestSidebar_HandleClickType_HiddenPath_Vertical(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -355,7 +356,7 @@ func TestSidebar_HandleClickType_HiddenPath_Collapsed(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.sessionHasContent = true
@@ -370,8 +371,8 @@ func TestSidebar_HandleClickType_HiddenPath_Collapsed(t *testing.T) {
 
 	// The row after the title must not keep a copyable hit target; with the
 	// path hidden the usage reading moves up into that row instead.
-	result, _ := sb.HandleClickType(paddingLeft+3, m.titleLineCount())
-	assert.Equal(t, ClickUsage, result, "a hidden path must not be clickable; the usage line takes the row")
+	result, _ := sb.HandleClickType(paddingLeft+1, m.titleLineCount())
+	assert.Equal(t, ClickUsageContext, result, "a hidden path must not be clickable; the usage line's context segment takes the row")
 
 	result, _ = sb.HandleClickType(paddingLeft+3, 0)
 	assert.Equal(t, ClickTitle, result, "the title stays clickable")
@@ -382,7 +383,7 @@ func TestSidebar_WorkingDirectory(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	sb := New(t.Context(), sessionState)
+	sb := New(animation.NewRuntime(), t.Context(), sessionState)
 
 	m := sb.(*model)
 	m.workingDirectory = "~/projects/myapp"

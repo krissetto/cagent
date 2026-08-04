@@ -28,6 +28,7 @@ import (
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
 	agenttool "github.com/docker/docker-agent/pkg/tools/builtin/agent"
+	"github.com/docker/docker-agent/pkg/tools/codemode"
 	mcptools "github.com/docker/docker-agent/pkg/tools/mcp"
 )
 
@@ -1668,6 +1669,43 @@ func TestEmitStartupInfo_RecoveryAuthNoticeEmittedOnce(t *testing.T) {
 	rt.emitToolsProgressively(ctx, root, nopSend)
 	noticesPhase4 := root.DrainWarnings()
 	require.Len(t, noticesPhase4, 1, "fresh failure after streak reset must emit a new notice")
+}
+
+// TestConfigureToolsetHandlers_ReachesThroughCodeModeWrapper is the
+// regression test for the sigma MCP OAuth bug: an agent with
+// code_mode_tools:true wraps all its toolsets in a single codemode
+// meta-toolset that is neither Elicitable/OAuthCapable itself nor an
+// Unwrapper tools.As can walk through (it hides N inner toolsets, not one).
+// configureToolsetHandlers (called once per turn, before Tools()/Start())
+// must still reach the inner MCP-like toolset's elicitation handler through
+// that wrapper, otherwise its OAuth elicitation request finds no handler
+// wired up and defers forever — the toolset never surfaces its
+// authorization dialog and registers 0 tools.
+func TestConfigureToolsetHandlers_ReachesThroughCodeModeWrapper(t *testing.T) {
+	t.Parallel()
+
+	prov := &mockProvider{id: "test/codemode-model", stream: &mockStream{}}
+	inner := &elicitingToolSet{message: "authorize?"}
+
+	root := agent.New("root", "agent",
+		agent.WithModel(prov),
+		agent.WithToolSets(codemode.Wrap(inner)),
+	)
+	tm := team.New(team.WithAgents(root))
+	rt, err := NewLocalRuntime(t.Context(), tm, WithCurrentAgent("root"), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+
+	events := make(chan Event, 8)
+	rt.configureToolsetHandlers(root, NewChannelSink(events))
+	close(events)
+	for range events {
+	}
+
+	inner.mu.Lock()
+	handler := inner.handler
+	inner.mu.Unlock()
+	require.NotNil(t, handler,
+		"configureToolsetHandlers must wire the elicitation handler through the code_mode_tools wrapper")
 }
 
 // TestEmitAgentWarnings_OnlyEmitsFailures verifies that emitAgentWarnings

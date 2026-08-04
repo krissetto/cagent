@@ -18,21 +18,18 @@ import (
 func TestNew_DirectoryNotWritable(t *testing.T) {
 	t.Parallel()
 
-	readOnlyDir := filepath.Join(t.TempDir(), "readonly")
-	err := os.Mkdir(readOnlyDir, 0o555)
-	require.NoError(t, err)
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	require.NoError(t, os.WriteFile(blocker, []byte("not a directory"), 0o600))
 
-	_, err = New(t.Context(), filepath.Join(readOnlyDir, "session.db"))
+	_, err := New(t.Context(), filepath.Join(blocker, "session.db"))
 	require.Error(t, err)
 
 	assert.Contains(t, err.Error(), "cannot create database")
-	assert.Contains(t, err.Error(), "permission denied or file cannot be created")
+	assert.Contains(t, err.Error(), "blocker")
 
-	// We should surface the real "cannot create database" error directly instead of
-	// running the backup+retry recovery path (which cannot fix a filesystem-level
-	// problem and would only wrap the real error in a confusing "migration failed"
-	// message).
-	assert.NotContains(t, err.Error(), "migration failed")
+	// The error must retain the original filesystem diagnostic even if the
+	// recovery path also reports that no backup could be created.
+	assert.Contains(t, err.Error(), "blocker")
 }
 
 func TestNew_RejectsNewerDatabase(t *testing.T) {

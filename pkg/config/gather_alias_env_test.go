@@ -52,3 +52,21 @@ func TestGatherEnvVarsForModels_TemplatedAliasBaseURL(t *testing.T) {
 		})
 	}
 }
+
+func TestGatherEnvVarsForModels_GitHubCopilotAcceptsGHToken(t *testing.T) {
+	t.Parallel()
+
+	cfg := &latest.Config{
+		Agents: []latest.AgentConfig{{Name: "a", Model: "m"}},
+		Models: map[string]latest.ModelConfig{
+			"m": {Provider: "github-copilot", Model: "gpt-4.1"},
+		},
+	}
+
+	got := GatherEnvVarsForModels(t.Context(), cfg, environment.NewMapEnvProvider(map[string]string{
+		"GH_TOKEN": "gh-token",
+	}))
+
+	assert.Contains(t, got, "GH_TOKEN")
+	assert.NotContains(t, got, "GITHUB_TOKEN")
+}

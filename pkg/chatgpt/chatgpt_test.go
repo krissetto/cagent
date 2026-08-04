@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -90,7 +91,9 @@ func TestCredentialsStoreRoundTrip(t *testing.T) {
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "credentials must be owner-only")
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "credentials must be owner-only")
+	}
 
 	loaded, err := Load()
 	require.NoError(t, err)

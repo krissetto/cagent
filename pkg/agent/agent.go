@@ -42,7 +42,7 @@ type Agent struct {
 	addEnvironmentInfo      bool
 	addDescriptionParameter bool
 	redactSecrets           bool
-	saferShell              bool
+	safety                  latest.SafetyMode // Author-declared safety-mode default for new sessions; empty when unset
 	maxIterations           int
 	maxConsecutiveToolCalls int
 	maxOldToolCallTokens    int
@@ -111,16 +111,17 @@ func (a *Agent) RedactSecrets() bool {
 	return a.redactSecrets
 }
 
-// SaferShell reports whether any of the agent's shell toolsets opted
-// into the `safer: true` destructive-command guard. When true, the
-// runtime auto-injects the safer_shell builtin under pre_tool_use
-// with preempt_yolo:true; see [builtins.ApplyAgentDefaults].
-func (a *Agent) SaferShell() bool {
-	return a.saferShell
-}
-
 func (a *Agent) MaxIterations() int {
 	return a.maxIterations
+}
+
+// Safety returns the safety-mode default the agent's author declared in
+// its config (agents.<name>.safety), or empty when unset. It is a
+// default only: any user-owned choice (CLI flags, alias options, user
+// settings) takes precedence when a session is created, and it never
+// replaces the mode stored on a resumed session.
+func (a *Agent) Safety() latest.SafetyMode {
+	return a.safety
 }
 
 func (a *Agent) MaxConsecutiveToolCalls() int {

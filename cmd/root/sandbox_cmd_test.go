@@ -14,7 +14,9 @@ import (
 // to end against a temp HOME, verifying that allow / list / deny
 // round-trip through the user config.
 func TestSandboxAllowDenyList(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	root := NewRootCmd()
 	root.SetContext(t.Context())

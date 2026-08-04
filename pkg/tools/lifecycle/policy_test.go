@@ -87,6 +87,42 @@ func TestPolicyFromConfig_StartupTimeout(t *testing.T) {
 	}).StartupTimeout)
 }
 
+func TestPolicyFromConfig_CallTimeout(t *testing.T) {
+	t.Parallel()
+
+	// Nil config and an unset field both mean "no timeout" — call_timeout
+	// has no profile default, unlike startup_timeout.
+	assert.Equal(t, time.Duration(0), PolicyFromConfig("test", nil).CallTimeout)
+	assert.Equal(t, time.Duration(0), PolicyFromConfig("test", &latest.LifecycleConfig{
+		Profile: latest.LifecycleProfileStrict,
+	}).CallTimeout, "call_timeout has no profile default, even under strict")
+
+	assert.Equal(t, 45*time.Second, PolicyFromConfig("test", &latest.LifecycleConfig{
+		CallTimeout: latest.Duration{Duration: 45 * time.Second},
+	}).CallTimeout)
+}
+
+// TestPolicyFromConfig_NilEquivalentToZeroPolicy pins the equivalence that
+// NewGatewayToolset's lifecycle wiring relies on: callers that previously
+// passed no policy (zero value) must see the same supervisor behavior as
+// PolicyFromConfig(name, nil), so wiring lifecycle config through the
+// gateway path is not a behavior change for toolsets without a lifecycle
+// block. Logger is the only permitted difference.
+func TestPolicyFromConfig_NilEquivalentToZeroPolicy(t *testing.T) {
+	t.Parallel()
+
+	zero := Policy{}
+	fromNil := PolicyFromConfig("test", nil)
+
+	assert.Equal(t, zero.Restart, fromNil.Restart)
+	assert.Equal(t, zero.maxAttempts(), fromNil.maxAttempts())
+	assert.Equal(t, zero.Backoff, fromNil.Backoff)
+	assert.Equal(t, zero.StartupTimeout, fromNil.StartupTimeout)
+	assert.Equal(t, zero.CallTimeout, fromNil.CallTimeout)
+	assert.Nil(t, zero.Logger)
+	assert.NotNil(t, fromNil.Logger, "PolicyFromConfig always attaches a logger")
+}
+
 func TestParseRestart(t *testing.T) {
 	t.Parallel()
 	cases := map[string]Restart{

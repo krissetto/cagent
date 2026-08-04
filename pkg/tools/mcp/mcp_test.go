@@ -1,9 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"iter"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +18,29 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/lifecycle"
 )
+
+func TestRemoteToolsetLogsDoNotExposeCredentials(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	const secret = "audit-secret-value"
+	ts := NewRemoteToolset(
+		"test",
+		"https://user:"+secret+"@example.com/mcp?api_key="+secret,
+		"streamable",
+		map[string]string{"Authorization": "Bearer " + secret, "X-API-Key": secret},
+		nil,
+	)
+
+	output := logs.String()
+	assert.NotContains(t, output, secret)
+	assert.NotContains(t, output, "user:")
+	assert.Contains(t, output, "Authorization")
+	assert.Contains(t, output, "X-API-Key")
+	assert.Equal(t, "example.com", ts.logID)
+}
 
 // mockMCPClient is a test double for the mcpClient interface.
 type mockMCPClient struct {
@@ -612,6 +637,159 @@ func TestCallToolRecoversFromErrSessionMissing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "recovered", result.Output)
 	assert.Equal(t, int32(2), callCount.Load(), "expected exactly 2 CallTool invocations (1 failed + 1 retry)")
+}
+
+func TestCallToolTimeoutFires(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockMCPClient{
+		callToolFn: func(ctx context.Context, _ *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	ts := newTestToolset("test-server", "test-server", mock)
+	ts.callTimeout = 50 * time.Millisecond
+	ts.markStartedForTesting()
+
+	start := time.Now()
+	_, err := ts.callTool(t.Context(), tools.ToolCall{
+		Function: tools.FunctionCall{Name: "test_tool", Arguments: `{}`},
+	}, tools.NopRuntime{})
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, tools.ErrCallTimeout, "expected ErrCallTimeout, got: %v", err)
+	assert.Contains(t, err.Error(), "timed out")
+	assert.Less(t, elapsed, 5*time.Second, "the call_timeout should have fired promptly")
+	assert.Equal(t, lifecycle.StateReady, ts.State().State, "a fired call_timeout must not disturb the toolset's lifecycle state")
+}
+
+func TestCallToolNoTimeoutWhenCallTimeoutUnset(t *testing.T) {
+	t.Parallel()
+
+	var sawDeadline bool
+	mock := &mockMCPClient{
+		callToolFn: func(ctx context.Context, _ *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+			_, sawDeadline = ctx.Deadline()
+			return callToolResult(&mcp.TextContent{Text: "ok"}), nil
+		},
+	}
+
+	ts := newTestToolset("test-server", "test-server", mock)
+	// ts.callTimeout is left at its zero value.
+	ts.markStartedForTesting()
+
+	result, err := ts.callTool(t.Context(), tools.ToolCall{
+		Function: tools.FunctionCall{Name: "test_tool", Arguments: `{}`},
+	}, tools.NopRuntime{})
+
+	require.NoError(t, err)
+	assert.Equal(t, "ok", result.Output)
+	assert.False(t, sawDeadline, "no call_timeout means the caller's context must be used unmodified")
+}
+
+func TestCallToolParentCancelWinsOverTimeout(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	mock := &mockMCPClient{
+		callToolFn: func(ctx context.Context, _ *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	ts := newTestToolset("test-server", "test-server", mock)
+	ts.callTimeout = time.Hour // large enough that only the parent cancel can fire first
+	ts.markStartedForTesting()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		<-started
+		cancel()
+	}()
+
+	_, err := ts.callTool(ctx, tools.ToolCall{
+		Function: tools.FunctionCall{Name: "test_tool", Arguments: `{}`},
+	}, tools.NopRuntime{})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled, "expected context.Canceled, got: %v", err)
+	assert.NotErrorIs(t, err, tools.ErrCallTimeout, "a parent cancel must not be misreported as a call_timeout")
+}
+
+func TestCallToolTimeoutCoversReconnectRetry(t *testing.T) {
+	t.Parallel()
+
+	var callCount, initCount atomic.Int32
+	mock := newReconnectableMock()
+	mock.callToolFn = func(_ context.Context, _ *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+		callCount.Add(1)
+		// Always fail with a connection error, forcing a reconnect attempt.
+		return nil, fmt.Errorf("tools/call: %w", mcp.ErrSessionMissing)
+	}
+	slowInit := &slowReconnectClient{reconnectableMockClient: mock, reconnectDelay: 300 * time.Millisecond, initCount: &initCount}
+
+	ts := newTestToolset("test-server", "test-server", slowInit)
+	ts.callTimeout = 50 * time.Millisecond
+	require.NoError(t, ts.Start(t.Context()))
+	t.Cleanup(func() { _ = ts.Stop(t.Context()) })
+
+	start := time.Now()
+	_, err := ts.callTool(t.Context(), tools.ToolCall{
+		Function: tools.FunctionCall{Name: "test_tool", Arguments: `{}`},
+	}, tools.NopRuntime{})
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, tools.ErrCallTimeout, "expected ErrCallTimeout, got: %v", err)
+	assert.Less(t, elapsed, sessionMissingRetryTimeout,
+		"the call_timeout must cover the reconnect-retry as one budget, not stack on top of the 35s retry wait")
+	assert.GreaterOrEqual(t, callCount.Load(), int32(1))
+}
+
+// slowReconnectClient blocks the second-and-later Initialize call for
+// reconnectDelay, simulating a reconnect that outlasts a short call_timeout.
+type slowReconnectClient struct {
+	*reconnectableMockClient
+
+	reconnectDelay time.Duration
+	initCount      *atomic.Int32
+}
+
+func (m *slowReconnectClient) Initialize(ctx context.Context, req *mcp.InitializeRequest) (*mcp.InitializeResult, error) {
+	if m.initCount.Add(1) > 1 {
+		select {
+		case <-time.After(m.reconnectDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return m.reconnectableMockClient.Initialize(ctx, req)
+}
+
+func TestNewToolsetCommandSetsCallTimeoutFromPolicy(t *testing.T) {
+	t.Parallel()
+
+	ts := NewToolsetCommand("test", "gopls", nil, nil, "", lifecycle.Policy{CallTimeout: 42 * time.Second})
+	assert.Equal(t, 42*time.Second, ts.callTimeout)
+}
+
+func TestNewRemoteToolsetSetsCallTimeoutFromPolicy(t *testing.T) {
+	t.Parallel()
+
+	ts := NewRemoteToolset("test", "https://example.com", "streamable", nil, nil, lifecycle.Policy{CallTimeout: 7 * time.Second})
+	assert.Equal(t, 7*time.Second, ts.callTimeout)
+}
+
+func TestNewToolsetCommandNoPolicyMeansNoCallTimeout(t *testing.T) {
+	t.Parallel()
+
+	ts := NewToolsetCommand("test", "gopls", nil, nil, "")
+	assert.Equal(t, time.Duration(0), ts.callTimeout)
 }
 
 func TestRemoteToolsetDefaultsRestartAlways(t *testing.T) {

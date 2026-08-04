@@ -146,3 +146,55 @@ func TestBudgetSurvivesAcrossMessages(t *testing.T) {
 			"a budget that resets per message lets a session spend the ceiling on every turn")
 	}
 }
+
+// TestEnforceBudgetEmitsCanonicalStopMessage pins the budget stop wiring:
+// budget_exceeded embeds the assistant stop message under StopMessage,
+// the session records the same canonical message right after, and the
+// message_added event (whose payload is never serialized) follows the
+// marker. JSON consumers only ever see the event's copy, so event and
+// session content must be identical.
+func TestEnforceBudgetEmitsCanonicalStopMessage(t *testing.T) {
+	now := budgetEpoch
+	r := budgetRuntime(t, func() time.Time { return now })
+	r.ensureBudget()
+
+	sess := session.New()
+	a := agent.New("root", "test")
+	sink := &collectSink{}
+	r.recordBudget(sess, a, &chat.Usage{InputTokens: 100, OutputTokens: 100}, new(0.03), time.Second, sink)
+
+	require.Equal(t, iterationStop, r.enforceBudget(t.Context(), sess, a, sink))
+
+	var exceeded *BudgetExceededEvent
+	var added *MessageAddedEvent
+	exceededIdx, addedIdx := -1, -1
+	for i, e := range sink.events {
+		switch ev := e.(type) {
+		case *BudgetExceededEvent:
+			exceeded = ev
+			exceededIdx = i
+		case *MessageAddedEvent:
+			added = ev
+			addedIdx = i
+		}
+	}
+	require.NotNil(t, exceeded, "enforceBudget must emit budget_exceeded")
+	require.NotNil(t, added, "enforceBudget must emit message_added")
+	assert.Less(t, exceededIdx, addedIdx, "the marker precedes the stop message")
+
+	require.NotNil(t, exceeded.StopMessage)
+	assert.Equal(t, "root", exceeded.StopMessage.AgentName)
+	assert.Equal(t, chat.MessageRoleAssistant, exceeded.StopMessage.Message.Role)
+	assert.Equal(t, exceeded.Message, exceeded.StopMessage.Message.Content)
+	assert.Equal(t, budgetEpoch.Format(time.RFC3339), exceeded.StopMessage.Message.CreatedAt)
+
+	messages := sess.GetAllMessages()
+	require.Len(t, messages, 1)
+	recorded := messages[0]
+	assert.Equal(t, exceeded.StopMessage.AgentName, recorded.AgentName, "event and session must carry the same stop message")
+	assert.Equal(t, exceeded.StopMessage.Message.Role, recorded.Message.Role)
+	assert.Equal(t, exceeded.StopMessage.Message.Content, recorded.Message.Content)
+	assert.Equal(t, exceeded.StopMessage.Message.CreatedAt, recorded.Message.CreatedAt)
+	require.NotNil(t, added.Message)
+	assert.Equal(t, recorded, *added.Message)
+}

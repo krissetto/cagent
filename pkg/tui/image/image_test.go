@@ -7,8 +7,10 @@ import (
 	stdimage "image"
 	"image/color"
 	"image/png"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -61,15 +63,56 @@ func TestLoadMarkdownReferenceRejectsLocalSchemes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chart.png")
 	require.NoError(t, os.WriteFile(path, encoded.Bytes(), 0o600))
 
-	for _, source := range []string{"file://" + path, "sandbox://" + path} {
+	for _, scheme := range []string{"file", "sandbox"} {
+		source := localSchemeURI(scheme, path)
 		_, ok := LoadMarkdownReference(t.Context(), MarkdownReference{Alt: "chart", Source: source})
 		assert.False(t, ok, source)
 	}
 
-	// Bare paths remain supported for agent-generated local images.
+	// Bare paths remain supported for agent-generated local images —
+	// including absolute Windows paths, whose drive letter must not be
+	// mistaken for a URL scheme.
 	inline, ok := LoadMarkdownReference(t.Context(), MarkdownReference{Alt: "chart", Source: path})
 	require.True(t, ok)
 	assert.Equal(t, "chart", inline.Name)
+}
+
+// localSchemeURI builds a syntactically valid URI for path — e.g.
+// file:///C:/Temp/chart.png on Windows, file:///tmp/chart.png elsewhere —
+// so LoadMarkdownReference rejects it on its scheme. Concatenating
+// "file://" with a backslash path would produce an unparseable URL and
+// exercise the wrong code path.
+func localSchemeURI(scheme, path string) string {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p // file URIs address drive letters as /C:/...
+	}
+	u := url.URL{Scheme: scheme, Path: p}
+	return u.String()
+}
+
+func TestIsWindowsDrivePath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		source string
+		want   bool
+	}{
+		{`C:\Users\me\chart.png`, true},
+		{`c:/users/me/chart.png`, true},
+		{`C:chart.png`, false}, // drive-relative: stays scheme-rejected
+		{`file:///C:/chart.png`, false},
+		{`sandbox://host/chart.png`, false},
+		{`/tmp/chart.png`, false},
+		{`./out/chart.png`, false},
+		{``, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.source, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isWindowsDrivePath(tt.source))
+		})
+	}
 }
 
 func TestInlineRegistryIsBounded(t *testing.T) {

@@ -257,8 +257,8 @@ func fileNameWithoutExt(path string) string {
 // IsExternalReference reports whether the input is an external agent reference
 // (OCI image or URL) rather than a local agent name defined in the same config.
 // Local agent names never contain "/", so the slash check distinguishes them
-// from OCI references like "agentcatalog/pirate" or "docker.io/org/agent:v1".
-// It also handles the "name:ref" syntax (e.g. "reviewer:agentcatalog/review-pr").
+// from OCI references like "myorg/agent:tag" or "docker.io/org/agent:v1".
+// It also handles the "name:ref" syntax (e.g. "reviewer:myorg/review-pr").
 func IsExternalReference(input string) bool {
 	_, ref := ParseExternalAgentRef(input)
 	return isExternalRef(ref)
@@ -269,13 +269,13 @@ func IsExternalReference(input string) bool {
 // identifier (no slashes) and reference is an OCI reference or URL.
 //
 // If no explicit name is provided, the base name is derived from the reference:
-//   - OCI refs: last path segment without tag (e.g. "agentcatalog/review-pr" → "review-pr")
+//   - OCI refs: last path segment without tag (e.g. "myorg/review-pr" → "review-pr")
 //   - URLs: filename without extension (e.g. "https://example.com/agent.yaml" → "agent")
 //
 // Examples:
 //
-//	ParseExternalAgentRef("reviewer:agentcatalog/review-pr") → ("reviewer", "agentcatalog/review-pr")
-//	ParseExternalAgentRef("agentcatalog/review-pr") → ("review-pr", "agentcatalog/review-pr")
+//	ParseExternalAgentRef("reviewer:myorg/review-pr") → ("reviewer", "myorg/review-pr")
+//	ParseExternalAgentRef("myorg/review-pr") → ("review-pr", "myorg/review-pr")
 //	ParseExternalAgentRef("docker.io/myorg/myagent:v1") → ("myagent", "docker.io/myorg/myagent:v1")
 //	ParseExternalAgentRef("https://example.com/agent.yaml") → ("agent", "https://example.com/agent.yaml")
 func ParseExternalAgentRef(input string) (agentName, ref string) {
@@ -312,7 +312,7 @@ func isExternalRef(input string) bool {
 // externalRefBaseName extracts a short agent name from an external reference.
 //
 //   - OCI: last path segment, tag/digest stripped
-//     "agentcatalog/review-pr" → "review-pr"
+//     "myorg/review-pr" → "review-pr"
 //     "docker.io/myorg/myagent:v1" → "myagent"
 //
 //   - URL: filename without extension

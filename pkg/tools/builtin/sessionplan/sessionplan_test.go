@@ -14,9 +14,10 @@ import (
 func TestPath(t *testing.T) {
 	t.Parallel()
 	t.Run("accepts UUID-shaped IDs", func(t *testing.T) {
-		path, err := Path("/plans", "7c2d8f0a-1234-4abc-9def-1234567890ab")
+		dir := t.TempDir()
+		path, err := Path(dir, "7c2d8f0a-1234-4abc-9def-1234567890ab")
 		require.NoError(t, err)
-		assert.Equal(t, "/plans/7c2d8f0a-1234-4abc-9def-1234567890ab.md", path)
+		assert.Equal(t, filepath.Join(dir, "7c2d8f0a-1234-4abc-9def-1234567890ab.md"), path)
 	})
 
 	// Path-traversal defence: the regex is the only thing standing between an

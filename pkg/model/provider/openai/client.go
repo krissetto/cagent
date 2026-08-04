@@ -77,9 +77,12 @@ func NewClient(ctx context.Context, cfg *latest.ModelConfig, env environment.Pro
 			)
 		case cfg.TokenKey != "":
 			// Explicit token_key configured - use that env var
-			authToken, _ := env.Get(ctx, cfg.TokenKey)
+			authToken, tokenKey := authTokenForTokenKey(ctx, cfg, env)
 			if authToken == "" {
-				return nil, fmt.Errorf("%s environment variable is required", cfg.TokenKey)
+				if cfg.Provider == "github-copilot" && cfg.TokenKey == "GITHUB_TOKEN" {
+					return nil, errors.New("GITHUB_TOKEN or GH_TOKEN environment variable is required")
+				}
+				return nil, fmt.Errorf("%s environment variable is required", tokenKey)
 			}
 			clientOptions = append(clientOptions, option.WithAPIKey(authToken))
 		case isCustomProvider(cfg):
@@ -391,6 +394,8 @@ func (c *Client) CreateChatCompletionStream(
 		return nil, errors.New("at least one message is required")
 	}
 
+	messages = c.withClaudeSchemaInstruction(ctx, messages)
+
 	trackUsage := c.TrackUsageEnabled()
 
 	params := openai.ChatCompletionNewParams{
@@ -616,6 +621,8 @@ func (c *Client) CreateResponseStream(
 		return nil, errors.New("at least one message is required")
 	}
 
+	messages = c.withClaudeSchemaInstruction(ctx, messages)
+
 	input := c.convertMessagesToResponseInput(ctx, messages)
 	deferredToolsEnabled := c.supportsDeferredTools()
 	if deferredToolsEnabled {
@@ -820,7 +827,7 @@ func (c *Client) buildWSHeaderFn() func(ctx context.Context) (http.Header, error
 		// Resolve the API key using the same logic as the HTTP client.
 		var apiKey string
 		if c.ModelConfig.TokenKey != "" {
-			apiKey, _ = c.Env.Get(ctx, c.ModelConfig.TokenKey)
+			apiKey, _ = authTokenForTokenKey(ctx, &c.ModelConfig, c.Env)
 		}
 		if apiKey == "" {
 			// Fall back to the standard OPENAI_API_KEY env var via the
@@ -841,6 +848,16 @@ func (c *Client) buildWSHeaderFn() func(ctx context.Context) (http.Header, error
 
 		return h, nil
 	}
+}
+
+func authTokenForTokenKey(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider) (string, string) {
+	token, _ := env.Get(ctx, cfg.TokenKey)
+	if token == "" && cfg.Provider == "github-copilot" && cfg.TokenKey == "GITHUB_TOKEN" {
+		if fallback, _ := env.Get(ctx, "GH_TOKEN"); fallback != "" {
+			return fallback, "GH_TOKEN"
+		}
+	}
+	return token, cfg.TokenKey
 }
 
 // getTransport returns the streaming transport preference from ProviderOpts.

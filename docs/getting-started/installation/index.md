@@ -121,6 +121,7 @@ Docker Agent needs API keys for the model providers you want to use. Set them as
 export OPENAI_API_KEY="sk-..."           # OpenAI
 export ANTHROPIC_API_KEY="sk-ant-..."    # Anthropic
 export GOOGLE_API_KEY="AI..."            # Google Gemini (or GEMINI_API_KEY)
+export GITHUB_TOKEN="ghp-..."            # GitHub Copilot (PAT with copilot scope)
 export MISTRAL_API_KEY="..."             # Mistral
 export OPENROUTER_API_KEY="..."          # OpenRouter
 ```
@@ -139,8 +140,8 @@ $ docker agent version
 # Run the default agent
 $ docker agent run
 
-# Or try a built-in example
-$ docker agent run agentcatalog/pirate
+# Or run an agent from an OCI registry
+$ docker agent run myorg/agent:tag
 ```
 
 ## What's Next?

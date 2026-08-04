@@ -89,8 +89,11 @@ func TestLazyModelStore_DefersError(t *testing.T) {
 func TestLazyModelStore_GatesCustomProvider(t *testing.T) {
 	// Point the cache at an empty home so there is no on-disk catalog to fall
 	// back on: a cold start, as in a freshly-spawned pod. t.Setenv forbids
-	// t.Parallel, which is fine here.
-	t.Setenv("HOME", t.TempDir())
+	// t.Parallel, which is fine here. modelsdev.NewStore resolves the home
+	// via os.UserHomeDir, which reads USERPROFILE on Windows.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	var store ModelStore = &lazyModelStore{}
 

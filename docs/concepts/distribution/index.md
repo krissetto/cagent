@@ -33,8 +33,8 @@ $ docker agent share push ./agent.yaml ghcr.io/username/my-agent:v1.0
 # Pull an agent
 $ docker agent share pull docker.io/username/my-agent:latest
 
-# Pull from the agent catalog
-$ docker agent share pull agentcatalog/pirate
+# Pull from Docker Hub shorthand
+$ docker agent share pull myorg/agent:tag
 ```
 
 ## Running from a Registry
@@ -45,23 +45,11 @@ Run agents directly from a registry without pulling first:
 # Run directly from Docker Hub
 $ docker agent run docker.io/username/my-agent:latest
 
-# Run from the agent catalog
-$ docker agent run agentcatalog/pirate
+# Docker Hub shorthand (docker.io is implied)
+$ docker agent run myorg/agent:tag
 
 # Run with a specific agent from a multi-agent config
 $ docker agent run docker.io/username/dev-team:latest -a developer
-```
-
-## Agent Catalog
-
-The `agentcatalog` namespace on Docker Hub hosts pre-built agents you can try:
-
-```bash
-# Try the pirate-themed assistant
-$ docker agent run agentcatalog/pirate
-
-# Try the coding agent
-$ docker agent run agentcatalog/coder
 ```
 
 ## Using as Sub-Agents
@@ -75,13 +63,13 @@ agents:
     description: Coordinator
     instruction: Delegate tasks to the right sub-agent.
     sub_agents:
-      - agentcatalog/pirate         # auto-named "pirate"
+      - myorg/agent:tag             # auto-named "agent"
       - my_reviewer:myorg/reviewer  # explicitly named "my_reviewer"
 ```
 
 External sub-agents are automatically named after their last path segment. Use the `name:reference` syntax to give them a custom name.
 
-Tag references are checked against the registry on every `docker agent run`, which adds a network round-trip per sub-agent at startup. Pin them to a digest (`agentcatalog/pirate@sha256:…`) to serve them from cache instead.
+Tag references are checked against the registry on every `docker agent run`, which adds a network round-trip per sub-agent at startup. Pin them to a digest (`myorg/agent@sha256:…`) to serve them from cache instead.
 
 See [Pin external sub-agents to a digest](../multi-agent/index.md#pin-external-sub-agents-to-a-digest) and [External Sub-Agents](../multi-agent/index.md#external-sub-agents-from-registries) for details.
 
@@ -91,7 +79,7 @@ Combine OCI references with aliases for convenient access:
 
 ```bash
 # Create an alias for a registry agent
-$ docker agent alias add coder agentcatalog/coder --yolo
+$ docker agent alias add coder myorg/coder --yolo
 
 # Now just run
 $ docker agent run coder

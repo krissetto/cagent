@@ -9,6 +9,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/tools"
 	transfertasktool "github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
@@ -37,7 +38,7 @@ func transferMessage(status types.ToolStatus) *types.Message {
 }
 
 func renderCard(status types.ToolStatus) string {
-	view := New(transferMessage(status), nil)
+	view := New(animation.NewRuntime(), transferMessage(status), nil)
 	view.SetSize(80, 1)
 	return stripANSI(view.View())
 }
@@ -92,7 +93,7 @@ func TestTransferTaskFallsBackToToolHeaderWhenArgumentsCannotParse(t *testing.T)
 		},
 	}, tools.Tool{Name: transfertasktool.ToolNameTransferTask}, types.ToolStatusPending)
 
-	view := New(msg, service.StaticSessionState{})
+	view := New(animation.NewRuntime(), msg, service.StaticSessionState{})
 	_ = view.SetSize(80, 0)
 
 	assert.Contains(t, stripANSI(view.View()), transfertasktool.ToolNameTransferTask)

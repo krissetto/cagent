@@ -244,7 +244,11 @@ func addEnvVarsForModelConfig(ctx context.Context, model *latest.ModelConfig, cu
 	if alias, exists := provider.LookupAlias(model.Provider); exists {
 		// Check built-in aliases
 		if alias.TokenEnvVar != "" {
-			requiredEnv[alias.TokenEnvVar] = true
+			if model.Provider == "github-copilot" {
+				requiredEnv[githubCopilotTokenEnvVar(ctx, env)] = true
+			} else {
+				requiredEnv[alias.TokenEnvVar] = true
+			}
 		}
 		// A templated alias base URL (e.g. Cloudflare's account/gateway-scoped
 		// endpoint) references env vars that must resolve when the provider is
@@ -255,6 +259,16 @@ func addEnvVarsForModelConfig(ctx context.Context, model *latest.ModelConfig, cu
 	} else {
 		addEnvVarsForCoreProvider(ctx, model.Provider, model, requiredEnv, env)
 	}
+}
+
+func githubCopilotTokenEnvVar(ctx context.Context, env environment.Provider) string {
+	if value, _ := env.Get(ctx, "GITHUB_TOKEN"); value != "" {
+		return "GITHUB_TOKEN"
+	}
+	if value, _ := env.Get(ctx, "GH_TOKEN"); value != "" {
+		return "GH_TOKEN"
+	}
+	return "GITHUB_TOKEN"
 }
 
 // addEnvVarsForCoreProvider adds the required env vars for a core provider type.

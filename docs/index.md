@@ -207,7 +207,7 @@ What people build with Docker Agent today:
     </div>
     <h3>Coding agents</h3>
     <p>Pair-programmer agents with file system, shell, and LSP tools. Read code, edit it, run tests, iterate.</p>
-    <a href="https://hub.docker.com/u/agentcatalog" target="_blank" rel="noopener">Browse the catalog →</a>
+    <a href="features/cli/">CLI reference →</a>
   </div>
   <div class="usecase">
     <div class="usecase-icon">
@@ -283,14 +283,10 @@ $ docker agent run
 
 ### From the Registry
 
-Run pre-built agents from the [agent catalog on **Docker Hub**](https://hub.docker.com/u/agentcatalog) — just like pulling a Docker image:
+Run agents straight from any OCI-compatible registry — just like pulling a Docker image:
 
 ```bash
-# A pirate-themed assistant
-$ docker agent run agentcatalog/pirate
-
-# A coding agent
-$ docker agent run agentcatalog/coder
+$ docker agent run myorg/agent:tag
 ```
 
 ### Multi-Agent Teams
@@ -347,9 +343,9 @@ $ docker agent serve api agent.yaml --listen :8080
 Docker Agent reuses the tooling and conventions you already know:
 
 <div class="ecosystem">
-  <a class="ecosystem-tile" href="https://hub.docker.com/u/agentcatalog" target="_blank" rel="noopener">
+  <a class="ecosystem-tile" href="https://hub.docker.com" target="_blank" rel="noopener">
     <strong>Docker Hub</strong>
-    <span>Pull pre-built agents from the agent catalog — same registry, same auth.</span>
+    <span>Push and pull agents like container images — same registry, same auth.</span>
   </a>
   <a class="ecosystem-tile" href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noopener">
     <strong>Docker Desktop</strong>

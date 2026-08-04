@@ -26,6 +26,16 @@ type LiveSession struct {
 	// while idle (no active stream), unlike child rows which exist only
 	// while their RunStream is live.
 	Current bool `json:"current"`
+
+	// CompactionModel is the identity ("provider/model") of the row's agent
+	// dedicated compaction model, set only when it actually caps ContextLimit
+	// below the primary model's own window. Render-unused in the /context
+	// dialog (the header's single cap statement is authoritative there); kept
+	// on the struct as part of the JSON/API surface for other consumers.
+	CompactionModel string `json:"compaction_model,omitempty"`
+	// PrimaryContextLimit is the primary model's own context window, set
+	// only alongside CompactionModel. Render-unused today (see CompactionModel).
+	PrimaryContextLimit int64 `json:"primary_context_limit,omitempty"`
 }
 
 // UsedTokens returns the session's current context occupancy estimate.
@@ -183,7 +193,15 @@ func (r *LocalRuntime) liveSessionRow(ctx context.Context, sess *session.Session
 		Current:      current,
 	}
 	if a, err := r.team.Agent(agentName); err == nil && a != nil && !a.HasHarness() {
-		row.ContextLimit = r.contextLimitForAgentModel(ctx, a, r.getEffectiveModelID(ctx, a))
+		modelID := r.getEffectiveModelID(ctx, a)
+		row.ContextLimit = r.contextLimitForAgentModel(ctx, a, modelID)
+		if a.CompactionModel() != nil {
+			compactionModel, primaryLimit, compactionLimit := r.compactionCapAttribution(ctx, a, modelID)
+			if compactionCaps(primaryLimit, compactionLimit) {
+				row.CompactionModel = compactionModel
+				row.PrimaryContextLimit = primaryLimit
+			}
+		}
 	}
 	return row
 }

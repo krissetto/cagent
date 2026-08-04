@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/commands"
 	"github.com/docker/docker-agent/pkg/tui/components/statusbar"
 	"github.com/docker/docker-agent/pkg/tui/components/tabbar"
@@ -15,7 +16,7 @@ import (
 func TestKeyboardEnhancementsInvalidateStatusBarHelp(t *testing.T) {
 	m, _ := newTestModel(t)
 	m.focusedPanel = PanelEditor
-	m.tabBar = tabbar.New(0)
+	m.tabBar = tabbar.New(animation.NewRuntime(), 0)
 	m.statusBar = statusbar.New(m)
 	m.statusBar.SetWidth(400)
 
@@ -191,7 +192,6 @@ func TestFormatWindowTitle(t *testing.T) {
 		appName      string
 		sessionTitle string
 		working      bool
-		animFrame    int
 		wantContains []string
 		wantEquals   string
 	}{
@@ -214,7 +214,6 @@ func TestFormatWindowTitle(t *testing.T) {
 			appName:      "docker agent",
 			sessionTitle: "",
 			working:      true,
-			animFrame:    0,
 			// Spinner frame is a single rune followed by a space, then the
 			// app name. We don't pin the exact rune (it depends on the
 			// spinner package) but we do guarantee the suffix.
@@ -225,7 +224,6 @@ func TestFormatWindowTitle(t *testing.T) {
 			appName:      "docker agent",
 			sessionTitle: "Refactor TUI",
 			working:      true,
-			animFrame:    1,
 			wantContains: []string{" Refactor TUI - docker agent"},
 		},
 	}
@@ -234,7 +232,7 @@ func TestFormatWindowTitle(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := formatWindowTitle(tt.appName, tt.sessionTitle, tt.working, tt.animFrame)
+			got := formatWindowTitle(0, tt.appName, tt.sessionTitle, tt.working)
 			if tt.wantEquals != "" && got != tt.wantEquals {
 				t.Errorf("formatWindowTitle = %q, want %q", got, tt.wantEquals)
 			}

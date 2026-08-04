@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	latestcfg "github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/paths"
 	"github.com/docker/docker-agent/pkg/userconfig"
 )
@@ -64,4 +65,43 @@ func TestRunAliasListCommand_JSONFormatEmpty(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	assert.Empty(t, entries)
 	assert.Equal(t, "[]", string(bytes.TrimSpace(buf.Bytes())))
+}
+
+func TestRunAliasAddCommand_Safety(t *testing.T) {
+	// Not parallel: SetConfigDir mutates process-global state.
+	dir := t.TempDir()
+	paths.SetConfigDir(dir)
+	t.Cleanup(func() { paths.SetConfigDir("") })
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+	err := runAliasAddCommand(cmd, []string{"careful", "myorg/coder"}, &aliasAddFlags{safety: "balanced"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Safety: balanced")
+
+	cfg, err := userconfig.Load()
+	require.NoError(t, err)
+	alias, ok := cfg.GetAlias("careful")
+	require.True(t, ok)
+	assert.Equal(t, latestcfg.SafetyModeBalanced, alias.Safety)
+}
+
+func TestRunAliasAddCommand_InvalidSafety(t *testing.T) {
+	// Not parallel: SetConfigDir mutates process-global state.
+	dir := t.TempDir()
+	paths.SetConfigDir(dir)
+	t.Cleanup(func() { paths.SetConfigDir("") })
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+	err := runAliasAddCommand(cmd, []string{"careful", "myorg/coder"}, &aliasAddFlags{safety: "yolo"})
+	require.ErrorContains(t, err, "invalid --safety value")
+	require.ErrorContains(t, err, "strict, balanced, autonomous")
+
+	cfg, err := userconfig.Load()
+	require.NoError(t, err)
+	_, ok := cfg.GetAlias("careful")
+	assert.False(t, ok, "an invalid alias must not be stored")
 }

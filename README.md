@@ -61,8 +61,8 @@ See [Set Up a Model](https://docker.github.io/docker-agent/getting-started/set-u
 # Run the default agent
 docker agent run
 
-# Run from the agent catalog
-docker agent run agentcatalog/pirate
+# Run from an OCI registry
+docker agent run myorg/agent:tag
 
 # Generate a new agent interactively
 docker agent new

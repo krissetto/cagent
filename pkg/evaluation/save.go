@@ -99,6 +99,9 @@ func SessionFromEvents(events []map[string]any, title string, questions []string
 	var currentCost float64
 	var currentTimestamp string
 
+	// Track budget stop markers already imported (idempotence on repeats)
+	terminations := &terminationTracker{}
+
 	// Helper to flush current assistant message
 	flushAssistantMessage := func() {
 		if currentContent.Len() > 0 || currentReasoningContent.Len() > 0 || len(currentToolCalls) > 0 {
@@ -260,6 +263,26 @@ func SessionFromEvents(events []map[string]any, title string, questions []string
 				sess.SetTitle(eventTitle)
 			}
 
+		case "budget_exceeded":
+			// A budget stop is a structured termination, never an error.
+			// Flush pending content first so the marker sits at the stop's
+			// chronological position, immediately followed by the assistant
+			// stop message the event embeds under stop_message. All
+			// message_added events are ignored: they carry no JSON payload,
+			// and regular assistant turns are already rebuilt from
+			// agent_choice events.
+			if !userMessageAdded {
+				addNextQuestion(eventTimestamp)
+			}
+			flushAssistantMessage()
+			term, stop := terminations.observeBudgetExceeded(event)
+			if term != nil {
+				sess.AddTermination(term)
+			}
+			if stop != nil {
+				sess.AddMessage(stop)
+			}
+
 		case "stream_stopped":
 			// Flush final assistant message
 			flushAssistantMessage()
@@ -403,11 +426,12 @@ func SaveRunSessionsJSON(run *EvalRun, outputDir string) (string, error) {
 		Timestamp: run.Timestamp,
 		Duration:  run.Duration.Round(time.Millisecond).String(),
 		Config: RunOutputConfig{
-			Agent:       run.Config.AgentFilename,
-			JudgeModel:  run.Config.JudgeModel,
-			Concurrency: run.Config.Concurrency,
-			EvalsDir:    run.Config.EvalsDir,
-			BaseImage:   run.Config.BaseImage,
+			Agent:            run.Config.AgentFilename,
+			JudgeModel:       run.Config.JudgeModel,
+			Concurrency:      run.Config.Concurrency,
+			EvalsDir:         run.Config.EvalsDir,
+			BaseImage:        run.Config.BaseImage,
+			ContainerRuntime: run.Config.ContainerRuntime,
 		},
 		Summary:  run.Summary,
 		Sessions: sessions,
@@ -432,6 +456,10 @@ func populateEvalResult(result *Result) {
 		Error:        result.Error,
 		Cost:         result.Cost,
 		OutputTokens: result.OutputTokens,
+		// Surface a structured termination (e.g. budget exceeded) recorded
+		// in the session items. Informational only: it does not participate
+		// in checkResults scoring.
+		Termination: result.Session.Termination(),
 	}
 
 	// Populate size check if size was evaluated

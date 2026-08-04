@@ -15,10 +15,19 @@ import (
 
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/concurrent"
+	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/model/provider/base"
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/tools"
 )
+
+// Safety returns the author-declared default set via WithSafety, empty
+// when unset.
+func TestSafety(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, latest.SafetyMode(""), New("a", "").Safety())
+	assert.Equal(t, latest.SafetyModeStrict, New("a", "", WithSafety(latest.SafetyModeStrict)).Safety())
+}
 
 type stubToolSet struct {
 	startErr error

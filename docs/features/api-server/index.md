@@ -23,7 +23,7 @@ $ docker agent serve api agent.yaml --listen 0.0.0.0:8080
 $ docker agent serve api agent.yaml --session-db ./sessions.db
 
 # Auto-refresh from OCI registry every 10 minutes
-$ docker agent serve api agentcatalog/coder --pull-interval 10
+$ docker agent serve api myorg/coder --pull-interval 10
 ```
 
 ## Endpoints
@@ -148,6 +148,7 @@ Event types include:
 - `tool_call` — Agent requesting tool execution
 - `tool_call_confirmation` — Tool call waiting for user approval
 - `tool_call_response` — Tool execution result
+- `plan_changed` — A shared plan was created, updated, or deleted through the plan toolset. The payload carries the plan's `scope`, `name`, `action`, and `version` — never its content. Shared plans are deliberately process-global: every active stream served by the same process subscribes to the same shared plan notifier and receives the event regardless of which session performed the mutation, and the payload does not identify the mutating session (read the plan's `author` metadata for collaborative attribution).
 - `error` — Error during execution
 
 ## Typical Workflow

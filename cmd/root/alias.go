@@ -13,6 +13,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/cli"
 	"github.com/docker/docker-agent/pkg/config"
+	latestcfg "github.com/docker/docker-agent/pkg/config/latest"
 	pathx "github.com/docker/docker-agent/pkg/path"
 	"github.com/docker/docker-agent/pkg/telemetry"
 	"github.com/docker/docker-agent/pkg/userconfig"
@@ -22,9 +23,9 @@ func newAliasCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "alias",
 		Short: "Manage aliases",
-		Long:  "Create and manage aliases for agent configurations or catalog references.",
-		Example: `  # Create an alias for a catalog agent
-  docker-agent alias add code agentcatalog/notion-expert
+		Long:  "Create and manage aliases for agent configurations or OCI registry references.",
+		Example: `  # Create an alias for a registry agent
+  docker-agent alias add code myorg/notion-expert
 
   # Create an alias for a local agent file
   docker-agent alias add myagent ~/myagent.yaml
@@ -49,6 +50,7 @@ func newAliasCmd() *cobra.Command {
 
 type aliasAddFlags struct {
 	yolo            bool
+	safety          string
 	model           string
 	hideToolResults bool
 	sandbox         bool
@@ -60,32 +62,36 @@ func newAliasAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add <alias-name> <agent-path>",
 		Short: "Add a new alias",
-		Long: `Add a new alias for an agent configuration or catalog reference.
+		Long: `Add a new alias for an agent configuration or OCI registry reference.
 
 You can optionally specify runtime options that will be applied whenever
 the alias is used:
 
   --yolo               Automatically approve all tool calls without prompting
+  --safety             Default safety mode: strict, balanced, or autonomous
   --model              Override the agent's model (format: [agent=]provider/model)
   --hide-tool-results  Hide tool call results in the TUI
   --sandbox            Always run the agent inside a Docker sandbox`,
 		Example: `  # Create a simple alias
-  docker-agent alias add code agentcatalog/notion-expert
+  docker-agent alias add code myorg/notion-expert
 
   # Create an alias that always runs in yolo mode
-  docker-agent alias add yolo-coder agentcatalog/coder --yolo
+  docker-agent alias add yolo-coder myorg/coder --yolo
+
+  # Create an alias that defaults to the balanced safety mode
+  docker-agent alias add careful-coder myorg/coder --safety balanced
 
   # Create an alias with a specific model
-  docker-agent alias add fast-coder agentcatalog/coder --model openai/gpt-4o-mini
+  docker-agent alias add fast-coder myorg/coder --model openai/gpt-4o-mini
 
   # Create an alias with hidden tool results
-  docker-agent alias add quiet agentcatalog/coder --hide-tool-results
+  docker-agent alias add quiet myorg/coder --hide-tool-results
 
   # Create an alias that always runs in a sandbox
-  docker-agent alias add safe-coder agentcatalog/coder --sandbox
+  docker-agent alias add safe-coder myorg/coder --sandbox
 
   # Create an alias with multiple options
-  docker-agent alias add turbo agentcatalog/coder --yolo --model anthropic/claude-sonnet-4-0`,
+  docker-agent alias add turbo myorg/coder --yolo --model anthropic/claude-sonnet-4-0`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAliasAddCommand(cmd, args, &flags)
@@ -93,6 +99,7 @@ the alias is used:
 	}
 
 	cmd.Flags().BoolVar(&flags.yolo, "yolo", false, "Automatically approve all tool calls without prompting")
+	cmd.Flags().StringVar(&flags.safety, "safety", "", "Default safety mode when running the alias: strict, balanced, or autonomous (wins over --yolo)")
 	cmd.Flags().StringVar(&flags.model, "model", "", "Override agent model (format: [agent=]provider/model)")
 	cmd.Flags().BoolVar(&flags.hideToolResults, "hide-tool-results", false, "Hide tool call results in the TUI")
 	cmd.Flags().BoolVar(&flags.sandbox, "sandbox", false, "Always run the agent inside a Docker sandbox")
@@ -138,6 +145,12 @@ func runAliasAddCommand(cmd *cobra.Command, args []string, flags *aliasAddFlags)
 	name := args[0]
 	agentPath := args[1]
 
+	// Fail fast on a typo: only the three canonical modes may be stored.
+	safety := latestcfg.SafetyMode(flags.safety)
+	if err := safety.Validate(); err != nil {
+		return fmt.Errorf("invalid --safety value: %w", err)
+	}
+
 	absAgentPath, err := pathx.ExpandHomeDir(agentPath)
 	if err != nil {
 		return err
@@ -155,6 +168,7 @@ func runAliasAddCommand(cmd *cobra.Command, args []string, flags *aliasAddFlags)
 	alias := &userconfig.Alias{
 		Path:            absAgentPath,
 		Yolo:            flags.yolo,
+		Safety:          safety,
 		Model:           flags.model,
 		HideToolResults: flags.hideToolResults,
 		Sandbox:         flags.sandbox,
@@ -172,6 +186,9 @@ func runAliasAddCommand(cmd *cobra.Command, args []string, flags *aliasAddFlags)
 	out.Printf("  Agent: %s\n", absAgentPath)
 	if flags.yolo {
 		out.Printf("  Yolo:  enabled\n")
+	}
+	if safety != "" {
+		out.Printf("  Safety: %s\n", string(safety))
 	}
 	if flags.model != "" {
 		out.Printf("  Model: %s\n", flags.model)
@@ -253,6 +270,9 @@ func runAliasListCommand(cmd *cobra.Command, args []string, asJSON bool) (comman
 		var options []string
 		if alias.Yolo {
 			options = append(options, "yolo")
+		}
+		if alias.Safety != "" {
+			options = append(options, "safety="+string(alias.Safety))
 		}
 		if alias.Model != "" {
 			options = append(options, "model="+alias.Model)

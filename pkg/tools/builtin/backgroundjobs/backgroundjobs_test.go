@@ -3,6 +3,7 @@ package backgroundjobs
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -398,7 +399,8 @@ func TestBackgroundJobsTool_Instructions(t *testing.T) {
 func TestResolveWorkDir(t *testing.T) {
 	t.Parallel()
 
-	workingDir := "/configured/project"
+	workingDir := t.TempDir()
+	absolute := t.TempDir()
 	h := &backgroundJobsHandler{workingDir: workingDir}
 
 	tests := []struct {
@@ -408,10 +410,10 @@ func TestResolveWorkDir(t *testing.T) {
 	}{
 		{name: "empty defaults to workingDir", cwd: "", expected: workingDir},
 		{name: "dot defaults to workingDir", cwd: ".", expected: workingDir},
-		{name: "absolute path unchanged", cwd: "/tmp/other", expected: "/tmp/other"},
-		{name: "relative path joined with workingDir", cwd: "src/pkg", expected: "/configured/project/src/pkg"},
-		{name: "relative with dot prefix", cwd: "./subdir", expected: "/configured/project/subdir"},
-		{name: "relative with parent traversal", cwd: "../sibling", expected: "/configured/sibling"},
+		{name: "absolute path unchanged", cwd: absolute, expected: absolute},
+		{name: "relative path joined with workingDir", cwd: "src/pkg", expected: filepath.Join(workingDir, "src", "pkg")},
+		{name: "relative with dot prefix", cwd: "./subdir", expected: filepath.Join(workingDir, "subdir")},
+		{name: "relative with parent traversal", cwd: "../sibling", expected: filepath.Join(filepath.Dir(workingDir), "sibling")},
 	}
 
 	for _, tt := range tests {

@@ -227,7 +227,9 @@ func LoadMarkdownReference(ctx context.Context, ref MarkdownReference) (Inline, 
 		// Sources come from LLM-generated markdown, so local schemes like
 		// file:// and sandbox:// would let a prompt-injected response read
 		// arbitrary local files (confused deputy). Only bare paths pass.
-		if parsed != nil && parsed.Scheme != "" {
+		// Absolute Windows paths (C:\…) are bare paths too, even though
+		// net/url reads their drive letter as a single-letter scheme.
+		if parsed != nil && parsed.Scheme != "" && !isWindowsDrivePath(ref.Source) {
 			return Inline{}, false
 		}
 		file, err := os.Open(ref.Source)
@@ -242,6 +244,18 @@ func LoadMarkdownReference(ctx context.Context, ref MarkdownReference) (Inline, 
 	}
 
 	return FromBytes(name, mimeType, data)
+}
+
+// isWindowsDrivePath reports whether source is an absolute Windows path
+// (`C:\...` or `C:/...`), whose drive letter net/url would misparse as a
+// URL scheme. Real URI schemes are never a single letter, so this cannot
+// re-admit file:// or sandbox:// sources.
+func isWindowsDrivePath(source string) bool {
+	if len(source) < 3 || source[1] != ':' || (source[2] != '\\' && source[2] != '/') {
+		return false
+	}
+	drive := source[0]
+	return ('a' <= drive && drive <= 'z') || ('A' <= drive && drive <= 'Z')
 }
 
 // FromBase64 decodes and normalizes one base64-encoded image.

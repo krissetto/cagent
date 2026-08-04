@@ -14,6 +14,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/chat"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/commands"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
@@ -169,9 +170,14 @@ type Page interface {
 	// background pages — whose regular commands are discarded — so
 	// presentation deadlines keep running while a tab is hidden.
 	TakeRoutedTimers() tea.Cmd
+	VisualGeneration() uint64
 }
 
-// queuedMessage represents a message waiting to be sent to the agent
+func (p *chatPage) VisualGeneration() uint64 { return p.messages.VisualGeneration() }
+func (p *chatPage) SidebarVisualGeneration() uint64 {
+	return p.sidebar.VisualGeneration()
+}
+
 type queuedMessage struct {
 	content     string
 	attachments []msgtypes.Attachment
@@ -181,7 +187,10 @@ type queuedMessage struct {
 const maxQueuedMessages = 5
 
 // chatPage implements Page
+//
+//nolint:gocritic // Kept near its supporting queued-message declarations.
 type chatPage struct {
+	ar            *animation.Runtime
 	width, height int
 
 	// Components
@@ -239,6 +248,12 @@ type chatPage struct {
 	sidebarDragStartX     int  // X position when drag started
 	sidebarDragStartWidth int  // Sidebar preferred width when drag started
 	sidebarDragMoved      bool // True if mouse moved beyond threshold during drag
+
+	// appliedLayout is the layout geometry last pushed to child components by
+	// SetSize. Update compares it against the live layout to catch silent
+	// shifts (e.g. the collapsed sidebar band growing when async startup info
+	// arrives) that would otherwise leave mouse hit-testing offset.
+	appliedLayout sidebarLayout
 }
 
 // sidebarHidden reports whether the sidebar should be omitted entirely from
@@ -343,11 +358,12 @@ func defaultKeyMap() KeyMap {
 }
 
 // New creates a new chat page
-func New(ctx context.Context, a *app.App, sessionState *service.SessionState, opts ...PageOption) Page {
+func New(ar *animation.Runtime, ctx context.Context, a *app.App, sessionState *service.SessionState, opts ...PageOption) Page {
 	p := &chatPage{
+		ar:            ar,
 		ctx:           func() context.Context { return context.WithoutCancel(ctx) },
-		sidebar:       sidebar.New(ctx, sessionState),
-		messages:      messages.New(sessionState),
+		sidebar:       sidebar.New(ar, ctx, sessionState),
+		messages:      messages.New(ar, sessionState),
 		app:           a,
 		keyMap:        defaultKeyMap(),
 		commandParser: commands.NewParser(),
@@ -388,13 +404,14 @@ func WithCommandParser(p *commands.Parser) PageOption {
 }
 
 // WithLayoutSettings applies initial layout customization (sidebar position,
-// section spacing, section visibility, and agent info mode).
+// section spacing, section visibility, agent info mode, and agent filtering).
 func WithLayoutSettings(settings msgtypes.LayoutSettings) PageOption {
 	return func(p *chatPage) {
 		p.layoutSettings = settings
 		p.sidebar.SetSectionVisibility(sectionVisibility(settings))
 		p.sidebar.SetSectionGap(settings.SectionSpacing.BlankLines())
 		p.sidebar.SetAgentInfoMode(agentInfoMode(settings.SidebarInfoMode))
+		p.sidebar.SetActiveAgentsOnly(settings.ActiveAgentsOnly)
 	}
 }
 
@@ -448,6 +465,31 @@ func (p *chatPage) Init() tea.Cmd {
 
 // Update handles messages and updates the page state
 func (p *chatPage) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
+	model, cmd := p.update(msg)
+	// State changes (async sidebar updates, streaming indicators) can move
+	// child components without any resize. Child positions are only applied
+	// in SetSize, so reapply the geometry when the live layout drifted from
+	// the last applied one; otherwise mouse hit-testing stays offset until
+	// the next window resize.
+	if relayout := p.relayoutIfNeeded(); relayout != nil {
+		cmd = tea.Batch(cmd, relayout)
+	}
+	return model, cmd
+}
+
+// relayoutIfNeeded reapplies the current geometry when the computed layout no
+// longer matches the one last pushed to child components.
+func (p *chatPage) relayoutIfNeeded() tea.Cmd {
+	if p.width <= 0 || p.height <= 0 {
+		return nil
+	}
+	if p.computeSidebarLayout() == p.appliedLayout {
+		return nil
+	}
+	return p.SetSize(p.width, p.height)
+}
+
+func (p *chatPage) update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// Timers armed by a previous Update were dispatched by its caller (either
 	// through the returned command or via TakeRoutedTimers); only this
 	// update's timers may be collected after it.
@@ -739,6 +781,7 @@ func (p *chatPage) SetSize(width, height int) tea.Cmd {
 
 	// Compute layout once and use it for all sizing
 	sl := p.computeSidebarLayout()
+	p.appliedLayout = sl
 
 	switch sl.mode {
 	case sidebarVertical:
@@ -1239,6 +1282,7 @@ func (p *chatPage) SetLayoutSettings(settings msgtypes.LayoutSettings) tea.Cmd {
 	p.sidebar.SetSectionVisibility(sectionVisibility(settings))
 	p.sidebar.SetSectionGap(settings.SectionSpacing.BlankLines())
 	p.sidebar.SetAgentInfoMode(agentInfoMode(settings.SidebarInfoMode))
+	p.sidebar.SetActiveAgentsOnly(settings.ActiveAgentsOnly)
 	if p.width <= 0 || p.height <= 0 {
 		return nil
 	}
@@ -1298,6 +1342,11 @@ func (p *chatPage) routedTimerCmd(timer sidebar.TransferTimer) tea.Cmd {
 	return tea.Tick(timer.Duration, func(time.Time) tea.Msg {
 		return msgtypes.RoutedMsg{SessionID: routingID, Inner: timer.Msg}
 	})
+}
+
+func (p *chatPage) PointerTargetsMessages(x, _ int) bool {
+	sl := p.computeSidebarLayout()
+	return sl.mode != sidebarVertical || p.sidebar.IsCollapsed() || !sl.isInSidebar(x-styles.AppPadding)
 }
 
 // handleSidebarClickType checks what was clicked in the sidebar area.

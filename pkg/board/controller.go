@@ -61,19 +61,10 @@ type controller struct {
 
 	mu       sync.Mutex
 	watchers map[string]*watcher
-	// expectTurn marks cards whose latest launch carried an initial prompt:
-	// a first turn is imminent, so the watcher keeps them "starting" until
-	// the event stream reports it instead of flashing "ready" first.
-	expectTurn map[string]bool
-	// launchFailures counts, per card, consecutive agent deaths before the
-	// control plane ever answered. It lives on the controller — not in the
-	// watcher loop — so a user-initiated relaunch can reset it and give the
-	// agent a fresh set of attempts after the cap tripped.
-	launchFailures map[string]int
-	// launchErrors keeps, per card, the last failed relaunch's error. When a
-	// session cannot even be recreated there is no dead pane to attach to and
-	// read, so this is the only record of why the card went red.
-	launchErrors map[string]error
+	// cards holds per-card recovery state. It lives on the controller — not
+	// in the watcher loop — so user-initiated relaunches (SendPrompt), which
+	// run outside the watcher, can read and update it too.
+	cards map[string]*cardState
 
 	// relaunchMu serializes session relaunches. A watcher's background
 	// resume and a prompt-bearing relaunch (SendPrompt) can otherwise race:
@@ -87,17 +78,31 @@ type watcher struct {
 	done   chan struct{}
 }
 
+// cardState is the controller's per-card recovery state, guarded by c.mu.
+type cardState struct {
+	// expectTurn marks a card whose latest launch carried an initial prompt:
+	// a first turn is imminent, so the watcher keeps it "starting" until the
+	// event stream reports it instead of flashing "ready" first.
+	expectTurn bool
+	// launchFailures counts consecutive agent deaths before the control
+	// plane ever answered. A user-initiated relaunch resets it to give the
+	// agent a fresh set of attempts after the cap tripped.
+	launchFailures int
+	// launchError keeps the last failed relaunch's error. When a session
+	// cannot even be recreated there is no dead pane to attach to and read,
+	// so this is the only record of why the card went red.
+	launchError error
+}
+
 func newController(ctx context.Context, store *Store, sessions sessionManager, onChanged func()) *controller {
 	return &controller{
-		ctx:            ctx,
-		store:          store,
-		sessions:       sessions,
-		onChanged:      onChanged,
-		clientFor:      func(socket, session string) sessionClient { return newClient(socket, session) },
-		watchers:       make(map[string]*watcher),
-		expectTurn:     make(map[string]bool),
-		launchFailures: make(map[string]int),
-		launchErrors:   make(map[string]error),
+		ctx:       ctx,
+		store:     store,
+		sessions:  sessions,
+		onChanged: onChanged,
+		clientFor: func(socket, session string) sessionClient { return newClient(socket, session) },
+		watchers:  make(map[string]*watcher),
+		cards:     make(map[string]*cardState),
 	}
 }
 
@@ -131,20 +136,28 @@ func (c *controller) ExpectTurn(cardID string) {
 	c.setExpectTurn(cardID, true)
 }
 
+// stateLocked returns the card's state, creating it on first use. Callers
+// must hold c.mu.
+func (c *controller) stateLocked(cardID string) *cardState {
+	s, ok := c.cards[cardID]
+	if !ok {
+		s = &cardState{}
+		c.cards[cardID] = s
+	}
+	return s
+}
+
 func (c *controller) setExpectTurn(cardID string, expect bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if expect {
-		c.expectTurn[cardID] = true
-	} else {
-		delete(c.expectTurn, cardID)
-	}
+	c.stateLocked(cardID).expectTurn = expect
 }
 
 func (c *controller) turnExpected(cardID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.expectTurn[cardID]
+	s := c.cards[cardID]
+	return s != nil && s.expectTurn
 }
 
 // launchFailed records one more agent death before the control plane ever
@@ -152,24 +165,23 @@ func (c *controller) turnExpected(cardID string) bool {
 func (c *controller) launchFailed(cardID string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.launchFailures[cardID]++
-	return c.launchFailures[cardID]
+	s := c.stateLocked(cardID)
+	s.launchFailures++
+	return s.launchFailures
 }
 
 func (c *controller) resetLaunchFailures(cardID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.launchFailures, cardID)
+	if s := c.cards[cardID]; s != nil {
+		s.launchFailures = 0
+	}
 }
 
 func (c *controller) setLaunchError(cardID string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err == nil {
-		delete(c.launchErrors, cardID)
-	} else {
-		c.launchErrors[cardID] = err
-	}
+	c.stateLocked(cardID).launchError = err
 }
 
 // LaunchError returns the last failed relaunch's error for the card, or nil.
@@ -177,7 +189,10 @@ func (c *controller) setLaunchError(cardID string, err error) {
 func (c *controller) LaunchError(cardID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.launchErrors[cardID]
+	if s := c.cards[cardID]; s != nil {
+		return s.launchError
+	}
+	return nil
 }
 
 // Stop cancels the card's watcher and waits for it to exit. Waiting matters:
@@ -202,9 +217,7 @@ func (c *controller) Stop(cardID string) {
 func (c *controller) forget(cardID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.expectTurn, cardID)
-	delete(c.launchFailures, cardID)
-	delete(c.launchErrors, cardID)
+	delete(c.cards, cardID)
 }
 
 // watch keeps one card mirrored to its control plane: snapshot to resync,

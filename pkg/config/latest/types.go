@@ -18,7 +18,7 @@ import (
 	"github.com/docker/docker-agent/pkg/effort"
 )
 
-const Version = "14"
+const Version = "15"
 
 // Config represents the entire configuration file
 type Config struct {
@@ -128,6 +128,34 @@ func (b *BudgetConfig) validate() error {
 	return nil
 }
 
+// SafetyMode is a declarative safety-mode default that agent authors
+// (runtime.safety, agents.<name>.safety) and users (settings.safety,
+// alias safety) can put in YAML. Only the three canonical session modes
+// are accepted; the legacy aliases the session layer still normalizes
+// (unsafe, safer, safe-auto) are not valid in configuration files.
+//
+// The values mirror pkg/session.SafetyPolicy but are defined here so
+// the config layer does not depend on the session layer.
+type SafetyMode string
+
+const (
+	// SafetyModeStrict prompts on every tool call.
+	SafetyModeStrict SafetyMode = "strict"
+	// SafetyModeBalanced auto-approves classifier-safe calls only.
+	SafetyModeBalanced SafetyMode = "balanced"
+	// SafetyModeAutonomous auto-approves every call (legacy yolo).
+	SafetyModeAutonomous SafetyMode = "autonomous"
+)
+
+// Validate accepts the three canonical modes and empty (unset).
+func (m SafetyMode) Validate() error {
+	switch m {
+	case "", SafetyModeStrict, SafetyModeBalanced, SafetyModeAutonomous:
+		return nil
+	}
+	return fmt.Errorf("invalid safety mode %q (valid: strict, balanced, autonomous)", string(m))
+}
+
 // RuntimeDefaults captures execution-time defaults the agent author
 // wants applied when this config is run. The values act as defaults
 // only: an explicit CLI flag or user-config setting always wins.
@@ -136,6 +164,13 @@ type RuntimeDefaults struct {
 	// default — equivalent to passing --sandbox on the command line.
 	// Useful for agents that always need filesystem/network isolation.
 	Sandbox bool `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+
+	// Safety is the safety mode new sessions default to when the user
+	// has not chosen one (no --safety/--yolo flag, no alias option, no
+	// user-config setting). It never overrides a user choice and never
+	// replaces the mode stored on a resumed session. A per-agent
+	// AgentConfig.Safety takes precedence over this config-wide default.
+	Safety SafetyMode `json:"safety,omitempty" yaml:"safety,omitempty"`
 
 	// NetworkAllowlist is the list of hosts that should be added to
 	// the sandbox's default-deny network proxy when this agent runs in
@@ -622,6 +657,12 @@ type AgentConfig struct {
 	// tools whose annotations carry a read-only hint are listed and
 	// callable. Equivalent to setting `readonly: true` on each toolset.
 	ReadOnly bool `json:"readonly,omitempty" yaml:"readonly,omitempty"`
+	// Safety is the safety mode new sessions started on this agent
+	// default to when the user has not chosen one (no --safety/--yolo
+	// flag, no alias option, no user-config setting). It never overrides
+	// a user choice and never replaces the mode stored on a resumed
+	// session. Takes precedence over the config-wide RuntimeDefaults.Safety.
+	Safety SafetyMode `json:"safety,omitempty" yaml:"safety,omitempty"`
 	// RedactSecrets enables every leg of the redact_secrets feature:
 	// the pre_tool_use builtin (scrubs tool arguments), the
 	// before_llm_call hook (scrubs outgoing chat content), and the
@@ -994,34 +1035,6 @@ func (a *AgentConfig) SessionCompactionEnabled() bool {
 		return true
 	}
 	return *a.SessionCompaction
-}
-
-// SaferShellEnabled reports whether any of the agent's shell toolsets
-// has opted into destructive-command detection. The flag lives on the
-// toolset (not the agent), so this aggregates across all of an agent's
-// toolsets — one match anywhere flips the agent-level flag the runtime
-// uses to register the safer_shell builtin.
-//
-// Off by default: a missing pointer or explicit `safer: false` does
-// not enable the feature. Only an explicit `safer: true` on at least
-// one shell toolset switches it on.
-//
-// Multi-toolset note: when an agent declares more than one shell
-// toolset and only some opt in, the safer_shell builtin still runs
-// for every shell call on this agent (it filters by ToolName, not
-// by toolset identity). Author one shell toolset per agent when you
-// need toolset-scoped granularity.
-func (a *AgentConfig) SaferShellEnabled() bool {
-	if a == nil {
-		return false
-	}
-	for i := range a.Toolsets {
-		ts := &a.Toolsets[i]
-		if ts.Type == "shell" && ts.Safer != nil && *ts.Safer {
-			return true
-		}
-	}
-	return false
 }
 
 // GetFallbackRetries returns the fallback retries from the config.
@@ -1614,15 +1627,10 @@ type Toolset struct {
 	// finishes.
 	Recall *bool `json:"recall,omitempty" yaml:"recall,omitempty"`
 
-	// For the `shell` toolset — opt in to destructive-command detection.
-	// When enabled, the agent auto-registers the safer_shell builtin under
-	// pre_tool_use with preempt_yolo:true. Destructive commands (rm -rf, docker
-	// volume rm, mkfs, …) get an Ask verdict carrying a blast-radius
-	// classification; known-safe reads (ls, git status, docker ps, …)
-	// flow through silently; everything else asks with blast_radius=unknown
-	// so the user sees the prompt before --yolo or permission allow-rules
-	// can auto-approve it. nil/false leaves the agent's shell calls subject
-	// only to the regular approval pipeline.
+	// Deprecated: ignored. The runtime now classifies every shell
+	// command natively (pkg/safety) and gates it through the session's
+	// safety mode, so the opt-in is meaningless. Kept so existing
+	// YAMLs with `safer: true` still parse under strict decoding.
 	Safer *bool `json:"safer,omitempty" yaml:"safer,omitempty"`
 
 	// For the `rag` tool
@@ -1664,8 +1672,11 @@ type Remote struct {
 	OAuth         *RemoteOAuthConfig `json:"oauth,omitempty"`
 }
 
-// RemoteOAuthConfig holds explicit OAuth credentials for remote MCP servers
-// that do not support Dynamic Client Registration (RFC 7591).
+// RemoteOAuthConfig tunes the OAuth flow for remote MCP servers. ClientID
+// (and optional ClientSecret) supply explicit credentials for servers that
+// do not support Dynamic Client Registration (RFC 7591); when ClientID is
+// omitted, docker-agent falls back to DCR or an interactive prompt while
+// still honoring CallbackPort, Scopes and CallbackRedirectURL.
 type RemoteOAuthConfig struct {
 	ClientID     string   `json:"clientId"`
 	ClientSecret string   `json:"clientSecret,omitempty"`
@@ -2439,15 +2450,18 @@ type RAGFusionConfig struct {
 	Weights  map[string]float64 `json:"weights,omitempty"`  // Strategy weights for weighted fusion
 }
 
-// PermissionsConfig represents tool permission configuration.
-// Allow/Ask/Deny model. This controls tool call approval behavior:
-// - Allow: Tools matching these patterns are auto-approved (like --yolo for specific tools)
-// - Ask: Tools matching these patterns always require user approval, even if the tool is read-only
-// - Deny: Tools matching these patterns are always rejected, even with --yolo
+// PermissionsConfig configures custom per-tool rules that layer on
+// top of the session's safety mode (strict / balanced / autonomous):
+//   - Allow: matching tools auto-approve, even under strict
+//   - Deny: matching tools are rejected, even under autonomous
+//   - Ask: matching tools require user approval. Rules from this config
+//     (the agent-author tier) yield to a user-chosen balanced/autonomous
+//     mode; session-scoped ask rules always prompt.
 //
-// Patterns support glob-style matching (e.g., "shell", "read_*", "mcp:github:*")
-// The evaluation order is: Deny (checked first), then Allow, then Ask (explicit), then default
-// (read-only tools auto-approved, others ask)
+// Patterns support glob-style matching (e.g., "shell", "read_*",
+// "mcp:github:*", "shell:cmd=git status*"). Within a config the
+// evaluation order is Deny, then Allow, then Ask; when no rule
+// matches, the (safety mode × safety label) table decides.
 type PermissionsConfig struct {
 	// Allow lists tool name patterns that are auto-approved without user confirmation
 	Allow []string `json:"allow,omitempty"`
@@ -2684,17 +2698,16 @@ type HookMatcherConfig struct {
 	Hooks HookDefinitions `json:"hooks" yaml:"hooks"`
 
 	// PreemptYolo opts a pre_tool_use entry into firing BEFORE the
-	// deterministic approval pipeline (--yolo, permission patterns).
-	// A deny/ask verdict from a preempting hook cannot be bypassed by
-	// auto-approval rules; an allow verdict is advisory (the pipeline
-	// still runs Decide() and the rest of pre_tool_use). Default
-	// pre_tool_use entries fire AFTER Decide(), as before. Only valid
-	// on pre_tool_use; ignored on other events.
+	// deterministic approval pipeline (custom allow/ask/deny rules +
+	// safety mode). A deny/ask verdict from a preempting hook cannot
+	// be bypassed by any safety mode (including Autonomous) or by
+	// permission allow-rules; an allow verdict is advisory (the
+	// pipeline still runs Decide() and the rest of pre_tool_use).
+	// Default pre_tool_use entries fire AFTER Decide(), as before.
+	// Only valid on pre_tool_use; ignored on other events.
 	//
-	// Used by the safer_shell builtin (auto-registered with this flag
-	// when a shell toolset has `safer: true`). Custom hooks set it to
-	// true when they implement a security-critical check that must
-	// not be bypassed by --yolo.
+	// Set it on hooks that implement a security-critical check that
+	// must not be bypassed by auto-approval.
 	PreemptYolo *bool `json:"preempt_yolo,omitempty" yaml:"preempt_yolo,omitempty"`
 }
 

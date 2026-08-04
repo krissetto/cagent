@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/chatgpt"
 	"github.com/docker/docker-agent/pkg/config/latest"
@@ -35,6 +36,20 @@ func TestAvailableProviders_NoGateway(t *testing.T) {
 				"OPENAI_API_KEY": "test-key",
 			},
 			expectedProvider: "openai",
+		},
+		{
+			name: "github copilot github token present",
+			envVars: map[string]string{
+				"GITHUB_TOKEN": "test-token",
+			},
+			expectedProvider: "github-copilot",
+		},
+		{
+			name: "github copilot gh token present",
+			envVars: map[string]string{
+				"GH_TOKEN": "test-token",
+			},
+			expectedProvider: "github-copilot",
 		},
 		{
 			name: "google api key present",
@@ -461,7 +476,7 @@ func TestDefaultModels(t *testing.T) {
 	t.Parallel()
 
 	// Test that DefaultModels map has all expected providers
-	expectedProviders := []string{"openai", "anthropic", "google", "dmr", "mistral", "openrouter", "baseten", "ovhcloud", "groq", "fireworks", "deepseek", "cerebras", "together", "huggingface", "moonshot", "vercel", "amazon-bedrock", "opencode-zen", "opencode-go"}
+	expectedProviders := []string{"openai", "anthropic", "google", "dmr", "mistral", "openrouter", "baseten", "ovhcloud", "groq", "fireworks", "deepseek", "cerebras", "together", "huggingface", "moonshot", "vercel", "amazon-bedrock", "opencode-zen", "opencode-go", "github-copilot"}
 
 	for _, provider := range expectedProviders {
 		t.Run(provider, func(t *testing.T) {
@@ -473,6 +488,7 @@ func TestDefaultModels(t *testing.T) {
 
 	// Test specific model values
 	assert.Equal(t, "gpt-5.6", DefaultModels["openai"])
+	assert.Equal(t, "gpt-5.6", DefaultModels["github-copilot"])
 	assert.Equal(t, "claude-sonnet-4-6", DefaultModels["anthropic"])
 	assert.Equal(t, "gemini-3.5-flash", DefaultModels["google"])
 	assert.Equal(t, "ai/qwen3:latest", DefaultModels["dmr"])
@@ -497,7 +513,7 @@ func TestAutoModelConfig_IntegrationWithDefaultModels(t *testing.T) {
 	t.Parallel()
 
 	// Verify that AutoModelConfig always returns a model from DefaultModels
-	providers := []string{"openai", "anthropic", "google", "mistral", "openrouter", "baseten", "ovhcloud", "groq", "fireworks", "deepseek", "cerebras", "together", "huggingface", "moonshot", "vercel", "opencode-zen"}
+	providers := []string{"openai", "anthropic", "google", "mistral", "openrouter", "baseten", "ovhcloud", "groq", "fireworks", "deepseek", "cerebras", "together", "huggingface", "moonshot", "vercel", "opencode-zen", "github-copilot"}
 
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
@@ -509,6 +525,8 @@ func TestAutoModelConfig_IntegrationWithDefaultModels(t *testing.T) {
 			switch provider {
 			case "openai":
 				envVars["OPENAI_API_KEY"] = "test-key"
+			case "github-copilot":
+				envVars["GITHUB_TOKEN"] = "test-key"
 			case "anthropic":
 				envVars["ANTHROPIC_API_KEY"] = "test-key"
 			case "google":
@@ -1132,6 +1150,7 @@ func TestProviderAPIKeyEnvVars(t *testing.T) {
 
 	// Broad, general-purpose tokens must not be forwarded as model credentials.
 	assert.NotContains(t, vars, "GITHUB_TOKEN")
+	assert.NotContains(t, vars, "GH_TOKEN")
 
 	// The ChatGPT OAuth access token is a subscription credential, not an
 	// API key, and must never be forwarded into isolated environments.
@@ -1154,4 +1173,10 @@ func TestCloudProviderEnvVars(t *testing.T) {
 	// Mutating the returned slices must not corrupt the package table.
 	providers[0].EnvVars[0] = "MUTATED"
 	assert.NotEqual(t, "MUTATED", cloudProviders[0].envVars[0])
+
+	copilotIdx := slices.IndexFunc(providers, func(p ProviderEnvVars) bool {
+		return p.Provider == "github-copilot"
+	})
+	require.GreaterOrEqual(t, copilotIdx, 0)
+	assert.Equal(t, []string{"GITHUB_TOKEN", "GH_TOKEN"}, providers[copilotIdx].EnvVars)
 }

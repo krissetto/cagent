@@ -31,8 +31,8 @@ $ docker agent serve acp ./agent.yaml
 # With a multi-agent team config
 $ docker agent serve acp ./team.yaml
 
-# From the agent catalog
-$ docker agent serve acp agentcatalog/pirate
+# From an OCI registry
+$ docker agent serve acp myorg/agent:tag
 
 # With a custom session database
 $ docker agent serve acp ./agent.yaml --session-db ./my-sessions.db

@@ -456,35 +456,6 @@ func listUserThemeRefs() ([]string, error) {
 	return listThemeRefsFrom(ThemesDir())
 }
 
-// UserThemeExists returns true if a user theme file exists for the given ref
-// in the user themes directory (typically ~/.cagent/themes/).
-//
-// This handles the "user:" prefix - "user:nord" checks for ~/.cagent/themes/nord.yaml.
-func UserThemeExists(ref string) bool {
-	if ref == "" {
-		return false
-	}
-
-	// Strip user: prefix if present
-	baseRef := strings.TrimPrefix(ref, UserThemePrefix)
-
-	if err := validateThemeRef(baseRef); err != nil {
-		return false
-	}
-
-	dir := ThemesDir()
-
-	// Try .yaml first, then .yml
-	if _, err := os.Stat(filepath.Join(dir, baseRef+".yaml")); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(dir, baseRef+".yml")); err == nil {
-		return true
-	}
-
-	return false
-}
-
 // SaveThemeToUserConfig persists the theme reference to the user config file.
 // If themeRef equals DefaultThemeRef, the setting is cleared (empty string).
 func SaveThemeToUserConfig(themeRef string) error {

@@ -32,7 +32,6 @@ func newDebugCmd() *cobra.Command {
 		Short:   "Debug tools",
 		GroupID: "advanced",
 	}
-	cmd.Hidden = true
 
 	cmd.AddCommand(&cobra.Command{
 		Use:   "config <agent-file>|<registry-ref>",

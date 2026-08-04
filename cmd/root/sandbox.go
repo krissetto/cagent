@@ -135,8 +135,14 @@ func runInSandbox(ctx context.Context, cmd *cobra.Command, args []string, runCon
 	configDir := paths.GetConfigDir()
 	dockerAgentArgs := dockerAgentArgs(cmd, args, configDir)
 
-	stopTokenWriter := sandbox.StartTokenWriterIfNeeded(ctx, configDir, runConfig.ModelsGateway)
-	defer stopTokenWriter()
+	// When the gateway is a Docker one, authenticate its requests via the
+	// sandbox proxy's sbx-login injection instead of forwarding a token.
+	// Without the kit those requests cannot authenticate at all, so a
+	// write failure is fatal.
+	loginKit, err := sandbox.LoginKit(runConfig.ModelsGateway)
+	if err != nil {
+		return fmt.Errorf("configuring gateway authentication for the sandbox: %w", err)
+	}
 
 	// Resolve wd to an absolute path so that it matches the absolute
 	// workspace paths returned by `docker sandbox ls --json`.
@@ -178,12 +184,13 @@ func runInSandbox(ctx context.Context, cmd *cobra.Command, args []string, runCon
 	userHosts := userSandboxAllowlist(ctx)
 
 	printModelsGateway(cmd.OutOrStdout(), runConfig.ModelsGateway)
+	printGatewayLoginInjection(cmd.OutOrStdout(), loginKit)
 	printModelsDevAllowance(cmd.OutOrStdout())
 	printToolInstallAllowance(cmd.OutOrStdout(), kitResult)
 	printAgentNetworkAllowlist(cmd.OutOrStdout(), agentHosts)
 	printUserSandboxAllowlist(cmd.OutOrStdout(), userHosts)
 
-	name, err := backend.Ensure(ctx, wd, extras, template, configDir)
+	name, err := backend.Ensure(ctx, wd, extras, template, configDir, loginKit)
 	if err != nil {
 		return err
 	}
@@ -209,12 +216,23 @@ func runInSandbox(ctx context.Context, cmd *cobra.Command, args []string, runCon
 	envFlags, envVars := sandbox.EnvForAgent(ctx, agentRef, envProvider, runConfig.Flavors)
 
 	// Forward the gateway by name so a URL with credentials never
-	// shows up in the slog'd `docker sandbox exec` argv. We do not
-	// forward DOCKER_TOKEN: inside the sandbox it must come only from
-	// sandbox-tokens.json (kept fresh by StartTokenWriterIfNeeded).
+	// shows up in the slog'd `docker sandbox exec` argv.
 	if gateway := runConfig.ModelsGateway; gateway != "" {
 		envFlags = append(envFlags, "-e", envModelsGateway)
 		envVars = append(envVars, envModelsGateway+"="+gateway)
+	}
+
+	// For a docker.com gateway (loginKit != "") DOCKER_TOKEN inside the
+	// sandbox is the login kit's proxy-managed sentinel, swapped for a
+	// fresh login JWT by the sandbox proxy on every request — nothing to
+	// forward. Other trusted gateways (localhost, e.g. the record proxy)
+	// still gate on DOCKER_TOKEN inside the sandbox, so forward the
+	// current value as a one-shot; it cannot be refreshed in there.
+	if loginKit == "" && environment.IsTrustedDockerURL(runConfig.ModelsGateway) {
+		if token, _ := envProvider.Get(ctx, environment.DockerDesktopTokenEnv); token != "" {
+			envFlags = append(envFlags, "-e", environment.DockerDesktopTokenEnv)
+			envVars = append(envVars, environment.DockerDesktopTokenEnv+"="+token)
+		}
 	}
 
 	// Point the in-sandbox resolvers at the staged kit. The sandbox CLI
@@ -265,6 +283,7 @@ func dockerAgentArgs(cmd *cobra.Command, args []string, configDir string) []stri
 
 	var dockerAgentArgs []string
 	hasYolo := false
+	hasSafety := false
 	cmd.Flags().Visit(func(f *pflag.Flag) {
 		if skip[f.Name] {
 			return
@@ -273,6 +292,9 @@ func dockerAgentArgs(cmd *cobra.Command, args []string, configDir string) []stri
 		if f.Name == "yolo" {
 			hasYolo = true
 		}
+		if f.Name == "safety" {
+			hasSafety = true
+		}
 
 		if f.Value.Type() == "bool" {
 			dockerAgentArgs = append(dockerAgentArgs, "--"+f.Name+"="+f.Value.String())
@@ -280,7 +302,7 @@ func dockerAgentArgs(cmd *cobra.Command, args []string, configDir string) []stri
 			dockerAgentArgs = append(dockerAgentArgs, "--"+f.Name, f.Value.String())
 		}
 	})
-	if !hasYolo {
+	if !hasYolo && !hasSafety {
 		dockerAgentArgs = append(dockerAgentArgs, "--yolo")
 	}
 
@@ -501,6 +523,18 @@ func printModelsGateway(w io.Writer, gateway string) {
 		return
 	}
 	fmt.Fprintf(w, "Models gateway: %s (allowlisting %s in the sandbox proxy)\n", display, host)
+}
+
+// printGatewayLoginInjection prints how gateway requests are
+// authenticated when the login kit is in play: the sandbox proxy
+// injects the user's Docker login token, so no credential is ever
+// forwarded into the sandbox. Silent when no kit was configured (no
+// gateway, or a non-Docker gateway).
+func printGatewayLoginInjection(w io.Writer, loginKit string) {
+	if loginKit == "" {
+		return
+	}
+	fmt.Fprintln(w, "Gateway auth: the sandbox proxy injects your Docker login token into gateway requests")
 }
 
 // printModelsDevAllowance prints that the models.dev catalog host is

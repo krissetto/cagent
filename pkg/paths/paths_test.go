@@ -1,10 +1,12 @@
 package paths_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/paths"
 )
@@ -47,6 +49,21 @@ func TestGetHomeDir(t *testing.T) {
 	t.Parallel()
 
 	assert.NotEmpty(t, paths.GetHomeDir())
+}
+
+func TestGetHomeDirUsesPlatformNativeHome(t *testing.T) {
+	// HOME and USERPROFILE deliberately differ: if a HOME preference is
+	// ever reintroduced, GetHomeDir diverges from os.UserHomeDir on
+	// Windows and this test fails there.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	assert.Equal(t, filepath.Clean(home), paths.GetHomeDir())
+	assert.Equal(t, filepath.Join(home, ".config", "cagent"), paths.GetConfigDir())
+	assert.Equal(t, filepath.Join(home, ".cagent"), paths.GetDataDir())
 }
 
 func TestSetRoot(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/codingharness"
+	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/model/provider/dmr"
@@ -290,6 +291,33 @@ func TestDoctorCommand_JSON(t *testing.T) {
 	assert.Equal(t, "OPENAI_API_KEY", byProvider["openai"].EnvVar)
 	assert.Equal(t, "environment", byProvider["openai"].Source)
 	assert.False(t, byProvider["anthropic"].Found)
+}
+
+func TestDoctorCommand_JSONReportsGitHubCopilot(t *testing.T) {
+	t.Parallel()
+
+	output, err := executeDoctor(t, []string{"--json"}, withDoctorTestEnv(
+		map[string]string{"GH_TOKEN": "gh-token"},
+		[]string{"ai/qwen3:latest"}, nil))
+
+	require.NoError(t, err)
+	assert.NotContains(t, output, "gh-token", "secret values must never be printed")
+
+	var report doctorReport
+	require.NoError(t, json.Unmarshal([]byte(output), &report))
+
+	byProvider := map[string]doctorProviderStatus{}
+	for _, p := range report.Providers {
+		byProvider[p.Provider] = p
+	}
+
+	copilot := byProvider["github-copilot"]
+	assert.True(t, copilot.Found)
+	assert.Equal(t, []string{"GITHUB_TOKEN", "GH_TOKEN"}, copilot.EnvVars)
+	assert.Equal(t, "GH_TOKEN", copilot.EnvVar)
+	assert.Equal(t, "environment", copilot.Source)
+	assert.Equal(t, "github-copilot", report.AutoModel.Provider)
+	assert.Equal(t, config.DefaultModels["github-copilot"], report.AutoModel.Model)
 }
 
 func writeDoctorAgentFile(t *testing.T) string {

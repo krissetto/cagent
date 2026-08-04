@@ -94,16 +94,17 @@ func newTestSessionManager(t *testing.T, sess *session.Session, fake runtime.Run
 	require.NoError(t, store.AddSession(ctx, sess))
 
 	sm := &SessionManager{
-		runtimeSessions:   concurrent.NewMap[string, *activeRuntimes](),
-		deletedSessions:   concurrent.NewMap[string, *activeRuntimes](),
-		eventLogs:         concurrent.NewMap[string, *pumpedEventLog](),
-		deletedEventLogs:  make(map[string]struct{}),
-		followUpInjectors: concurrent.NewMap[string, FollowUpInjector](),
-		followUpKeys:      concurrent.NewMap[string, *idempotencyCache](),
-		sessionStore:      store,
-		Sources:           config.Sources{},
-		runConfig:         &config.RuntimeConfig{},
-		sessionReady:      make(chan struct{}),
+		runtimeSessions:       concurrent.NewMap[string, *activeRuntimes](),
+		deletedSessions:       concurrent.NewMap[string, *activeRuntimes](),
+		eventLogs:             concurrent.NewMap[string, *pumpedEventLog](),
+		deletedEventLogs:      make(map[string]struct{}),
+		followUpInjectors:     concurrent.NewMap[string, FollowUpInjector](),
+		followUpKeys:          concurrent.NewMap[string, *idempotencyCache](),
+		pendingSafetyDefaults: concurrent.NewMap[string, struct{}](),
+		sessionStore:          store,
+		Sources:               config.Sources{},
+		runConfig:             &config.RuntimeConfig{},
+		sessionReady:          make(chan struct{}),
 	}
 
 	// Pre-register a runtime for this session so RunSession skips agent loading.

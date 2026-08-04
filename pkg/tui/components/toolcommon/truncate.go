@@ -95,6 +95,8 @@ func takeRunesThatFit(runes []rune, start, width int) int {
 // wrapTextWithIndent wraps text where the first line has a different available width.
 // Subsequent lines are indented to align with the tool name badge.
 // If text starts with a newline, it's considered pre-formatted and no indent is added.
+// On wrapped lines, each visible fragment of a URL is emitted inside an OSC 8
+// hyperlink to the full URL, so a URL split across lines stays clickable everywhere.
 func wrapTextWithIndent(text string, firstLineWidth, subsequentLineWidth int) string {
 	if firstLineWidth <= 0 || subsequentLineWidth <= 0 {
 		return text
@@ -145,6 +147,7 @@ func wrapTextWithIndent(text string, firstLineWidth, subsequentLineWidth int) st
 
 		// Need to wrap this line
 		runes := []rune(inputLine)
+		urlSpans := findURLRuneSpans(runes)
 		start := 0
 		for start < len(runes) {
 			// After first chunk, use subsequent width/indent
@@ -159,7 +162,7 @@ func wrapTextWithIndent(text string, firstLineWidth, subsequentLineWidth int) st
 				result.WriteByte('\n')
 			}
 			result.WriteString(prefix)
-			result.WriteString(string(runes[start:end]))
+			writeChunkWithHyperlinks(&result, runes, start, end, urlSpans)
 			start = end
 		}
 	}

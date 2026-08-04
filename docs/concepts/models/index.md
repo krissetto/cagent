@@ -73,7 +73,7 @@ for details.
 | Provider            | Key              | Example Models                       | API Key Env Var                     |
 | ------------------- | ---------------- | ------------------------------------ | ----------------------------------- |
 | OpenAI              | `openai`         | gpt-5, gpt-5-mini, gpt-4o            | `OPENAI_API_KEY`                    |
-| Anthropic           | `anthropic`      | claude-sonnet-4-5, claude-opus-4-7   | `ANTHROPIC_API_KEY`                 |
+| Anthropic           | `anthropic`      | claude-sonnet-4-5, claude-opus-5     | `ANTHROPIC_API_KEY`                 |
 | Google              | `google`         | gemini-3.5-flash, gemini-3-pro       | `GOOGLE_API_KEY` / `GEMINI_API_KEY` |
 | AWS Bedrock         | `amazon-bedrock` | Claude, Nova, Llama models           | AWS credentials                     |
 | Docker Model Runner | `dmr`            | ai/qwen3, ai/llama3.2                | None (local)                        |
@@ -97,7 +97,7 @@ for details.
 | Requesty            | `requesty`       | Multi-provider gateway               | `REQUESTY_API_KEY`                  |
 | OpenRouter          | `openrouter`     | Multi-provider gateway               | `OPENROUTER_API_KEY`                |
 | Azure OpenAI        | `azure`          | gpt-4o, gpt-5 on Azure               | `AZURE_API_KEY` + `base_url`        |
-| Ollama              | `ollama`         | Any local Ollama model               | None (local; optional `base_url`)   |
+| [Ollama](../../providers/local/index.md) | `ollama` | Any local Ollama model | None (local; optional `base_url`) |
 | GitHub Copilot      | `github-copilot` | Copilot-hosted OpenAI/Anthropic      | `GITHUB_TOKEN` (PAT with `copilot`) |
 | ChatGPT (OpenAI account) | `chatgpt`   | gpt-5 family via ChatGPT subscription | None (sign in via `docker agent setup`) |
 

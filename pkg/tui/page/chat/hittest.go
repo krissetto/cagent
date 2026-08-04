@@ -16,6 +16,7 @@ const (
 	TargetSidebarTitle
 	TargetSidebarWorkingDir
 	TargetSidebarAgent
+	TargetSidebarUsageContext
 	TargetSidebarUsage
 	TargetSidebarContent
 	TargetMessages
@@ -115,6 +116,8 @@ func (h *HitTest) sidebarClickTarget(x, y int) MouseTarget {
 	case sidebar.ClickAgent:
 		h.AgentName = agentName
 		return TargetSidebarAgent
+	case sidebar.ClickUsageContext:
+		return TargetSidebarUsageContext
 	case sidebar.ClickUsage:
 		return TargetSidebarUsage
 	default:

@@ -89,6 +89,7 @@ agents:
 func TestResolveAgentFile_EmptyIsDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	resolved, err := resolve("")
 
@@ -99,6 +100,7 @@ func TestResolveAgentFile_EmptyIsDefault(t *testing.T) {
 func TestResolveAgentFile_DefaultIsDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	resolved, err := resolve("default")
 
@@ -118,6 +120,7 @@ func TestResolveAgentFile_CoderIsCoder(t *testing.T) {
 func TestResolveAgentFile_ReplaceAliasWithActualFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Prepare an aliased file: alias -> [xxx]/pirate.yaml
 	wd := t.TempDir()
@@ -139,6 +142,7 @@ func TestResolveAgentFile_ReplaceAliasWithActualFile(t *testing.T) {
 func TestResolveAgentFile_ReplaceDefaultAliasWithActualFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Prepare an aliased file: alias -> [xxx]/pirate.yaml
 	wd := t.TempDir()
@@ -160,6 +164,7 @@ func TestResolveAgentFile_ReplaceDefaultAliasWithActualFile(t *testing.T) {
 func TestResolveAgentFile_ReplaceEmptyAliasWithActualFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Prepare an aliased file: alias -> [xxx]/pirate.yaml
 	wd := t.TempDir()
@@ -293,6 +298,7 @@ func TestResolveSources(t *testing.T) {
 func TestResolve_DefaultAliasOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Create an agent file
 	agentFile := filepath.Join(t.TempDir(), "custom-agent.yaml")
@@ -344,6 +350,7 @@ func TestBuiltinAgentNames(t *testing.T) {
 func TestResolve_DefaultAliasToOCIReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up alias for "default" pointing to an OCI reference
 	cfg, err := userconfig.Load()
@@ -360,6 +367,7 @@ func TestResolve_DefaultAliasToOCIReference(t *testing.T) {
 func TestResolveSources_DefaultAliasToOCIReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up alias for "default" pointing to an OCI reference
 	cfg, err := userconfig.Load()
@@ -381,6 +389,7 @@ func TestResolveSources_DefaultAliasToOCIReference(t *testing.T) {
 func TestResolve_EmptyWithDefaultAliasOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Create an agent file
 	agentFile := filepath.Join(t.TempDir(), "custom-agent.yaml")
@@ -410,6 +419,7 @@ func TestResolve_EmptyWithDefaultAliasOverride(t *testing.T) {
 func TestResolveSources_DefaultAliasOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Create an agent file
 	agentFile := filepath.Join(t.TempDir(), "custom-agent.yaml")
@@ -443,6 +453,7 @@ func TestResolveSources_DefaultAliasOverride(t *testing.T) {
 func TestResolveSources_EmptyWithDefaultAliasOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Create an agent file
 	agentFile := filepath.Join(t.TempDir(), "custom-agent.yaml")
@@ -476,12 +487,13 @@ func TestResolveSources_EmptyWithDefaultAliasOverride(t *testing.T) {
 func TestResolveAlias_WithYoloOption(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up alias with yolo option
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
 	require.NoError(t, cfg.SetAlias("yolo-agent", &userconfig.Alias{
-		Path: "agentcatalog/coder",
+		Path: "myorg/coder",
 		Yolo: true,
 	}))
 	require.NoError(t, cfg.Save())
@@ -496,12 +508,13 @@ func TestResolveAlias_WithYoloOption(t *testing.T) {
 func TestResolveAlias_WithModelOption(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up alias with model option
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
 	require.NoError(t, cfg.SetAlias("model-agent", &userconfig.Alias{
-		Path:  "agentcatalog/coder",
+		Path:  "myorg/coder",
 		Model: "openai/gpt-4o-mini",
 	}))
 	require.NoError(t, cfg.Save())
@@ -516,12 +529,13 @@ func TestResolveAlias_WithModelOption(t *testing.T) {
 func TestResolveAlias_WithBothOptions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up alias with both options
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
 	require.NoError(t, cfg.SetAlias("turbo", &userconfig.Alias{
-		Path:  "agentcatalog/coder",
+		Path:  "myorg/coder",
 		Yolo:  true,
 		Model: "anthropic/claude-sonnet-4-0",
 	}))
@@ -537,11 +551,12 @@ func TestResolveAlias_WithBothOptions(t *testing.T) {
 func TestResolveAlias_WithSandboxOption(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
 	require.NoError(t, cfg.SetAlias("safe-coder", &userconfig.Alias{
-		Path:    "agentcatalog/coder",
+		Path:    "myorg/coder",
 		Sandbox: true,
 	}))
 	require.NoError(t, cfg.Save())
@@ -555,12 +570,13 @@ func TestResolveAlias_WithSandboxOption(t *testing.T) {
 func TestResolveAlias_NoOptions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up alias without options
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
 	require.NoError(t, cfg.SetAlias("plain", &userconfig.Alias{
-		Path: "agentcatalog/coder",
+		Path: "myorg/coder",
 	}))
 	require.NoError(t, cfg.Save())
 
@@ -572,6 +588,7 @@ func TestResolveAlias_NoOptions(t *testing.T) {
 func TestResolveAlias_NotAnAlias(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Resolve non-existent alias
 	alias := ResolveAlias("./some-file.yaml")
@@ -581,12 +598,13 @@ func TestResolveAlias_NotAnAlias(t *testing.T) {
 func TestResolveAlias_EmptyUsesDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up default alias with yolo option
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
 	require.NoError(t, cfg.SetAlias("default", &userconfig.Alias{
-		Path: "agentcatalog/coder",
+		Path: "myorg/coder",
 		Yolo: true,
 	}))
 	require.NoError(t, cfg.Save())
@@ -600,12 +618,13 @@ func TestResolveAlias_EmptyUsesDefault(t *testing.T) {
 func TestResolveAlias_WithHideToolResultsOption(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up alias with hide_tool_results option
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
 	require.NoError(t, cfg.SetAlias("hidden-tools", &userconfig.Alias{
-		Path:            "agentcatalog/coder",
+		Path:            "myorg/coder",
 		HideToolResults: true,
 	}))
 	require.NoError(t, cfg.Save())
@@ -621,12 +640,13 @@ func TestResolveAlias_WithHideToolResultsOption(t *testing.T) {
 func TestResolveAlias_WithAllOptions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up alias with all options
 	cfg, err := userconfig.Load()
 	require.NoError(t, err)
 	require.NoError(t, cfg.SetAlias("full", &userconfig.Alias{
-		Path:            "agentcatalog/coder",
+		Path:            "myorg/coder",
 		Yolo:            true,
 		Model:           "anthropic/claude-sonnet-4-0",
 		HideToolResults: true,
@@ -651,7 +671,7 @@ func TestIsExternalReference(t *testing.T) {
 	}{
 		{
 			name:     "OCI reference with namespace",
-			input:    "agentcatalog/pirate",
+			input:    "myorg/agent:tag",
 			expected: true,
 		},
 		{
@@ -686,7 +706,7 @@ func TestIsExternalReference(t *testing.T) {
 		},
 		{
 			name:     "named OCI reference is external",
-			input:    "reviewer:agentcatalog/review-pr",
+			input:    "reviewer:myorg/review-pr",
 			expected: true,
 		},
 		{
@@ -717,9 +737,9 @@ func TestParseExternalAgentRef(t *testing.T) {
 	}{
 		{
 			name:         "simple OCI reference derives base name",
-			input:        "agentcatalog/pirate",
-			expectedName: "pirate",
-			expectedRef:  "agentcatalog/pirate",
+			input:        "myorg/agent:tag",
+			expectedName: "agent",
+			expectedRef:  "myorg/agent:tag",
 		},
 		{
 			name:         "OCI reference with tag derives base name without tag",
@@ -735,9 +755,9 @@ func TestParseExternalAgentRef(t *testing.T) {
 		},
 		{
 			name:         "explicit name prefix",
-			input:        "reviewer:agentcatalog/review-pr",
+			input:        "reviewer:myorg/review-pr",
 			expectedName: "reviewer",
-			expectedRef:  "agentcatalog/review-pr",
+			expectedRef:  "myorg/review-pr",
 		},
 		{
 			name:         "explicit name with tagged OCI ref",

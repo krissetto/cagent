@@ -248,6 +248,30 @@ func (r *LocalRuntime) effectiveContextLimit(ctx context.Context, a *agent.Agent
 	return min(primaryLimit, compactionLimit)
 }
 
+// compactionCapAttribution resolves the identity of the agent's dedicated
+// compaction model together with both models' context windows, for callers
+// that need to attribute a possibly-capped effective context limit to the
+// model that imposes it. Returns a zero compactionModel and zero limits when
+// the agent has no dedicated compaction model configured.
+func (r *LocalRuntime) compactionCapAttribution(ctx context.Context, a *agent.Agent, modelID modelsdev.ID) (compactionModel string, primaryLimit, compactionLimit int64) {
+	if a == nil {
+		return "", 0, 0
+	}
+	cm := a.CompactionModel()
+	if cm == nil {
+		return "", 0, 0
+	}
+	return cm.ID().String(), r.resolveContextLimit(ctx, a.Model(ctx), modelID), r.compactionContextLimit(ctx, a)
+}
+
+// compactionCaps reports whether a dedicated compaction model's window
+// actually reduces the effective context limit below the primary model's
+// own window — the condition under which UIs should attribute the cap to
+// the compaction model.
+func compactionCaps(primaryLimit, compactionLimit int64) bool {
+	return compactionLimit > 0 && compactionLimit < primaryLimit
+}
+
 // resolveContextLimit resolves the effective context window size for a
 // model. Resolution order:
 //

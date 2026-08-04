@@ -186,7 +186,7 @@ func TestCollapsedInfoLine_ShowsTeamRoster(t *testing.T) {
 		{Name: "planner", Provider: "openai", Model: "gpt-4"},
 		{Name: "reviewer", Provider: "openai", Model: "gpt-4"},
 	})
-	_ = s.SetAgentInfo("root", "openai/gpt-4", "")
+	_ = s.SetAgentInfo("root", "openai/gpt-4", "", 0, "", 0)
 
 	info := ansi.Strip(s.collapsedInfoLine(120))
 	assert.Contains(t, info, "▶ root openai/gpt-4", "current agent leads with its model")

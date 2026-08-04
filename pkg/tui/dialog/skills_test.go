@@ -26,14 +26,14 @@ func TestNewSkillsDialog_RendersSkills(t *testing.T) {
 		{
 			Name:        "commit",
 			Description: "Commit local changes",
-			BaseDir:     "skills/commit",
+			BaseDir:     filepath.Join("skills", "commit"),
 			Local:       true,
 			Context:     "fork",
 		},
 		{
 			Name:        "poem",
 			Description: "Prints a poem",
-			BaseDir:     "cache/skills/poem",
+			BaseDir:     filepath.Join("cache", "skills", "poem"),
 			Local:       false,
 		},
 	}
@@ -42,12 +42,12 @@ func TestNewSkillsDialog_RendersSkills(t *testing.T) {
 	assert.Contains(t, out, "Skills (2)")
 	assert.Contains(t, out, "commit")
 	assert.Contains(t, out, "Commit local changes")
-	assert.Contains(t, out, filepath.FromSlash("from: skills/commit"))
+	assert.Contains(t, out, "from: "+filepath.Join("skills", "commit"))
 	assert.Contains(t, out, "local")
 	assert.Contains(t, out, "fork")
 	assert.Contains(t, out, "poem")
 	assert.Contains(t, out, "Prints a poem")
-	assert.Contains(t, out, filepath.FromSlash("from: cache/skills/poem"))
+	assert.Contains(t, out, "from: "+filepath.Join("cache", "skills", "poem"))
 	assert.Contains(t, out, "remote")
 }
 

@@ -56,22 +56,48 @@ func (r *IncrementalRenderer) Render(input string) (string, error) {
 	return out, err
 }
 
+// RenderedParts exposes the reusable rendered block prefix separately from the
+// still-mutable trailing block. Consumers that retain lines can splice only
+// MutableTail while StablePrefix grows monotonically during streaming.
+type RenderedParts struct {
+	StablePrefix string
+	MutableTail  string
+	CodeBlocks   []CodeBlock
+}
+
+// RenderParts renders input without concatenating the stable rendered prefix
+// to the mutable tail. This avoids rescanning/copying an ever-growing ANSI
+// string in viewport-oriented consumers.
+func (r *IncrementalRenderer) RenderParts(input string) (RenderedParts, error) {
+	stable, tail, blocks, err := r.renderParts(input)
+	return RenderedParts{StablePrefix: stable, MutableTail: tail, CodeBlocks: blocks}, err
+}
+
 // RenderWithCodeBlocks behaves like Render but additionally returns the list
 // of fenced code blocks in the rendered output. Each entry's Line is the
 // 0-indexed line within the returned string where the block's copy label is
 // drawn.
 func (r *IncrementalRenderer) RenderWithCodeBlocks(input string) (string, []CodeBlock, error) {
+	stable, tail, blocks, err := r.renderParts(input)
+	if err != nil {
+		return "", nil, err
+	}
+	return r.joinPrefixAndTail(stable, tail), blocks, nil
+}
+
+func (r *IncrementalRenderer) renderParts(input string) (string, string, []CodeBlock, error) {
 	if input == "" {
 		r.inputPrefix = ""
 		r.outputPrefix = ""
 		r.codeBlocksPrefix = nil
-		return "", nil, nil
+		return "", "", nil, nil
 	}
 
 	// If the new input no longer starts with our cached prefix, the user (or a
 	// retry) replaced earlier content; fall back to a full render.
 	if r.inputPrefix == "" || !strings.HasPrefix(input, r.inputPrefix) {
-		return r.fullRender(input)
+		stable, tail, blocks, err := r.fullRenderParts(input)
+		return stable, tail, blocks, err
 	}
 
 	// Locate a fresh stable boundary anywhere up to the end of the current
@@ -86,10 +112,10 @@ func (r *IncrementalRenderer) RenderWithCodeBlocks(input string) (string, []Code
 		// concatenate. Cached prefix is unchanged.
 		renderedTail, tailBlocks, err := r.fallback.RenderWithCodeBlocks(tail)
 		if err != nil {
-			return r.fullRender(input)
+			stable, tail, blocks, fallbackErr := r.fullRenderParts(input)
+			return stable, tail, blocks, fallbackErr
 		}
-		out := r.joinPrefixAndTail(r.outputPrefix, renderedTail)
-		return out, r.mergeCodeBlocks(r.outputPrefix, r.codeBlocksPrefix, tailBlocks), nil
+		return r.outputPrefix, renderedTail, r.mergeCodeBlocks(r.outputPrefix, r.codeBlocksPrefix, tailBlocks), nil
 	}
 
 	// We have a new boundary inside the tail. Render the new stable region
@@ -98,7 +124,8 @@ func (r *IncrementalRenderer) RenderWithCodeBlocks(input string) (string, []Code
 	newStableTail := tail[:boundary]
 	renderedStableTail, stableBlocks, err := r.fallback.RenderWithCodeBlocks(newStableTail)
 	if err != nil {
-		return r.fullRender(input)
+		stable, tail, blocks, fallbackErr := r.fullRenderParts(input)
+		return stable, tail, blocks, fallbackErr
 	}
 	newBlocks := r.mergeCodeBlocks(r.outputPrefix, r.codeBlocksPrefix, stableBlocks)
 	r.inputPrefix += newStableTail
@@ -107,14 +134,14 @@ func (r *IncrementalRenderer) RenderWithCodeBlocks(input string) (string, []Code
 
 	rest := tail[boundary:]
 	if rest == "" {
-		return r.outputPrefix, cloneCodeBlocks(r.codeBlocksPrefix), nil
+		return r.outputPrefix, "", cloneCodeBlocks(r.codeBlocksPrefix), nil
 	}
 	renderedRest, restBlocks, err := r.fallback.RenderWithCodeBlocks(rest)
 	if err != nil {
-		return r.fullRender(input)
+		stable, tail, blocks, fallbackErr := r.fullRenderParts(input)
+		return stable, tail, blocks, fallbackErr
 	}
-	out := r.joinPrefixAndTail(r.outputPrefix, renderedRest)
-	return out, r.mergeCodeBlocks(r.outputPrefix, r.codeBlocksPrefix, restBlocks), nil
+	return r.outputPrefix, renderedRest, r.mergeCodeBlocks(r.outputPrefix, r.codeBlocksPrefix, restBlocks), nil
 }
 
 // SetWidth updates the renderer width. Width changes invalidate the cache
@@ -138,46 +165,39 @@ func (r *IncrementalRenderer) Reset() {
 	r.codeBlocksPrefix = nil
 }
 
-// fullRender renders input from scratch, refreshes the cache, and returns the
-// result. To avoid rendering input twice (once whole, once for the cached
-// prefix), we split input at its longest stable boundary and render the two
-// pieces separately, then join. The two render calls on smaller inputs are
-// faster than one big render plus a separate prefix render, and the prefix
-// piece can be reused as outputPrefix.
-func (r *IncrementalRenderer) fullRender(input string) (string, []CodeBlock, error) {
+func (r *IncrementalRenderer) fullRenderParts(input string) (string, string, []CodeBlock, error) {
 	boundary := stableBoundary(input)
 	if boundary <= 0 {
 		out, blocks, err := r.fallback.RenderWithCodeBlocks(input)
 		if err != nil {
-			return "", nil, err
+			return "", "", nil, err
 		}
 		r.inputPrefix = ""
 		r.outputPrefix = ""
 		r.codeBlocksPrefix = nil
-		return out, blocks, nil
+		return "", out, blocks, nil
 	}
 
 	prefix := input[:boundary]
 	rest := input[boundary:]
 	renderedPrefix, prefixBlocks, err := r.fallback.RenderWithCodeBlocks(prefix)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	if rest == "" {
 		r.inputPrefix = prefix
 		r.outputPrefix = renderedPrefix
 		r.codeBlocksPrefix = prefixBlocks
-		return renderedPrefix, cloneCodeBlocks(prefixBlocks), nil
+		return renderedPrefix, "", cloneCodeBlocks(prefixBlocks), nil
 	}
 	renderedRest, restBlocks, err := r.fallback.RenderWithCodeBlocks(rest)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	r.inputPrefix = prefix
 	r.outputPrefix = renderedPrefix
 	r.codeBlocksPrefix = prefixBlocks
-	out := r.joinPrefixAndTail(renderedPrefix, renderedRest)
-	return out, r.mergeCodeBlocks(renderedPrefix, prefixBlocks, restBlocks), nil
+	return renderedPrefix, renderedRest, r.mergeCodeBlocks(renderedPrefix, prefixBlocks, restBlocks), nil
 }
 
 // joinPrefixAndTail concatenates a previously rendered prefix and a freshly

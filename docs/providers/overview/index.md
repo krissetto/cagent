@@ -18,6 +18,7 @@ _Docker Agent supports multiple AI model providers. Choose the right one for you
 - [**Google Gemini**](../google/index.md) — Gemini 2.5 Flash, Gemini 3 Pro. Fast and cost-effective.
 - [**AWS Bedrock**](../bedrock/index.md) — access Claude, Nova, Llama, and more through AWS infrastructure.
 - [**Docker Model Runner**](../dmr/index.md) — run models locally with Docker. No API keys, no costs.
+- [**Local Models**](../local/index.md) — run Ollama, vLLM, or LocalAI locally. No API key required.
 - [**Provider Definitions**](../custom/index.md) — define reusable provider configurations with shared defaults for any provider type.
 
 ## Quick Comparison
@@ -29,6 +30,7 @@ _Docker Agent supports multiple AI model providers. Choose the right one for you
 | Google              | `google`         | No     | Fast inference, competitive pricing, multimodal       |
 | AWS Bedrock         | `amazon-bedrock` | No     | Enterprise features, multiple models, AWS integration |
 | Docker Model Runner | `dmr`            | Yes    | No API costs, data privacy, offline capable           |
+| Local Models (Ollama / vLLM) | `ollama` / custom | Yes | No API costs, full data privacy, any OpenAI-compatible server |
 
 ## Additional Built-in Providers
 
@@ -59,7 +61,7 @@ Docker Agent also includes built-in aliases for these providers:
 | Requesty       | `requesty`       | `REQUESTY_API_KEY`                  |
 | OpenRouter     | `openrouter`     | `OPENROUTER_API_KEY`                |
 | Azure OpenAI   | `azure`          | `AZURE_API_KEY` + `base_url`        |
-| Ollama         | `ollama`         | None (local; optional `base_url`)   |
+| [Ollama](../local/index.md) | `ollama` | None (local; optional `base_url`) |
 | GitHub Copilot | `github-copilot` | `GITHUB_TOKEN` (PAT with `copilot` scope) |
 
 ```bash

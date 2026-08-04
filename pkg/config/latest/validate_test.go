@@ -267,7 +267,9 @@ func TestToolsetValidateOAuth(t *testing.T) {
 	}{
 		{name: "minimal oauth", toolset: remote(&RemoteOAuthConfig{ClientID: "client"})},
 		{name: "oauth without remote url", toolset: Toolset{Type: "mcp", Command: "server", Remote: Remote{OAuth: &RemoteOAuthConfig{ClientID: "client"}}}, wantErr: "oauth requires remote url to be set"},
-		{name: "missing clientId", toolset: remote(&RemoteOAuthConfig{}), wantErr: "oauth requires clientId to be set"},
+		{name: "missing clientId falls back to dynamic registration", toolset: remote(&RemoteOAuthConfig{})},
+		{name: "clientSecret without clientId", toolset: remote(&RemoteOAuthConfig{ClientSecret: "secret"}), wantErr: "oauth clientSecret requires clientId to be set"},
+		{name: "callback settings without clientId", toolset: remote(&RemoteOAuthConfig{CallbackPort: 8765, CallbackRedirectURL: "https://redirect.example.com/cb"})},
 		{name: "callback port unset", toolset: remote(&RemoteOAuthConfig{ClientID: "client", CallbackPort: 0})},
 		{name: "callback port lower bound", toolset: remote(&RemoteOAuthConfig{ClientID: "client", CallbackPort: 1})},
 		{name: "callback port upper bound", toolset: remote(&RemoteOAuthConfig{ClientID: "client", CallbackPort: 65535})},
@@ -561,6 +563,21 @@ func TestConfigValidateErrorWrapping(t *testing.T) {
 			config:  Config{Agents: Agents{{Name: "root", Hooks: &HooksConfig{Stop: HookDefinitions{{}}}}}},
 			wantErr: "hooks.stop[0]: type is required",
 		},
+		{
+			name:    "runtime safety error",
+			config:  Config{Runtime: &RuntimeDefaults{Safety: "yolo"}},
+			wantErr: "runtime.safety: invalid safety mode \"yolo\" (valid: strict, balanced, autonomous)",
+		},
+		{
+			name:    "runtime safety legacy alias rejected",
+			config:  Config{Runtime: &RuntimeDefaults{Safety: "unsafe"}},
+			wantErr: "runtime.safety: invalid safety mode \"unsafe\"",
+		},
+		{
+			name:    "agent safety error",
+			config:  Config{Agents: Agents{{Name: "root", Safety: "Strict"}}},
+			wantErr: "agents.root.safety: invalid safety mode \"Strict\" (valid: strict, balanced, autonomous)",
+		},
 	}
 
 	for _, tt := range tests {
@@ -600,10 +617,14 @@ func TestConfigValidateValidConfig(t *testing.T) {
 		Toolsets: map[string]Toolset{
 			"web": {Type: "fetch", AllowedDomains: []string{"example.com", "*.example.org"}},
 		},
+		// All three canonical modes are explicitly permitted at runtime and
+		// agent scope, autonomous included.
+		Runtime: &RuntimeDefaults{Safety: SafetyModeAutonomous},
 		Agents: Agents{
 			{
 				Name:                "root",
 				Model:               "main",
+				Safety:              SafetyModeBalanced,
 				Fallback:            &FallbackConfig{Models: []string{"pick"}, Retries: -1, Cooldown: Duration{Duration: time.Minute}},
 				Harness:             &HarnessConfig{Type: "claude-code", Effort: "high"},
 				CompactionThreshold: new(1.0),
@@ -613,8 +634,38 @@ func TestConfigValidateValidConfig(t *testing.T) {
 				},
 				Hooks: &HooksConfig{Stop: HookDefinitions{{Type: "command", Command: "echo done"}}},
 			},
+			{Name: "careful", Model: "main", Safety: SafetyModeStrict},
 		},
 	}
 
 	require.NoError(t, cfg.Validate())
+}
+
+func TestSafetyModeValidate(t *testing.T) {
+	t.Parallel()
+
+	cases := map[SafetyMode]bool{
+		"":                   true,
+		SafetyModeStrict:     true,
+		SafetyModeBalanced:   true,
+		SafetyModeAutonomous: true,
+
+		// Legacy session aliases and near-misses are rejected: only the
+		// three canonical modes may appear in YAML safety fields.
+		"unsafe":    false,
+		"safer":     false,
+		"safe-auto": false,
+		"yolo":      false,
+		"Balanced":  false, // case-sensitive on purpose
+	}
+
+	for in, wantOK := range cases {
+		err := in.Validate()
+		if wantOK {
+			require.NoErrorf(t, err, "SafetyMode(%q).Validate()", string(in))
+		} else {
+			require.ErrorContainsf(t, err, "invalid safety mode", "SafetyMode(%q).Validate()", string(in))
+			require.ErrorContainsf(t, err, "strict, balanced, autonomous", "SafetyMode(%q).Validate()", string(in))
+		}
+	}
 }

@@ -28,8 +28,8 @@ $ docker agent serve a2a ./agent.yaml
 # Specify a custom address
 $ docker agent serve a2a ./agent.yaml --listen 127.0.0.1:9000
 
-# Use an agent from the catalog
-$ docker agent serve a2a agentcatalog/pirate
+# Use an agent from an OCI registry
+$ docker agent serve a2a myorg/agent:tag
 ```
 
 ## Flags
@@ -55,7 +55,7 @@ $ docker agent serve a2a agentcatalog/pirate
 - **Auto port selection** — Picks an available port if not specified
 - **Agent card** — Provides standard A2A agent metadata
 - **Full Docker Agent features** — Supports all tools, models, and gateway features
-- **Multiple sources** — Load agents from files or the agent catalog
+- **Multiple sources** — Load agents from files or OCI registries
 
 > [!TIP]
 > **See also**

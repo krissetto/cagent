@@ -4,6 +4,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/docker/docker-agent/pkg/plans"
 )
 
 // TestManagerBackgroundDialog verifies that opening a dialog with a non-nil
@@ -54,4 +57,86 @@ func TestManagerBackgroundDialog(t *testing.T) {
 	assert.False(t, mgr.TopIsBackground())
 	assert.Nil(t, mgr.TopBackgroundEvent())
 	assert.Nil(t, mgr.TopDialog())
+}
+
+// TestManagerHasDialog verifies HasDialog sees the whole stack, including
+// dialogs buried under the topmost one, unlike TopDialog.
+func TestManagerHasDialog(t *testing.T) {
+	t.Parallel()
+
+	mgr := New().(*manager)
+	isExit := func(d Dialog) bool {
+		_, ok := d.(*exitConfirmationDialog)
+		return ok
+	}
+
+	assert.False(t, mgr.HasDialog(isExit), "empty manager matches nothing")
+
+	mgr.handleOpen(OpenDialogMsg{Model: NewExitConfirmationDialog()})
+	assert.True(t, mgr.HasDialog(isExit))
+
+	// Bury it under another dialog: TopDialog no longer sees it, HasDialog does.
+	mgr.handleOpen(OpenDialogMsg{Model: NewHelpDialog(nil)})
+	_, topIsExit := mgr.TopDialog().(*exitConfirmationDialog)
+	require.False(t, topIsExit)
+	assert.True(t, mgr.HasDialog(isExit), "a buried dialog must still be found")
+
+	assert.False(t, mgr.HasDialog(func(Dialog) bool { return false }))
+}
+
+// TestManagerClosePlanDetail verifies the targeted plan-detail close is
+// idempotent: it pops the topmost dialog only when it is the detail for
+// exactly the given ref, so duplicates, wrong refs, another dialog on top,
+// or an already-closed detail never pop the wrong dialog.
+func TestManagerClosePlanDetail(t *testing.T) {
+	t.Parallel()
+
+	ref := plans.SharedRef("release")
+	newDetail := func() Dialog {
+		return NewPlanDetailDialog(plans.Plan{Scope: plans.ScopeShared, Name: "release"})
+	}
+
+	t.Run("closes the matching top detail once, duplicates are no-ops", func(t *testing.T) {
+		t.Parallel()
+		mgr := New().(*manager)
+		browser := NewPlanBrowserDialog(plans.ListResult{})
+		mgr.handleOpen(OpenDialogMsg{Model: browser})
+		mgr.handleOpen(OpenDialogMsg{Model: newDetail()})
+
+		mgr.Update(ClosePlanDetailMsg{Ref: ref})
+		require.Same(t, browser, mgr.TopDialog(), "the detail closes, the browser surfaces")
+
+		// The duplicated close arrives after the detail already closed.
+		mgr.Update(ClosePlanDetailMsg{Ref: ref})
+		assert.Same(t, browser, mgr.TopDialog(), "a duplicate close must not pop the browser")
+
+		mgr.handleClose()
+		mgr.Update(ClosePlanDetailMsg{Ref: ref})
+		assert.False(t, mgr.Open(), "a close on an empty stack is a no-op")
+	})
+
+	t.Run("a detail showing another plan is left alone", func(t *testing.T) {
+		t.Parallel()
+		mgr := New().(*manager)
+		other := NewPlanDetailDialog(plans.Plan{Scope: plans.ScopeShared, Name: "other"})
+		mgr.handleOpen(OpenDialogMsg{Model: other})
+
+		mgr.Update(ClosePlanDetailMsg{Ref: ref})
+		assert.Same(t, other, mgr.TopDialog(), "a close for a different ref is a no-op")
+	})
+
+	t.Run("a non-detail dialog on top is left alone", func(t *testing.T) {
+		t.Parallel()
+		mgr := New().(*manager)
+		mgr.handleOpen(OpenDialogMsg{Model: newDetail()})
+		help := NewHelpDialog(nil)
+		mgr.handleOpen(OpenDialogMsg{Model: help})
+
+		mgr.Update(ClosePlanDetailMsg{Ref: ref})
+		assert.Same(t, help, mgr.TopDialog(), "the covering dialog must not be popped")
+		assert.True(t, mgr.HasDialog(func(d Dialog) bool {
+			viewer, ok := d.(PlanDetailViewer)
+			return ok && viewer.PlanRef() == ref
+		}), "the buried detail stays open")
+	})
 }

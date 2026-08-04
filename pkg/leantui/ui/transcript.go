@@ -165,13 +165,6 @@ func (t *Transcript) Lines(width, spinnerFrame int, busy bool, sessionState serv
 	return lines
 }
 
-// Clear drops all transcript content and active tool state.
-func (t *Transcript) Clear() {
-	t.blocks = nil
-	t.pending = nil
-	t.toolz.Reset()
-}
-
 // BlockCount reports the number of committed transcript blocks.
 func (t *Transcript) BlockCount() int { return len(t.blocks) }
 

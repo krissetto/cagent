@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/gateway"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tools/lifecycle"
 )
 
 const (
@@ -41,7 +42,14 @@ type GatewayToolset struct {
 
 var _ tools.ToolSet = (*GatewayToolset)(nil)
 
-func NewGatewayToolset(ctx context.Context, name, mcpServerName string, secrets []gateway.Secret, config any, envProvider environment.Provider, cwd string) (*GatewayToolset, error) {
+// NewGatewayToolset creates a new MCP toolset backed by the MCP gateway CLI
+// for a cataloged server (a `ref:`-based toolset).
+//
+// The optional policy lets callers tune restart/backoff/timeout behaviour;
+// see NewToolsetCommand for the semantics. When omitted, the zero value
+// is used, which is behaviorally equivalent to lifecycle.PolicyFromConfig
+// with a nil config (the resilient-profile default).
+func NewGatewayToolset(ctx context.Context, name, mcpServerName string, secrets []gateway.Secret, config any, envProvider environment.Provider, cwd string, policy ...lifecycle.Policy) (*GatewayToolset, error) {
 	slog.DebugContext(ctx, "Creating MCP Gateway toolset", "name", mcpServerName)
 
 	// A crash or SIGKILL skips Stop and leaves plaintext secrets behind;
@@ -75,7 +83,7 @@ func NewGatewayToolset(ctx context.Context, name, mcpServerName string, secrets 
 		"--config", fileConfig,
 	}
 
-	inner := NewToolsetCommand(name, "docker", args, nil, cwd)
+	inner := NewToolsetCommand(name, "docker", args, nil, cwd, policy...)
 	inner.description = "mcp(ref=" + mcpServerName + ")"
 
 	return &GatewayToolset{

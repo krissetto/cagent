@@ -40,9 +40,14 @@ type codeModeTool struct {
 
 // Verify interface compliance
 var (
-	_ tools.ToolSet   = (*codeModeTool)(nil)
-	_ tools.Startable = (*codeModeTool)(nil)
-	_ tools.Named     = (*codeModeTool)(nil)
+	_ tools.ToolSet             = (*codeModeTool)(nil)
+	_ tools.Startable           = (*codeModeTool)(nil)
+	_ tools.Named               = (*codeModeTool)(nil)
+	_ tools.Elicitable          = (*codeModeTool)(nil)
+	_ tools.Sampleable          = (*codeModeTool)(nil)
+	_ tools.SampleableWithTools = (*codeModeTool)(nil)
+	_ tools.OAuthCapable        = (*codeModeTool)(nil)
+	_ tools.ChangeNotifier      = (*codeModeTool)(nil)
 )
 
 // Name implements tools.Named; loader-created, so no registry WithName wrapper.
@@ -141,4 +146,81 @@ func (c *codeModeTool) Stop(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// SetElicitationHandler forwards the handler to every inner toolset that
+// supports elicitation (e.g. an MCP toolset driving an OAuth flow). Without
+// this, code_mode_tools wrapping hides the inner MCP toolset behind
+// codeModeTool, which As can't unwrap (it wraps N toolsets, not one), so the
+// handler would never reach it and any OAuth elicitation would find no
+// handler wired up and defer forever.
+func (c *codeModeTool) SetElicitationHandler(handler tools.ElicitationHandler) {
+	for _, t := range c.toolsets {
+		if e, ok := tools.As[tools.Elicitable](t); ok {
+			e.SetElicitationHandler(handler)
+		}
+	}
+}
+
+// SetSamplingHandler forwards the handler to every inner toolset that
+// supports sampling. See SetElicitationHandler for why forwarding is needed.
+func (c *codeModeTool) SetSamplingHandler(handler tools.SamplingHandler) {
+	for _, t := range c.toolsets {
+		if s, ok := tools.As[tools.Sampleable](t); ok {
+			s.SetSamplingHandler(handler)
+		}
+	}
+}
+
+// SetSamplingWithToolsHandler forwards the handler to every inner toolset
+// that supports sampling-with-tools. See SetElicitationHandler for why
+// forwarding is needed.
+func (c *codeModeTool) SetSamplingWithToolsHandler(handler tools.SamplingWithToolsHandler) {
+	for _, t := range c.toolsets {
+		if s, ok := tools.As[tools.SampleableWithTools](t); ok {
+			s.SetSamplingWithToolsHandler(handler)
+		}
+	}
+}
+
+// SetOAuthSuccessHandler forwards the handler to every inner toolset that
+// supports OAuth. See SetElicitationHandler for why forwarding is needed.
+func (c *codeModeTool) SetOAuthSuccessHandler(handler func()) {
+	for _, t := range c.toolsets {
+		if o, ok := tools.As[tools.OAuthCapable](t); ok {
+			o.SetOAuthSuccessHandler(handler)
+		}
+	}
+}
+
+// SetManagedOAuth forwards the managed-OAuth flag to every inner toolset
+// that supports OAuth. See SetElicitationHandler for why forwarding is needed.
+func (c *codeModeTool) SetManagedOAuth(managed bool) {
+	for _, t := range c.toolsets {
+		if o, ok := tools.As[tools.OAuthCapable](t); ok {
+			o.SetManagedOAuth(managed)
+		}
+	}
+}
+
+// SetUnmanagedOAuthRedirectURI forwards the unmanaged-OAuth redirect URI to
+// every inner toolset that supports OAuth. See SetElicitationHandler for why
+// forwarding is needed.
+func (c *codeModeTool) SetUnmanagedOAuthRedirectURI(uri string) {
+	for _, t := range c.toolsets {
+		if o, ok := tools.As[tools.OAuthCapable](t); ok {
+			o.SetUnmanagedOAuthRedirectURI(uri)
+		}
+	}
+}
+
+// SetToolsChangedHandler forwards the handler to every inner toolset that
+// can report a tool-list change (e.g. an MCP server sending
+// ToolListChanged). See SetElicitationHandler for why forwarding is needed.
+func (c *codeModeTool) SetToolsChangedHandler(handler func()) {
+	for _, t := range c.toolsets {
+		if n, ok := tools.As[tools.ChangeNotifier](t); ok {
+			n.SetToolsChangedHandler(handler)
+		}
+	}
 }

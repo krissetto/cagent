@@ -29,7 +29,7 @@ $ docker agent serve chat ./team.yaml
 $ docker agent serve chat ./team.yaml --agent reviewer
 
 # Run an agent straight from the registry
-$ docker agent serve chat agentcatalog/pirate --listen 127.0.0.1:9090
+$ docker agent serve chat myorg/agent:tag --listen 127.0.0.1:9090
 
 # Require a Bearer token, sourced from an env var
 $ docker agent serve chat agent.yaml --api-key-env CHAT_BEARER_TOKEN

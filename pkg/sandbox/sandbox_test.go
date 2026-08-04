@@ -87,16 +87,6 @@ func TestForWorkspace(t *testing.T) {
 			wd:       "/b",
 			wantName: "b",
 		},
-		{
-			name: "legacy vms key still resolves a match",
-			// Older docker sandbox versions wrap the list under "vms".
-			// The lookup falls back to that key (with a warning logged
-			// at runtime) so users on outdated CLIs keep getting
-			// sandbox reuse instead of accumulating duplicates.
-			json:     `{"vms":[{"name":"my-sandbox","workspaces":["/my/project"]}]}`,
-			wd:       "/my/project",
-			wantName: "my-sandbox",
-		},
 	}
 
 	// Write the fake "docker" executable once and have it cat a data
@@ -253,7 +243,7 @@ func TestAllowHosts_RejectsCommaOrWhitespaceEntries(t *testing.T) {
 
 	// Smuggling additional rules through a single argument by
 	// embedding a comma (or whitespace) in a hostname must fail
-	// loudly: the sbx backend joins the list with commas before
+	// loudly: the backend joins the list with commas before
 	// forwarding it to the policy engine, and the inner CLI
 	// otherwise has no way to distinguish a typo from an attack.
 	backend := sandbox.NewBackend(false) // docker backend; sbx behaves the same
@@ -271,6 +261,48 @@ func TestAllowHosts_RejectsCommaOrWhitespaceEntries(t *testing.T) {
 	}
 }
 
+// Both backends share the modern CLI surface: per-sandbox network
+// rules are spelled `[docker sandbox|sbx] policy allow network
+// --sandbox NAME host1,host2` (the old positional-sandbox and
+// `network proxy --allow-host` forms were removed from recent CLIs).
+func TestAllowHosts_ArgvSpelling(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("argv-capture script is POSIX-only")
+	}
+
+	fakeDir := t.TempDir()
+	argsFile := filepath.Join(fakeDir, "args.txt")
+	writeMockScript(t, fakeDir, "docker", fmt.Sprintf("echo \"$@\" > %q", argsFile))
+	writeMockScript(t, fakeDir, "sbx", fmt.Sprintf("echo \"$@\" > %q", argsFile))
+	t.Setenv("PATH", fakeDir)
+
+	tests := []struct {
+		name     string
+		backend  *sandbox.Backend
+		wantArgs string
+	}{
+		{
+			name:     "docker",
+			backend:  sandbox.NewBackend(false),
+			wantArgs: "sandbox policy allow network --sandbox my-sbx a.example.com,b.example.com",
+		},
+		{
+			name:     "sbx",
+			backend:  sandbox.NewBackend(true),
+			wantArgs: "policy allow network --sandbox my-sbx a.example.com,b.example.com",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, tt.backend.AllowHosts(t.Context(), "my-sbx", []string{"a.example.com", "b.example.com"}))
+
+			got, err := os.ReadFile(argsFile)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantArgs, strings.TrimSpace(string(got)))
+		})
+	}
+}
+
 func TestAllowHosts_SkipsEmptyEntries(t *testing.T) {
 	// Empty / whitespace-only entries are silently dropped; if every
 	// requested host is empty we must end up calling no command at
@@ -284,6 +316,55 @@ func TestAllowHosts_SkipsEmptyEntries(t *testing.T) {
 
 	backend := sandbox.NewBackend(false)
 	require.NoError(t, backend.AllowHosts(t.Context(), "sandbox-x", []string{"", "   ", "\t"}))
+}
+
+// BuildExecCmd must inject LANG=C.UTF-8 — the only UTF-8 locale shipped
+// by the sandbox template image; a locale the image lacks (en_US.UTF-8)
+// silently degrades vim to latin1 and mangles non-ASCII input (#3874).
+// It must also hand the wrapper the real host stdio for the interactive
+// TUI session.
+func TestBuildExecCmd(t *testing.T) {
+	fakeDir := t.TempDir()
+	writeMockScript(t, fakeDir, "sbx", "exit 0")
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tests := []struct {
+		name       string
+		backend    *sandbox.Backend
+		wantPrefix []string
+	}{
+		{
+			name:       "docker",
+			backend:    sandbox.NewBackend(false),
+			wantPrefix: []string{"docker", "sandbox", "exec"},
+		},
+		{
+			name:       "sbx",
+			backend:    sandbox.NewBackend(true),
+			wantPrefix: []string{"sbx", "exec"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := tt.backend.BuildExecCmd(t.Context(), "my-sbx", "/my/project",
+				[]string{"agent.yaml", "--yolo"}, []string{"-e", "FOO"}, []string{"FOO=bar"})
+
+			want := append(tt.wantPrefix,
+				"-it", "-w", "/my/project",
+				"-e", "FOO",
+				"-e", "TERM=xterm-256color",
+				"-e", "COLORTERM=truecolor",
+				"-e", "LANG=C.UTF-8",
+				"my-sbx", "docker-agent", "run",
+				"agent.yaml", "--yolo",
+			)
+			assert.Equal(t, want, cmd.Args)
+			assert.Same(t, os.Stdin, cmd.Stdin, "Stdin must be os.Stdin")
+			assert.Same(t, os.Stdout, cmd.Stdout, "Stdout must be os.Stdout")
+			assert.Same(t, os.Stderr, cmd.Stderr, "Stderr must be os.Stderr")
+			assert.Contains(t, cmd.Env, "FOO=bar")
+		})
+	}
 }
 
 // writeMockScript writes a mock executable script to the given directory.

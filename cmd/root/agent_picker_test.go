@@ -45,7 +45,7 @@ func TestParseAgentPickerRefs(t *testing.T) {
 		{"multiple refs", "default,coder", []string{"default", "coder"}},
 		{"trims whitespace", " default , coder ", []string{"default", "coder"}},
 		{"drops empty entries", "default,,coder,", []string{"default", "coder"}},
-		{"external refs", "default,agentcatalog/pirate", []string{"default", "agentcatalog/pirate"}},
+		{"external refs", "default,myorg/agent:tag", []string{"default", "myorg/agent:tag"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,7 +102,7 @@ func TestIsLocalConfigRef(t *testing.T) {
 	assert.True(t, isLocalConfigRef("./agent.yml"))
 	assert.True(t, isLocalConfigRef("agent.hcl"))
 	assert.False(t, isLocalConfigRef("default"))
-	assert.False(t, isLocalConfigRef("agentcatalog/pirate"))
+	assert.False(t, isLocalConfigRef("myorg/agent:tag"))
 	assert.False(t, isLocalConfigRef("https://example.com/agent.yaml"))
 }
 
@@ -155,7 +155,7 @@ func TestAgentPickerRenderNoPanic(t *testing.T) {
 
 	choices := []agentChoice{
 		{ref: "default", description: "A helpful AI assistant", tags: []string{"general", "assistant"}, yaml: "agents:\n  root:\n    model: auto\n"},
-		{ref: "agentcatalog/some-really-long-agent-reference-name", description: strings.Repeat("very long description ", 20)},
+		{ref: "myorg/some-really-long-agent-reference-name", description: strings.Repeat("very long description ", 20)},
 		{ref: "broken", err: errors.New("multi\nline\nerror that is also quite long and should be truncated cleanly")},
 	}
 	m := newAgentPickerModel(choices)
@@ -504,7 +504,7 @@ func TestAgentPickerPanelSizeMatchesRender(t *testing.T) {
 		{{ref: "a", description: "short"}},
 		{
 			{ref: "default", description: strings.Repeat("long description ", 10)},
-			{ref: "agentcatalog/some-really-long-agent-reference-name"},
+			{ref: "myorg/some-really-long-agent-reference-name"},
 			{ref: "broken", err: errors.New("boom")},
 		},
 	}

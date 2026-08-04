@@ -53,6 +53,7 @@ var cloudProviders = []providerConfig{
 	// source. It is ordered after openai so adding a ChatGPT sign-in never
 	// changes auto-selection for users that already export OPENAI_API_KEY.
 	{"chatgpt", []string{chatgpt.TokenEnvVar}, "sign in with your ChatGPT account: `docker agent setup`", ""},
+	{"github-copilot", []string{"GITHUB_TOKEN", "GH_TOKEN"}, "GITHUB_TOKEN (or GH_TOKEN)", ""},
 	{"google", []string{
 		"GOOGLE_API_KEY",
 		"GEMINI_API_KEY",
@@ -150,6 +151,7 @@ func (e *AutoModelFallbackError) Unwrap() error { return e.Cause }
 var DefaultModels = map[string]string{
 	"openai":         "gpt-5.6",
 	"chatgpt":        "gpt-5.6",
+	"github-copilot": "gpt-5.6",
 	"anthropic":      "claude-sonnet-4-6",
 	"google":         "gemini-3.5-flash",
 	"dmr":            "ai/qwen3:latest",

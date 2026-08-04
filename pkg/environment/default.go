@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/docker/docker-agent/pkg/paths"
 	"github.com/docker/docker-agent/pkg/userconfig"
 )
 
@@ -20,24 +19,8 @@ type Source struct {
 // default provider chain: OS env, run secrets, the docker agent env file
 // (<config dir>/.env, when present), credential helper (if configured),
 // and Docker Desktop. Lookup precedence is the slice order.
-//
-// When running inside a Docker sandbox (detected via SANDBOX_VM_ID), a
-// [SandboxTokenProvider] is prepended so that DOCKER_TOKEN is read from the
-// JSON file written by the host-side token writer.
 func DefaultSources() []Source {
 	var sources []Source
-
-	// Inside a sandbox the Docker Desktop backend API is unreachable and
-	// any DOCKER_TOKEN env var is a stale one-shot value.
-	// Workaround: Prepend a file-based provider that reads the continuously-refreshed token.
-	// The host writes the token file into the config directory (mounted read-only
-	// into the sandbox), so we must read from GetConfigDir — not GetDataDir.
-	if InSandbox() {
-		sources = append(sources, Source{
-			Name:     "sandbox-tokens",
-			Provider: NewSandboxTokenProvider(SandboxTokensFilePath(paths.GetConfigDir())),
-		})
-	}
 
 	sources = append(sources,
 		Source{Name: "environment", Provider: NewOsEnvProvider()},

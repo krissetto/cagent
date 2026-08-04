@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -31,7 +32,8 @@ import (
 // skipExamples contains example files that require cloud-specific configurations
 // (e.g., AWS profiles, GCP credentials) that can't be mocked with dummy env vars.
 var skipExamples = map[string]string{
-	"pr-reviewer-bedrock.yaml": "requires AWS profile configuration",
+	"pr-reviewer-bedrock.yaml":      "requires AWS profile configuration",
+	"sub-agents-from-registry.yaml": "pulls a sub-agent from a remote OCI registry",
 }
 
 func withTestProviderRegistry(opts ...Opt) []Opt {
@@ -162,7 +164,9 @@ func gatherExampleEnvVars(t *testing.T, examples []string) map[string]bool {
 }
 
 func TestLoadDefaultAgent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	agentSource, err := config.Resolve("default", nil)
 	require.NoError(t, err)
@@ -1129,6 +1133,82 @@ func TestLoadPropagatesMaxToolResultTokens(t *testing.T) {
 	assert.Equal(t, 512, agt.MaxToolResultTokens())
 }
 
+// TestLoadPropagatesSafetyDefaults verifies the author-declared safety
+// defaults travel from the YAML config to the built team: runtime.safety
+// lands on the team (team.RuntimeSafety) and agents.<name>.safety on the
+// agent (agent.Safety), where session constructors resolve them.
+func TestLoadPropagatesSafetyDefaults(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "dummy")
+
+	data := []byte(`runtime:
+  safety: autonomous
+agents:
+  root:
+    model: openai/gpt-4o
+    instruction: test
+    safety: balanced
+  careful:
+    model: openai/gpt-4o
+    instruction: test
+`)
+
+	team, err := Load(t.Context(), config.NewBytesSource("safety.yaml", data), &config.RuntimeConfig{}, withTestProviderRegistry()...)
+	require.NoError(t, err)
+
+	assert.Equal(t, latest.SafetyModeAutonomous, team.RuntimeSafety())
+
+	root, err := team.Agent("root")
+	require.NoError(t, err)
+	assert.Equal(t, latest.SafetyModeBalanced, root.Safety())
+
+	careful, err := team.Agent("careful")
+	require.NoError(t, err)
+	assert.Empty(t, careful.Safety(), "agent without a safety default carries none of its own")
+}
+
+// TestLoadRejectsInvalidSafety pins the load-time failure: a non-canonical
+// safety value anywhere in the config must fail loading with an error that
+// names the offending field.
+func TestLoadRejectsInvalidSafety(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "dummy")
+
+	tests := []struct {
+		name    string
+		data    string
+		wantErr string
+	}{
+		{
+			name: "runtime scope",
+			data: `runtime:
+  safety: yolo
+agents:
+  root:
+    model: openai/gpt-4o
+    instruction: test
+`,
+			wantErr: "runtime.safety: invalid safety mode \"yolo\"",
+		},
+		{
+			name: "agent scope",
+			data: `agents:
+  root:
+    model: openai/gpt-4o
+    instruction: test
+    safety: safe-auto
+`,
+			wantErr: "agents.root.safety: invalid safety mode \"safe-auto\"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(t.Context(), config.NewBytesSource("bad.yaml", []byte(tt.data)), &config.RuntimeConfig{}, withTestProviderRegistry()...)
+			require.ErrorContains(t, err, tt.wantErr)
+			require.ErrorContains(t, err, "strict, balanced, autonomous")
+		})
+	}
+}
+
 // TestLoadWithConfig_GlobalProviders covers user-level custom providers
 // (seeded into the runtime config from the user config file): they must
 // resolve inline `provider/model` references in any agent config, while
@@ -1441,4 +1521,75 @@ agents:
 	}
 
 	assert.Positive(t, counter.calls.Load(), "transport wrapper supplied via WithModelOptions should have been invoked when the agent's model made a request")
+}
+
+// Concurrent loads that share one *RuntimeConfig — the shape the API server
+// uses, one config for every session — must each see their own working
+// directory. Toolsets read it off runConfig, so a load that mutates the
+// shared value hands the wrong directory to another session's shell,
+// filesystem and git tools.
+func TestLoadWithConfig_WithWorkingDirIsConcurrencySafe(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "dummy")
+
+	data := []byte(`agents:
+  root:
+    model: openai/gpt-4o
+    instruction: test
+    toolsets:
+      - type: recorder
+`)
+
+	var mu sync.Mutex
+	seen := map[string]string{}
+	recorder := NewToolsetRegistry(map[string]ToolsetCreator{
+		"recorder": func(_ context.Context, _ latest.Toolset, _ string, runConfig *config.RuntimeConfig, agentName string) (tools.ToolSet, error) {
+			// Hold the observed value across a scheduling point to widen
+			// the window in which a competing load could clobber it.
+			observed := runConfig.WorkingDir
+			runtime.Gosched()
+			mu.Lock()
+			defer mu.Unlock()
+			seen[observed] = agentName
+			return &mockToolSet{}, nil
+		},
+	})
+
+	callerDir := t.TempDir()
+	runConfig := &config.RuntimeConfig{}
+	runConfig.WorkingDir = callerDir
+
+	const loads = 8
+	sessionDirs := make([]string, loads)
+	for i := range sessionDirs {
+		sessionDirs[i] = t.TempDir()
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, loads)
+	for i, dir := range sessionDirs {
+		wg.Go(func() {
+			_, errs[i] = Load(
+				t.Context(),
+				config.NewBytesSource("t.yaml", data),
+				runConfig,
+				WithProviderRegistry(providerdefaults.NewDefaultRegistry()),
+				WithToolsetRegistry(recorder),
+				WithWorkingDir(dir),
+			)
+		})
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "load %d", i)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, dir := range sessionDirs {
+		assert.Contains(t, seen, dir,
+			"each session's toolsets must be built with that session's working directory")
+	}
+	assert.Equal(t, callerDir, runConfig.WorkingDir,
+		"the shared RuntimeConfig must never be mutated")
 }

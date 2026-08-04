@@ -13,3 +13,5 @@ agents:
         remote:
           url: https://mcp.atlassian.com/v1/mcp/authv2
           transport_type: streamable
+          oauth:
+            callbackRedirectURL: "https://ai-backend-service.docker.com/callback?port=${callbackPort}"

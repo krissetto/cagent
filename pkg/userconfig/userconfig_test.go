@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -47,12 +48,12 @@ func TestConfig_SetGetAlias(t *testing.T) {
 
 	config := &Config{Aliases: make(map[string]*Alias)}
 
-	err := config.SetAlias("test", &Alias{Path: "agentcatalog/test-agent"})
+	err := config.SetAlias("test", &Alias{Path: "myorg/test-agent"})
 	require.NoError(t, err)
 
 	alias, ok := config.GetAlias("test")
 	assert.True(t, ok)
-	assert.Equal(t, "agentcatalog/test-agent", alias.Path)
+	assert.Equal(t, "myorg/test-agent", alias.Path)
 
 	_, ok = config.GetAlias("nonexistent")
 	assert.False(t, ok)
@@ -190,7 +191,7 @@ func TestConfig_DeleteAlias(t *testing.T) {
 
 	config := &Config{
 		Aliases: map[string]*Alias{
-			"code":    {Path: "agentcatalog/notion-expert"},
+			"code":    {Path: "myorg/notion-expert"},
 			"myagent": {Path: "/path/to/myagent.yaml"},
 		},
 	}
@@ -209,7 +210,7 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 
 	config := &Config{
 		Aliases: map[string]*Alias{
-			"code":    {Path: "agentcatalog/notion-expert"},
+			"code":    {Path: "myorg/notion-expert"},
 			"myagent": {Path: "/path/to/myagent.yaml"},
 		},
 	}
@@ -233,12 +234,13 @@ func TestSettings_LayoutRoundTrip(t *testing.T) {
 	config := &Config{
 		Settings: &Settings{
 			Layout: &LayoutSettings{
-				SidebarPosition: "left",
-				SectionSpacing:  "compact",
-				SidebarInfoMode: "detailed",
-				HideSessionPath: true,
-				HideUsage:       true,
-				HideTodos:       true,
+				SidebarPosition:  "left",
+				SectionSpacing:   "compact",
+				SidebarInfoMode:  "detailed",
+				ActiveAgentsOnly: true,
+				HideSessionPath:  true,
+				HideUsage:        true,
+				HideTodos:        true,
 			},
 		},
 	}
@@ -249,6 +251,7 @@ func TestSettings_LayoutRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "hide_session_path: true")
 	assert.Contains(t, string(data), "sidebar_info_mode: detailed")
+	assert.Contains(t, string(data), "active_agents_only: true")
 
 	loaded, err := loadFrom(configFile, "")
 	require.NoError(t, err)
@@ -257,6 +260,7 @@ func TestSettings_LayoutRoundTrip(t *testing.T) {
 	assert.Equal(t, "left", layout.SidebarPosition)
 	assert.Equal(t, "compact", layout.SectionSpacing)
 	assert.Equal(t, "detailed", layout.SidebarInfoMode)
+	assert.True(t, layout.ActiveAgentsOnly)
 	assert.True(t, layout.HideSessionPath)
 	assert.True(t, layout.HideUsage)
 	assert.False(t, layout.HideAgents)
@@ -280,7 +284,7 @@ func TestConfig_MigrateFromLegacy(t *testing.T) {
 	legacyFile := filepath.Join(tmpDir, "aliases.yaml")
 
 	// Create legacy aliases file
-	legacyContent := `code: agentcatalog/notion-expert
+	legacyContent := `code: myorg/notion-expert
 myagent: /path/to/myagent.yaml
 `
 	require.NoError(t, os.WriteFile(legacyFile, []byte(legacyContent), 0o644))
@@ -290,7 +294,7 @@ myagent: /path/to/myagent.yaml
 	require.NoError(t, err)
 
 	assert.Len(t, config.Aliases, 2)
-	assert.Equal(t, "agentcatalog/notion-expert", config.Aliases["code"].Path)
+	assert.Equal(t, "myorg/notion-expert", config.Aliases["code"].Path)
 
 	// Verify migration was persisted
 	assert.FileExists(t, configFile)
@@ -352,13 +356,13 @@ func TestConfig_MigrateWhenConfigEmpty(t *testing.T) {
 	require.NoError(t, os.WriteFile(configFile, []byte("aliases: {}\n"), 0o644))
 
 	// Create legacy file
-	require.NoError(t, os.WriteFile(legacyFile, []byte("code: agentcatalog/notion-expert\n"), 0o644))
+	require.NoError(t, os.WriteFile(legacyFile, []byte("code: myorg/notion-expert\n"), 0o644))
 
 	config, err := loadFrom(configFile, legacyFile)
 	require.NoError(t, err)
 
 	assert.Len(t, config.Aliases, 1)
-	assert.Equal(t, "agentcatalog/notion-expert", config.Aliases["code"].Path)
+	assert.Equal(t, "myorg/notion-expert", config.Aliases["code"].Path)
 }
 
 func TestConfig_NoLegacyFile(t *testing.T) {
@@ -384,7 +388,7 @@ func TestConfig_AtomicWrite(t *testing.T) {
 
 	config := &Config{
 		Aliases: map[string]*Alias{
-			"test": {Path: "agentcatalog/test-agent"},
+			"test": {Path: "myorg/test-agent"},
 		},
 	}
 
@@ -394,7 +398,7 @@ func TestConfig_AtomicWrite(t *testing.T) {
 	// Verify file exists and has correct content
 	loaded, err := loadFrom(configFile, "")
 	require.NoError(t, err)
-	assert.Equal(t, "agentcatalog/test-agent", loaded.Aliases["test"].Path)
+	assert.Equal(t, "myorg/test-agent", loaded.Aliases["test"].Path)
 
 	// Verify no temp files left behind
 	entries, err := os.ReadDir(tmpDir)
@@ -411,7 +415,7 @@ func TestConfig_AtomicWrite_Permissions(t *testing.T) {
 
 	config := &Config{
 		Aliases: map[string]*Alias{
-			"test": {Path: "agentcatalog/test-agent"},
+			"test": {Path: "myorg/test-agent"},
 		},
 	}
 
@@ -420,7 +424,9 @@ func TestConfig_AtomicWrite_Permissions(t *testing.T) {
 	// Verify file permissions are 0600
 	info, err := os.Stat(configFile)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 }
 
 func TestConfig_AliasWithOptions(t *testing.T) {
@@ -431,9 +437,9 @@ func TestConfig_AliasWithOptions(t *testing.T) {
 
 	config := &Config{
 		Aliases: map[string]*Alias{
-			"yolo-agent":  {Path: "agentcatalog/coder", Yolo: true},
-			"model-agent": {Path: "agentcatalog/coder", Model: "openai/gpt-4o-mini"},
-			"both":        {Path: "agentcatalog/coder", Yolo: true, Model: "anthropic/claude-sonnet-4-0"},
+			"yolo-agent":  {Path: "myorg/coder", Yolo: true},
+			"model-agent": {Path: "myorg/coder", Model: "openai/gpt-4o-mini"},
+			"both":        {Path: "myorg/coder", Yolo: true, Model: "anthropic/claude-sonnet-4-0"},
 		},
 	}
 
@@ -445,21 +451,21 @@ func TestConfig_AliasWithOptions(t *testing.T) {
 	// Verify yolo option
 	yoloAlias, ok := loaded.GetAlias("yolo-agent")
 	require.True(t, ok)
-	assert.Equal(t, "agentcatalog/coder", yoloAlias.Path)
+	assert.Equal(t, "myorg/coder", yoloAlias.Path)
 	assert.True(t, yoloAlias.Yolo)
 	assert.Empty(t, yoloAlias.Model)
 
 	// Verify model option
 	modelAlias, ok := loaded.GetAlias("model-agent")
 	require.True(t, ok)
-	assert.Equal(t, "agentcatalog/coder", modelAlias.Path)
+	assert.Equal(t, "myorg/coder", modelAlias.Path)
 	assert.False(t, modelAlias.Yolo)
 	assert.Equal(t, "openai/gpt-4o-mini", modelAlias.Model)
 
 	// Verify both options
 	bothAlias, ok := loaded.GetAlias("both")
 	require.True(t, ok)
-	assert.Equal(t, "agentcatalog/coder", bothAlias.Path)
+	assert.Equal(t, "myorg/coder", bothAlias.Path)
 	assert.True(t, bothAlias.Yolo)
 	assert.Equal(t, "anthropic/claude-sonnet-4-0", bothAlias.Model)
 }
@@ -471,7 +477,7 @@ func TestConfig_SetAliasWithOptions(t *testing.T) {
 
 	// Set alias with yolo option
 	err := config.SetAlias("yolo-test", &Alias{
-		Path: "agentcatalog/test",
+		Path: "myorg/test",
 		Yolo: true,
 	})
 	require.NoError(t, err)
@@ -482,7 +488,7 @@ func TestConfig_SetAliasWithOptions(t *testing.T) {
 
 	// Set alias with model option
 	err = config.SetAlias("model-test", &Alias{
-		Path:  "agentcatalog/test",
+		Path:  "myorg/test",
 		Model: "openai/gpt-4o",
 	})
 	require.NoError(t, err)
@@ -501,7 +507,7 @@ func TestConfig_ModelsGateway(t *testing.T) {
 	config := &Config{
 		ModelsGateway: "https://models.example.com",
 		Aliases: map[string]*Alias{
-			"test": {Path: "agentcatalog/test-agent"},
+			"test": {Path: "myorg/test-agent"},
 		},
 	}
 
@@ -511,7 +517,7 @@ func TestConfig_ModelsGateway(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "https://models.example.com", loaded.ModelsGateway)
-	assert.Equal(t, "agentcatalog/test-agent", loaded.Aliases["test"].Path)
+	assert.Equal(t, "myorg/test-agent", loaded.Aliases["test"].Path)
 }
 
 func TestConfig_ModelsGateway_Empty(t *testing.T) {
@@ -551,7 +557,7 @@ func TestConfig_Version(t *testing.T) {
 	// Create config without version
 	config := &Config{
 		Aliases: map[string]*Alias{
-			"test": {Path: "agentcatalog/test-agent"},
+			"test": {Path: "myorg/test-agent"},
 		},
 	}
 
@@ -577,13 +583,13 @@ func TestConfig_Version_LoadLegacyWithoutVersion(t *testing.T) {
 	configFile := filepath.Join(tmpDir, "config.yaml")
 
 	// Create config file without version field (simulates old config)
-	require.NoError(t, os.WriteFile(configFile, []byte("aliases:\n  test:\n    path: agentcatalog/test\n"), 0o644))
+	require.NoError(t, os.WriteFile(configFile, []byte("aliases:\n  test:\n    path: myorg/test\n"), 0o644))
 
 	// Load should work and version should be empty (not automatically upgraded on read)
 	config, err := loadFrom(configFile, "")
 	require.NoError(t, err)
 	assert.Empty(t, config.Version)
-	assert.Equal(t, "agentcatalog/test", config.Aliases["test"].Path)
+	assert.Equal(t, "myorg/test", config.Aliases["test"].Path)
 
 	// Saving should add the version
 	require.NoError(t, config.saveTo(configFile))
@@ -706,8 +712,8 @@ func TestConfig_AliasWithHideToolResults(t *testing.T) {
 
 	config := &Config{
 		Aliases: map[string]*Alias{
-			"hidden": {Path: "agentcatalog/coder", HideToolResults: true},
-			"full":   {Path: "agentcatalog/coder", Yolo: true, Model: "openai/gpt-4o", HideToolResults: true},
+			"hidden": {Path: "myorg/coder", HideToolResults: true},
+			"full":   {Path: "myorg/coder", Yolo: true, Model: "openai/gpt-4o", HideToolResults: true},
 		},
 	}
 
@@ -719,7 +725,7 @@ func TestConfig_AliasWithHideToolResults(t *testing.T) {
 	// Verify hide_tool_results option
 	hiddenAlias, ok := loaded.GetAlias("hidden")
 	require.True(t, ok)
-	assert.Equal(t, "agentcatalog/coder", hiddenAlias.Path)
+	assert.Equal(t, "myorg/coder", hiddenAlias.Path)
 	assert.True(t, hiddenAlias.HideToolResults)
 	assert.False(t, hiddenAlias.Yolo)
 	assert.Empty(t, hiddenAlias.Model)
@@ -743,6 +749,7 @@ func TestAlias_HasOptions(t *testing.T) {
 		{"nil alias", nil, false},
 		{"empty alias", &Alias{Path: "test"}, false},
 		{"yolo only", &Alias{Path: "test", Yolo: true}, true},
+		{"safety only", &Alias{Path: "test", Safety: latest.SafetyModeBalanced}, true},
 		{"model only", &Alias{Path: "test", Model: "openai/gpt-4o"}, true},
 		{"hide_tool_results only", &Alias{Path: "test", HideToolResults: true}, true},
 		{"sandbox only", &Alias{Path: "test", Sandbox: true}, true},
@@ -949,6 +956,7 @@ func TestConfig_DefaultModel_SaveAndLoad(t *testing.T) {
 func TestGet_Empty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// No config file exists
 	settings := Get()
@@ -960,6 +968,7 @@ func TestGet_Empty(t *testing.T) {
 func TestGet_WithHideToolResults(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Set up config with settings
 	cfg, err := Load()
@@ -1414,4 +1423,129 @@ func TestLoad_UnknownVersionStillLoads(t *testing.T) {
 	cfg, err := loadFrom(configFile, "")
 	require.NoError(t, err)
 	assert.Equal(t, "https://gw.example.com", cfg.ModelsGateway)
+}
+
+func TestConfig_Settings_Safety(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte(`settings:
+  safety: balanced
+`), 0o644))
+
+	cfg, err := loadFrom(configFile, "")
+	require.NoError(t, err)
+	assert.Equal(t, latest.SafetyModeBalanced, cfg.GetSettings().Safety)
+	assert.Equal(t, latest.SafetyModeBalanced, cfg.GetSettings().GetSafety())
+}
+
+func TestConfig_Settings_InvalidSafetyFailsLoad(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte(`settings:
+  safety: yolo
+`), 0o644))
+
+	_, err := loadFrom(configFile, "")
+	require.ErrorContains(t, err, "settings.safety")
+	require.ErrorContains(t, err, `invalid safety mode "yolo" (valid: strict, balanced, autonomous)`)
+}
+
+func TestConfig_Alias_InvalidSafetyFailsLoad(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte(`aliases:
+  coder:
+    path: myorg/coder
+    safety: unsafe
+`), 0o644))
+
+	_, err := loadFrom(configFile, "")
+	require.ErrorContains(t, err, "aliases.coder.safety")
+	require.ErrorContains(t, err, `invalid safety mode "unsafe"`)
+}
+
+func TestSettings_GetSafety(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		settings *Settings
+		want     latest.SafetyMode
+	}{
+		{"nil settings", nil, ""},
+		{"unset", &Settings{}, ""},
+		{"safety set", &Settings{Safety: latest.SafetyModeStrict}, latest.SafetyModeStrict},
+		{"legacy YOLO maps to autonomous", &Settings{YOLO: true}, latest.SafetyModeAutonomous},
+		{"safety wins over legacy YOLO", &Settings{YOLO: true, Safety: latest.SafetyModeBalanced}, latest.SafetyModeBalanced},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.settings.GetSafety())
+		})
+	}
+}
+
+func TestAlias_GetSafety(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		alias *Alias
+		want  latest.SafetyMode
+	}{
+		{"nil alias", nil, ""},
+		{"unset", &Alias{Path: "x"}, ""},
+		{"safety set", &Alias{Path: "x", Safety: latest.SafetyModeBalanced}, latest.SafetyModeBalanced},
+		{"legacy yolo maps to autonomous", &Alias{Path: "x", Yolo: true}, latest.SafetyModeAutonomous},
+		{"safety wins over legacy yolo", &Alias{Path: "x", Yolo: true, Safety: latest.SafetyModeStrict}, latest.SafetyModeStrict},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.alias.GetSafety())
+		})
+	}
+}
+
+func TestConfig_SetAlias_InvalidSafety(t *testing.T) {
+	t.Parallel()
+
+	config := &Config{Aliases: make(map[string]*Alias)}
+	err := config.SetAlias("bad", &Alias{Path: "myorg/coder", Safety: "yolo"})
+	require.ErrorContains(t, err, "safety")
+	require.ErrorContains(t, err, "invalid safety mode")
+}
+
+// Alias safety must survive a save/load round trip alongside the other
+// options, and unknown keys must still round-trip via Extra.
+func TestConfig_AliasSafetyRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+
+	config := &Config{
+		Aliases: map[string]*Alias{
+			"careful": {Path: "myorg/coder", Safety: latest.SafetyModeStrict},
+		},
+		Settings: &Settings{Safety: latest.SafetyModeBalanced},
+	}
+	require.NoError(t, config.saveTo(configFile))
+
+	loaded, err := loadFrom(configFile, "")
+	require.NoError(t, err)
+
+	alias, ok := loaded.GetAlias("careful")
+	require.True(t, ok)
+	assert.Equal(t, latest.SafetyModeStrict, alias.Safety)
+	assert.Equal(t, latest.SafetyModeBalanced, loaded.GetSettings().Safety)
 }

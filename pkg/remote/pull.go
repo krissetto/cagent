@@ -20,8 +20,8 @@ import (
 
 // NormalizeReference parses an OCI reference and returns the normalized
 // store key that Pull uses to store artifacts. This ensures that equivalent
-// references (e.g. "agentcatalog/review-pr" and
-// "index.docker.io/agentcatalog/review-pr:latest") map to the same key.
+// references (e.g. "myorg/review-pr" and
+// "index.docker.io/myorg/review-pr:latest") map to the same key.
 //
 // The registry host is deliberately stripped, so references that differ only
 // by registry map to the same key. Callers that need a registry-scoped
@@ -37,7 +37,7 @@ func NormalizeReference(registryRef string) (string, error) {
 
 // FullyQualifiedReference returns the fully-qualified form of an OCI
 // reference, including the registry host (e.g.
-// "index.docker.io/agentcatalog/review-pr:latest"). Equivalent shorthand
+// "index.docker.io/myorg/review-pr:latest"). Equivalent shorthand
 // forms map to the same value, while references that differ only by registry
 // map to different values — unlike NormalizeReference, which strips the host.
 func FullyQualifiedReference(registryRef string) (string, error) {

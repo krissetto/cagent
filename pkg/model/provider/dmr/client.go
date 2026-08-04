@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/openai/openai-go/v3"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/config/latest"
+	"github.com/docker/docker-agent/pkg/httpclient"
 	"github.com/docker/docker-agent/pkg/model/provider/base"
 	"github.com/docker/docker-agent/pkg/model/provider/dmr/dmrmodels"
 	"github.com/docker/docker-agent/pkg/model/provider/oaistream"
@@ -44,7 +47,8 @@ type Client struct {
 
 	client     openai.Client
 	httpClient *http.Client
-	engine     string
+	// engine is empty in gateway mode: engine-gated request shaping stays on defaults.
+	engine string
 
 	// attachmentCaps records the document MIME types this DMR-hosted model is
 	// declared to accept natively, parsed from provider_opts.supports_images /
@@ -68,34 +72,48 @@ func NewClient(ctx context.Context, cfg *latest.ModelConfig, opts ...options.Opt
 
 	globalOptions := options.Apply(opts...)
 
-	// Skip docker model status query when BaseURL is explicitly provided.
-	// This avoids unnecessary exec calls and speeds up tests/CI scenarios.
-	var endpoint, engine string
+	var endpoint, engine, baseURL string
+	var httpClient *http.Client
 	verifyViaAPI := false
-	if cfg.BaseURL == "" && os.Getenv("MODEL_RUNNER_HOST") == "" {
-		var err error
-		endpoint, engine, err = dmrmodels.DockerModelEndpointAndEngine(ctx)
-		switch {
-		case err == nil:
-			// Auto-pull the model if needed
-			if err := pullDockerModelIfNeeded(ctx, cfg.Model); err != nil {
-				slog.DebugContext(ctx, "docker model pull failed", "error", err)
-				return nil, err
-			}
-		case dmrmodels.IsNotInstalledError(err):
-			slog.DebugContext(ctx, "docker model status query failed", "error", err)
-			return nil, ErrNotInstalled
-		default:
-			// The `docker model` CLI is unusable (broken plugin, docker not on
-			// PATH, ...) but the DMR endpoint may still be up: check model
-			// availability through the HTTP API below so a missing model fails
-			// here instead of as a raw HTTP 404 at message time.
-			slog.ErrorContext(ctx, "docker model status query failed", "error", err)
-			verifyViaAPI = true
+	gateway := globalOptions.Gateway()
+	if gateway != "" {
+		// Skip local discovery: the gateway may be the only reachable path
+		// (e.g. inside a sandbox).
+		u, err := url.Parse(gateway)
+		if err != nil {
+			return nil, fmt.Errorf("invalid models gateway URL: %w", err)
 		}
-	}
+		baseURL = fmt.Sprintf("%s://%s%s/v1/", u.Scheme, u.Host, strings.TrimSuffix(u.Path, "/"))
+		httpClient = httpclient.NewHTTPClient(ctx, base.GatewayHTTPOptions(u, dmrmodels.DefaultHostURL(), cfg, &globalOptions)...)
+		globalOptions.WrapTransport(ctx, httpClient)
+	} else {
+		// Skip docker model status query when BaseURL is explicitly provided.
+		// This avoids unnecessary exec calls and speeds up tests/CI scenarios.
+		if cfg.BaseURL == "" && os.Getenv("MODEL_RUNNER_HOST") == "" {
+			var err error
+			endpoint, engine, err = dmrmodels.DockerModelEndpointAndEngine(ctx)
+			switch {
+			case err == nil:
+				// Auto-pull the model if needed
+				if err := pullDockerModelIfNeeded(ctx, cfg.Model); err != nil {
+					slog.DebugContext(ctx, "docker model pull failed", "error", err)
+					return nil, err
+				}
+			case dmrmodels.IsNotInstalledError(err):
+				slog.DebugContext(ctx, "docker model status query failed", "error", err)
+				return nil, ErrNotInstalled
+			default:
+				// The `docker model` CLI is unusable (broken plugin, docker not on
+				// PATH, ...) but the DMR endpoint may still be up: check model
+				// availability through the HTTP API below so a missing model fails
+				// here instead of as a raw HTTP 404 at message time.
+				slog.ErrorContext(ctx, "docker model status query failed", "error", err)
+				verifyViaAPI = true
+			}
+		}
 
-	baseURL, httpClient := dmrmodels.ResolveBaseURL(ctx, cfg, endpoint)
+		baseURL, httpClient = dmrmodels.ResolveBaseURL(ctx, cfg, endpoint)
+	}
 
 	// A custom transport (e.g. the Docker Unix socket) must also be used by
 	// the OpenAI adapter, not just the direct HTTP calls.
@@ -137,8 +155,9 @@ func NewClient(ctx context.Context, cfg *latest.ModelConfig, opts ...options.Opt
 	)
 	// Skip model configuration for title-generation and compaction clones to
 	// avoid reconfiguring the model with different settings (e.g., smaller
-	// max_tokens) that would affect the main agent.
-	if !globalOptions.GeneratingTitle() && !globalOptions.Compacting() {
+	// max_tokens) that would affect the main agent. It is local-only, so
+	// gateway mode skips it too.
+	if gateway == "" && !globalOptions.GeneratingTitle() && !globalOptions.Compacting() {
 		if err := configureModel(ctx, httpClient, baseURL, cfg.Model, backendCfg, parsed.mode, parsed.rawRuntimeFlags); err != nil {
 			slog.DebugContext(ctx, "model configure via API skipped or failed", "error", err)
 		}

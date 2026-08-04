@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +47,7 @@ func TestBuild_StagesSkillsAndRedacts(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillBody), 0o644))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	// Run from an empty cwd so cwd-walking finds nothing extra.
 	t.Chdir(t.TempDir())
 
@@ -91,6 +93,7 @@ func TestBuild_RebuildsCleanDir(t *testing.T) {
 	isolateEnv(t)
 	hostHome := t.TempDir()
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(t.TempDir())
 
 	// A local agent YAML gives us a stable, offline AgentRef. A bare
@@ -167,6 +170,7 @@ models:
 	require.NoError(t, os.WriteFile(yamlPath, agentYAML, 0o600))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(workspace)
 
 	cacheDir := t.TempDir()
@@ -225,6 +229,7 @@ models:
 	require.NoError(t, os.WriteFile(yamlPath, agentYAML, 0o600))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(workspace)
 
 	res, err := Build(t.Context(), Options{
@@ -282,6 +287,7 @@ models:
 	require.NoError(t, os.WriteFile(yamlPath, agentYAML, 0o600))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(workspace)
 
 	res, err := Build(t.Context(), Options{
@@ -311,6 +317,7 @@ func TestBuild_NoAgentRefLeavesPromptFilesEmpty(t *testing.T) {
 	// prompt files are staged.
 	hostHome := t.TempDir()
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(t.TempDir())
 
 	cacheDir := t.TempDir()
@@ -373,6 +380,7 @@ func TestBuild_DropsSymlinksEscapingSkillRoot(t *testing.T) {
 	require.NoError(t, os.Symlink(secretFile, filepath.Join(skillDir, "creds")))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(t.TempDir())
 
 	res, err := Build(t.Context(), Options{
@@ -407,6 +415,7 @@ func TestBuild_AllowsSymlinksWithinSkillRoot(t *testing.T) {
 	require.NoError(t, os.Symlink(helper, filepath.Join(skillDir, "alias.txt")))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(t.TempDir())
 
 	res, err := Build(t.Context(), Options{
@@ -436,6 +445,7 @@ func TestBuild_PreservesExecutableBit(t *testing.T) {
 	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\necho hi\n"), 0o700))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(t.TempDir())
 
 	res, err := Build(t.Context(), Options{
@@ -449,6 +459,10 @@ func TestBuild_PreservesExecutableBit(t *testing.T) {
 	staged := filepath.Join(res.HostDir, skills.KitSkillsSubdir, "with-script", "run.sh")
 	info, err := os.Stat(staged)
 	require.NoError(t, err)
+	if runtime.GOOS == "windows" {
+		assert.FileExists(t, staged)
+		return
+	}
 	assert.NotZero(t, info.Mode().Perm()&0o100,
 		"staged script %s must keep its executable bit (got %v)", staged, info.Mode())
 }
@@ -463,6 +477,7 @@ func TestBuild_OnDiskManifestOmitsHostPaths(t *testing.T) {
 		[]byte("---\nname: plain\ndescription: plain\n---\n"), 0o644))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(t.TempDir())
 
 	res, err := Build(t.Context(), Options{
@@ -502,6 +517,7 @@ func TestBuild_ConcurrentRunsForSameAgentAreSafe(t *testing.T) {
 		[]byte("---\nname: shared\ndescription: shared skill\n---\n"), 0o644))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(t.TempDir())
 
 	cacheDir := t.TempDir()
@@ -607,6 +623,7 @@ models:
 	require.NoError(t, os.WriteFile(yamlPath, agentYAML, 0o600))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(workspace)
 
 	res, err := Build(t.Context(), Options{
@@ -625,9 +642,9 @@ models:
 	// Header + skills section.
 	assert.Contains(t, out, "Preparing docker-agent kit at "+res.HostDir)
 	assert.Contains(t, out, "skills:")
-	assert.Contains(t, out, "plain (from ~/.agents/skills/plain)",
+	assert.Contains(t, out, "plain (from "+filepath.Join("~", ".agents", "skills", "plain")+")",
 		"$HOME prefix should collapse to ~ in printed paths")
-	assert.Contains(t, out, "with-secret (from ~/.agents/skills/with-secret)")
+	assert.Contains(t, out, "with-secret (from "+filepath.Join("~", ".agents", "skills", "with-secret")+")")
 
 	// Every staged file appears, and only the redacted one carries the marker.
 	assert.Contains(t, out, "SKILL.md (redacted)", "redacted skill file must be tagged")
@@ -637,7 +654,7 @@ models:
 
 	// Prompt files section.
 	assert.Contains(t, out, "prompt files:")
-	assert.Contains(t, out, "AGENTS.md (from ~/AGENTS.md, redacted)")
+	assert.Contains(t, out, "AGENTS.md (from "+filepath.Join("~", "AGENTS.md")+", redacted)")
 
 	// Summary line.
 	assert.Contains(t, out, "summary: 2 skills, 1 prompt file, 2 secrets redacted")
@@ -669,6 +686,7 @@ models:
 	require.NoError(t, os.WriteFile(yamlPath, agentYAML, 0o600))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(workspace)
 
 	res, err := Build(t.Context(), Options{
@@ -748,6 +766,7 @@ models:
 	require.NoError(t, os.WriteFile(yamlPath, agentYAML, 0o600))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(workspace)
 	return hostHome, workspace, yamlPath
 }
@@ -845,6 +864,7 @@ models:
 	require.NoError(t, os.WriteFile(yamlPath, agentYAML, 0o600))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(workspace)
 
 	res, err := Build(t.Context(), Options{
@@ -892,6 +912,7 @@ models:
 	require.NoError(t, os.WriteFile(yamlPath, agentYAML, 0o600))
 
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 	t.Chdir(workspace)
 
 	res, err := Build(t.Context(), Options{

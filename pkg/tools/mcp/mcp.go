@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -90,7 +91,7 @@ func CreateToolSet(ctx context.Context, toolset latest.Toolset, runConfig *confi
 			envProvider,
 		)
 
-		return NewGatewayToolset(ctx, toolset.Name, mcpServerName, serverSpec.Secrets, toolset.Config, envProvider, cwd)
+		return NewGatewayToolset(ctx, toolset.Name, mcpServerName, serverSpec.Secrets, toolset.Config, envProvider, cwd, lifecycle.PolicyFromConfig(toolset.Name, toolset.Lifecycle))
 
 	case toolset.Command != "":
 		resolvedCommand, err := toolinstall.EnsureCommand(ctx, toolset.Command, toolset.Version)
@@ -173,6 +174,10 @@ type Toolset struct {
 
 	supervisor *lifecycle.Supervisor
 
+	// callTimeout bounds an individual callTool invocation, including its
+	// one reconnect-retry. Zero means no timeout (use the caller's ctx).
+	callTimeout time.Duration
+
 	mu sync.Mutex
 
 	// Cached tools and prompts, invalidated via MCP notifications and
@@ -232,6 +237,7 @@ func NewToolsetCommand(name, command string, args, env []string, cwd string, pol
 		mcpClient:   newStdioCmdClient(command, args, env, cwd),
 		logID:       command,
 		description: desc,
+		callTimeout: firstOrZero(policy).CallTimeout,
 	}
 	ts.supervisor = newSupervisor(ts, firstOrZero(policy))
 	return ts
@@ -270,9 +276,9 @@ func newRemoteToolset(
 	policy ...lifecycle.Policy,
 ) *Toolset {
 	slog.Debug("Creating Remote MCP toolset",
-		"url", urlString,
+		"server", sanitizeRemoteAddress(urlString),
 		"transport", transport,
-		"headers", headers,
+		"header_names", headerNames(headers),
 		"allow_private_ips", allowPrivateIPs,
 	)
 
@@ -280,11 +286,21 @@ func newRemoteToolset(
 	ts := &Toolset{
 		name:        name,
 		mcpClient:   newRemoteClient(urlString, transport, headers, NewKeyringTokenStore(), oauthConfig, allowPrivateIPs, env),
-		logID:       urlString,
+		logID:       sanitizeRemoteAddress(urlString),
 		description: desc,
+		callTimeout: firstOrZero(policy).CallTimeout,
 	}
 	ts.supervisor = newSupervisor(ts, remotePolicy(firstOrZero(policy)))
 	return ts
+}
+
+func headerNames(headers map[string]string) []string {
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 func remotePolicy(base lifecycle.Policy) lifecycle.Policy {
@@ -714,6 +730,8 @@ func (ts *Toolset) refreshPromptCache(ctx context.Context) {
 func (ts *Toolset) callTool(ctx context.Context, toolCall tools.ToolCall, _ tools.Runtime) (*tools.ToolCallResult, error) {
 	slog.DebugContext(ctx, "Calling MCP tool", "tool", toolCall.Function.Name, "arguments", toolCall.Function.Arguments)
 
+	start := time.Now()
+
 	toolCall.Function.Arguments = cmp.Or(toolCall.Function.Arguments, "{}")
 	var args map[string]any
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
@@ -745,31 +763,67 @@ func (ts *Toolset) callTool(ctx context.Context, toolCall tools.ToolCall, _ tool
 	request.Name = serverToolName
 	request.Arguments = args
 
-	resp, err := ts.mcpClient.CallTool(ctx, request)
+	// callCtx scopes the whole call (including the reconnect-retry below)
+	// as one budget. It is a child of ctx, never a replacement for it: the
+	// connection/session context is detached separately (context.WithoutCancel
+	// in clientConnector.Connect) and must never be bounded here — a fired
+	// call_timeout must only cancel this call, not tear down the session.
+	callCtx := ctx
+	if ts.callTimeout > 0 {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, ts.callTimeout)
+		defer cancel()
+	}
+
+	resp, err := ts.mcpClient.CallTool(callCtx, request)
 
 	// If the call failed with a connection or session error (e.g. the
 	// server restarted), trigger or wait for a reconnection and retry
 	// the call once.
-	if err != nil && isConnectionError(err) && ctx.Err() == nil {
+	if err != nil && isConnectionError(err) && callCtx.Err() == nil {
 		slog.WarnContext(ctx, "MCP call failed, forcing reconnect and retrying", "tool", toolCall.Function.Name, "server", ts.logID, "error", err)
-		if waitErr := ts.supervisor.RestartAndWait(ctx, sessionMissingRetryTimeout); waitErr != nil {
-			return nil, fmt.Errorf("failed to reconnect after call failure: %w", waitErr)
+		if waitErr := ts.supervisor.RestartAndWait(callCtx, sessionMissingRetryTimeout); waitErr != nil {
+			return nil, ts.classifyCallToolError(ctx, callCtx, toolCall, start, fmt.Errorf("failed to reconnect after call failure: %w", waitErr))
 		}
-		resp, err = ts.mcpClient.CallTool(ctx, request)
+		resp, err = ts.mcpClient.CallTool(callCtx, request)
 	}
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-			slog.DebugContext(ctx, "CallTool canceled by context", "tool", toolCall.Function.Name)
-			return nil, err
-		}
-		slog.ErrorContext(ctx, "Failed to call MCP tool", "tool", toolCall.Function.Name, "error", err)
-		return nil, fmt.Errorf("failed to call tool: %w", err)
+		return nil, ts.classifyCallToolError(ctx, callCtx, toolCall, start, err)
 	}
 
 	result := processMCPContent(resp)
 	slog.DebugContext(ctx, "MCP tool call completed", "tool", toolCall.Function.Name, "output_length", len(result.Output))
 	slog.DebugContext(ctx, result.Output)
 	return result, nil
+}
+
+// classifyCallToolError funnels every callTool failure path (the initial
+// call, the reconnect-retry wait, and the retried call) through one
+// classification, in order:
+//  1. Canceled — checked against the caller's ctx, which wins even though
+//     callCtx also reads Canceled once its parent is canceled.
+//  2. call_timeout expiry — ctx.Err() == nil attributes the deadline to
+//     our own timer rather than a parent/session deadline.
+//  3. Everything else — the existing generic wrap.
+func (ts *Toolset) classifyCallToolError(ctx, callCtx context.Context, toolCall tools.ToolCall, start time.Time, err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		slog.DebugContext(ctx, "CallTool canceled by context", "tool", toolCall.Function.Name)
+		return err
+	}
+	if ts.callTimeout > 0 && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
+		elapsed := time.Since(start)
+		slog.WarnContext(ctx, "MCP tool call timed out", "tool", toolCall.Function.Name, "server", ts.logID, "call_timeout", ts.callTimeout, "elapsed", elapsed)
+		if span := trace.SpanFromContext(ctx); span.IsRecording() {
+			span.AddEvent("mcp.tool_call.timeout", trace.WithAttributes(
+				attribute.String("tool", toolCall.Function.Name),
+				attribute.String("call_timeout", ts.callTimeout.String()),
+				attribute.String("elapsed", elapsed.String()),
+			))
+		}
+		return fmt.Errorf("%w after %s", tools.ErrCallTimeout, ts.callTimeout)
+	}
+	slog.ErrorContext(ctx, "Failed to call MCP tool", "tool", toolCall.Function.Name, "error", err)
+	return fmt.Errorf("failed to call tool: %w", err)
 }
 
 func processMCPContent(toolResult *mcp.CallToolResult) *tools.ToolCallResult {

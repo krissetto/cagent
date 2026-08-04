@@ -116,13 +116,16 @@ toolsets:
 
 | Field          | Type            | Required | Description                                                                                      |
 | -------------- | --------------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `clientId`     | string          | ✓        | OAuth client ID registered with the remote MCP server.                                           |
-| `clientSecret` | string          | ✗        | OAuth client secret. Omit for public clients using PKCE.                                         |
+| `clientId`     | string          | ✗        | OAuth client ID registered with the remote MCP server. When omitted, Docker Agent uses Dynamic Client Registration or prompts interactively. |
+| `clientSecret` | string          | ✗        | OAuth client secret. Requires `clientId`. Omit for public clients using PKCE.                    |
 | `callbackPort` | integer         | ✗        | Local port to receive the OAuth redirect. If omitted, Docker Agent picks a random free port.    |
 | `scopes`       | array[string]   | ✗        | Scopes to request during the authorization step. Values are server-specific.                     |
 | `callbackRedirectURL` | string   | ✗        | Custom OAuth redirect URI. Useful when the auth server requires HTTPS or a pre-registered URL. The literal placeholder `${callbackPort}` is replaced with the actual local callback port. See below.            |
 
 Secrets should be stored in a credential helper or environment variable rather than committed — see [Secrets](../../guides/secrets/index.md) for interpolation patterns.
+
+> [!TIP]
+> The `oauth:` block also works **without** `clientId`. Use it to pin the callback port, request specific scopes, or set a custom redirect URL while still letting Docker Agent obtain the client ID via Dynamic Client Registration (or the interactive prompt).
 
 ### Custom redirect URI (`callbackRedirectURL`)
 

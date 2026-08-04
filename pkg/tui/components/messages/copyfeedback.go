@@ -1,11 +1,11 @@
 package messages
 
 import (
+	"image/color"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/docker/docker-agent/pkg/tui/components/markdown"
@@ -80,11 +80,10 @@ func (m *model) applyCopiedFlash(lines []string, viewportStartLine int) []string
 	end := start + ansi.StringWidth(label)
 
 	style := styles.SuccessStyle.Bold(true)
-	if f.codeBlock {
-		// Keep the code block's background band intact behind the swap.
-		if bg := styles.MarkdownStyle().CodeBlock.BackgroundColor; bg != nil {
-			style = style.Background(lipgloss.Color(*bg))
-		}
+	// Keep whatever band the copy label sat on (user message background,
+	// code block background) intact behind the swap.
+	if bg := backgroundAt(line, start); bg != nil {
+		style = style.Background(bg)
 	}
 
 	result := make([]string, len(lines))
@@ -93,4 +92,54 @@ func (m *model) applyCopiedFlash(lines []string, viewportStartLine int) []string
 		style.Render(types.CopiedFeedbackLabel) +
 		ansi.Cut(line, end, ansi.StringWidth(plain))
 	return result
+}
+
+// backgroundAt returns the SGR background color in effect at the given cell
+// column of a rendered line, or nil when none is set.
+func backgroundAt(line string, col int) color.Color {
+	p := ansi.GetParser()
+	defer ansi.PutParser(p)
+
+	var bg color.Color
+	var state byte
+	for w := 0; line != "" && w <= col; {
+		seq, width, n, newState := ansi.DecodeSequence(line, state, p)
+		if n == 0 {
+			break // invalid input that cannot be decoded; avoid spinning forever
+		}
+		if ansi.HasCsiPrefix(seq) && p.Command() == 'm' {
+			bg = applySGRBackground(bg, p.Params())
+		}
+		w += width
+		state = newState
+		line = line[n:]
+	}
+	return bg
+}
+
+// applySGRBackground folds one SGR sequence's background-related parameters
+// into the current background, ignoring everything else.
+func applySGRBackground(bg color.Color, params ansi.Params) color.Color {
+	if len(params) == 0 {
+		return nil // bare ESC[m is a full reset
+	}
+	for i := 0; i < len(params); i++ {
+		switch param := params[i].Param(0); {
+		case param == 0 || param == 49:
+			bg = nil
+		case param >= 40 && param <= 47:
+			bg = ansi.Black + ansi.BasicColor(param-40)
+		case param >= 100 && param <= 107:
+			bg = ansi.BrightBlack + ansi.BasicColor(param-100)
+		case param == 48:
+			var c color.Color
+			n := ansi.ReadStyleColor(params[i:], &c)
+			if n == 0 {
+				return bg // malformed extended color; stop parsing this sequence
+			}
+			bg = c
+			i += n - 1
+		}
+	}
+	return bg
 }

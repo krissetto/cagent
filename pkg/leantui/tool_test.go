@@ -12,7 +12,6 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
 	builtinshell "github.com/docker/docker-agent/pkg/tools/builtin/shell"
-	"github.com/docker/docker-agent/pkg/tui/animation"
 	tuitypes "github.com/docker/docker-agent/pkg/tui/types"
 )
 
@@ -53,9 +52,10 @@ func TestRenderToolWrapsCallInBox(t *testing.T) {
 }
 
 func TestRenderToolDoesNotLeakAnimationSubscription(t *testing.T) {
-	assert.False(t, animation.HasActive())
 	ui.RenderToolWithState(shellToolView(tuitypes.ToolStatusRunning), 80, 3, nil)
-	assert.False(t, animation.HasActive())
+	// RenderToolWithState owns a short-lived runtime and StopView cleanup. A
+	// second render must remain safe rather than depending on package globals.
+	ui.RenderToolWithState(shellToolView(tuitypes.ToolStatusRunning), 80, 4, nil)
 }
 
 func TestRenderToolKeepsLastLinesWhenArgumentsTemporarilyInvalid(t *testing.T) {

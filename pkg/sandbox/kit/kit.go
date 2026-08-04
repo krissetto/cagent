@@ -204,7 +204,7 @@ type Redaction struct {
 func Build(ctx context.Context, opts Options) (*Result, error) {
 	hostHome := opts.HostHome
 	if hostHome == "" {
-		hostHome, _ = os.UserHomeDir()
+		hostHome = paths.GetHomeDir()
 	}
 
 	cacheParent := opts.CacheDir

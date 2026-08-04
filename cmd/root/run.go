@@ -1,6 +1,7 @@
 package root
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"github.com/docker/docker-agent/pkg/permissions"
 	"github.com/docker/docker-agent/pkg/profiling"
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/server"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/teamloader"
@@ -52,8 +54,20 @@ const worktreeAutoName = "auto"
 var projectDefaultAgentFiles = []string{"docker-agent.yaml", "docker-agent.yml", "docker-agent.hcl"}
 
 type runExecFlags struct {
-	agentName         string
-	autoApprove       bool
+	agentName   string
+	autoApprove bool
+	safety      string
+	// safetyChanged / yoloChanged record whether --safety / --yolo were
+	// explicitly passed on the command line. Explicit flags are the only
+	// safety sources allowed to override a resumed session's stored mode;
+	// alias options and user settings are defaults that never do.
+	safetyChanged bool
+	yoloChanged   bool
+	// defaultSafety is the user-owned safety default resolved from alias
+	// options and user settings (alias wins; within each scope safety wins
+	// over the legacy yolo/YOLO flag). Never populated from CLI flags or
+	// author YAML.
+	defaultSafety     session.SafetyPolicy
 	attachmentPath    string
 	remoteAddress     string
 	modelOverrides    []string
@@ -111,6 +125,13 @@ type runExecFlags struct {
 	// session has independent snapshot state; that controller is local
 	// to the spawner closure and never reaches this field.
 	snapshotController builtins.SnapshotController
+
+	// listenSM is the SessionManager behind the --listen control plane, set
+	// by startSessionCoordinator. When present, sessions spawned later (TUI
+	// tabs) attach to it instead of a private manager, so control-plane
+	// clients can observe and drive every tab of the run — not just the
+	// initial session. Nil when --listen is off.
+	listenSM *server.SessionManager
 }
 
 func newRunCmd() *cobra.Command {
@@ -142,7 +163,8 @@ func newRunCmd() *cobra.Command {
 
 func addRunOrExecFlags(cmd *cobra.Command, flags *runExecFlags) {
 	cmd.PersistentFlags().StringVarP(&flags.agentName, "agent", "a", "", "Name of the agent to run (defaults to the team's first agent)")
-	cmd.PersistentFlags().BoolVar(&flags.autoApprove, "yolo", false, "Automatically approve all tool calls without prompting")
+	cmd.PersistentFlags().BoolVar(&flags.autoApprove, "yolo", false, "Automatically approve all tool calls without prompting (same as --safety autonomous)")
+	cmd.PersistentFlags().StringVar(&flags.safety, "safety", "", "Safety mode for tool approval: strict (ask for everything), balanced (auto-approve safe calls), or autonomous (approve everything)")
 	cmd.PersistentFlags().BoolVar(&flags.hideToolResults, "hide-tool-results", false, "Hide tool call results")
 	cmd.PersistentFlags().StringVar(&flags.attachmentPath, "attach", "", "Attach an image file to the message")
 	cmd.PersistentFlags().StringArrayVar(&flags.promptFiles, "prompt-file", nil, "Append file contents to the prompt (repeatable)")
@@ -176,7 +198,7 @@ func addRunOrExecFlags(cmd *cobra.Command, flags *runExecFlags) {
 	cmd.PersistentFlags().StringVar(&flags.theme, "theme", "", "Preselect a TUI theme by name, or \"auto\" to match the terminal's light/dark background (overrides the theme from user config; ignored outside the interactive TUI)")
 	_ = cmd.RegisterFlagCompletionFunc("theme", completeTheme)
 	cmd.PersistentFlags().BoolVar(&flags.sandbox, "sandbox", false, "Run the agent inside a Docker sandbox (requires Docker Desktop with sandbox support)")
-	cmd.PersistentFlags().StringVar(&flags.sandboxTemplate, "template", "docker/sandbox-templates:docker-agent", "Template image for the sandbox (passed to docker sandbox create -t)")
+	cmd.PersistentFlags().StringVar(&flags.sandboxTemplate, "template", "docker/docker-agent-sbx-templates:latest", "Template image for the sandbox (passed to docker sandbox create -t)")
 	cmd.PersistentFlags().BoolVar(&flags.sbx, "sbx", true, "Prefer the sbx CLI backend when available (set --sbx=false to force docker sandbox)")
 	cmd.PersistentFlags().BoolVar(&flags.noKit, "no-kit", false, "Do not stage a docker-agent kit (skills, prompt files) when running in a sandbox")
 	cmd.PersistentFlags().StringVar(&flags.agentPickerSpec, "agent-picker", "", "Show a full-screen picker to choose an agent before launching. Optional comma-separated list of agent refs; \"defaults\" (or no value) offers the built-in agents plus any configs in ~/.agents")
@@ -235,6 +257,17 @@ func (f *runExecFlags) runRunCommand(cmd *cobra.Command, args []string) (command
 			return err
 		}
 	}
+
+	// Same early-failure treatment for --safety: a typo must not
+	// silently collapse to strict. Legacy policy aliases are a wire
+	// compat concern; the new flag only takes the canonical modes.
+	switch session.SafetyPolicy(f.safety) {
+	case "", session.SafetyPolicyStrict, session.SafetyPolicyBalanced, session.SafetyPolicyAutonomous:
+	default:
+		return fmt.Errorf("invalid --safety value %q (valid: strict, balanced, autonomous)", f.safety)
+	}
+	f.safetyChanged = cmd.Flags().Changed("safety")
+	f.yoloChanged = cmd.Flags().Changed("yolo")
 
 	useTUI := !f.exec && (f.forceTUI || isatty.IsTerminal(os.Stdout.Fd()))
 	f.leanChanged = cmd.Flags().Changed("lean")
@@ -338,29 +371,25 @@ func (f *runExecFlags) runOrExec(ctx context.Context, out *cli.Printer, args []s
 
 	agentFileName := f.resolveRunAgentFileName(args)
 
+	// Load the user config once and fail loudly: falling back to defaults
+	// here would silently drop the user's settings (safety, permissions,
+	// hooks) and alias options, and an invalid settings/alias safety value
+	// must surface as a clear validation error, not a quiet reset.
+	userCfg, err := userconfig.Load()
+	if err != nil {
+		return fmt.Errorf("loading user config: %w", err)
+	}
+
 	// Apply global user settings first (lowest priority)
 	// User settings only apply if the flag wasn't explicitly set by the user
-	userSettings := userconfig.Get()
+	userSettings := userCfg.GetSettings()
 	f.applyUserSettings(ctx, userSettings)
 	f.runConfig.GlobalHooks = config.MergeHooks(userSettings.GlobalHooks(), config.LoadHookDropIns())
 
 	// Apply alias options if this is an alias reference
 	// Alias options only apply if the flag wasn't explicitly set by the user
-	if alias := config.ResolveAlias(agentFileName); alias != nil {
-		slog.DebugContext(ctx, "Applying alias options", "yolo", alias.Yolo, "model", alias.Model, "hide_tool_results", alias.HideToolResults, "sandbox", alias.Sandbox)
-		if alias.Yolo && !f.autoApprove {
-			f.autoApprove = true
-		}
-		if alias.Model != "" && len(f.modelOverrides) == 0 {
-			f.modelOverrides = append(f.modelOverrides, alias.Model)
-		}
-		if alias.HideToolResults && !f.hideToolResults {
-			f.hideToolResults = true
-		}
-		// alias.Sandbox is consumed earlier in runRunCommand before
-		// dispatch; reaching runOrExec means the sandbox decision
-		// resolved to false (or the user opted out via --sandbox=false),
-		// so flipping it here would be a no-op.
+	if alias := aliasOptions(userCfg, agentFileName); alias != nil {
+		f.applyAliasOptions(ctx, alias)
 	}
 
 	// Build global permissions checker from user config settings.
@@ -582,9 +611,13 @@ func (f *runExecFlags) applyUserSettings(ctx context.Context, userSettings *user
 		f.hideToolResults = true
 		slog.DebugContext(ctx, "Applying user settings", "hide_tool_results", true)
 	}
-	if userSettings.YOLO && !f.autoApprove {
+	if userSettings.YOLO && !f.yoloChanged && !f.autoApprove {
 		f.autoApprove = true
 		slog.DebugContext(ctx, "Applying user settings", "YOLO", true)
+	}
+	if s := f.scopedSafetyDefault(userSettings.Safety, userSettings.YOLO); s != "" {
+		f.defaultSafety = s
+		slog.DebugContext(ctx, "Applying user settings", "safety", string(s))
 	}
 	// The tour needs the full TUI's overlay support, so a lean default from
 	// user config is not applied when the tour was requested.
@@ -596,6 +629,44 @@ func (f *runExecFlags) applyUserSettings(ctx context.Context, userSettings *user
 		f.snapshotsEnabled = true
 		slog.DebugContext(ctx, "Applying user settings", "snapshot", true)
 	}
+}
+
+// applyAliasOptions applies an alias's bundled runtime options. Like user
+// settings they are defaults: an explicitly-passed flag wins. They are
+// applied after applyUserSettings so an alias's own choices (including its
+// safety default) take priority over the global settings.
+func (f *runExecFlags) applyAliasOptions(ctx context.Context, alias *userconfig.Alias) {
+	slog.DebugContext(ctx, "Applying alias options", "yolo", alias.Yolo, "safety", string(alias.Safety), "model", alias.Model, "hide_tool_results", alias.HideToolResults, "sandbox", alias.Sandbox)
+	if alias.Yolo && !f.yoloChanged && !f.autoApprove {
+		f.autoApprove = true
+	}
+	// The alias's safety default (safety option, or legacy yolo →
+	// autonomous) outranks the user-settings default applied before it.
+	if s := f.scopedSafetyDefault(alias.Safety, alias.Yolo); s != "" {
+		f.defaultSafety = s
+	}
+	if alias.Model != "" && len(f.modelOverrides) == 0 {
+		f.modelOverrides = append(f.modelOverrides, alias.Model)
+	}
+	if alias.HideToolResults && !f.hideToolResults {
+		f.hideToolResults = true
+	}
+	// alias.Sandbox is consumed earlier in runRunCommand before
+	// dispatch; reaching runOrExec means the sandbox decision
+	// resolved to false (or the user opted out via --sandbox=false),
+	// so flipping it here would be a no-op.
+}
+
+// aliasOptions resolves the alias options for an agent reference from an
+// already-loaded user config, mirroring config.ResolveAlias: the empty
+// reference maps to the "default" alias, and an alias without options is
+// not returned.
+func aliasOptions(cfg *userconfig.Config, agentFileName string) *userconfig.Alias {
+	alias, ok := cfg.GetAlias(cmp.Or(agentFileName, "default"))
+	if !ok || !alias.HasOptions() {
+		return nil
+	}
+	return alias
 }
 
 func (f *runExecFlags) loadTeamInWorktree(ctx context.Context, b backend, wd string) (*teamloader.LoadResult, *worktree.Worktree, string, error) {
@@ -882,10 +953,19 @@ func (f *runExecFlags) createLocalRuntimeAndSession(ctx context.Context, loadRes
 		sess, err = sessStore.GetSession(ctx, resolvedID)
 		switch {
 		case err == nil:
-			// Via the option, not a raw field write: WithToolsApproved
-			// backfills SafetyPolicy=unsafe so safer_shell honours --yolo
-			// on resumed sessions too.
-			session.WithToolsApproved(req.ToolsApproved)(sess)
+			// Only an explicit CLI flag (--safety / --yolo, both resolved
+			// into req.SafetyPolicy with --safety winning) may override the
+			// mode a resumed session carries: alias options, user settings
+			// and author-declared YAML defaults are defaults for NEW
+			// sessions and must never replace persisted state. The override
+			// goes through the option (not a raw field write) so the legacy
+			// ToolsApproved flag and the mode stay in sync. Without an
+			// explicit flag the stored state is left untouched — a plain
+			// resume must not reset ToolsApproved out from under a stored
+			// autonomous policy.
+			if req.SafetyExplicit && req.SafetyPolicy != "" {
+				session.WithSafetyPolicy(req.SafetyPolicy)(sess)
+			}
 			sess.HideToolResults = req.HideToolResults
 
 			// Apply any stored model overrides from the session
@@ -905,13 +985,13 @@ func (f *runExecFlags) createLocalRuntimeAndSession(ctx context.Context, loadRes
 			// reuse it across runs — the first run creates, later runs resume.
 			// A relative ref (-1, -2, ...) never lands here: it must resolve
 			// against existing sessions.
-			sess = session.New(append(f.buildSessionOpts(agt, req), session.WithID(resolvedID))...)
+			sess = session.New(append(f.buildSessionOpts(agt, t, req), session.WithID(resolvedID))...)
 			slog.DebugContext(ctx, "Creating session with caller-supplied ID", "session_id", resolvedID, "agent", agentName)
 		default:
 			return nil, nil, fmt.Errorf("loading session %q: %w", resolvedID, err)
 		}
 	} else {
-		sess = session.New(f.buildSessionOpts(agt, req)...)
+		sess = session.New(f.buildSessionOpts(agt, t, req)...)
 		// Session is stored lazily on first UpdateSession call (when content is added)
 		// This avoids creating empty sessions in the database
 		slog.DebugContext(ctx, "Using local runtime", "agent", agentName)
@@ -931,17 +1011,26 @@ func (f *runExecFlags) handleExecMode(ctx context.Context, out *cli.Printer, rt 
 		userMessages = args[1:]
 	}
 
-	err := cli.Run(ctx, out, cli.Config{
-		AppName:        AppName,
-		AttachmentPath: f.attachmentPath,
-		HideToolCalls:  f.hideToolCalls,
-		OutputJSON:     f.outputJSON,
-		AutoApprove:    f.autoApprove,
-	}, rt, sess, userMessages)
+	err := cli.Run(ctx, out, f.execCLIConfig(sess), rt, sess, userMessages)
 	if cliErr, ok := errors.AsType[cli.RuntimeError](err); ok {
 		return RuntimeError{Err: cliErr.Err}
 	}
 	return err
+}
+
+// execCLIConfig builds the cli.Config for a non-TUI (--exec) run.
+// AutoApprove is derived from the session's resolved safety mode rather
+// than the raw --yolo flag: when a legacy yolo boolean and a typed safety
+// default coexist (settings/alias), the typed mode wins for the session,
+// and max-iteration auto-extension must match that resolved mode.
+func (f *runExecFlags) execCLIConfig(sess *session.Session) cli.Config {
+	return cli.Config{
+		AppName:        AppName,
+		AttachmentPath: f.attachmentPath,
+		HideToolCalls:  f.hideToolCalls,
+		OutputJSON:     f.outputJSON,
+		AutoApprove:    sess.GetSafetyPolicy() == session.SafetyPolicyAutonomous,
+	}
 }
 
 func readInitialMessage(args []string) (*string, error) {
@@ -1083,16 +1172,91 @@ func (f *runExecFlags) buildAppOpts(args []string) ([]app.Opt, error) {
 // buildSessionOpts returns the canonical set of session options derived from
 // CLI flags and agent configuration. Both the initial session and spawned
 // sessions use this method so their options never drift apart.
-func (f *runExecFlags) buildSessionOpts(agt *agent.Agent, req runtime.CreateSessionRequest) []session.Opt {
+func (f *runExecFlags) buildSessionOpts(agt *agent.Agent, t *team.Team, req runtime.CreateSessionRequest) []session.Opt {
 	return []session.Opt{
 		session.WithMaxIterations(agt.MaxIterations()),
 		session.WithMaxConsecutiveToolCalls(agt.MaxConsecutiveToolCalls()),
 		session.WithMaxOldToolCallTokens(agt.MaxOldToolCallTokens()),
 		session.WithMaxToolResultTokens(agt.MaxToolResultTokens()),
+		// WithToolsApproved before WithSafetyPolicy so a resolved safety
+		// policy wins over the legacy yolo boolean; an empty policy is a
+		// no-op and leaves the yolo-derived state alone.
 		session.WithToolsApproved(req.ToolsApproved),
+		session.WithSafetyPolicy(effectiveNewSessionSafety(req, agt, t)),
 		session.WithHideToolResults(req.HideToolResults),
 		session.WithWorkingDir(req.WorkingDir),
 	}
+}
+
+// effectiveNewSessionSafety resolves the safety mode a FRESH session starts
+// with. The user-owned request value (explicit CLI flags, alias options,
+// user settings — already resolved in that order by createSessionRequest)
+// always wins; only when the user expressed no preference at all do the
+// author-declared YAML defaults apply: the selected agent's safety first,
+// then the config-wide runtime.safety. Author configs — local, URL, or OCI
+// — can therefore never override a user choice. Resumed sessions never go
+// through this resolution; their stored mode is handled separately.
+func effectiveNewSessionSafety(req runtime.CreateSessionRequest, agt *agent.Agent, t *team.Team) session.SafetyPolicy {
+	if req.SafetyPolicy != "" {
+		return req.SafetyPolicy
+	}
+	if req.ToolsApproved {
+		// Legacy user-owned yolo without a resolved policy: WithToolsApproved
+		// already pins autonomous; author defaults must not downgrade it.
+		return ""
+	}
+	if agt != nil {
+		if s := agt.Safety(); s != "" {
+			return session.SafetyPolicy(s)
+		}
+	}
+	if t != nil {
+		if s := t.RuntimeSafety(); s != "" {
+			return session.SafetyPolicy(s)
+		}
+	}
+	return ""
+}
+
+// explicitCLISafety returns the safety mode explicitly requested on the
+// command line, or empty when neither --safety nor --yolo was passed.
+// --safety wins over --yolo; an explicit --yolo=false expresses no mode
+// (it only suppresses yolo defaults from alias options and user settings).
+func (f *runExecFlags) explicitCLISafety() session.SafetyPolicy {
+	if f.safetyChanged && f.safety != "" {
+		return session.SafetyPolicy(f.safety)
+	}
+	if f.yoloChanged && f.autoApprove {
+		return session.SafetyPolicyAutonomous
+	}
+	return ""
+}
+
+// userSafetyPolicy resolves the user-owned safety mode for this run:
+// explicit CLI flags first, then the alias/settings default. Empty means
+// the user expressed no preference and author-declared YAML defaults may
+// apply to fresh sessions.
+func (f *runExecFlags) userSafetyPolicy() session.SafetyPolicy {
+	if s := f.explicitCLISafety(); s != "" {
+		return s
+	}
+	return f.defaultSafety
+}
+
+// scopedSafetyDefault resolves one scope's (user settings or alias)
+// safety default: the typed safety field wins over the legacy yolo
+// boolean at the same scope, and the legacy boolean is ignored entirely
+// once --yolo was explicitly passed — --yolo=true is already an explicit
+// CLI mode, and --yolo=false must not be resurrected by a lower-scope
+// yolo default.
+func (f *runExecFlags) scopedSafetyDefault(safety latestcfg.SafetyMode, legacyYolo bool) session.SafetyPolicy {
+	if safety != "" {
+		return session.SafetyPolicy(safety)
+	}
+	if legacyYolo && !f.yoloChanged {
+		return session.SafetyPolicyAutonomous
+	}
+	return ""
 }
 
 // createSessionSpawner creates a function that can spawn new sessions with different working directories.
@@ -1139,7 +1303,7 @@ func (f *runExecFlags) createSessionSpawner(agentSource config.Source, sessStore
 		// Create a new session
 		spawnReq := f.createSessionRequest(workingDir)
 		spawnReq.AgentName = agt.Name()
-		newSess := session.New(f.buildSessionOpts(agt, spawnReq)...)
+		newSess := session.New(f.buildSessionOpts(agt, t, spawnReq)...)
 
 		// Create cleanup function
 		cleanup := func() {

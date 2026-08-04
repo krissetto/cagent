@@ -2,6 +2,8 @@ package desktop
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"sync"
 	"time"
@@ -17,17 +19,80 @@ type DockerHubInfo struct {
 // GetToken returns Docker Desktop's access token. Desktop's newer auth stack
 // (auth v2) serves whatever its in-memory token source holds and never
 // refreshes on GET, so a stuck background refresher makes it return the same
-// expired JWT forever. When that happens we force a refresh on Desktop's side.
+// expired JWT forever — or nothing at all when its read-time refresh failed.
+// When that happens we force a refresh on Desktop's side.
 func GetToken(ctx context.Context) string {
-	token := fetchToken(ctx)
-	if token == "" || !tokenExpired(token) {
+	token, err := fetchToken(ctx)
+	if err == nil && token != "" && !tokenExpired(token) {
 		return token
 	}
 
+	logUnusableToken(ctx, token, err)
+
+	// Signed out: a forced refresh can't help and would delay every caller.
+	if token == "" && !isLoggedIn(ctx) {
+		return ""
+	}
+
 	if fresh := forceTokenRefresh(ctx); fresh != "" {
+		slog.InfoContext(ctx, "Recovered a fresh token from Docker Desktop",
+			"fingerprint", tokenFingerprint(fresh))
 		return fresh
 	}
+	if token == "" {
+		slog.WarnContext(ctx, "Token refresh failed, no token available")
+		return ""
+	}
+	slog.WarnContext(ctx, "Token refresh failed, sending a token known to be expired",
+		"fingerprint", tokenFingerprint(token),
+		"expired_for", expiredFor(token))
 	return token
+}
+
+// logUnusableToken records why Docker Desktop's token can't be used as-is,
+// so gateway auth failures can be attributed from logs.
+func logUnusableToken(ctx context.Context, token string, err error) {
+	switch {
+	case err != nil:
+		slog.WarnContext(ctx, "Failed to fetch a token from Docker Desktop", "error", err)
+	case token == "":
+		slog.WarnContext(ctx, "Docker Desktop served an empty token")
+	default:
+		attrs := []any{"fingerprint", tokenFingerprint(token), "expired_for", expiredFor(token)}
+		if exp, ok := tokenExpiry(token); ok {
+			attrs = append(attrs, "expires_at", exp.UTC().Format(time.RFC3339))
+		}
+		slog.WarnContext(ctx, "Docker Desktop served an expired token", attrs...)
+	}
+}
+
+// tokenFingerprint returns a short non-reversible identifier, safe to log.
+func tokenFingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:4])
+}
+
+// expiredFor returns how long ago the token's exp claim passed.
+func expiredFor(token string) string {
+	exp, ok := tokenExpiry(token)
+	if !ok {
+		return "unknown"
+	}
+	return time.Since(exp).Round(time.Second).String()
+}
+
+// tokenExpiry returns the token's exp claim, or false when the token doesn't
+// parse or carries no exp claim.
+func tokenExpiry(token string) (time.Time, bool) {
+	parsed, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
+	if err != nil {
+		return time.Time{}, false
+	}
+	exp, err := parsed.Claims.GetExpirationTime()
+	if err != nil || exp == nil {
+		return time.Time{}, false
+	}
+	return exp.Time, true
 }
 
 func GetUserInfo(ctx context.Context) DockerHubInfo {
@@ -36,22 +101,26 @@ func GetUserInfo(ctx context.Context) DockerHubInfo {
 	return info
 }
 
-func fetchToken(ctx context.Context) string {
+func fetchToken(ctx context.Context) (string, error) {
 	var token string
-	_ = ClientBackend.Get(ctx, "/registry/token", &token)
-	return token
+	err := ClientBackend.Get(ctx, "/registry/token", &token)
+	return token, err
+}
+
+func isLoggedIn(ctx context.Context) bool {
+	var loggedIn bool
+	if err := ClientBackend.Get(ctx, "/registry/is-logged-in", &loggedIn); err != nil {
+		return false
+	}
+	return loggedIn
 }
 
 // tokenExpired reports whether the JWT's exp claim is in the past, with
 // leeway for clock skew between this machine and the token issuer.
 // Tokens that don't parse or carry no exp claim are treated as valid.
 func tokenExpired(token string) bool {
-	parsed, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
-	if err != nil {
-		return false
-	}
-	exp, err := parsed.Claims.GetExpirationTime()
-	if err != nil || exp == nil {
+	exp, ok := tokenExpiry(token)
+	if !ok {
 		return false
 	}
 	return exp.Before(time.Now().Add(-expiryLeeway))
@@ -143,9 +212,9 @@ func awaitRefresh(ctx context.Context, done <-chan struct{}) string {
 }
 
 func runTokenRefresh(ctx context.Context) string {
-	slog.DebugContext(ctx, "Docker Desktop returned an expired token, forcing a refresh")
+	slog.WarnContext(ctx, "Forcing a Docker Desktop token refresh")
 	if err := postRefreshNudge(ctx); err != nil {
-		slog.DebugContext(ctx, "Failed to trigger Docker Desktop token refresh", "error", err)
+		slog.WarnContext(ctx, "Failed to trigger Docker Desktop token refresh", "error", err)
 		return ""
 	}
 
@@ -154,12 +223,12 @@ func runTokenRefresh(ctx context.Context) string {
 
 	for {
 		// Check right away: Desktop may have refreshed synchronously.
-		if token := fetchToken(ctx); token != "" && !tokenExpired(token) {
+		if token, err := fetchToken(ctx); err == nil && token != "" && !tokenExpired(token) {
 			return token
 		}
 		select {
 		case <-ctx.Done():
-			slog.DebugContext(ctx, "Docker Desktop did not deliver a fresh token in time")
+			slog.WarnContext(ctx, "Docker Desktop did not deliver a fresh token in time")
 			return ""
 		case <-ticker.C:
 		}

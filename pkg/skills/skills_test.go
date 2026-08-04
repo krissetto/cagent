@@ -458,6 +458,7 @@ func TestLoad_AgentsSkillsGlobal(t *testing.T) {
 	// Create a temp home directory with .agents/skills
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	agentsSkillDir := filepath.Join(tmpHome, ".agents", "skills", "global-skill")
 	require.NoError(t, os.MkdirAll(agentsSkillDir, 0o755))
@@ -493,6 +494,7 @@ func TestLoad_AgentsSkillsGlobalRecursive(t *testing.T) {
 	// Create a temp home directory with nested .agents/skills
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	// Create a deeply nested skill under ~/.agents/skills/
 	nestedSkillDir := filepath.Join(tmpHome, ".agents", "skills", "project-a", "skill-one")
@@ -613,6 +615,7 @@ description: A skill from repo root
 	// Set HOME to a directory without skills to isolate test
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	skills := Load(t.Context(), []string{"local"})
 
@@ -653,6 +656,7 @@ description: A skill from .github/skills
 
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	skills := Load(t.Context(), []string{"local"})
 
@@ -700,6 +704,7 @@ description: Agents version
 
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	skills := Load(t.Context(), []string{"local"})
 
@@ -722,6 +727,7 @@ func TestLoad_AgentsSkillsFromNonGitGroupingParent(t *testing.T) {
 	// grouping root itself.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Grouping root (~/org) is NOT a git repo and holds a cross-repo skill.
 	groupingSkillDir := filepath.Join(home, "org", ".agents", "skills", "services")
@@ -762,6 +768,7 @@ func TestLoad_AgentsSkillsPrecedence_GroupingOverridesGlobal(t *testing.T) {
 	// must win over the global one.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	globalSkillDir := filepath.Join(home, ".agents", "skills", "shared-skill")
 	require.NoError(t, os.MkdirAll(globalSkillDir, 0o755))
@@ -808,6 +815,7 @@ func TestLoad_AgentsSkillsPrecedence_ProjectOverridesGlobal(t *testing.T) {
 	// Create a temp home directory with a global skill
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	globalSkillDir := filepath.Join(tmpHome, ".agents", "skills", "shared-skill")
 	require.NoError(t, os.MkdirAll(globalSkillDir, 0o755))
@@ -891,6 +899,7 @@ description: Subproject version
 	// Set HOME to empty dir
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	// From repo root, should get root version
 	t.Chdir(tmpRepo)
@@ -953,6 +962,7 @@ func TestLoad_KitDirOverridesEverything(t *testing.T) {
 	// don't exist inside the sandbox.
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	// Stage a host-only skill the test must NOT see.
 	hostSkillDir := filepath.Join(tmpHome, ".agents", "skills", "host-only")
@@ -1040,6 +1050,7 @@ func TestProjectSearchDirs(t *testing.T) {
 	t.Run("under home walks past git root up to but not including home", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
 
 		// A sub-repo (its own .git) inside a non-git grouping parent.
 		repo := filepath.Join(home, "org", "repo")

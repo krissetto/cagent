@@ -195,7 +195,7 @@ func (a ociSource) read(ctx context.Context) (data []byte, degraded bool, err er
 	}
 
 	// Normalize the reference so that equivalent forms (e.g.
-	// "agentcatalog/review-pr" and "index.docker.io/agentcatalog/review-pr:latest")
+	// "myorg/review-pr" and "index.docker.io/myorg/review-pr:latest")
 	// resolve to the same store key that remote.Pull uses.
 	storeKey, err := remote.NormalizeReference(a.reference)
 	if err != nil {

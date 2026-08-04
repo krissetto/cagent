@@ -511,7 +511,7 @@ func (t *ToolSet) Instructions() string {
 
 Use background agent tasks to dispatch work to sub-agents concurrently.
 
-- **run_background_agent**: Start a command, returns task ID. The sub-agent runs with all tools pre-approved — use only with trusted sub-agents and well-scoped tasks.
+- **run_background_agent**: Start a command and return its task ID. Native sub-agents inherit the current session's safety policy and permissions; calls requiring confirmation are denied because background tasks are non-interactive. External harnesses enforce their own permission model.
 - **list_background_agents**: Show all tasks with status and runtime
 - **view_background_agent**: Get output and status of a task by task_id
 - **stop_background_agent**: Terminate a task by task_id
@@ -525,8 +525,9 @@ func backgroundAgentTools() []tools.Tool {
 			Name:     ToolNameRunBackgroundAgent,
 			Category: "transfer",
 			Description: `Start a sub-agent task in the background and return immediately with a task ID.
-Use this to dispatch work to multiple sub-agents concurrently. The sub-agent runs with all tools
-pre-approved — use only with trusted sub-agents and well-scoped tasks. Check progress with
+Use this to dispatch work to multiple sub-agents concurrently. Native sub-agents inherit the current
+session's safety policy and permissions; calls requiring confirmation are denied because background
+tasks are non-interactive. External harnesses enforce their own permission model. Check progress with
 view_background_agent and collect results once the task is complete.`,
 			Parameters:  tools.MustSchemaFor[RunBackgroundAgentArgs](),
 			Annotations: tools.ToolAnnotations{Title: "Run Background Agent"},

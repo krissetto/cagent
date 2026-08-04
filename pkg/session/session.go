@@ -33,32 +33,62 @@ const (
 	toolResultTruncationMarker = "\n[...tool result truncated: middle omitted...]\n"
 )
 
-// SafetyPolicy is the per-session safety preference. It is data only:
-// the runtime forwards it to hooks via [hooks.Input.SafetyPolicy] and
-// classifiers (e.g. safer_shell) adapt on it. Empty ⇒ derive from
-// ToolsApproved (true ⇒ unsafe, false ⇒ strict).
+// SafetyPolicy is the per-session safety mode. The runtime routes
+// tool calls to allow/ask through the (mode × safety-label) table in
+// pkg/runtime/toolexec; custom permission rules always win over the
+// mode.
+//
+// Empty means "never explicitly chosen": tool calls behave like the
+// pre-modes default (read-only-annotated tools auto-approve, everything
+// else asks), except that ToolsApproved=true upgrades it to Autonomous.
 type SafetyPolicy string
 
 const (
-	// SafetyPolicyUnsafe: --yolo / ToolsApproved=true equivalent.
-	// Classifiers stay silent, tool calls auto-approve.
-	SafetyPolicyUnsafe SafetyPolicy = "unsafe"
-	// SafetyPolicySafer: auto-approve except classifier-flagged
-	// destructive calls (blast_radius low/medium/high).
-	SafetyPolicySafer SafetyPolicy = "safer"
-	// SafetyPolicySafeAuto: auto-approve shell calls the classifier
-	// positively recognises as safe (blast_radius=safe); ask on
-	// destructive and unknown. Sits between safer and strict:
-	// safer waves through unknown too, strict prompts for safe.
-	SafetyPolicySafeAuto SafetyPolicy = "safe-auto"
-	// SafetyPolicyStrict: today's no-yolo CLI default — prompt for
-	// anything not auto-approved by a checker rule.
+	// SafetyPolicyStrict prompts on every tool call, including
+	// read-only ones. Only custom allow rules silence a prompt.
 	SafetyPolicyStrict SafetyPolicy = "strict"
+	// SafetyPolicyBalanced auto-approves classifier-safe calls
+	// (safe-listed shell commands, read-only-annotated tools); asks
+	// on destructive and unknown.
+	SafetyPolicyBalanced SafetyPolicy = "balanced"
+	// SafetyPolicyAutonomous auto-approves every call (legacy yolo).
+	// Only custom deny/ask rules and preempt hooks still gate.
+	SafetyPolicyAutonomous SafetyPolicy = "autonomous"
 )
 
+// Legacy safety-policy values accepted on input (API requests,
+// persisted sessions) and normalized by [SafetyPolicy.Normalize].
+// Never emitted by new code.
+const (
+	legacyPolicyUnsafe   SafetyPolicy = "unsafe"
+	legacyPolicySafer    SafetyPolicy = "safer"
+	legacyPolicySafeAuto SafetyPolicy = "safe-auto"
+)
+
+// Normalize maps legacy policy values onto the current three-mode
+// vocabulary: unsafe → autonomous, safer / safe-auto → balanced
+// (the cautious mapping: old "safer" also waved unknown calls
+// through, balanced asks about them). Current values and empty pass
+// through unchanged; unrecognised values collapse to strict so an
+// unknown input can never widen approval.
+func (p SafetyPolicy) Normalize() SafetyPolicy {
+	switch p {
+	case "", SafetyPolicyStrict, SafetyPolicyBalanced, SafetyPolicyAutonomous:
+		return p
+	case legacyPolicyUnsafe:
+		return SafetyPolicyAutonomous
+	case legacyPolicySafer, legacyPolicySafeAuto:
+		return SafetyPolicyBalanced
+	default:
+		return SafetyPolicyStrict
+	}
+}
+
+// IsValid accepts current values, the legacy aliases, and empty.
 func (p SafetyPolicy) IsValid() bool {
 	switch p {
-	case "", SafetyPolicyUnsafe, SafetyPolicySafer, SafetyPolicySafeAuto, SafetyPolicyStrict:
+	case "", SafetyPolicyStrict, SafetyPolicyBalanced, SafetyPolicyAutonomous,
+		legacyPolicyUnsafe, legacyPolicySafer, legacyPolicySafeAuto:
 		return true
 	}
 	return false
@@ -76,6 +106,12 @@ type Item struct {
 	// error survive a session reload and travel with a shared JSON export
 	// for diagnostics.
 	Error *Error `json:"error,omitempty"`
+
+	// Termination holds a structured, non-error run stop marker (e.g. a
+	// budget ceiling) recorded by the evaluation pipeline. Storing it as an
+	// item keeps the stop's chronological position across reloads and
+	// JSON exports. Absent for runs that ended normally or with an error.
+	Termination *Termination `json:"termination,omitempty"`
 
 	// Summary is a summary of the session up until this point
 	Summary string `json:"summary,omitempty"`
@@ -123,6 +159,11 @@ func (si *Item) IsError() bool {
 	return si.Error != nil
 }
 
+// IsTermination returns true if this item contains a termination marker
+func (si *Item) IsTermination() bool {
+	return si.Termination != nil
+}
+
 // Error records an agent failure that occurred during a run. It is stored as
 // a session item so the error is visible when the session is reopened and is
 // included in a shared JSON session export for diagnostics.
@@ -136,6 +177,36 @@ type Error struct {
 	AgentName string `json:"agent_name,omitempty"`
 	// CreatedAt is the RFC3339 timestamp of the failure.
 	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// TerminationReasonBudgetExceeded is the only recognized Termination
+// reason: the runtime's native budget_exceeded event.
+const TerminationReasonBudgetExceeded = "budget_exceeded"
+
+// Termination records a structured, non-error run stop observed during an
+// evaluation, currently only the runtime's budget_exceeded event. It is an
+// allow-listed copy of that event: all fields are plain strings, only
+// Reason is required, and producers omit optional fields whose source
+// value is missing or unusable. It deliberately never carries session,
+// agent, prompt, or tool data.
+type Termination struct {
+	// Reason is the stop reason; the only recognized value is
+	// [TerminationReasonBudgetExceeded].
+	Reason string `json:"reason"`
+	// Budget names the budget that tripped: "run" for the top-level
+	// `budget:`, otherwise the key under `budgets:`.
+	Budget string `json:"budget,omitempty"`
+	// Limit is the limit kind that tripped ("max_cost", "max_tokens",
+	// "max_time").
+	Limit string `json:"limit,omitempty"`
+	// Used and Max are the human-readable amounts reported by the runtime.
+	Used string `json:"used,omitempty"`
+	Max  string `json:"max,omitempty"`
+	// ConfigPath is the YAML path of the limit that tripped, e.g.
+	// "budgets.tight.max_cost".
+	ConfigPath string `json:"config_path,omitempty"`
+	// Message is the human-readable stop message reported by the runtime.
+	Message string `json:"message,omitempty"`
 }
 
 // Session represents the agent's state including conversation history and variables
@@ -187,6 +258,12 @@ type Session struct {
 	// SafetyPolicy is the per-session safety preference. See the
 	// [SafetyPolicy] type doc for the three modes and empty-value semantics.
 	SafetyPolicy SafetyPolicy `json:"safety_policy,omitempty"`
+
+	// PriorSafetyPolicy remembers the mode that was active before a yolo
+	// toggle escalated to Autonomous, so toggling off restores it instead
+	// of discarding an explicit Balanced/Strict choice. Managed by
+	// [Session.ToggleYolo]; empty outside a toggle escalation.
+	PriorSafetyPolicy SafetyPolicy `json:"prior_safety_policy,omitempty"`
 
 	// NonInteractive indicates the session is running in a non-interactive context
 	// (e.g. MCP server, A2A adapter, evaluation framework) where there is no user
@@ -474,6 +551,11 @@ func NewErrorItem(e *Error) Item {
 	return Item{Error: e}
 }
 
+// NewTerminationItem creates a SessionItem containing a termination marker
+func NewTerminationItem(t *Termination) Item {
+	return Item{Termination: t}
+}
+
 // EvalResult contains the evaluation scoring outcome for a session.
 type EvalResult struct {
 	Passed       bool             `json:"passed"`
@@ -483,6 +565,11 @@ type EvalResult struct {
 	Cost         float64          `json:"cost"`
 	OutputTokens int64            `json:"output_tokens"`
 	Checks       EvalResultChecks `json:"checks"`
+	// Termination is the structured, non-error stop recorded for the run
+	// (e.g. budget exceeded), copied from the session items. It is
+	// informational only and does not affect Passed, Failures, or Error.
+	// Absent for runs that ended normally or with an error.
+	Termination *Termination `json:"termination,omitempty"`
 }
 
 // EvalResultChecks groups the individual check results.
@@ -951,6 +1038,29 @@ func (s *Session) AddError(e *Error) {
 	s.Messages = append(s.Messages, NewErrorItem(e))
 }
 
+// AddTermination appends a structured termination marker to the session so
+// the stop's chronological position survives reload and JSON export.
+func (s *Session) AddTermination(t *Termination) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Messages = append(s.Messages, NewTerminationItem(t))
+}
+
+// Termination returns a copy of the first structured termination marker
+// recorded in the session's items, or nil when the run was never stopped
+// by one.
+func (s *Session) Termination() *Termination {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.Messages {
+		if s.Messages[i].Termination != nil {
+			t := *s.Messages[i].Termination
+			return &t
+		}
+	}
+	return nil
+}
+
 // Duration calculates the duration of the session from message timestamps.
 func (s *Session) Duration() time.Duration {
 	messages := s.GetAllMessages()
@@ -1201,26 +1311,30 @@ func WithMessages(messages []Item) Opt {
 
 // WithToolsApproved is the legacy --yolo setter. Prefer
 // [WithSafetyPolicy]. With toolsApproved=true and no explicit
-// SafetyPolicy, pins the policy to [SafetyPolicyUnsafe].
+// SafetyPolicy, pins the policy to [SafetyPolicyAutonomous].
 func WithToolsApproved(toolsApproved bool) Opt {
 	return func(s *Session) {
 		s.ToolsApproved = toolsApproved
 		if toolsApproved && s.SafetyPolicy == "" {
-			s.SafetyPolicy = SafetyPolicyUnsafe
+			s.SafetyPolicy = SafetyPolicyAutonomous
 		}
 	}
 }
 
-// WithSafetyPolicy sets the session's safety preference.
-// [SafetyPolicyUnsafe] also flips ToolsApproved=true so legacy branches
-// on ToolsApproved keep working. The other modes leave ToolsApproved
-// alone — set both if you want auto-approve + selective gating.
+// WithSafetyPolicy sets the session's safety mode. The input is
+// normalized (legacy aliases map onto the three-mode vocabulary) and
+// ToolsApproved is kept in sync so legacy readers of that flag agree
+// with the mode. Empty means "no explicit choice" and is a no-op, so
+// the option composes with [WithToolsApproved] regardless of order
+// (--yolo callers pass ToolsApproved=true and an empty policy).
 func WithSafetyPolicy(policy SafetyPolicy) Opt {
 	return func(s *Session) {
-		s.SafetyPolicy = policy
-		if policy == SafetyPolicyUnsafe {
-			s.ToolsApproved = true
+		policy = policy.Normalize()
+		if policy == "" {
+			return
 		}
+		s.SafetyPolicy = policy
+		s.ToolsApproved = policy == SafetyPolicyAutonomous
 	}
 }
 
@@ -1431,12 +1545,26 @@ func (s *Session) EmbeddedSubSessionCost() float64 {
 	return cost
 }
 
-// IsToolsApproved returns a consistent snapshot of the ToolsApproved flag.
-// This is safe to call concurrently with session mutations.
+// IsToolsApproved reports whether every tool call auto-approves. It is
+// derived from the effective safety mode — [SafetyPolicyAutonomous] —
+// so a mode downgrade takes effect even if the legacy ToolsApproved
+// flag was left behind by an older writer. Safe for concurrent use.
 func (s *Session) IsToolsApproved() bool {
+	return s.GetSafetyPolicy() == SafetyPolicyAutonomous
+}
+
+// GetSafetyPolicy returns the session's effective safety mode: the
+// normalized explicit policy or, when none was ever chosen,
+// [SafetyPolicyAutonomous] if the legacy ToolsApproved flag is set and
+// the empty legacy default otherwise. Safe for concurrent use.
+func (s *Session) GetSafetyPolicy() SafetyPolicy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.ToolsApproved
+	policy := s.SafetyPolicy.Normalize()
+	if policy == "" && s.ToolsApproved {
+		return SafetyPolicyAutonomous
+	}
+	return policy
 }
 
 // ClonePermissions returns a deep copy of the session's PermissionsConfig.
@@ -1454,30 +1582,72 @@ func (s *Session) SetPermissions(perms *PermissionsConfig) {
 	s.Permissions = perms
 }
 
-// SetToolsApproved updates ToolsApproved under s.mu so concurrent readers
-// (e.g. background-agent goroutines calling IsToolsApproved) observe a
-// consistent value. It mirrors WithToolsApproved's SafetyPolicy sync.
+// SetToolsApproved is the legacy --yolo toggle. Prefer
+// [Session.SetSafetyPolicy]; this maps true → Autonomous (when no
+// explicit mode was chosen) so the two signals cannot disagree.
 func (s *Session) SetToolsApproved(approved bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ToolsApproved = approved
 	if approved && s.SafetyPolicy == "" {
-		s.SafetyPolicy = SafetyPolicyUnsafe
+		s.SafetyPolicy = SafetyPolicyAutonomous
 	}
 }
 
-// SetSafetyPolicy updates the session's SafetyPolicy under s.mu.
-// Mirrors WithSafetyPolicy: setting unsafe also flips ToolsApproved
-// so legacy branches on ToolsApproved keep working. Runtime callers
-// use this to persist a user's mid-session mode change (e.g. opting
-// into safe-auto from a confirmation prompt).
+// SetSafetyPolicy updates the session's safety mode under s.mu,
+// normalizing legacy aliases. ToolsApproved is synced in the same
+// critical section (Autonomous → true, anything else → false) so a
+// mode downgrade genuinely revokes the blanket approval, serialized
+// state stays coherent for legacy readers, and no concurrent
+// GetSafetyPolicy can observe a half-updated combination.
+//
+// SetSafetyPolicy("") is NOT a no-op: it is a full reset to the legacy
+// default (read-only tools auto-approve, everything else asks) and
+// CLEARS ToolsApproved, demoting a --yolo session. Callers that want
+// to keep a blanket approval must pass [SafetyPolicyAutonomous]; the
+// [WithSafetyPolicy] option is the empty-means-unset variant.
+//
+// Runtime callers use this to persist a user's mid-session mode change
+// (e.g. opting into Balanced from a confirmation prompt).
 func (s *Session) SetSafetyPolicy(policy SafetyPolicy) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.SafetyPolicy = policy
-	if policy == SafetyPolicyUnsafe {
-		s.ToolsApproved = true
+	s.SafetyPolicy = policy.Normalize()
+	s.ToolsApproved = s.SafetyPolicy == SafetyPolicyAutonomous
+	// An explicit choice invalidates the yolo-toggle memory: toggling
+	// off later must not resurrect a mode the user has since replaced.
+	s.PriorSafetyPolicy = ""
+}
+
+// GetPriorSafetyPolicy returns the yolo-toggle memory (see
+// [Session.ToggleYolo]). Safe for concurrent use.
+func (s *Session) GetPriorSafetyPolicy() SafetyPolicy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.PriorSafetyPolicy
+}
+
+// ToggleYolo flips the session between Autonomous and the mode that was
+// active before the escalation, so an explicit Balanced/Strict choice
+// survives a toggle round-trip. A session that was never escalated from
+// a named mode drops back to the legacy default (""). The method is its
+// own inverse, which callers use to roll back a toggle whose
+// persistence failed.
+func (s *Session) ToggleYolo() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.SafetyPolicy.Normalize()
+	if current == "" && s.ToolsApproved {
+		current = SafetyPolicyAutonomous
 	}
+	if current == SafetyPolicyAutonomous {
+		s.SafetyPolicy = s.PriorSafetyPolicy.Normalize()
+		s.PriorSafetyPolicy = ""
+	} else {
+		s.PriorSafetyPolicy = current
+		s.SafetyPolicy = SafetyPolicyAutonomous
+	}
+	s.ToolsApproved = s.SafetyPolicy == SafetyPolicyAutonomous
 }
 
 // AppendPermissionAllow adds toolName to the session's Allow list if not
@@ -1654,7 +1824,10 @@ func (s *Session) LastSummary() string {
 // first kept message so that recent context is preserved after compaction.
 // Otherwise it is lastSummaryIndex+1 (i.e. right after the summary item), or
 // 0 when there is no summary.
-func (s *Session) buildSessionSummaryMessages(items []Item) ([]chat.Message, int) {
+//
+// summary is the raw text of the last summary item in items ("" when there
+// is none), i.e. exactly the text the synthetic message carries.
+func (s *Session) buildSessionSummaryMessages(items []Item) ([]chat.Message, int, string) {
 	var messages []chat.Message
 	// Find the last summary index to determine where conversation messages start
 	// and to include the summary in session summary messages
@@ -1666,10 +1839,12 @@ func (s *Session) buildSessionSummaryMessages(items []Item) ([]chat.Message, int
 		}
 	}
 
+	summary := ""
 	if lastSummaryIndex >= 0 && lastSummaryIndex < len(items) {
+		summary = items[lastSummaryIndex].Summary
 		messages = append(messages, chat.Message{
 			Role:      chat.MessageRoleUser,
-			Content:   SummaryMessageContent(items[lastSummaryIndex].Summary),
+			Content:   SummaryMessageContent(summary),
 			CreatedAt: s.now().Format(time.RFC3339),
 		})
 	}
@@ -1685,7 +1860,7 @@ func (s *Session) buildSessionSummaryMessages(items []Item) ([]chat.Message, int
 		}
 	}
 
-	return messages, startIndex
+	return messages, startIndex, summary
 }
 
 // CompactionInput returns the chat messages that the compactor should
@@ -1813,16 +1988,30 @@ func (s *Session) instructionMessages() ([]chat.Message, []InstructionUpdate) {
 }
 
 func (s *Session) GetMessages(a *agent.Agent, extraSystemMessages ...chat.Message) []chat.Message {
-	return s.getMessages(a, true, extraSystemMessages...)
+	messages, _ := s.getMessages(a, true, extraSystemMessages...)
+	return messages
 }
 
 // GetMessagesWithoutInstructionContext assembles the legacy prompt where
 // dynamic context is supplied directly as extra system messages.
 func (s *Session) GetMessagesWithoutInstructionContext(a *agent.Agent, extraSystemMessages ...chat.Message) []chat.Message {
-	return s.getMessages(a, false, extraSystemMessages...)
+	messages, _ := s.getMessages(a, false, extraSystemMessages...)
+	return messages
 }
 
-func (s *Session) getMessages(a *agent.Agent, includeInstructionContext bool, extraSystemMessages ...chat.Message) []chat.Message {
+// GetMessagesAndLastSummary is GetMessages plus the most recent compaction
+// summary that assembly used, both derived from the same snapshot of
+// s.Messages: the returned summary is exactly the text behind the synthetic
+// "Session Summary: ..." user message in the returned prompt ("" when the
+// snapshot holds no summary), even if a compaction lands concurrently.
+// Separate GetMessages and LastSummary calls cannot promise that. The
+// guarantee covers only the session-history snapshot, not the other state
+// read during assembly (instruction context, agent configuration).
+func (s *Session) GetMessagesAndLastSummary(a *agent.Agent, extraSystemMessages ...chat.Message) ([]chat.Message, string) {
+	return s.getMessages(a, true, extraSystemMessages...)
+}
+
+func (s *Session) getMessages(a *agent.Agent, includeInstructionContext bool, extraSystemMessages ...chat.Message) ([]chat.Message, string) {
 	slog.Debug("Getting messages for agent", "agent", a.Name(), "session_id", s.ID)
 
 	// Build invariant system messages (cacheable across sessions/users/projects)
@@ -1839,7 +2028,7 @@ func (s *Session) getMessages(a *agent.Agent, includeInstructionContext bool, ex
 	}
 
 	// Build session summary messages (vary per session)
-	summaryMessages, startIndex := s.buildSessionSummaryMessages(items)
+	summaryMessages, startIndex, summary := s.buildSessionSummaryMessages(items)
 
 	var messages []chat.Message
 	messages = append(messages, invariantMessages...)
@@ -1922,7 +2111,7 @@ func (s *Session) getMessages(a *agent.Agent, includeInstructionContext bool, ex
 		"conversation_messages", conversationCount,
 		"max_history_items", maxItems)
 
-	return messages
+	return messages, summary
 }
 
 // trimMessages ensures we don't exceed the maximum number of messages while maintaining

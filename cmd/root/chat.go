@@ -38,7 +38,7 @@ speak OpenAI's chat protocol (such as Open WebUI) drive a docker-agent
 agent without any custom integration.`,
 		Example: `  docker-agent serve chat ./agent.yaml
   docker-agent serve chat ./team.yaml --agent reviewer
-  docker-agent serve chat agentcatalog/pirate --listen 127.0.0.1:9090`,
+  docker-agent serve chat myorg/agent:tag --listen 127.0.0.1:9090`,
 		Args: cobra.ExactArgs(1),
 		RunE: flags.runChatCommand,
 	}

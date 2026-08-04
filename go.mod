@@ -14,7 +14,7 @@ require (
 	github.com/a2aproject/a2a-go v0.3.15
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/alpkeskin/gotoon v0.1.1
-	github.com/anthropics/anthropic-sdk-go v1.58.1
+	github.com/anthropics/anthropic-sdk-go v1.61.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.43.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.31
@@ -32,8 +32,8 @@ require (
 	github.com/docker/aijson v0.1.0
 	github.com/docker/cli v29.6.2+incompatible
 	github.com/docker/go-units v0.5.0
-	github.com/docker/portcullis v0.0.0-20260716075131-3d4d8c21f0db
-	github.com/dop251/goja v0.0.0-20260721123636-c65cf2f023c8
+	github.com/docker/portcullis v1.0.0
+	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
 	github.com/expr-lang/expr v1.17.8
 	github.com/fatih/color v1.19.0
 	github.com/fsnotify/fsnotify v1.10.1
@@ -48,11 +48,11 @@ require (
 	github.com/junegunn/fzf v0.74.1
 	github.com/k3a/html2text v1.4.0
 	github.com/labstack/echo/v4 v4.15.4
-	github.com/mattn/go-isatty v0.0.23
-	github.com/mattn/go-runewidth v0.0.24
+	github.com/mattn/go-isatty v0.0.24
+	github.com/mattn/go-runewidth v0.0.27
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/natefinch/atomic v1.0.1
-	github.com/openai/openai-go/v3 v3.44.0
+	github.com/openai/openai-go/v3 v3.46.0
 	github.com/pb33f/libopenapi v0.38.7
 	github.com/rivo/uniseg v0.4.7
 	github.com/rumpl/harness v0.0.0-20260612213434-3f63cb8efc05
@@ -77,7 +77,7 @@ require (
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	google.golang.org/adk v1.2.0
-	google.golang.org/genai v1.64.0
+	google.golang.org/genai v1.65.0
 	gopkg.in/dnaeon/go-vcr.v4 v4.0.7
 	gotest.tools/v3 v3.5.2
 	modernc.org/sqlite v1.54.0
@@ -155,7 +155,7 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fvbommel/sortorder v1.1.0 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
-	github.com/go-git/go-billy/v5 v5.9.0
+	github.com/go-git/go-billy/v5 v5.9.1
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
@@ -198,7 +198,7 @@ require (
 	github.com/skeema/knownhosts v1.3.1 // indirect
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/objx v0.5.2 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
@@ -220,8 +220,8 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.44.0
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
-	golang.org/x/crypto v0.53.0 // indirect
-	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect

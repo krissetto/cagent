@@ -90,6 +90,18 @@ func TestSupportedThinkingLevels(t *testing.T) {
 			want:     []effort.Level{effort.None, effort.Low, effort.Medium, effort.High},
 		},
 		{
+			name:     "claude opus 5 gets xhigh and max",
+			provider: "anthropic",
+			modelID:  "claude-opus-5",
+			want:     []effort.Level{effort.None, effort.Low, effort.Medium, effort.High, effort.XHigh, effort.Max},
+		},
+		{
+			name:     "bedrock claude opus 5 gets xhigh and max",
+			provider: "amazon-bedrock",
+			modelID:  "us.anthropic.claude-opus-5-20260724",
+			want:     []effort.Level{effort.None, effort.Low, effort.Medium, effort.High, effort.XHigh, effort.Max},
+		},
+		{
 			name:     "claude fable gets xhigh and max",
 			provider: "anthropic",
 			modelID:  "claude-fable-5",
@@ -419,6 +431,9 @@ func TestAnthropicTopEfforts(t *testing.T) {
 		// Both xhigh and max.
 		{"claude-opus-4-7", []effort.Level{effort.XHigh, effort.Max}},
 		{"claude-opus-4-8", []effort.Level{effort.XHigh, effort.Max}},
+		{"claude-opus-5", []effort.Level{effort.XHigh, effort.Max}},
+		{"claude-opus-5-20260724", []effort.Level{effort.XHigh, effort.Max}},
+		{"us.anthropic.claude-opus-5", []effort.Level{effort.XHigh, effort.Max}},
 		{"claude-fable-5", []effort.Level{effort.XHigh, effort.Max}},
 		{"claude-mythos-5", []effort.Level{effort.XHigh, effort.Max}},
 		// Bedrock-style identifiers with regional prefixes: the prefix is

@@ -19,7 +19,7 @@ A Docker Agent config has these main sections:
 
 ```bash
 # 1. Version — configuration schema version (optional but recommended)
-version: 14
+version: 15
 
 # 2. Metadata — optional agent metadata for distribution
 metadata:
@@ -279,7 +279,7 @@ Prefer `${env.X}` everywhere. The bare `$X` / `${X}` and `~` forms are accepted 
 
 Docker Agent validates your configuration at startup:
 
-- Local `sub_agents` must reference agents defined in the config (external OCI references like `agentcatalog/pirate` are pulled from registries automatically; pin them to a digest with `@sha256:…` to avoid a per-run registry lookup)
+- Local `sub_agents` must reference agents defined in the config (external OCI references like `myorg/agent:tag` are pulled from registries automatically; pin them to a digest with `@sha256:…` to avoid a per-run registry lookup)
 - Named model references must exist in the `models` section
 - Provider names must be valid (`openai`, `anthropic`, `google`, `dmr`, etc.)
 - Required environment variables (API keys) must be set
@@ -295,10 +295,10 @@ For YAML editor autocompletion and validation, use the [Docker Agent JSON Schema
 
 ## Config Versioning
 
-Docker Agent configs are versioned. The current version is `14`. Add the version at the top of your config:
+Docker Agent configs are versioned. The current version is `15`. Add the version at the top of your config:
 
 ```yaml
-version: 14
+version: 15
 
 agents:
   root:

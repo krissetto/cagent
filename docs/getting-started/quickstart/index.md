@@ -24,16 +24,12 @@ This starts a general-purpose assistant with sensible defaults. Just start chatt
 > [!NOTE]
 > This needs a model: a cloud provider API key, or a local model pulled through Docker Model Runner. [Set Up a Model](../set-up-a-model/index.md) walks through both paths.
 
-## Option B: Run a Pre-Built Agent from the Registry
+## Option B: Run an Agent from a Registry
 
-Try a ready-made agent from the [agent catalog](https://hub.docker.com/u/agentcatalog) — no YAML needed:
+Run an agent shared through any OCI-compatible registry — no local YAML needed:
 
 ```bash
-# Run a pirate-themed assistant
-$ docker agent run agentcatalog/pirate
-
-# Run a coding agent
-$ docker agent run agentcatalog/coder
+$ docker agent run myorg/agent:tag
 ```
 
 ## Option C: Generate a Config Interactively

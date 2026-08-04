@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +97,19 @@ func NewToolset(name, url string, headers map[string]string, opts ...Option) *To
 	return t
 }
 
+func sanitizeURLForLog(rawURL string) string {
+	u, err := neturl.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
+}
+
 // Instructions returns instructions for using the A2A toolset.
 func (t *Toolset) Instructions() string {
 	t.mu.RLock()
@@ -164,7 +178,7 @@ func (t *Toolset) Tools(_ context.Context) ([]tools.Tool, error) {
 
 // Start connects to the A2A agent and fetches the agent card.
 func (t *Toolset) Start(ctx context.Context) error {
-	slog.DebugContext(ctx, "Starting A2A toolset", "url", t.url, "timeout", t.timeout, "allow_private_ips", t.allowPrivateIPs)
+	slog.DebugContext(ctx, "Starting A2A toolset", "server", sanitizeURLForLog(t.url), "timeout", t.timeout, "allow_private_ips", t.allowPrivateIPs)
 
 	// Use the SSRF-safe client to fetch the agent card so a malicious or
 	// misconfigured `url:` cannot reach loopback / RFC1918 / link-local
@@ -183,8 +197,12 @@ func (t *Toolset) Start(ctx context.Context) error {
 		base = http.DefaultTransport
 	}
 
+	endpointOrigin := t.url
+	if card.URL != "" {
+		endpointOrigin = card.URL
+	}
 	headers := t.expander.ExpandMap(ctx, t.headers)
-	httpClient.Transport = upstream.NewHeaderTransport(base, headers)
+	httpClient.Transport = upstream.NewHeaderTransportForOrigin(base, endpointOrigin, headers)
 
 	client, err := a2aclient.NewFromCard(
 		ctx, card,

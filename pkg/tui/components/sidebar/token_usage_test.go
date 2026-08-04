@@ -9,9 +9,27 @@ import (
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/styles"
 )
+
+// TestTokenUsageLine_ShowsCompactionCap verifies the usage line marks a
+// capped effective limit with a short warning marker, and stays silent once
+// SetAgentInfo reports an uncapped/absent compaction model.
+func TestTokenUsageLine_ShowsCompactionCap(t *testing.T) {
+	t.Parallel()
+
+	m := newTestSidebar(t)
+	m.SetAgentInfo("root", "anthropic/claude", "", 16_000, "local/small", 128_000)
+
+	line := ansi.Strip(m.tokenUsageLine())
+	assert.Contains(t, line, "⚠ capped")
+
+	m.SetAgentInfo("root", "anthropic/claude", "", 128_000, "", 0)
+	line = ansi.Strip(m.tokenUsageLine())
+	assert.NotContains(t, line, "capped")
+}
 
 func TestActiveSessionTokens_SingleSession(t *testing.T) {
 	t.Parallel()
@@ -56,7 +74,7 @@ func TestActiveSessionTokens_FallbackToSingleSession(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	m.sessionUsage["session-1"] = &runtime.Usage{
 		InputTokens:  5000,
@@ -73,7 +91,7 @@ func TestActiveSessionTokens_Empty(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	tokens, found := m.activeSessionTokens()
 	assert.False(t, found)
@@ -213,7 +231,7 @@ func TestTokenUsageSummary_NoUsageYet_ShowsZeroLine(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	summary := ansi.Strip(m.tokenUsageSummary())
 	assert.Contains(t, summary, styles.TokenGlyph+" 0")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -251,6 +252,131 @@ func (t *testToolSet) Start(context.Context) error {
 func (t *testToolSet) Stop(context.Context) error {
 	t.stop++
 	return nil
+}
+
+// capableToolSet is a testToolSet that also implements the capability
+// interfaces codeModeTool must forward (Elicitable, Sampleable,
+// SampleableWithTools, OAuthCapable, ChangeNotifier) so tests can assert
+// that codeModeTool actually forwards to inner toolsets instead of
+// silently dropping them (the regression this file guards against: an
+// MCP toolset wrapped by code_mode_tools never got its OAuth elicitation
+// handler wired up, so its authorization dialog never surfaced).
+type capableToolSet struct {
+	testToolSet
+
+	elicitationHandler        tools.ElicitationHandler
+	samplingHandler           tools.SamplingHandler
+	samplingWithToolsHandler  tools.SamplingWithToolsHandler
+	oauthSuccessHandler       func()
+	managedOAuth              bool
+	unmanagedOAuthRedirectURI string
+	toolsChangedHandler       func()
+}
+
+var (
+	_ tools.Elicitable          = (*capableToolSet)(nil)
+	_ tools.Sampleable          = (*capableToolSet)(nil)
+	_ tools.SampleableWithTools = (*capableToolSet)(nil)
+	_ tools.OAuthCapable        = (*capableToolSet)(nil)
+	_ tools.ChangeNotifier      = (*capableToolSet)(nil)
+)
+
+func (c *capableToolSet) SetElicitationHandler(handler tools.ElicitationHandler) {
+	c.elicitationHandler = handler
+}
+
+func (c *capableToolSet) SetSamplingHandler(handler tools.SamplingHandler) {
+	c.samplingHandler = handler
+}
+
+func (c *capableToolSet) SetSamplingWithToolsHandler(handler tools.SamplingWithToolsHandler) {
+	c.samplingWithToolsHandler = handler
+}
+
+func (c *capableToolSet) SetOAuthSuccessHandler(handler func()) {
+	c.oauthSuccessHandler = handler
+}
+
+func (c *capableToolSet) SetManagedOAuth(managed bool) {
+	c.managedOAuth = managed
+}
+
+func (c *capableToolSet) SetUnmanagedOAuthRedirectURI(uri string) {
+	c.unmanagedOAuthRedirectURI = uri
+}
+
+func (c *capableToolSet) SetToolsChangedHandler(handler func()) {
+	c.toolsChangedHandler = handler
+}
+
+// TestCodeModeTool_ForwardsCapabilityHandlers verifies that codeModeTool
+// forwards elicitation, sampling, OAuth, and tool-list-changed handlers to
+// every inner toolset that supports them. Before this fix, codeModeTool
+// implemented none of these capability interfaces, so
+// tools.ConfigureHandlers (called by the runtime once per turn) could never
+// reach an MCP toolset hidden behind code_mode_tools — its OAuth
+// elicitation handler stayed nil forever and the authorization dialog
+// never surfaced.
+func TestCodeModeTool_ForwardsCapabilityHandlers(t *testing.T) {
+	t.Parallel()
+	capable := &capableToolSet{}
+	// A plain toolset without any capability must be tolerated (As returns
+	// ok=false) rather than panicking.
+	plain := &testToolSet{}
+
+	tool := Wrap(capable, plain)
+
+	elicitHandler := func(context.Context, *mcp.ElicitParams) (tools.ElicitationResult, error) {
+		return tools.ElicitationResult{}, nil
+	}
+	samplingHandler := func(context.Context, *mcp.CreateMessageParams) (*mcp.CreateMessageResult, error) {
+		return nil, nil
+	}
+	samplingWithToolsHandler := func(context.Context, *mcp.CreateMessageWithToolsParams) (*mcp.CreateMessageWithToolsResult, error) {
+		return nil, nil
+	}
+	oauthCalled := false
+
+	// tools.ConfigureHandlers is the exact call the runtime makes once per
+	// turn (see configureToolsetHandlers in pkg/runtime/loop.go); routing
+	// through it here instead of casting to each capability interface
+	// directly keeps this test aligned with the real call site.
+	tools.ConfigureHandlers(tool, elicitHandler, samplingHandler, samplingWithToolsHandler,
+		func() { oauthCalled = true }, true, "http://127.0.0.1:1234/callback")
+
+	require.NotNil(t, capable.elicitationHandler)
+	require.NotNil(t, capable.samplingHandler)
+	require.NotNil(t, capable.samplingWithToolsHandler)
+	require.NotNil(t, capable.oauthSuccessHandler)
+	capable.oauthSuccessHandler()
+	assert.True(t, oauthCalled)
+	assert.True(t, capable.managedOAuth)
+	assert.Equal(t, "http://127.0.0.1:1234/callback", capable.unmanagedOAuthRedirectURI)
+
+	changedCalled := false
+	tool.(tools.ChangeNotifier).SetToolsChangedHandler(func() { changedCalled = true })
+	require.NotNil(t, capable.toolsChangedHandler)
+	capable.toolsChangedHandler()
+	assert.True(t, changedCalled)
+}
+
+// TestCodeModeTool_ForwardsCapabilityHandlersThroughStartableWrapper verifies
+// that the capability forwarding also finds an inner toolset wrapped in a
+// tools.StartableToolSet, matching how real MCP toolsets are wired
+// (tools.NewStartable(mcpToolset)) before being handed to codemode.Wrap.
+func TestCodeModeTool_ForwardsCapabilityHandlersThroughStartableWrapper(t *testing.T) {
+	t.Parallel()
+	capable := &capableToolSet{}
+	wrapped := tools.NewStartable(capable)
+
+	tool := Wrap(wrapped)
+
+	handler := func(context.Context, *mcp.ElicitParams) (tools.ElicitationResult, error) {
+		return tools.ElicitationResult{}, nil
+	}
+	tool.(tools.Elicitable).SetElicitationHandler(handler)
+
+	assert.NotNil(t, capable.elicitationHandler)
 }
 
 // TestCodeModeTool_SuccessNoToolCalls verifies that successful execution does not include tool calls.

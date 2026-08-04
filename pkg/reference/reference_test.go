@@ -19,7 +19,7 @@ func TestOciRefToFilename(t *testing.T) {
 		{"registry with port", "localhost:5000/test", "localhost_5000_test.yaml"},
 		{"ref with digest", "myorg/agent@sha256:deadbeef", "myorg_agent_sha256_deadbeef.yaml"},
 		{"port tag and digest", "registry.example.com:443/org/agent:v2@sha256:abc123", "registry.example.com_443_org_agent_v2_sha256_abc123.yaml"},
-		{"no tag", "agentcatalog/pirate", "agentcatalog_pirate.yaml"},
+		{"no tag", "myorg/agent", "myorg_agent.yaml"},
 		{"slash", "a/b", "a_b.yaml"},
 		{"colon", "a:b", "a_b.yaml"},
 		{"at sign", "a@b", "a_b.yaml"},

@@ -197,6 +197,75 @@ func TestLiveSessions_UnknownContextLimit(t *testing.T) {
 	assert.Zero(t, rows[0].ContextLimit, "unresolvable model window reports an unknown limit")
 }
 
+// mapModelStore returns a distinct context limit per model id, letting a
+// test give the worker's primary model and its dedicated compaction model
+// different windows (see compaction_model_integration_test.go).
+
+// TestLiveSessions_CompactionModelAttribution covers the row-level attribution
+// of a capped effective context limit to the dedicated compaction model that
+// imposes it (see [LocalRuntime.liveSessionRow]): a strictly smaller compaction
+// window is attributed, while an equal/larger one, no dedicated model, or an
+// unresolvable compaction window all leave the row unattributed.
+func TestLiveSessions_CompactionModelAttribution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		store               ModelStore
+		workerOpts          []agent.Opt
+		wantContextLimit    int64
+		wantCompactionModel string
+		wantPrimaryLimit    int64
+	}{
+		{
+			name:                "dedicated compaction model smaller caps and attributes",
+			store:               mapModelStore{limits: map[string]int{"worker/primary": 200_000, "worker/compaction": 16_000}},
+			workerOpts:          []agent.Opt{agent.WithCompactionModel(&mockProvider{id: "worker/compaction"})},
+			wantContextLimit:    16_000,
+			wantCompactionModel: "worker/compaction",
+			wantPrimaryLimit:    200_000,
+		},
+		{
+			name:             "equal or larger compaction model leaves attribution zero",
+			store:            mapModelStore{limits: map[string]int{"worker/primary": 200_000, "worker/compaction": 200_000}},
+			workerOpts:       []agent.Opt{agent.WithCompactionModel(&mockProvider{id: "worker/compaction"})},
+			wantContextLimit: 200_000,
+		},
+		{
+			name:             "no dedicated compaction model leaves attribution zero",
+			store:            mapModelStore{limits: map[string]int{"worker/primary": 200_000}},
+			wantContextLimit: 200_000,
+		},
+		{
+			name:             "unresolvable compaction window leaves attribution zero",
+			store:            mapModelStore{limits: map[string]int{"worker/primary": 200_000}},
+			workerOpts:       []agent.Opt{agent.WithCompactionModel(&mockProvider{id: "worker/unresolvable"})},
+			wantContextLimit: 200_000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prov := &stepProvider{id: "worker/primary"}
+			rt := newLiveSessionsRuntime(t, prov, tt.store, tt.workerOpts...)
+
+			rootSess := session.New(session.WithID("root-session"), session.WithUserMessage("hi"))
+			child := newWorkerSession("child-1")
+			rt.registerLiveSession(child)
+
+			rows := rt.LiveSessions(t.Context(), rootSess)
+			require.Len(t, rows, 2)
+			row := rows[1]
+
+			assert.Equal(t, tt.wantContextLimit, row.ContextLimit)
+			assert.Equal(t, tt.wantCompactionModel, row.CompactionModel)
+			assert.Equal(t, tt.wantPrimaryLimit, row.PrimaryContextLimit)
+		})
+	}
+}
+
 // TestLiveSessions_ExcludesSessionsOutsideCurrentRootTree pins the team
 // scoping contract: only descendants of the current root are listed. A stale
 // root stream (the session App.NewSession/ReplaceSession swapped away from
@@ -328,9 +397,13 @@ func TestCompactLiveSession_ExecutesAtIterationBoundary(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	prov := &stepProvider{id: "test/mock-model", steps: []providerStep{
-		// Turn 1: content without a finish reason keeps the loop running,
-		// so the queued request executes at the next iteration boundary.
-		{stream: newStreamBuilder().AddContent("working on it").Build(), started: started, release: release},
+		// Turn 1: a tool call keeps the loop running (Stopped=false), so the
+		// queued request executes at the next iteration boundary.
+		{stream: newStreamBuilder().
+			AddToolCallName("call_1", "unknown_tool").
+			AddToolCallArguments("call_1", "{}").
+			AddToolCallStopWithUsage(1, 1).
+			Build(), started: started, release: release},
 		// The compaction summary call.
 		{stream: newStreamBuilder().AddContent("a compact summary").AddStopWithUsage(10, 5).Build()},
 		// Turn 2: natural stop ends the stream.
@@ -446,14 +519,28 @@ func TestCompactLiveSession_DuplicateSessionIDsCompactOnlyTargetEntry(t *testing
 	startedB := make(chan struct{})
 	releaseB := make(chan struct{})
 	prov := &stepProvider{id: "test/mock-model", steps: []providerStep{
-		// Older stream turn 1: kept in flight while the newer stream
-		// registers under the same session ID.
-		{stream: newStreamBuilder().AddContent("older working").Build(), started: startedA, release: releaseA},
-		// Newer stream turn 1, gated so it stays live throughout.
-		{stream: newStreamBuilder().AddContent("newer working").Build(), started: startedB, release: releaseB},
+		// Older stream turn 1: a tool call keeps the stream live (the loop
+		// continues to execute the call) while the newer stream registers
+		// under the same session ID. A tool-call turn is used rather than a
+		// bare content turn so the older stream deterministically reaches a
+		// second model call regardless of the bare-EOF stop rule.
+		{stream: newStreamBuilder().
+			AddToolCallName("call_older", "unknown_tool").
+			AddToolCallArguments("call_older", "{}").
+			AddToolCallStopWithUsage(1, 1).
+			Build(), started: startedA, release: releaseA},
+		// Newer stream turn 1, gated so it stays live throughout. A tool-call
+		// turn is used (matching the older stream) so the newer stream reaches
+		// an iteration boundary where the pending compaction can run.
+		{stream: newStreamBuilder().
+			AddToolCallName("call_newer", "unknown_tool").
+			AddToolCallArguments("call_newer", "{}").
+			AddToolCallStopWithUsage(1, 1).
+			Build(), started: startedB, release: releaseB},
 		// Older stream turn 2: natural stop. With the request left alone this
-		// is the older stream's next model call; stealing the request would
-		// consume this step as the compaction summary instead.
+		// is the older stream's next model call (after the tool result feeds
+		// back in); stealing the request would consume this step as the
+		// compaction summary instead.
 		{stream: newStreamBuilder().AddStopWithUsage(1, 1).Build()},
 		// The compaction summary call, drained by the newer stream's own
 		// iteration boundary.
@@ -551,7 +638,14 @@ func TestCompactLiveSession_HookVetoSynthesizesSkipped(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	prov := &stepProvider{id: "test/mock-model", steps: []providerStep{
-		{stream: newStreamBuilder().AddContent("working on it").Build(), started: started, release: release},
+		// Turn 1: tool call keeps the loop running (Stopped=false) so the
+		// hook veto fires at the iteration boundary, not at teardown.
+		{stream: newStreamBuilder().
+			AddToolCallName("call_1", "unknown_tool").
+			AddToolCallArguments("call_1", "{}").
+			AddToolCallStopWithUsage(1, 1).
+			Build(), started: started, release: release},
+		// Turn 2: natural stop (model call after the tool result, compaction vetoed).
 		{stream: newStreamBuilder().AddStopWithUsage(1, 1).Build()},
 	}}
 	rt := newLiveSessionsRuntime(t, prov, mockModelStoreWithLimit{limit: 100_000},

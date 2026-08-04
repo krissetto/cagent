@@ -27,7 +27,7 @@ The first provider that has a value wins. You can mix and match — for example,
 
 Whatever provider returns the value, if that value looks like a [1Password secret reference](#1password-references) (it starts with `op://`), Docker Agent resolves it through the `op` CLI before handing it to a model provider or tool.
 
-When Docker Agent runs inside a Docker sandbox (detected via `SANDBOX_VM_ID`), a sandbox token provider is prepended to the chain so that `DOCKER_TOKEN` is read from a continuously-refreshed file instead of a stale environment variable.
+When Docker Agent runs an agent with `--sandbox` and a Docker AI gateway is configured, the sandbox proxy authenticates gateway requests itself: it injects your Docker login token into HTTPS requests to the gateway host (docker.com domains only). The token never enters the sandbox — inside it, `DOCKER_TOKEN` is a proxy-managed placeholder.
 
 ## Environment Variables
 

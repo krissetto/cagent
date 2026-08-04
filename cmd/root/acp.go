@@ -23,7 +23,7 @@ func newACPCmd() *cobra.Command {
 		Long:  "Start an ACP server that exposes the agent via the Agent Client Protocol",
 		Example: `  docker-agent serve acp ./agent.yaml
   docker-agent serve acp ./team.yaml
-  docker-agent serve acp agentcatalog/pirate`,
+  docker-agent serve acp myorg/agent:tag`,
 		Args: cobra.ExactArgs(1),
 		RunE: flags.runACPCommand,
 	}
