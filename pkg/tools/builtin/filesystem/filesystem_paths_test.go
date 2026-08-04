@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -192,8 +193,9 @@ func TestFilesystemTool_AllowList_AbsolutePath(t *testing.T) {
 	require.NoError(t, err)
 
 	// Absolute path outside is rejected.
-	_, err = tool.resolveAndCheckPath("/etc/hosts")
+	_, err = tool.resolveAndCheckPath(filepath.Join(t.TempDir(), "outside.txt"))
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside the allowed directories")
 }
 
 func TestFilesystemTool_DenyList_RejectsMatchingPaths(t *testing.T) {
@@ -215,7 +217,7 @@ func TestFilesystemTool_DenyList_RejectsMatchingPaths(t *testing.T) {
 
 	// And — because no allow-list is set — paths outside the working dir
 	// are still allowed (deny-only configurations preserve broad access).
-	_, err = tool.resolveAndCheckPath("/etc/hosts")
+	_, err = tool.resolveAndCheckPath(filepath.Join(t.TempDir(), "outside.txt"))
 	require.NoError(t, err)
 }
 
@@ -296,10 +298,12 @@ func TestFilesystemTool_AllowList_EmptyDisablesCheck(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+
 	// nil and empty slice both leave the allow-list disabled.
 	for _, roots := range [][]string{nil, {}} {
 		tool := newTestToolSet(t, tmpDir, WithAllowList(roots))
-		_, err := tool.resolveAndCheckPath("/etc/hosts")
+		_, err := tool.resolveAndCheckPath(outside)
 		require.NoError(t, err, "empty/nil allow-list must not constrain")
 	}
 }
@@ -402,9 +406,10 @@ func TestFilesystemTool_Instructions_MentionsRestrictions(t *testing.T) {
 	t.Parallel()
 	wd := t.TempDir()
 
-	// Default instructions: working directory stated, no restriction text.
+	// Default instructions: working directory stated (%q-quoted), no
+	// restriction text.
 	plain := New(wd).Instructions()
-	assert.Contains(t, plain, wd)
+	assert.Contains(t, plain, fmt.Sprintf("%q", wd))
 	assert.NotContains(t, plain, "restricted")
 	assert.NotContains(t, plain, "must not access")
 
@@ -484,7 +489,7 @@ func TestWithAllowList_RejectsUndefinedEnvVar(t *testing.T) {
 
 	// The allow-list construction failed, so the toolset is disabled
 	// (fail-closed). All operations must be rejected.
-	_, err := tool.resolveAndCheckPath("/etc/hosts")
+	_, err := tool.resolveAndCheckPath(filepath.Join(t.TempDir(), "outside.txt"))
 	require.Error(t, err, "undefined env var must cause toolset to fail-closed")
 	assert.Contains(t, err.Error(), "disabled due to invalid")
 
@@ -506,8 +511,9 @@ func TestWithAllowList_AcceptsDefinedEnvVar(t *testing.T) {
 	require.NoError(t, err)
 
 	// Outside is rejected — confirms the allow-list is actually active.
-	_, err = tool.resolveAndCheckPath("/etc/hosts")
+	_, err = tool.resolveAndCheckPath(filepath.Join(t.TempDir(), "outside.txt"))
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside the allowed directories")
 }
 
 func TestDenyList_NonExistentPath(t *testing.T) {

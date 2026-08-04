@@ -3,6 +3,7 @@ package filesystem
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -181,8 +182,9 @@ func TestFilesystemTool_ReadFile(t *testing.T) {
 	assert.Contains(t, result.Output, "not found")
 	// The hint must name the resolved path and the working directory so the
 	// model can correct a wrong base instead of retrying the same path.
-	assert.Contains(t, result.Output, filepath.Join(tmpDir, "nonexistent.txt"))
-	assert.Contains(t, result.Output, tmpDir)
+	// %q-quoted, so Windows separators appear escaped in the output.
+	assert.Contains(t, result.Output, fmt.Sprintf("%q", filepath.Join(tmpDir, "nonexistent.txt")))
+	assert.Contains(t, result.Output, fmt.Sprintf("%q", tmpDir))
 }
 
 // TestFilesystemTool_ReadFile_LineRange is a regression test for issue
