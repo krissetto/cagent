@@ -401,6 +401,10 @@ func (c *Client) runAgentWithAgentName(ctx context.Context, sessionID, agent, ag
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
+		// A single SSE line can carry a large tool response; raise the cap
+		// above bufio's 64 KiB default so an oversized line does not silently
+		// truncate the stream (bufio.ErrTooLong).
+		scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), maxSSELineBytes)
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			if len(line) == 0 || line[0] == ':' {
@@ -439,7 +443,12 @@ func (c *Client) runAgentWithAgentName(ctx context.Context, sessionID, agent, ag
 			eventChan <- e
 		}
 
+		// Surface a read failure (e.g. an over-long line) instead of ending
+		// the stream silently — otherwise the run appears to stop with no
+		// error after the last event that fit.
 		if err := scanner.Err(); err != nil {
+			slog.DebugContext(ctx, "event", "scanner_error", err)
+			eventChan <- Error(fmt.Sprintf("reading event stream: %v", err))
 			return
 		}
 	}()
@@ -542,6 +551,10 @@ func (c *Client) StreamSessionEvents(ctx context.Context, sessionID string) (<-c
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
+		// A single SSE line can carry a large tool response; raise the cap
+		// above bufio's 64 KiB default so an oversized line does not silently
+		// truncate the stream (bufio.ErrTooLong).
+		scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), maxSSELineBytes)
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			if len(line) == 0 || line[0] == ':' {
@@ -580,8 +593,12 @@ func (c *Client) StreamSessionEvents(ctx context.Context, sessionID string) (<-c
 			eventChan <- e
 		}
 
+		// Surface a read failure (e.g. an over-long line) instead of ending
+		// the stream silently — otherwise the run appears to stop with no
+		// error after the last event that fit.
 		if err := scanner.Err(); err != nil {
 			slog.DebugContext(ctx, "scanner error", "error", err)
+			eventChan <- Error(fmt.Sprintf("reading event stream: %v", err))
 		}
 	}()
 
