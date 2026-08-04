@@ -41,6 +41,7 @@ func TestClone_CopiesScalarFields(t *testing.T) {
 		ExcludedTools:           []string{"run_skill"},
 		AgentName:               "root",
 		ParentID:                "parent",
+		DelegationLineage:       []string{"coordinator"},
 	}
 	orig.AddMessage(UserMessage("hello"))
 
@@ -64,6 +65,9 @@ func TestClone_CopiesScalarFields(t *testing.T) {
 	assert.InEpsilon(t, 1.5, clone.Cost, 1e-9)
 	assert.Equal(t, "root", clone.AgentName)
 	assert.Equal(t, "parent", clone.ParentID)
+	assert.Equal(t, []string{"coordinator"}, clone.DelegationLineage)
+	clone.DelegationLineage[0] = "mutated"
+	assert.Equal(t, []string{"coordinator"}, orig.DelegationLineage)
 	assert.Equal(t, "hello", clone.GetLastUserMessageContent())
 	require.NotNil(t, clone.Permissions)
 	assert.Equal(t, []string{"a"}, clone.Permissions.Allow)
