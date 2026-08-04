@@ -178,7 +178,11 @@ func TestFilesystemTool_ReadFile(t *testing.T) {
 		Path: "nonexistent.txt",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "not found", result.Output)
+	assert.Contains(t, result.Output, "not found")
+	// The hint must name the resolved path and the working directory so the
+	// model can correct a wrong base instead of retrying the same path.
+	assert.Contains(t, result.Output, filepath.Join(tmpDir, "nonexistent.txt"))
+	assert.Contains(t, result.Output, tmpDir)
 }
 
 // TestFilesystemTool_ReadFile_LineRange is a regression test for issue
@@ -401,7 +405,7 @@ func TestFilesystemTool_ReadImageFile(t *testing.T) {
 	result, err = tool.handleReadFile(t.Context(), ReadFileArgs{Path: "missing.png"})
 	require.NoError(t, err)
 	assert.True(t, result.IsError)
-	assert.Equal(t, "not found", result.Output)
+	assert.Contains(t, result.Output, "not found")
 }
 
 func TestFilesystemTool_ReadMultipleFiles(t *testing.T) {
@@ -456,7 +460,7 @@ func TestFilesystemTool_ListDirectory(t *testing.T) {
 		Path: "nonexistent",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, result.Output, "Error reading directory")
+	assert.Contains(t, result.Output, "not found")
 }
 
 func TestFilesystemTool_EditFile(t *testing.T) {
