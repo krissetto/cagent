@@ -587,6 +587,22 @@ func TestParseEditFileArgs(t *testing.T) {
 			wantErrMsg: "failed to parse double-serialized edits string",
 		},
 		{
+			name:     "repair: double-serialized with extra closing brace in inner payload",
+			input:    `{"edits": "[{\"oldText\": \"a\", \"newText\": \"b\"}}]", "path": "docker-compose.yml"}`,
+			wantPath: "docker-compose.yml",
+			wantEdits: []Edit{
+				{OldText: "a", NewText: "b"},
+			},
+		},
+		{
+			name:     "repair: double-serialized with extra closing bracket in inner payload",
+			input:    `{"path": "f.go", "edits": "[{\"oldText\": \"a\", \"newText\": \"b\"}]]"}`,
+			wantPath: "f.go",
+			wantEdits: []Edit{
+				{OldText: "a", NewText: "b"},
+			},
+		},
+		{
 			name:     "missing edits field (partial/streaming args)",
 			input:    `{"path": "/tmp/test.txt"}`,
 			wantPath: "/tmp/test.txt",

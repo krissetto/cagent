@@ -388,7 +388,16 @@ func ParseEditFileArgs(data []byte) (EditFileArgs, error) {
 		return EditFileArgs{}, fmt.Errorf("edits field is neither an array nor a JSON string: %w", err)
 	}
 	if err := json.Unmarshal([]byte(editsStr), &args.Edits); err != nil {
-		return EditFileArgs{}, fmt.Errorf("failed to parse double-serialized edits string: %w", err)
+		// The inner payload can carry the same brace/bracket-counting
+		// mistakes as the outer JSON, so give it the same repair pass.
+		repaired, ok := tryRepairEditFileJSON([]byte(editsStr))
+		if !ok {
+			return EditFileArgs{}, fmt.Errorf("failed to parse double-serialized edits string: %w", err)
+		}
+		if err := json.Unmarshal(repaired, &args.Edits); err != nil {
+			return EditFileArgs{}, fmt.Errorf("failed to parse double-serialized edits string after repair: %w", err)
+		}
+		slog.Debug("Repaired malformed double-serialized edits payload")
 	}
 
 	return args, nil
