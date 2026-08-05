@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/latest"
@@ -49,6 +50,8 @@ type ToolSet struct {
 	manager       *rag.Manager
 	toolName      string
 	eventCallback EventCallback
+	cancelWatcher context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 // Verify interface compliance.
@@ -84,20 +87,29 @@ func (t *ToolSet) Start(ctx context.Context) error {
 		return nil
 	}
 
+	// We create a child context so we can explicitly cancel the watcher and event goroutines
+	// when Stop() is called, preventing goroutine leaks if the parent context outlives this toolset.
+	watchCtx, cancel := context.WithCancel(ctx)
+	t.cancelWatcher = cancel
+
 	// Forward RAG manager events if a callback is set.
 	if t.eventCallback != nil {
-		go t.forwardEvents(ctx)
+		t.wg.Go(func() {
+			t.forwardEvents(watchCtx)
+		})
 	}
 
 	if err := t.manager.Initialize(ctx); err != nil {
+		cancel()
+		t.wg.Wait()
 		return fmt.Errorf("failed to initialize RAG manager %q: %w", t.toolName, err)
 	}
 
-	go func() {
-		if err := t.manager.StartFileWatcher(ctx); err != nil {
-			slog.ErrorContext(ctx, "Failed to start RAG file watcher", "tool", t.toolName, "error", err)
+	t.wg.Go(func() {
+		if err := t.manager.StartFileWatcher(watchCtx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.ErrorContext(watchCtx, "Failed to start RAG file watcher", "tool", t.toolName, "error", err)
 		}
-	}()
+	})
 	return nil
 }
 
@@ -106,6 +118,10 @@ func (t *ToolSet) Stop(_ context.Context) error {
 	if t.manager == nil {
 		return nil
 	}
+	if t.cancelWatcher != nil {
+		t.cancelWatcher()
+	}
+	t.wg.Wait()
 	return t.manager.Close()
 }
 
