@@ -37,6 +37,18 @@ const (
 	ToolNameWaitBackgroundJob = "wait_background_job"
 
 	maxBackgroundJobOutputBytes = 10 * 1024 * 1024
+
+	// waitDelayAfterJobExit specifies how long cmd.Wait waits for I/O pipes to close
+	// after the main process exits. Like the shell tool, this prevents hangs when a
+	// background job daemonizes (e.g. `myserver &`) and the grandchild inherits
+	// stdout/stderr. If the delay expires, Wait() returns exec.ErrWaitDelay and the
+	// pipes are forcefully closed. This truncates captured output from the still-running
+	// grandchild and typically kills it with SIGPIPE on its next write. This trade-off
+	// is necessary: run_background_job is designed to exit its direct child quickly
+	// so the agent can continue its turn. If a user needs a permanently-running job
+	// that survives indefinitely while logging, they should redirect its output
+	// (e.g. `myserver > log.txt 2>&1 &`).
+	waitDelayAfterJobExit = 1 * time.Second
 )
 
 // ToolSet manages long-running shell commands.
@@ -224,6 +236,7 @@ func (h *backgroundJobsHandler) runBackgroundJob(ctx context.Context, rt tools.R
 	cmd.Env = h.env
 	cmd.Dir = h.resolveWorkDir(params.Cwd)
 	cmd.SysProcAttr = platformSpecificSysProcAttr()
+	cmd.WaitDelay = waitDelayAfterJobExit
 
 	job := &backgroundJob{
 		id:        jobID,
@@ -273,22 +286,29 @@ func (h *backgroundJobsHandler) monitorJob(ctx context.Context, job *backgroundJ
 	err := cmd.Wait()
 
 	job.outputMu.Lock()
-	if job.status.Load() == statusStopped {
-		job.outputMu.Unlock()
-		return
-	}
 
-	if err != nil {
+	var newStatus int32
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			job.exitCode = exitErr.ExitCode()
 		} else {
 			job.exitCode = -1
 		}
-		job.status.Store(statusFailed)
+		newStatus = statusFailed
 		job.err = err
 	} else {
-		job.exitCode = 0
-		job.status.Store(statusCompleted)
+		// Either err == nil (clean exit) or err == exec.ErrWaitDelay (grandchild inherited pipes).
+		job.exitCode = cmd.ProcessState.ExitCode()
+		if job.exitCode == 0 {
+			newStatus = statusCompleted
+		} else {
+			newStatus = statusFailed
+		}
+	}
+
+	if !job.status.CompareAndSwap(statusRunning, newStatus) {
+		job.outputMu.Unlock()
+		return
 	}
 
 	status := job.status.Load()

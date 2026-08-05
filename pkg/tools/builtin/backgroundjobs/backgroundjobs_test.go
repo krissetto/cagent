@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -422,4 +423,49 @@ func TestResolveWorkDir(t *testing.T) {
 			assert.Equal(t, tt.expected, h.resolveWorkDir(tt.cwd))
 		})
 	}
+}
+
+// Regression test for a backgroundjobs hang caused by backgrounded grandchildren.
+//
+// A command like `sleep 10 &` makes the shell exit immediately, but the
+// backgrounded sleep inherits stdout/stderr. Without cmd.WaitDelay, Go's
+// exec.Cmd.Wait() blocks reading the pipe until the child dies.
+//
+// With the WaitDelay safeguard the monitor goroutine must finish within a small
+// fraction of the sleep timeout, and correctly interpret ErrWaitDelay as a
+// success if the direct child exited 0.
+func TestBackgroundJobsTool_BackgroundedChildDoesNotBlockReturn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell backgrounding semantics; skipped on Windows")
+	}
+
+	tool := New(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
+
+	start := time.Now()
+	result, err := tool.handler.RunBackgroundJob(t.Context(), RunBackgroundJobArgs{
+		// sleep inherits stdout/stderr from the shell and holds the pipe
+		// open for 30s. The monitor must return as soon as the shell exits + waitDelay.
+		Cmd: "sleep 30 &",
+	}, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Wait for the monitor goroutine to mark the job as finished.
+	require.Eventually(t, func() bool {
+		listResult, err := tool.handler.ListBackgroundJobs(t.Context(), nil)
+		require.NoError(t, err)
+		return !strings.Contains(listResult.Output, "Status: running")
+	}, 10*time.Second, 100*time.Millisecond)
+
+	elapsed := time.Since(start)
+	assert.Less(t, elapsed, 5*time.Second,
+		"background job monitor must complete promptly when the command daemonizes a child; elapsed=%s", elapsed)
+
+	// Since the direct child (shell) exited 0, the job should be marked completed
+	// even though the pipes were forcefully closed (ErrWaitDelay).
+	listResult, err := tool.handler.ListBackgroundJobs(t.Context(), nil)
+	require.NoError(t, err)
+	assert.Contains(t, listResult.Output, "Status: completed")
+	assert.Contains(t, listResult.Output, "Exit Code: 0")
 }
