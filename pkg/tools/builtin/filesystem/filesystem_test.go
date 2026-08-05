@@ -603,6 +603,21 @@ func TestParseEditFileArgs(t *testing.T) {
 			},
 		},
 		{
+			name:     "repair: double-serialized with extra closing brace between inner array elements",
+			input:    `{"path": "f.go", "edits": "[{\"oldText\": \"a\", \"newText\": \"b\"}}, {\"oldText\": \"c\", \"newText\": \"d\"}]"}`,
+			wantPath: "f.go",
+			wantEdits: []Edit{
+				{OldText: "a", NewText: "b"},
+				{OldText: "c", NewText: "d"},
+			},
+		},
+		{
+			name:       "repair: rejected when inner repair yields an edit with empty oldText",
+			input:      `{"path": "f.go", "edits": "[{\"oldText\": \"a\"}}, {\"newText\": \"b\"}]"}`,
+			wantErr:    true,
+			wantErrMsg: "empty oldText",
+		},
+		{
 			name:     "missing edits field (partial/streaming args)",
 			input:    `{"path": "/tmp/test.txt"}`,
 			wantPath: "/tmp/test.txt",

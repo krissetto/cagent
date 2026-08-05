@@ -397,10 +397,27 @@ func ParseEditFileArgs(data []byte) (EditFileArgs, error) {
 		if err := json.Unmarshal(repaired, &args.Edits); err != nil {
 			return EditFileArgs{}, fmt.Errorf("failed to parse double-serialized edits string after repair: %w", err)
 		}
+		if err := validateRepairedEdits(args.Edits); err != nil {
+			return EditFileArgs{}, err
+		}
 		slog.Debug("Repaired malformed double-serialized edits payload")
 	}
 
 	return args, nil
+}
+
+// validateRepairedEdits guards against repair output that is structurally
+// valid but semantically corrupted. An empty oldText is never a meaningful
+// edit (handleEditFile's strings.Replace would silently insert newText at
+// the start of the file), so its presence after a repair means the repair
+// removed a load-bearing character rather than a spurious one.
+func validateRepairedEdits(edits []Edit) error {
+	for i, edit := range edits {
+		if edit.OldText == "" {
+			return fmt.Errorf("repaired edits payload is invalid: edit %d has empty oldText", i+1)
+		}
+	}
+	return nil
 }
 
 // tryRepairEditFileJSON attempts to fix common LLM JSON malformations by
