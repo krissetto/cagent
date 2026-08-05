@@ -397,10 +397,10 @@ func ParseEditFileArgs(data []byte) (EditFileArgs, error) {
 		if err := json.Unmarshal(repaired, &args.Edits); err != nil {
 			return EditFileArgs{}, fmt.Errorf("failed to parse double-serialized edits string after repair: %w", err)
 		}
+		slog.Debug("Repaired malformed double-serialized edits payload")
 		if err := validateRepairedEdits(args.Edits); err != nil {
 			return EditFileArgs{}, err
 		}
-		slog.Debug("Repaired malformed double-serialized edits payload")
 	}
 
 	return args, nil
