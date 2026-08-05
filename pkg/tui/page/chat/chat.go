@@ -211,7 +211,10 @@ type chatPage struct {
 
 	msgCancel       context.CancelFunc
 	streamCancelled bool
-	streamDepth     int      // nesting depth of active streams (incremented on StreamStarted, decremented on StreamStopped)
+	// streamDepth is the nesting depth of active streams (StreamStarted++,
+	// StreamStopped--). >0 during a root compaction marks it as automatic
+	// (nested mid-run); standalone /compact emits no StreamStarted.
+	streamDepth     int
 	agentStack      []string // agent per active stream level; len(agentStack)==streamDepth
 	streamStartTime time.Time
 

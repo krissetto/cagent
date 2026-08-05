@@ -147,26 +147,26 @@ func (p *chatPage) handleRuntimeEvent(msg tea.Msg) (bool, tea.Cmd) {
 			return true, tea.Batch(sidebarCmd, subSessionCompactionNotice(msg))
 		}
 		if msg.Status == "completed" {
+			noticeCmd := rootCompactionNotice(msg)
+			if p.streamDepth > 0 {
+				// Automatic compaction nested in a live stream (the threshold
+				// fires after StreamStarted): update presentation only.
+				// Clearing msgCancel/working/queue here would break Esc and
+				// start queued messages against the live run (#3872);
+				// StreamStopped owns the cleanup.
+				return true, tea.Batch(sidebarCmd, noticeCmd)
+			}
+			// Standalone /compact runs outside any stream (Summarize emits no
+			// StreamStarted): this terminal event cleans up the work state.
 			p.msgCancel = nil
-			cmds := []tea.Cmd{
+			return true, tea.Batch(
 				sidebarCmd,
 				p.setWorking(false),
 				p.setPendingResponse(false),
 				p.processNextQueuedMessage(),
 				p.messages.ScrollToBottom(),
-			}
-			// Only announce success when a summary was actually applied.
-			// "failed" already surfaced an ErrorEvent; "skipped" means the
-			// compaction was a no-op (nothing to compact, hook veto, empty
-			// model output). Empty outcome (older servers) keeps the legacy
-			// success toast.
-			switch msg.Outcome {
-			case "", runtime.CompactionOutcomeApplied:
-				cmds = append(cmds, notification.SuccessCmd("Session compacted successfully."))
-			case runtime.CompactionOutcomeSkipped:
-				cmds = append(cmds, notification.InfoCmd("Session compaction skipped."))
-			}
-			return true, tea.Batch(cmds...)
+				noticeCmd,
+			)
 		}
 		return true, sidebarCmd
 
@@ -215,6 +215,21 @@ func (p *chatPage) isSubSessionEvent(sessionID string) bool {
 	}
 	sess := p.app.Session()
 	return sess != nil && sessionID != sess.ID
+}
+
+// rootCompactionNotice builds the root session's terminal compaction
+// feedback. Success is only announced when a summary was actually applied:
+// "failed" already surfaced an ErrorEvent; "skipped" means the compaction
+// was a no-op (nothing to compact, hook veto, empty model output). Empty
+// outcome (older servers) keeps the legacy success toast.
+func rootCompactionNotice(msg *runtime.SessionCompactionEvent) tea.Cmd {
+	switch msg.Outcome {
+	case "", runtime.CompactionOutcomeApplied:
+		return notification.SuccessCmd("Session compacted successfully.")
+	case runtime.CompactionOutcomeSkipped:
+		return notification.InfoCmd("Session compaction skipped.")
+	}
+	return nil
 }
 
 // subSessionCompactionNotice builds the agent-scoped feedback for a
