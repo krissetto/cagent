@@ -465,6 +465,37 @@ func TestFilesystemTool_ListDirectory(t *testing.T) {
 	assert.Contains(t, result.Output, "not found")
 }
 
+// TestFilesystemTool_ListDirectoryEmpty pins the empty-directory message:
+// with an empty Output the runtime substitutes a generic "(no output)"
+// placeholder, which models read as a tool failure and retry via shell.
+func TestFilesystemTool_ListDirectoryEmpty(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	tool := New(tmpDir)
+
+	result, err := tool.handleListDirectory(t.Context(), ListDirectoryArgs{
+		Path: ".",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Output, "Directory is empty: "+tmpDir)
+}
+
+func TestFilesystemTool_ListDirectoryAllEntriesIgnored(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755))
+	tool := New(tmpDir, WithIgnoreVCS(true))
+
+	result, err := tool.handleListDirectory(t.Context(), ListDirectoryArgs{
+		Path: ".",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Output, "no visible entries (1 hidden by ignore patterns)")
+	assert.Contains(t, result.Output, tmpDir)
+}
+
 func TestFilesystemTool_EditFile(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
