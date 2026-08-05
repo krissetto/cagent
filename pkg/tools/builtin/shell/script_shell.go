@@ -52,6 +52,12 @@ var (
 )
 
 func NewScript(shellTools map[string]latest.ScriptShellToolConfig, env []string) (*ScriptToolSet, error) {
+	for _, e := range env {
+		if strings.ContainsRune(e, 0) {
+			return nil, errors.New("toolset environment contains a NUL byte")
+		}
+	}
+
 	for toolName, tool := range shellTools {
 		if err := validateConfig(toolName, tool); err != nil {
 			return nil, err
@@ -266,9 +272,8 @@ func (t *ScriptToolSet) execute(ctx context.Context, rt tools.Runtime, toolConfi
 			continue
 		}
 		valueStr := fmt.Sprintf("%v", value)
-		// A NUL byte mid-string silently truncates env entries at the
-		// execve boundary; refuse rather than spawn a process with a
-		// surprising env.
+		// Go's os/exec rejects NUL bytes with generic errors. We check here
+		// to provide a clearer error message.
 		if strings.ContainsRune(valueStr, 0) {
 			return tools.ResultError(fmt.Sprintf("argument %q contains a NUL byte", key)), nil
 		}

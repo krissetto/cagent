@@ -3,7 +3,6 @@
 package selfupdate
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -58,7 +57,7 @@ func reExecProcess(path string, args, env []string) error {
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
-		if ok := asExitError(err, &exitErr); ok {
+		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.ExitCode())
 		}
 		return fmt.Errorf("running updated binary: %w", err)
@@ -66,10 +65,4 @@ func reExecProcess(path string, args, env []string) error {
 
 	os.Exit(0)
 	return nil
-}
-
-// asExitError is a tiny helper kept separate so exec_unix.go does not need to
-// import errors solely for this Windows branch.
-func asExitError(err error, target **exec.ExitError) bool {
-	return errors.As(err, target)
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -182,7 +183,7 @@ func TestStopAfterFailedStart(t *testing.T) {
 	select {
 	case <-done:
 		// Success: Stop returned without deadlocking
-	case <-t.Context().Done():
-		t.Fatal("Test context canceled")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() deadlocked after a failed Start()")
 	}
 }
