@@ -168,7 +168,7 @@ func NewWorkingDirPickerDialog(ctx context.Context, recentDirs, favoriteDirs []s
 		var err error
 		cwd, err = os.Getwd()
 		if err != nil {
-			cwd = "/"
+			cwd = "."
 		}
 	}
 
@@ -258,7 +258,7 @@ func (d *workingDirPickerDialog) loadBrowseDirectory() {
 		kind: entryUseThisDir,
 	})
 
-	if d.currentDir != "/" {
+	if filepath.Dir(d.currentDir) != d.currentDir {
 		d.browseEntries = append(d.browseEntries, dirEntry{
 			name: "..",
 			path: filepath.Dir(d.currentDir),

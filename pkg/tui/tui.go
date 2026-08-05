@@ -2159,7 +2159,7 @@ func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
 			workingDir, _ = os.Getwd()
 		}
 		if workingDir == "" {
-			workingDir = "/"
+			workingDir = "."
 		}
 		return m.handleSpawnSession(workingDir)
 	}

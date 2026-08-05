@@ -317,6 +317,20 @@ func TestFilePickerParentDirEntry(t *testing.T) {
 	require.Equal(t, filepath.Dir(dir), d.entries[0].path)
 }
 
+func TestFilePickerRootHasNoParentDirEntry(t *testing.T) {
+	t.Parallel()
+
+	// Get the root of the current working directory to test root behavior cross-platform
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	root := filepath.VolumeName(cwd) + string(filepath.Separator)
+
+	d := newTestFilePickerDialog(root)
+
+	// Ensure there's no ".." entry
+	assert.NotContains(t, entryNames(d.entries), "..")
+}
+
 func TestFilePickerFilterPreservesParentDir(t *testing.T) {
 	t.Parallel()
 	dir := setupTestDir(t)
