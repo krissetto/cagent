@@ -11,7 +11,22 @@ _Read, write, list, search, and navigate files and directories._
 
 ## Overview
 
-The filesystem tool gives agents the ability to explore codebases, read and edit files, create new files, search across files, and navigate directory structures. Paths are resolved relative to the working directory, though agents can also use absolute paths.
+The filesystem tool gives agents the ability to explore codebases, read and edit files, create new files, search across files, and navigate directory structures.
+
+### Path resolution
+
+Paths are resolved relative to the **working directory** (the directory where the agent session started, or the directory specified with `--workdir`):
+
+- **Relative paths** (e.g., `src/main.go`, `../README.md`) are joined with the working directory.
+- **Absolute paths** must match the host operating system:
+  - Unix/Linux/macOS: `/home/user/project/file.txt`
+  - Windows: `C:\Users\user\project\file.txt` or `C:/Users/user/project/file.txt`
+- **Home directory expansion**: paths starting with `~` or `~/` expand to the user's home directory.
+
+When a file is not found, error messages include the resolved absolute path to help diagnose incorrect base directories or path formats.
+
+> [!IMPORTANT]
+> Agents must use paths appropriate for the host OS. A Windows absolute path like `C:\file.txt` on a Unix system (or vice versa) is rejected with a clear error message.
 
 ## Available Tools
 
@@ -108,6 +123,3 @@ toolsets:
 Post-edit commands run with the same working directory as the agent. If a command exits non-zero, the error is logged and surfaced to the model as a warning, but the edit is not rolled back.
 
 See [`examples/post_edit.yaml`](https://github.com/docker/docker-agent/blob/main/examples/post_edit.yaml) for a complete example.
-
-> [!TIP]
-> The filesystem tool resolves paths relative to the working directory. Agents can also use absolute paths.
