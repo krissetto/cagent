@@ -328,11 +328,7 @@ func TestFilePickerRootHasNoParentDirEntry(t *testing.T) {
 	d := newTestFilePickerDialog(root)
 
 	// Ensure there's no ".." entry
-	for _, e := range d.entries {
-		if e.name == ".." {
-			t.Errorf("root directory should not have a parent dir entry, but got '..'")
-		}
-	}
+	assert.NotContains(t, entryNames(d.entries), "..")
 }
 
 func TestFilePickerFilterPreservesParentDir(t *testing.T) {

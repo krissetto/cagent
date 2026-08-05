@@ -26,7 +26,7 @@ func TestWorkingDirPickerRootHasNoParentDirEntry(t *testing.T) {
 	}
 }
 
-func TestWorkingDirPickerEmptyFallback(t *testing.T) {
+func TestWorkingDirPickerEmptyInitialDirUsesGetwd(t *testing.T) {
 	t.Parallel()
 
 	// Pass an empty string for the initial directory.
