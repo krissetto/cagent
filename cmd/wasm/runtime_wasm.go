@@ -613,7 +613,7 @@ func (rt *wasmRuntime) processToolCalls(ctx context.Context, calls []tools.ToolC
 			continue
 		}
 
-		toolResult, err := tool.Handler(ctx, tc)
+		toolResult, err := tool.Handler(ctx, tc, tools.NopRuntime{})
 		var output string
 		if err != nil {
 			output = fmt.Sprintf("Error: %v", err)

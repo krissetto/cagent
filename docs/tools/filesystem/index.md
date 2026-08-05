@@ -55,7 +55,7 @@ toolsets:
 | --- | --- | --- | --- |
 | `ignore_vcs` | boolean | `true` | When `true` (default), `.git` directories and `.gitignore` patterns are excluded from listings and searches. Set to `false` to include them. |
 | `post_edit` | array | `[]` | Commands to run after editing files matching a path pattern |
-| `post_edit[].path` | string | — | Glob pattern for files (e.g., `*.go`, `src/**/*.ts`) |
+| `post_edit[].path` | string | — | Glob pattern for files (e.g., `*.go`, `src/*/*.ts`) |
 | `post_edit[].cmd` | string | — | Command to run (use `${file}` for the edited file path) |
 | `allow_list` | array | `[]` | Directories the tools may access. Empty = unrestricted (default). |
 | `deny_list` | array | `[]` | Directories the tools must not access. Takes precedence over `allow_list`. |
@@ -111,13 +111,13 @@ toolsets:
         cmd: "gofmt -w ${file}"
       - path: "*.ts"
         cmd: "prettier --write ${file}"
-      - path: "src/**/*.py"
+      - path: "src/*/*.py"
         cmd: "black ${file}"
 ```
 
 | Property | Type | Description |
 | --- | --- | --- |
-| `path` | string | Glob pattern matched against the file path. `*.go` matches any `.go` file; `src/**/*.ts` matches `.ts` files anywhere under `src/`. |
+| `path` | string | Glob pattern matched against the file path. `*.go` matches any `.go` file; `src/*/*.ts` matches `.ts` files inside `src/`. |
 | `cmd` | string | Shell command to run. `${file}` expands to the absolute path of the just-edited file. |
 
 Post-edit commands run with the same working directory as the agent. If a command exits non-zero, the error is logged and surfaced to the model as a warning, but the edit is not rolled back.

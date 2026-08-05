@@ -619,7 +619,7 @@ func (t *ToolSet) executePostEditCommands(ctx context.Context, filePath string) 
 	if len(t.postEditCommands) == 0 {
 		return nil
 	}
-	return runPostEditCommands(ctx, t.postEditCommands, filePath)
+	return runPostEditCommands(ctx, t.workingDir, t.postEditCommands, filePath)
 }
 
 // resolvePath resolves a path relative to the working directory.
