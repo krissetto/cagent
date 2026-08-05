@@ -3,6 +3,7 @@ package filesystem
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -178,7 +179,12 @@ func TestFilesystemTool_ReadFile(t *testing.T) {
 		Path: "nonexistent.txt",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "not found", result.Output)
+	assert.Contains(t, result.Output, "not found")
+	// The hint must name the resolved path and the working directory so the
+	// model can correct a wrong base instead of retrying the same path.
+	// %q-quoted, so Windows separators appear escaped in the output.
+	assert.Contains(t, result.Output, fmt.Sprintf("%q", filepath.Join(tmpDir, "nonexistent.txt")))
+	assert.Contains(t, result.Output, fmt.Sprintf("%q", tmpDir))
 }
 
 // TestFilesystemTool_ReadFile_LineRange is a regression test for issue
@@ -401,7 +407,7 @@ func TestFilesystemTool_ReadImageFile(t *testing.T) {
 	result, err = tool.handleReadFile(t.Context(), ReadFileArgs{Path: "missing.png"})
 	require.NoError(t, err)
 	assert.True(t, result.IsError)
-	assert.Equal(t, "not found", result.Output)
+	assert.Contains(t, result.Output, "not found")
 }
 
 func TestFilesystemTool_ReadMultipleFiles(t *testing.T) {
@@ -456,7 +462,38 @@ func TestFilesystemTool_ListDirectory(t *testing.T) {
 		Path: "nonexistent",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, result.Output, "Error reading directory")
+	assert.Contains(t, result.Output, "not found")
+}
+
+// TestFilesystemTool_ListDirectoryEmpty pins the empty-directory message:
+// with an empty Output the runtime substitutes a generic "(no output)"
+// placeholder, which models read as a tool failure and retry via shell.
+func TestFilesystemTool_ListDirectoryEmpty(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	tool := New(tmpDir)
+
+	result, err := tool.handleListDirectory(t.Context(), ListDirectoryArgs{
+		Path: ".",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Output, "Directory is empty: "+tmpDir)
+}
+
+func TestFilesystemTool_ListDirectoryAllEntriesIgnored(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755))
+	tool := New(tmpDir, WithIgnoreVCS(true))
+
+	result, err := tool.handleListDirectory(t.Context(), ListDirectoryArgs{
+		Path: ".",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Output, "no visible entries (1 hidden by ignore patterns)")
+	assert.Contains(t, result.Output, tmpDir)
 }
 
 func TestFilesystemTool_EditFile(t *testing.T) {
@@ -548,6 +585,37 @@ func TestParseEditFileArgs(t *testing.T) {
 			input:      `{"path": "test.txt", "edits": "not valid json"}`,
 			wantErr:    true,
 			wantErrMsg: "failed to parse double-serialized edits string",
+		},
+		{
+			name:     "repair: double-serialized with extra closing brace in inner payload",
+			input:    `{"edits": "[{\"oldText\": \"a\", \"newText\": \"b\"}}]", "path": "docker-compose.yml"}`,
+			wantPath: "docker-compose.yml",
+			wantEdits: []Edit{
+				{OldText: "a", NewText: "b"},
+			},
+		},
+		{
+			name:     "repair: double-serialized with extra closing bracket in inner payload",
+			input:    `{"path": "f.go", "edits": "[{\"oldText\": \"a\", \"newText\": \"b\"}]]"}`,
+			wantPath: "f.go",
+			wantEdits: []Edit{
+				{OldText: "a", NewText: "b"},
+			},
+		},
+		{
+			name:     "repair: double-serialized with extra closing brace between inner array elements",
+			input:    `{"path": "f.go", "edits": "[{\"oldText\": \"a\", \"newText\": \"b\"}}, {\"oldText\": \"c\", \"newText\": \"d\"}]"}`,
+			wantPath: "f.go",
+			wantEdits: []Edit{
+				{OldText: "a", NewText: "b"},
+				{OldText: "c", NewText: "d"},
+			},
+		},
+		{
+			name:       "repair: rejected when inner repair yields an edit with empty oldText",
+			input:      `{"path": "f.go", "edits": "[{\"oldText\": \"a\"}}, {\"newText\": \"b\"}]"}`,
+			wantErr:    true,
+			wantErrMsg: "empty oldText",
 		},
 		{
 			name:     "missing edits field (partial/streaming args)",

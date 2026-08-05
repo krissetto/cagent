@@ -108,6 +108,7 @@ func (s *Session) Clone() *Session {
 		ExtraToolSets:           slices.Clone(s.ExtraToolSets),
 		AgentName:               s.AgentName,
 		ParentID:                s.ParentID,
+		DelegationLineage:       cloneStringSlice(s.DelegationLineage),
 		InstructionContext:      cloneInstructionContext(s.InstructionContext),
 		MessageUsageHistory:     slices.Clone(s.MessageUsageHistory),
 	}
@@ -204,6 +205,10 @@ func copySessionMetadata(dst, src *Session, title string) {
 	if src == nil || dst == nil {
 		return
 	}
+	// AgentName, ParentID, and DelegationLineage are deliberately not
+	// copied: a branch/fork is a fresh top-level session, not a pinned
+	// sub-session, so transient delegation state must not carry over.
+	// Clone() keeps them because it reproduces the session verbatim.
 	dst.SetTitle(title)
 	dst.ToolsApproved = src.ToolsApproved
 	dst.SafetyPolicy = src.SafetyPolicy

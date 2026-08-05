@@ -3,6 +3,52 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.121.0] - 2026-08-05
+
+This release brings several bug fixes and new features including configurable interrupt confirmation for the Esc key, ranged file reads, and improvements to safety classification and filesystem path handling.
+
+## What's New
+
+- Adds configurable interrupt confirmation for the Esc key: choose `always` (default, shows a dialog) or `double-tap` (requires pressing Esc twice) to interrupt a running stream
+- Adds optional `line` and `limit` arguments to `read_file` for ranged file reads, enabling partial reads of large files
+- Adds `--container-runtime` flag to evaluations, allowing an alternative Docker-compatible CLI (e.g. Podman) to be used for image builds and container runs
+- Broadens the destructive-command taxonomy in the shell safety classifier to cover additional command shapes (e.g. bare `docker rm <id>`)
+- Adds fail-fast detection of foreign-OS paths (e.g. WSL-style paths on Windows) in filesystem tools, with an explanation of path resolution
+- Adds signed-commit checking (Rules 4 and 5) to the `triage-prs` skill, flagging unsigned or invalid commits and managing the `status/needs-signed-commits` label
+
+## Bug Fixes
+
+- Fixes SSE stream truncation when tool results exceed 64 KiB, which previously caused runs to silently stop
+- Fixes the `--models-gateway` flag being ignored when creating the DMR provider client, causing failures in environments where the gateway is the only reachable path
+- Fixes cache entries not expiring when the current time exactly equals their expiry deadline, preventing stale reuse on coarse-resolution clocks (e.g. Windows)
+- Fixes self-update failure by reading and validating the GitHub release asset SHA-256 digest before downloading, instead of looking for a missing `checksums.txt`
+
+## Technical Changes
+
+- Replaces `arduino/setup-task` with the official `go-task/setup-task` action in CI workflows
+- Grants `actions: write` permission to the PR review workflow, restoring PR review runs that were failing during workflow validation
+- Refreshes the embedded models.dev catalog snapshot
+### Pull Requests
+
+- [#3875](https://github.com/docker/docker-agent/pull/3875) - fix(dmr): honor the models gateway when creating the client
+- [#3878](https://github.com/docker/docker-agent/pull/3878) - feat(tui): make current session plans editable
+- [#3883](https://github.com/docker/docker-agent/pull/3883) - fix(runtime): don't truncate the SSE stream on tool results >64 KiB
+- [#3888](https://github.com/docker/docker-agent/pull/3888) - chore: refresh embedded models.dev snapshot
+- [#3891](https://github.com/docker/docker-agent/pull/3891) - docs: update CHANGELOG.md for v1.120.0
+- [#3892](https://github.com/docker/docker-agent/pull/3892) - chore: replace arduino/setup-task with go-task/setup-task
+- [#3894](https://github.com/docker/docker-agent/pull/3894) - feat(eval): support configurable container runtime
+- [#3895](https://github.com/docker/docker-agent/pull/3895) - fix(filesystem): support ranged file reads
+- [#3896](https://github.com/docker/docker-agent/pull/3896) - fix(skills): expire cache entries at deadline
+- [#3897](https://github.com/docker/docker-agent/pull/3897) - fix(selfupdate): verify GitHub release asset digests
+- [#3898](https://github.com/docker/docker-agent/pull/3898) - fix(ci): grant PR reviewer actions write permission
+- [#3899](https://github.com/docker/docker-agent/pull/3899) - feat(tui): configurable interrupt confirmation for Esc key
+- [#3902](https://github.com/docker/docker-agent/pull/3902) - docs: auto-update for merged PRs (2026-08-04)
+- [#3903](https://github.com/docker/docker-agent/pull/3903) - feat: flag unsigned commits in triage-prs skill
+- [#3905](https://github.com/docker/docker-agent/pull/3905) - fix(runtime): guard nested agent delegation
+- [#3907](https://github.com/docker/docker-agent/pull/3907) - feat(safety): broaden destructive-command taxonomy
+- [#3908](https://github.com/docker/docker-agent/pull/3908) - feat(filesystem): fail fast on foreign-OS paths and explain path resolution
+
+
 ## [v1.120.0] - 2026-08-03
 
 This release improves Windows compatibility across the full test suite, adds new TUI features for context compaction and session plan editing, and fixes several platform-specific and sandbox issues.
@@ -5291,3 +5337,5 @@ This release improves the terminal user interface with better error handling and
 [v1.119.0]: https://github.com/docker/docker-agent/releases/tag/v1.119.0
 
 [v1.120.0]: https://github.com/docker/docker-agent/releases/tag/v1.120.0
+
+[v1.121.0]: https://github.com/docker/docker-agent/releases/tag/v1.121.0

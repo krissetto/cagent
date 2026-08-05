@@ -133,6 +133,10 @@ type Settings struct {
 	// working: "steer" (default) injects them into the ongoing stream,
 	// "queue" holds them until the current turn ends. Managed via /settings.
 	BusySendMode string `yaml:"busy_send_mode,omitempty"`
+	// InterruptConfirmation controls how Esc interrupts a running stream:
+	// "always" (default) shows a confirmation dialog, "double-tap" requires
+	// pressing Esc twice within 1 second, "none" interrupts immediately.
+	InterruptConfirmation string `yaml:"interrupt_confirmation,omitempty"`
 	// Extra preserves settings keys this version does not know about (e.g.
 	// written by a newer docker-agent) across a load/save round trip.
 	Extra map[string]any `yaml:",inline"`
@@ -255,6 +259,15 @@ func (s *Settings) GetRestoreTabs() bool {
 		return false
 	}
 	return *s.RestoreTabs
+}
+
+// GetInterruptConfirmation returns the configured interrupt confirmation mode.
+// Returns "always" if unset.
+func (s *Settings) GetInterruptConfirmation() string {
+	if s == nil || s.InterruptConfirmation == "" {
+		return "always"
+	}
+	return s.InterruptConfirmation
 }
 
 // SnapshotsEnabled returns whether global snapshot auto-injection is enabled.

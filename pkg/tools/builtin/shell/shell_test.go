@@ -200,7 +200,49 @@ func TestShellTool_Instructions(t *testing.T) {
 	instructions := tool.Instructions()
 
 	assert.Contains(t, instructions, "Shell Tools")
+	assert.Contains(t, instructions, shellBaseName(tool.handler.shell),
+		"instructions must name the resolved shell so the model uses its syntax")
+	assert.Contains(t, instructions, displayOS())
 	assert.NotContains(t, instructions, "run_background_job")
+}
+
+// TestShellTool_DescriptionNamesInterpreter guards against regressing to a
+// generic "the user's default shell" description: without the resolved shell
+// name, models assume POSIX and emit commands that fail under PowerShell/cmd.
+func TestShellTool_DescriptionNamesInterpreter(t *testing.T) {
+	t.Parallel()
+
+	tool := New(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
+
+	allTools, err := tool.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, allTools, 1)
+
+	description := allTools[0].Description
+	assert.Contains(t, description, shellBaseName(tool.handler.shell))
+	assert.Contains(t, description, displayOS())
+}
+
+func TestShellBaseName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path     string
+		expected string
+	}{
+		{path: "/bin/zsh", expected: "zsh"},
+		{path: "/usr/local/bin/fish", expected: "fish"},
+		{path: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, expected: "powershell"},
+		{path: `C:\Program Files\PowerShell\7\pwsh.exe`, expected: "pwsh"},
+		{path: `C:\Windows\System32\cmd.exe`, expected: "cmd"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, shellBaseName(tt.path))
+		})
+	}
 }
 
 func TestResolveWorkDir(t *testing.T) {

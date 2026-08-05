@@ -48,7 +48,7 @@ func (p *chatPage) handleKeyPress(msg tea.KeyPressMsg) (layout.Model, tea.Cmd) {
 		}
 		// Otherwise cancel the stream (only if something is running)
 		if p.working || p.msgCancel != nil {
-			cmd := p.cancelStream(true)
+			cmd := p.handleInterrupt()
 			return p, cmd
 		}
 		// Forward to messages for other uses (e.g., clear selection)

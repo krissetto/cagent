@@ -7,20 +7,30 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/docker/docker-agent/pkg/shellpath"
 )
 
 // runPostEditCommands executes configured shell commands after a file edit.
-func runPostEditCommands(ctx context.Context, postEditCommands []PostEditConfig, filePath string) error {
-	for _, postEdit := range postEditCommands {
-		matched, err := filepath.Match(postEdit.Path, filepath.Base(filePath))
-		if err != nil {
-			slog.WarnContext(ctx, "Invalid post-edit pattern", "pattern", postEdit.Path, "error", err)
-			continue
+func runPostEditCommands(ctx context.Context, workingDir string, postEditCommands []PostEditConfig, filePath string) error {
+	var relPath string
+	if workingDir != "" {
+		rel, err := filepath.Rel(workingDir, filePath)
+		if err == nil {
+			relPath = filepath.ToSlash(rel)
+		} else {
+			slog.DebugContext(ctx, "Failed to resolve relative path for post-edit pattern", "workingDir", workingDir, "filePath", filePath, "error", err)
+			relPath = filepath.ToSlash(filePath)
 		}
-		if !matched {
+	} else {
+		relPath = filepath.ToSlash(filePath)
+	}
+
+	for _, postEdit := range postEditCommands {
+		if !matchPostEdit(ctx, postEdit.Path, relPath, filePath) {
 			continue
 		}
 
@@ -34,4 +44,18 @@ func runPostEditCommands(ctx context.Context, postEditCommands []PostEditConfig,
 		}
 	}
 	return nil
+}
+
+func matchPostEdit(ctx context.Context, patternStr, relPath, filePath string) bool {
+	pattern := filepath.ToSlash(patternStr)
+	target := filepath.Base(filePath)
+	if strings.Contains(pattern, "/") {
+		target = relPath
+	}
+	matched, err := path.Match(pattern, target)
+	if err != nil {
+		slog.WarnContext(ctx, "Invalid post-edit pattern", "pattern", patternStr, "error", err)
+		return false
+	}
+	return matched
 }

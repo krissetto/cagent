@@ -892,21 +892,22 @@ func (m *appModel) handleThemeFileChanged(themeRef string) (tea.Model, tea.Cmd) 
 func (m *appModel) handleOpenSettingsDialog() (tea.Model, tea.Cmd) {
 	settings := userconfig.Get()
 	preferences := messages.Preferences{
-		Layout:             m.layoutSettings,
-		SendMode:           m.sendMode,
-		SplitDiffView:      settings.GetSplitDiffView(),
-		ExpandThinking:     settings.GetExpandThinking(),
-		HideToolResults:    settings.HideToolResults,
-		RenderImages:       settings.GetRenderImages(),
-		YOLO:               settings.YOLO,
-		RestoreTabs:        settings.GetRestoreTabs(),
-		Snapshot:           settings.SnapshotsEnabled(),
-		CacheStablePrompts: settings.CacheStablePromptsEnabled(),
-		WarnOnCacheMiss:    settings.CacheMissWarningsEnabled(),
-		Lean:               settings.Lean,
-		TabTitleMaxLength:  settings.GetTabTitleMaxLength(),
-		Sound:              settings.GetSound(),
-		SoundThreshold:     settings.GetSoundThreshold(),
+		Layout:                m.layoutSettings,
+		SendMode:              m.sendMode,
+		SplitDiffView:         settings.GetSplitDiffView(),
+		ExpandThinking:        settings.GetExpandThinking(),
+		HideToolResults:       settings.HideToolResults,
+		RenderImages:          settings.GetRenderImages(),
+		YOLO:                  settings.YOLO,
+		RestoreTabs:           settings.GetRestoreTabs(),
+		Snapshot:              settings.SnapshotsEnabled(),
+		CacheStablePrompts:    settings.CacheStablePromptsEnabled(),
+		WarnOnCacheMiss:       settings.CacheMissWarningsEnabled(),
+		Lean:                  settings.Lean,
+		TabTitleMaxLength:     settings.GetTabTitleMaxLength(),
+		Sound:                 settings.GetSound(),
+		SoundThreshold:        settings.GetSoundThreshold(),
+		InterruptConfirmation: messages.ParseInterruptMode(settings.GetInterruptConfirmation()),
 	}
 	return m, core.CmdHandler(dialog.OpenDialogMsg{
 		Model: dialog.NewSettingsDialog(preferences, !m.hideSidebar),
@@ -922,6 +923,7 @@ func (m *appModel) handleApplySettings(msg messages.ApplySettingsMsg) (tea.Model
 	m.sendMode = messages.ParseSendMode(string(preferences.SendMode))
 	for _, page := range m.chatPages {
 		page.SetSendMode(m.sendMode)
+		page.SetInterruptMode(preferences.InterruptConfirmation)
 	}
 	if m.sessionState.SplitDiffView() != preferences.SplitDiffView {
 		m.sessionState.SetSplitDiffView(preferences.SplitDiffView)
@@ -1001,6 +1003,7 @@ func savePreferences(p messages.Preferences) error {
 		s.YOLO = p.YOLO
 		s.Lean = p.Lean
 		s.Sound = p.Sound
+		s.InterruptConfirmation = string(p.InterruptConfirmation)
 		if p.SoundThreshold == userconfig.DefaultSoundThreshold {
 			s.SoundThreshold = 0
 		} else {
@@ -1061,6 +1064,7 @@ func saveSettingsToUserConfig(layout messages.LayoutSettings, mode messages.Send
 		WarnOnCacheMiss:    settings.CacheMissWarningsEnabled(),
 		Lean:               settings.Lean, TabTitleMaxLength: settings.GetTabTitleMaxLength(),
 		Sound: settings.GetSound(), SoundThreshold: settings.GetSoundThreshold(),
+		InterruptConfirmation: messages.ParseInterruptMode(settings.GetInterruptConfirmation()),
 	})
 }
 
