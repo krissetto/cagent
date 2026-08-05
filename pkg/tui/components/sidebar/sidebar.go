@@ -78,6 +78,7 @@ type Model interface {
 	// SetMirroredPadding swaps the horizontal edge padding so the sidebar hugs
 	// the terminal edge when rendered on the left of the chat.
 	SetMirroredPadding(mirrored bool)
+	VisualGeneration() uint64
 	SetAgentInfo(agentName, model, description string, contextLimit int64, compactionModel string, primaryContextLimit int64) tea.Cmd
 	SetTeamInfo(availableAgents []runtime.AgentDetails)
 	// SetAgentSwitching records the start (switching=true) or end of a
@@ -107,6 +108,10 @@ type Model interface {
 	// SetAgentInfoMode selects how the vertical Agents section renders each
 	// agent: the compact two-line roster (default) or detailed mini-cards.
 	SetAgentInfoMode(mode AgentInfoMode)
+	// SetActiveAgentsOnly filters the Agents roster (vertical panel and
+	// collapsed band) to agents active in the current session instead of the
+	// whole configured team.
+	SetActiveAgentsOnly(enabled bool)
 	GetSize() (width, height int)
 	LoadFromSession(sess *session.Session)
 	// ResetStreamTracking clears the active-stream stack so a new top-level run
@@ -271,6 +276,7 @@ func transferTimer(d time.Duration, gen int64, kind transferTimerKind) TransferT
 
 // model implements Model
 type model struct {
+	ar           *animation.Runtime
 	width        int
 	height       int
 	xPos         int                       // absolute x position on screen
@@ -326,6 +332,7 @@ type model struct {
 	sectionVisibility    SectionVisibility // which optional sections are rendered
 	sectionGap           int               // blank lines between sections in vertical mode
 	agentInfoMode        AgentInfoMode     // how the vertical Agents section renders each agent
+	activeAgentsOnly     bool              // filter the Agents roster to session-active agents
 
 	// Transfer-box animation: a single animation.Subscription drives the rail
 	// dot while any transfer_task hop is in flight. The frame counts shared
@@ -366,7 +373,7 @@ type model struct {
 }
 
 // New creates a new sidebar bound to the given session state.
-func New(ctx context.Context, sessionState *service.SessionState) Model {
+func New(ar *animation.Runtime, ctx context.Context, sessionState *service.SessionState) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Session title"
 	ti.CharLimit = 50
@@ -375,16 +382,18 @@ func New(ctx context.Context, sessionState *service.SessionState) Model {
 	wd, branch := getCurrentWorkingDirectory()
 
 	m := &model{
-		ctx:          func() context.Context { return context.WithoutCancel(ctx) },
-		width:        20,
-		layoutCfg:    DefaultLayoutConfig(),
-		height:       24,
-		sessionUsage: make(map[string]*runtime.Usage),
-		todoComp:     todotool.NewSidebarComponent(),
-		spinner:      spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle),
-		sessionTitle: "New session",
-		ragIndexing:  make(map[string]*ragIndexingState),
-		sessionState: sessionState,
+		ctx:               func() context.Context { return context.WithoutCancel(ctx) },
+		ar:                ar,
+		width:             20,
+		layoutCfg:         DefaultLayoutConfig(),
+		height:            24,
+		sessionUsage:      make(map[string]*runtime.Usage),
+		todoComp:          todotool.NewSidebarComponent(),
+		transferAnimation: ar.Subscribe(),
+		spinner:           spinner.New(ar, spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle),
+		sessionTitle:      "New session",
+		ragIndexing:       make(map[string]*ragIndexingState),
+		sessionState:      sessionState,
 		scrollview: scrollview.New(
 			scrollview.WithWheelStep(1),
 			scrollview.WithKeyMap(nil), // Sidebar has no keyboard scroll — only mouse
@@ -437,6 +446,8 @@ func (m *model) stopSpinner() {
 // on the next View(). Use this for changes that may alter the rendered content
 // AND its line layout (todos, sizing, agents, theme, …): the next View()
 // re-probes scrollbar visibility via the two-pass render.
+func (m *model) VisualGeneration() uint64 { return 0 }
+
 func (m *model) invalidateCache() {
 	m.cacheDirty = true
 	m.layoutDirty = true
@@ -754,6 +765,16 @@ func (m *model) SetAgentInfoMode(mode AgentInfoMode) {
 		return
 	}
 	m.agentInfoMode = mode
+	m.invalidateCache()
+}
+
+// SetActiveAgentsOnly filters the Agents roster to agents active in the
+// current session (see rosterAgents).
+func (m *model) SetActiveAgentsOnly(enabled bool) {
+	if m.activeAgentsOnly == enabled {
+		return
+	}
+	m.activeAgentsOnly = enabled
 	m.invalidateCache()
 }
 
@@ -1348,7 +1369,7 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		if wasActive {
 			m.spinner.Stop()
 		}
-		m.spinner = spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
+		m.spinner = spinner.New(m.ar, spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
 		if wasActive {
 			cmd := m.spinner.Init()
 			m.spinnerActive = true
@@ -1358,7 +1379,7 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		// Recreate all RAG indexing spinners
 		for _, state := range m.ragIndexing {
 			state.spinner.Stop()
-			state.spinner = spinner.New(spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
+			state.spinner = spinner.New(m.ar, spinner.ModeSpinnerOnly, styles.SpinnerDotsHighlightStyle)
 			cmds = append(cmds, state.spinner.Init())
 		}
 
@@ -1372,9 +1393,13 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		// Advance the transfer-box rail on the shared animation tick while a
 		// transfer is in flight; the phase math divides the coordinator's
 		// 14 FPS down to a sober dot movement (see transferPhase).
-		if _, isTick := msg.(animation.TickMsg); isTick && m.transferAnimation.IsActive() {
+		if tick, isTick := msg.(animation.TickMsg); isTick && m.transferAnimation.IsActive() {
+			before := m.transferPhase()
 			m.transferAnimationFrame++
-			needsInvalidate = true
+			if before != m.transferPhase() {
+				needsInvalidate = true
+				tick.MarkDirty()
+			}
 		}
 
 		// Update main spinner when tools are loading, agent is working, or title is regenerating
@@ -1512,7 +1537,8 @@ func (m *model) collapsedInfoLine(contentWidth int) string {
 // agentSummaryCollapsed renders the team roster for the band: the current
 // agent (in its accent color) with its model, then the other agents' names
 // in their own accent colors, so the whole team stays visible like in the
-// vertical Agents section.
+// vertical Agents section. The active-agents-only filter applies here too
+// (see rosterAgents).
 func (m *model) agentSummaryCollapsed() string {
 	name := m.sessionState.CurrentAgentName()
 	if name == "" {
@@ -1524,11 +1550,11 @@ func (m *model) agentSummaryCollapsed() string {
 	if m.agentModel != "" {
 		summary.WriteString(styles.MutedStyle.Render(" " + m.agentModel))
 	}
-	for _, agent := range m.availableAgents {
-		if agent.Name == name {
+	for _, entry := range m.rosterAgents() {
+		if entry.agent.Name == name {
 			continue
 		}
-		summary.WriteString(styles.MutedStyle.Render(" · ") + styles.AgentAccentStyleFor(agent.Name).Render(agent.Name))
+		summary.WriteString(styles.MutedStyle.Render(" · ") + styles.AgentAccentStyleFor(entry.agent.Name).Render(entry.agent.Name))
 	}
 	return summary.String()
 }
@@ -2042,7 +2068,9 @@ func (m *model) queueSection(contentWidth int) string {
 	return m.renderTab(title, strings.Join(lines, "\n"), contentWidth)
 }
 
-// agentInfo renders the Agents panel: every agent as a multi-line entry —
+// agentInfo renders the Agents panel: every roster agent (the whole team,
+// or only the session-active agents under the active-agents-only filter —
+// see rosterAgents) as a multi-line entry —
 // the compact two-line roster (see renderAgentLine) or a detailed mini-card
 // (see renderAgentCard), per the configured AgentInfoMode — with a blank
 // separator line between entries. The current agent is marked with ▶ (or the
@@ -2061,18 +2089,19 @@ func (m *model) agentInfo(contentWidth int) string {
 	if currentAgent == "" {
 		return ""
 	}
+	roster := m.rosterAgents()
 
 	agentTitle := "Agent"
-	if len(m.availableAgents) > 1 {
+	if len(roster) > 1 {
 		agentTitle = "Agents"
 	}
 	if m.delegationInFlight() {
 		agentTitle += " ↔"
 	}
 
-	renderAgent := m.compactAgentRenderer(contentWidth)
+	renderAgent := m.compactAgentRenderer(roster, contentWidth)
 	if m.agentInfoMode == AgentInfoDetailed {
-		renderAgent = m.detailedAgentRenderer(contentWidth)
+		renderAgent = m.detailedAgentRenderer(roster, contentWidth)
 	}
 
 	var bodyLines, owners []string
@@ -2080,15 +2109,15 @@ func (m *model) agentInfo(contentWidth int) string {
 		bodyLines = append(bodyLines, line)
 		owners = append(owners, owner)
 	}
-	for i, agent := range m.availableAgents {
+	for _, entry := range roster {
 		// Separate entries with a blank, unowned line so they stay visually
 		// distinct without being attributed to (or made clickable for) any agent.
 		if len(bodyLines) > 0 {
 			add("", "")
 		}
-		current := agent.Name == currentAgent
-		for _, line := range renderAgent(agent, i, current) {
-			add(line, agent.Name)
+		current := entry.agent.Name == currentAgent
+		for _, line := range renderAgent(entry.agent, entry.index, current) {
+			add(line, entry.agent.Name)
 		}
 	}
 	// The visible transfer presentation renders as a compact box below the
@@ -2109,12 +2138,60 @@ func (m *model) agentInfo(contentWidth int) string {
 // precomputed for the whole panel.
 type agentRenderer func(agent runtime.AgentDetails, index int, current bool) []string
 
+// rosterAgent is one Agents-roster entry: the agent's details plus its
+// original team index, preserved under filtering so the ^N switch shortcut
+// keeps addressing the same team position.
+type rosterAgent struct {
+	agent runtime.AgentDetails
+	index int
+}
+
+// rosterAgents returns the agents the Agents section presents, each with its
+// original team index. With the active-agents-only filter off this is the
+// whole team; with it on, only agents active in the current session (see
+// agentActiveInSession). Filtering is presentation-only: agent cycling and
+// switching still operate on the full team.
+func (m *model) rosterAgents() []rosterAgent {
+	roster := make([]rosterAgent, 0, len(m.availableAgents))
+	for i, agent := range m.availableAgents {
+		if m.activeAgentsOnly && !m.agentActiveInSession(agent.Name) {
+			continue
+		}
+		roster = append(roster, rosterAgent{agent: agent, index: i})
+	}
+	return roster
+}
+
+// agentActiveInSession reports whether the named agent counts as active for
+// the active-agents-only filter: the selected or working agent (so the
+// roster can never be empty), a participant of the in-flight transfer/return
+// presentation, or an agent with recorded participation in this session — a
+// usage snapshot or an attributed cost, live or restored.
+func (m *model) agentActiveInSession(name string) bool {
+	if name == m.sessionState.CurrentAgentName() || name == m.workingAgent {
+		return true
+	}
+	for _, hop := range m.agentTransfers {
+		if hop.from == name || hop.to == name {
+			return true
+		}
+	}
+	if r := m.agentReturn; r != nil && (r.from == name || r.to == name) {
+		return true
+	}
+	if _, ok := m.sessionState.AgentUsage(name); ok {
+		return true
+	}
+	_, ok := m.sessionState.AgentCost(name)
+	return ok
+}
+
 // compactAgentRenderer precomputes the compact roster's shared column widths
 // once — so every entry aligns and the badge width is not recomputed per
 // agent — and returns the per-agent two-line renderer (see renderAgentLine).
-func (m *model) compactAgentRenderer(contentWidth int) agentRenderer {
+func (m *model) compactAgentRenderer(roster []rosterAgent, contentWidth int) agentRenderer {
 	glyphOnly := contentWidth < rowGlyphOnlyMinWidth
-	badgeWidth := m.badgeColumnWidth(glyphOnly)
+	badgeWidth := badgeColumnWidth(roster, glyphOnly)
 	nameWidth := max(1, contentWidth-agentMarkerWidth-minGap-badgeWidth-1-agentShortcutWidth)
 	return func(agent runtime.AgentDetails, index int, current bool) []string {
 		return m.renderAgentLine(agent, index, contentWidth, nameWidth, badgeWidth, glyphOnly, current)
@@ -2122,9 +2199,24 @@ func (m *model) compactAgentRenderer(contentWidth int) agentRenderer {
 }
 
 // detailedAgentRenderer precomputes the detailed card layout's shared widths
-// and returns the per-agent mini-card renderer (see renderAgentCard).
-func (m *model) detailedAgentRenderer(contentWidth int) agentRenderer {
-	narrow := contentWidth < cardNarrowMinWidth
+// and returns the per-agent mini-card renderer (see renderAgentCard). The
+// metric vocabulary adapts to the roster: cards render the wide forms — full
+// "Effort"/"Context" labels with the decorative six-cell gauge — only when
+// every agent's preferred joined metric line fits the width the metric lines
+// actually get (the content width minus the card's agentMarkerWidth indent),
+// i.e. exactly the widths where every wide card keeps a single metric line.
+// If any agent's joined line would overflow, all cards use the compact
+// vocabulary (Eff/Ctx, no gauge) so the panel speaks one language and each
+// card stays as short as the width allows.
+func (m *model) detailedAgentRenderer(roster []rosterAgent, contentWidth int) agentRenderer {
+	metricWidth := contentWidth - agentMarkerWidth
+	narrow := false
+	for _, entry := range roster {
+		if lipgloss.Width(joinSegments(m.metricSegments(entry.agent, false))) > metricWidth {
+			narrow = true
+			break
+		}
+	}
 	nameWidth := max(1, contentWidth-agentMarkerWidth-minGap-agentShortcutWidth)
 	return func(agent runtime.AgentDetails, index int, current bool) []string {
 		return m.renderAgentCard(agent, index, contentWidth, nameWidth, narrow, current)
@@ -2208,10 +2300,10 @@ func thinkingBadge(label string) (badge, compact string) {
 // badgeColumnWidth returns the widest thinking badge across the roster so every
 // compact agent line reserves the same badge column and the badges stay
 // aligned. glyphOnly selects the single-cell compact form used near MinWidth.
-func (m *model) badgeColumnWidth(glyphOnly bool) int {
+func badgeColumnWidth(roster []rosterAgent, glyphOnly bool) int {
 	w := 0
-	for _, a := range m.availableAgents {
-		full, compact := thinkingBadge(a.Thinking)
+	for _, entry := range roster {
+		full, compact := thinkingBadge(entry.agent.Thinking)
 		b := full
 		if glyphOnly {
 			b = compact
@@ -2222,46 +2314,48 @@ func (m *model) badgeColumnWidth(glyphOnly bool) int {
 }
 
 // effortSegment builds the labeled effort metric for an agent's thinking
-// label: the full form ("Effort <gauge> <value>") and a minimal fallback
-// ("Effort <gauge>") for widths where the value word does not fit. Both are
-// empty when the agent has no thinking configuration. Effort levels and "off"
-// always carry the full six-cell gauge; adaptive reads "auto" and a token
-// budget keeps the token glyph with its count.
-func effortSegment(label string) metricSegment {
-	prefix := styles.MutedStyle.Render("Effort ")
+// label; both forms are empty when the agent has no thinking configuration.
+// The compact form ("Eff <value>") drops the decorative six-cell gauge but
+// always keeps the semantic value. Narrow cards use it outright, with no
+// minimal degradation; wide cards prefer the full form ("Effort <gauge>
+// <value>") and degrade to the compact form when even alone it overflows the
+// line — the decoration gives way, never the value. At every width adaptive
+// reads "auto" and a token budget keeps the token glyph with its count.
+func effortSegment(label string, narrow bool) metricSegment {
 	kind, tokens := classifyThinking(label)
+	var value, gauge string
 	switch kind {
 	case thinkingNone:
 		return metricSegment{}
 	case thinkingOff:
-		// Capable but disabled: a dim empty gauge, distinct from a non-capable
-		// model (which renders no effort segment at all).
-		gauge := toolcommon.EffortGaugeEmpty()
-		return metricSegment{
-			full:    prefix + gauge + " " + styles.MutedStyle.Faint(true).Render("off"),
-			minimal: prefix + gauge,
-		}
+		// Capable but disabled: dim, with an empty gauge on wide cards —
+		// distinct from a non-capable model (which renders no effort segment
+		// at all).
+		value = styles.MutedStyle.Faint(true).Render("off")
+		gauge = toolcommon.EffortGaugeEmpty()
 	case thinkingAdaptive:
-		auto := prefix + styles.ThinkingBadgeStyle.Render("auto")
-		return metricSegment{full: auto, minimal: auto}
+		value = styles.ThinkingBadgeStyle.Render("auto")
 	case thinkingTokens:
-		return metricSegment{
-			full:    prefix + styles.ThinkingBadgeStyle.Render(styles.TokenGlyph+" "+toolcommon.FormatTokenCount(tokens)),
-			minimal: prefix + styles.ThinkingBadgeStyle.Render(styles.TokenGlyph),
-		}
+		value = styles.ThinkingBadgeStyle.Render(styles.TokenGlyph + " " + toolcommon.FormatTokenCount(tokens))
 	default: // thinkingLevel
-		level, ok := effort.Parse(label)
-		if !ok {
+		if level, ok := effort.Parse(label); ok {
+			value = styles.MutedStyle.Render(label)
+			gauge = toolcommon.EffortGauge(level)
+		} else {
 			// Unknown/future level word: plain text so it still renders.
-			word := prefix + styles.ThinkingBadgeStyle.Render(label)
-			return metricSegment{full: word, minimal: word}
-		}
-		gauge := toolcommon.EffortGauge(level)
-		return metricSegment{
-			full:    prefix + gauge + " " + styles.MutedStyle.Render(label),
-			minimal: prefix + gauge,
+			value = styles.ThinkingBadgeStyle.Render(label)
 		}
 	}
+
+	compact := styles.MutedStyle.Render("Eff ") + value
+	if narrow {
+		return metricSegment{full: compact, minimal: compact}
+	}
+	wide := value
+	if gauge != "" {
+		wide = gauge + " " + value
+	}
+	return metricSegment{full: styles.MutedStyle.Render("Effort ") + wide, minimal: compact}
 }
 
 // contextSegment builds the labeled context metric for an agent: the latest
@@ -2380,10 +2474,12 @@ func (m *model) renderAgentLine(agent runtime.AgentDetails, index, contentWidth,
 // pad the marker column so the names stay aligned. Line 2: the indented
 // provider/model, left-truncated so its informative tail survives. The
 // remaining line(s) carry the labeled metrics, flowed to the width (see
-// flowMetricLines): effort keeps the full six-cell gauge at every width,
-// context keeps the warning/critical coloring, and cost is the agent's
-// cumulative attributed cost. The description is omitted. Agents past the 9th
-// have no shortcut.
+// flowMetricLines): wide cards label effort with the full six-cell gauge
+// while narrow cards compact the labels (Eff/Ctx) and keep the semantic
+// effort value in place of the gauge — a roster-wide adaptive choice (see
+// detailedAgentRenderer) — context keeps the warning/critical coloring, and
+// cost is the agent's cumulative attributed cost. The description is
+// omitted. Agents past the 9th have no shortcut.
 func (m *model) renderAgentCard(agent runtime.AgentDetails, index, contentWidth, nameWidth int, narrow, current bool) []string {
 	agentStyle := styles.AgentAccentStyleFor(agent.Name)
 
@@ -2432,47 +2528,63 @@ func metricSeparator() string {
 
 // metricSegment is one labeled metric of an agent card. full is the preferred
 // rendering; minimal is the degraded form used when full alone overflows the
-// line (only the effort segment degrades — it drops the value word but never
-// the six-cell gauge). Both empty means the segment is omitted entirely.
+// line (only the wide effort segment degrades — to its compact "Eff <value>"
+// form, which drops the decorative gauge but never the semantic value; narrow
+// segments never degrade). Both empty means the segment is omitted entirely.
 type metricSegment struct {
 	full    string
 	minimal string
 }
 
+// metricSegments builds the labeled metric segments of an agent's card in
+// display order: effort (omitted when the agent has no thinking
+// configuration), then context and cost.
+func (m *model) metricSegments(agent runtime.AgentDetails, narrow bool) []metricSegment {
+	segments := make([]metricSegment, 0, 3)
+	if s := effortSegment(agent.Thinking, narrow); s.full != "" {
+		segments = append(segments, s)
+	}
+	return append(segments, m.contextSegment(agent.Name, narrow), m.costSegment(agent.Name))
+}
+
 // metricLines builds the flowed metric lines of an agent card, fitted to
 // width columns.
 func (m *model) metricLines(agent runtime.AgentDetails, width int, narrow bool) []string {
-	segments := make([]metricSegment, 0, 3)
-	if s := effortSegment(agent.Thinking); s.full != "" {
-		segments = append(segments, s)
-	}
-	segments = append(segments, m.contextSegment(agent.Name, narrow), m.costSegment(agent.Name))
-	return flowMetricLines(segments, width)
+	return flowMetricLines(m.metricSegments(agent, narrow), width, narrow)
 }
 
 // flowMetricLines lays the metric segments out into lines of at most width
-// columns. All segments share one line when they fit — the ideal single
-// metrics line at wide sidebars. Otherwise the first segment (effort, when
-// present) takes a dedicated line, degrading to its minimal form if even
-// alone it overflows, and the remaining segments flow greedily. Segments are
-// never truncated: at the sidebar's minimum width every minimal form fits,
-// and narrower widths auto-collapse the sidebar before this matters.
-func flowMetricLines(segments []metricSegment, width int) []string {
+// columns. Narrow cards flow every segment greedily in order, sharing lines
+// wherever they fit, so the metrics take as few lines as possible. Wide
+// cards join all segments on one line — the adaptive vocabulary choice (see
+// detailedAgentRenderer) picks wide only when that line fits — with a
+// defensive degradation should it not: the first segment (effort, when
+// present) takes a dedicated line and the rest flow greedily, unless even
+// alone it overflows, in which case it degrades to its compact minimal form
+// and flows with the rest. Segments are never truncated: at the sidebar's
+// minimum width every minimal form fits, and narrower widths auto-collapse
+// the sidebar before this matters.
+func flowMetricLines(segments []metricSegment, width int, narrow bool) []string {
 	if len(segments) == 0 {
 		return nil
 	}
-	if all := joinSegments(segments); lipgloss.Width(all) <= width {
-		return []string{all}
-	}
-
-	first := segments[0].full
-	if lipgloss.Width(first) > width && segments[0].minimal != "" {
-		first = segments[0].minimal
-	}
-	lines := []string{first}
-
+	rest := segments
+	var lines []string
 	current := ""
-	for _, seg := range segments[1:] {
+	if !narrow {
+		if all := joinSegments(segments); lipgloss.Width(all) <= width {
+			return []string{all}
+		}
+		first := segments[0]
+		rest = segments[1:]
+		if lipgloss.Width(first.full) <= width || first.minimal == "" {
+			lines = append(lines, first.full)
+		} else {
+			current = first.minimal
+		}
+	}
+
+	for _, seg := range rest {
 		switch {
 		case current == "":
 			current = seg.full

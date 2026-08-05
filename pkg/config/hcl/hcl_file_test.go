@@ -1,6 +1,7 @@
 package hcl
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -225,5 +226,5 @@ agent "root" {
 	_, err := ToMap(src, filepath.Join(dir, "agent.hcl"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading file")
-	assert.Contains(t, err.Error(), filepath.Join(dir, "instructions.txt"))
+	assert.Contains(t, err.Error(), fmt.Sprintf("%q", filepath.Join(dir, "instructions.txt")))
 }

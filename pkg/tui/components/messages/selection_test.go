@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/markdown"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
@@ -255,7 +256,7 @@ func TestApplyCopiedFlashOffscreenIsNoop(t *testing.T) {
 func TestClickOnCopyLabelFlashesCopied(t *testing.T) {
 	t.Parallel()
 
-	m := NewScrollableView(80, 24, &service.SessionState{}).(*model)
+	m := NewScrollableView(animation.NewRuntime(), 80, 24, &service.SessionState{}).(*model)
 	m.SetSize(80, 24)
 	msg := types.Agent(types.MessageTypeAssistant, "", "hello response")
 	m.messages = append(m.messages, msg)

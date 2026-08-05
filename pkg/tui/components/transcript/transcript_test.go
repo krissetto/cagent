@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
@@ -17,7 +18,7 @@ import (
 const testAgent = "Gordon"
 
 func newTestTranscript() *Transcript {
-	return New(service.StaticSessionState{AgentName: testAgent})
+	return New(animation.NewRuntime(), service.StaticSessionState{AgentName: testAgent})
 }
 
 func toolCall(id string) (tools.ToolCall, tools.Tool) {

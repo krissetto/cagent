@@ -22,6 +22,11 @@ func (t *Config) Validate() error {
 	if err := t.Budget.validate(); err != nil {
 		return fmt.Errorf("budget: %w", err)
 	}
+	if t.Runtime != nil {
+		if err := t.Runtime.Safety.Validate(); err != nil {
+			return fmt.Errorf("runtime.safety: %w", err)
+		}
+	}
 	for name := range t.Budgets {
 		b := t.Budgets[name]
 		if err := b.validate(); err != nil {
@@ -69,6 +74,9 @@ func (t *Config) Validate() error {
 		}
 		if err := agent.validateHarness(); err != nil {
 			return err
+		}
+		if err := agent.Safety.Validate(); err != nil {
+			return fmt.Errorf("agents.%s.safety: %w", agent.Name, err)
 		}
 		if err := validateCompactionThreshold(agent.CompactionThreshold); err != nil {
 			return fmt.Errorf("agents.%s: %w", agent.Name, err)

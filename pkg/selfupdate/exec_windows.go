@@ -50,7 +50,7 @@ func reExecProcess(path string, args, env []string) error {
 		childArgs = args[1:]
 	}
 
-	cmd := exec.CommandContext(context.Background(), path, childArgs...)
+	cmd := exec.Command(path, childArgs...) //nolint:noctx // re-exec must outlive any request-scoped context
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

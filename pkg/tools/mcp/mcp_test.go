@@ -1,9 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"iter"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +18,29 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/lifecycle"
 )
+
+func TestRemoteToolsetLogsDoNotExposeCredentials(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	const secret = "audit-secret-value"
+	ts := NewRemoteToolset(
+		"test",
+		"https://user:"+secret+"@example.com/mcp?api_key="+secret,
+		"streamable",
+		map[string]string{"Authorization": "Bearer " + secret, "X-API-Key": secret},
+		nil,
+	)
+
+	output := logs.String()
+	assert.NotContains(t, output, secret)
+	assert.NotContains(t, output, "user:")
+	assert.Contains(t, output, "Authorization")
+	assert.Contains(t, output, "X-API-Key")
+	assert.Equal(t, "example.com", ts.logID)
+}
 
 // mockMCPClient is a test double for the mcpClient interface.
 type mockMCPClient struct {

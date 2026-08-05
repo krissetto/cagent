@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -248,9 +250,12 @@ func (t *ToolSet) Close() error {
 
 func (t *ToolSet) Instructions() string {
 	var b strings.Builder
-	b.WriteString(`## Filesystem Tools
-
-- Relative paths resolve from the working directory; absolute paths and ".." work as expected
+	b.WriteString("## Filesystem Tools\n")
+	if t.workingDir != "" {
+		fmt.Fprintf(&b, "\n- The working directory is %q; relative paths resolve from it", t.workingDir)
+	}
+	b.WriteString(`
+- Absolute paths must match the host OS (e.g. C:\... on Windows, /... on Unix)
 - Prefer read_multiple_files over sequential read_file calls
 - Use search_files_content to locate code or text across files
 - Use exclude patterns in searches and max_depth in directory_tree to limit output`)
@@ -319,6 +324,10 @@ type DirectoryTreeMeta struct {
 
 type ReadFileArgs struct {
 	Path string `json:"path" jsonschema:"File to read"`
+	// Line and Limit are pointers so an omitted value is distinguishable
+	// from an explicit (invalid) zero.
+	Line  *int `json:"line,omitempty" jsonschema:"1-based line number to start reading from (text files only; defaults to the first line)"`
+	Limit *int `json:"limit,omitempty" jsonschema:"Maximum number of lines to read (text files only; defaults to reading through the end of the file)"`
 }
 
 type ReadFileMeta struct {
@@ -379,10 +388,36 @@ func ParseEditFileArgs(data []byte) (EditFileArgs, error) {
 		return EditFileArgs{}, fmt.Errorf("edits field is neither an array nor a JSON string: %w", err)
 	}
 	if err := json.Unmarshal([]byte(editsStr), &args.Edits); err != nil {
-		return EditFileArgs{}, fmt.Errorf("failed to parse double-serialized edits string: %w", err)
+		// The inner payload can carry the same brace/bracket-counting
+		// mistakes as the outer JSON, so give it the same repair pass.
+		repaired, ok := tryRepairEditFileJSON([]byte(editsStr))
+		if !ok {
+			return EditFileArgs{}, fmt.Errorf("failed to parse double-serialized edits string: %w", err)
+		}
+		if err := json.Unmarshal(repaired, &args.Edits); err != nil {
+			return EditFileArgs{}, fmt.Errorf("failed to parse double-serialized edits string after repair: %w", err)
+		}
+		slog.Debug("Repaired malformed double-serialized edits payload")
+		if err := validateRepairedEdits(args.Edits); err != nil {
+			return EditFileArgs{}, err
+		}
 	}
 
 	return args, nil
+}
+
+// validateRepairedEdits guards against repair output that is structurally
+// valid but semantically corrupted. An empty oldText is never a meaningful
+// edit (handleEditFile's strings.Replace would silently insert newText at
+// the start of the file), so its presence after a repair means the repair
+// removed a load-bearing character rather than a spurious one.
+func validateRepairedEdits(edits []Edit) error {
+	for i, edit := range edits {
+		if edit.OldText == "" {
+			return fmt.Errorf("repaired edits payload is invalid: edit %d has empty oldText", i+1)
+		}
+	}
+	return nil
 }
 
 // tryRepairEditFileJSON attempts to fix common LLM JSON malformations by
@@ -507,7 +542,7 @@ func (t *ToolSet) Tools(context.Context) ([]tools.Tool, error) {
 		{
 			Name:         ToolNameReadFile,
 			Category:     "filesystem",
-			Description:  "Read the complete contents of a file from the file system. Supports text files and images (jpg, png, gif, webp). Images are returned as image content that you can view directly.",
+			Description:  "Read the contents of a file from the file system. By default the complete file is returned; for text files the optional line (1-based start line) and limit (maximum number of lines) arguments select a line range. Supports text files and images (jpg, png, gif, webp). Images are returned as image content that you can view directly.",
 			Parameters:   tools.MustSchemaFor[ReadFileArgs](),
 			OutputSchema: tools.MustSchemaFor[string](),
 			Handler:      tools.NewHandler(t.handleReadFile),
@@ -584,15 +619,15 @@ func (t *ToolSet) executePostEditCommands(ctx context.Context, filePath string) 
 	if len(t.postEditCommands) == 0 {
 		return nil
 	}
-	return runPostEditCommands(ctx, t.postEditCommands, filePath)
+	return runPostEditCommands(ctx, t.workingDir, t.postEditCommands, filePath)
 }
 
 // resolvePath resolves a path relative to the working directory.
 // A leading "~" or "~/" is expanded to the user's home directory so that
 // LLM-supplied paths like "~/file.txt" work without the agent having to
-// know the user's home directory upfront. Relative paths (including ".")
-// are joined with the working directory. Absolute paths and paths
-// starting with ".." are used as-is.
+// know the user's home directory upfront. Absolute paths are used as-is;
+// everything else (including "." and "..") is joined with the working
+// directory.
 //
 // resolvePath does NOT enforce the allow- or deny-lists; callers should use
 // [resolveAndCheckPath] when those checks are required (i.e. for any path
@@ -606,6 +641,43 @@ func (t *ToolSet) resolvePath(path string) string {
 	}
 
 	return filepath.Clean(filepath.Join(t.workingDir, path))
+}
+
+// checkForeignPath rejects paths that are absolute in another OS's syntax
+// (e.g. "/mnt/c/..." on Windows, "C:\..." on Unix). filepath.IsAbs does not
+// recognize them, so resolvePath would silently join them onto the working
+// directory and the caller would get a baffling not-found for a mangled
+// path. An explicit "./" prefix bypasses the check for the rare legitimate
+// file whose name matches one of these shapes.
+func checkForeignPath(path, goos string) error {
+	if goos == "windows" {
+		switch {
+		// "//server/share" and "\\server\share" are valid UNC paths.
+		case strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "//"):
+			return fmt.Errorf("path %q looks like a POSIX absolute path, but this host runs Windows; use a Windows path (e.g. C:\\...) or a path relative to the working directory", path)
+		case strings.HasPrefix(path, `\`) && !strings.HasPrefix(path, `\\`):
+			return fmt.Errorf("path %q is rooted but has no drive letter; use a full Windows path (e.g. C:\\...) or a path relative to the working directory", path)
+		case isDriveRelative(path):
+			return fmt.Errorf("path %q is drive-relative; use a full Windows path (e.g. C:\\...) or a path relative to the working directory", path)
+		}
+		return nil
+	}
+	if hasDrivePrefix(path) && len(path) > 2 && (path[2] == '/' || path[2] == '\\') {
+		return fmt.Errorf("path %q looks like a Windows absolute path, but this host runs %s; use a POSIX path (e.g. /home/...) or a path relative to the working directory", path, goos)
+	}
+	return nil
+}
+
+// hasDrivePrefix reports whether path starts with a drive letter and colon.
+func hasDrivePrefix(path string) bool {
+	return len(path) >= 2 && path[1] == ':' &&
+		('a' <= path[0] && path[0] <= 'z' || 'A' <= path[0] && path[0] <= 'Z')
+}
+
+// isDriveRelative reports whether path is like "C:" or "C:foo" — relative
+// to the current directory of drive C:, which filepath.Join cannot represent.
+func isDriveRelative(path string) bool {
+	return hasDrivePrefix(path) && (len(path) == 2 || path[2] != '/' && path[2] != '\\')
 }
 
 // resolveAndCheckPath is the canonical entry point used by every filesystem
@@ -651,6 +723,9 @@ func (t *ToolSet) resolveAndCheckPath(path string) (string, error) {
 	if t.sandboxBroken {
 		return "", errors.New("filesystem toolset is disabled due to invalid allow/deny list configuration")
 	}
+	if err := checkForeignPath(path, runtime.GOOS); err != nil {
+		return "", err
+	}
 
 	resolved := t.resolvePath(path)
 	if t.agentsIgnore.Match(resolved) {
@@ -670,6 +745,12 @@ func (t *ToolSet) resolveAndCheckPath(path string) (string, error) {
 		return "", fmt.Errorf("path %q is outside the allowed directories (%s)", path, t.allowList.describe())
 	}
 	return resolved, nil
+}
+
+// resolutionHint tells the model where a failed path actually pointed, so
+// it can correct a wrong base instead of retrying the same path.
+func (t *ToolSet) resolutionHint(resolved string) string {
+	return fmt.Sprintf(" (resolved to %q; relative paths resolve from the working directory %q)", resolved, t.workingDir)
 }
 
 // rootedAccess returns the [*os.Root] handle and rooted (slash-separated)
@@ -925,6 +1006,9 @@ func (t *ToolSet) handleEditFile(ctx context.Context, args EditFileArgs) (*tools
 
 	content, err := t.readFile(resolvedPath)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return tools.ResultError("not found" + t.resolutionHint(resolvedPath)), nil
+		}
 		return tools.ResultError(fmt.Sprintf("Error reading file: %s", err)), nil
 	}
 
@@ -964,6 +1048,9 @@ func (t *ToolSet) handleListDirectory(ctx context.Context, args ListDirectoryArg
 
 	entries, err := t.readDir(resolvedPath)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return tools.ResultError("not found" + t.resolutionHint(resolvedPath)), nil
+		}
 		return tools.ResultError(fmt.Sprintf("Error reading directory: %s", err)), nil
 	}
 
@@ -991,6 +1078,18 @@ func (t *ToolSet) handleListDirectory(ctx context.Context, args ListDirectoryArg
 		}
 	}
 
+	// An empty Output is rendered as a generic "(no output)" placeholder
+	// upstream, which the model cannot distinguish from a tool failure and
+	// typically retries with a shell command. Say explicitly that the
+	// listing succeeded and the directory is empty.
+	if count == 0 {
+		if len(entries) == 0 {
+			fmt.Fprintf(&result, "Directory is empty: %s\n", resolvedPath)
+		} else {
+			fmt.Fprintf(&result, "Directory has no visible entries (%d hidden by ignore patterns): %s\n", len(entries), resolvedPath)
+		}
+	}
+
 	return &tools.ToolCallResult{
 		Output: result.String(),
 		Meta:   meta,
@@ -999,6 +1098,14 @@ func (t *ToolSet) handleListDirectory(ctx context.Context, args ListDirectoryArg
 
 func (t *ToolSet) handleReadFile(ctx context.Context, args ReadFileArgs) (*tools.ToolCallResult, error) {
 	annotateFilesystemSpan(ctx, "read_file", args.Path)
+	if err := ValidateReadFileRange(args.Line, args.Limit); err != nil {
+		return &tools.ToolCallResult{
+			Output:  err.Error(),
+			IsError: true,
+			Meta:    ReadFileMeta{Path: args.Path, Error: err.Error()},
+		}, nil
+	}
+
 	resolvedPath, err := t.resolveAndCheckPath(args.Path)
 	if err != nil {
 		return &tools.ToolCallResult{
@@ -1013,7 +1120,7 @@ func (t *ToolSet) handleReadFile(ctx context.Context, args ReadFileArgs) (*tools
 	if err != nil {
 		var errMsg string
 		if errors.Is(err, fs.ErrNotExist) {
-			errMsg = "not found"
+			errMsg = "not found" + t.resolutionHint(resolvedPath)
 		} else {
 			errMsg = err.Error()
 		}
@@ -1022,6 +1129,7 @@ func (t *ToolSet) handleReadFile(ctx context.Context, args ReadFileArgs) (*tools
 			Output:  errMsg,
 			IsError: true,
 			Meta: ReadFileMeta{
+				Path:  args.Path,
 				Error: errMsg,
 			},
 		}, nil
@@ -1029,7 +1137,35 @@ func (t *ToolSet) handleReadFile(ctx context.Context, args ReadFileArgs) (*tools
 
 	// Only check for image files on regular files (not directories, etc.)
 	if info.Mode().IsRegular() && chat.IsImageFile(resolvedPath) {
+		// Byte-exact line ranges are meaningless for base64 image content;
+		// reject instead of silently returning the whole image.
+		if args.Line != nil || args.Limit != nil {
+			errMsg := "line/limit are only supported for text files; read the image without line/limit"
+			return &tools.ToolCallResult{
+				Output:  errMsg,
+				IsError: true,
+				Meta:    ReadFileMeta{Path: args.Path, Error: errMsg},
+			}, nil
+		}
 		return t.readImageFile(resolvedPath, args.Path)
+	}
+
+	if args.Line != nil || args.Limit != nil {
+		selected, totalLines, err := t.readFileLineRange(resolvedPath, args.Line, args.Limit)
+		if err != nil {
+			return &tools.ToolCallResult{
+				Output:  err.Error(),
+				IsError: true,
+				Meta:    ReadFileMeta{Path: args.Path, Error: err.Error()},
+			}, nil
+		}
+		return &tools.ToolCallResult{
+			Output: string(selected),
+			Meta: ReadFileMeta{
+				Path:      args.Path,
+				LineCount: totalLines,
+			},
+		}, nil
 	}
 
 	content, err := t.readFile(resolvedPath)
@@ -1048,9 +1184,87 @@ func (t *ToolSet) handleReadFile(ctx context.Context, args ReadFileArgs) (*tools
 	return &tools.ToolCallResult{
 		Output: text,
 		Meta: ReadFileMeta{
+			Path:      args.Path,
 			LineCount: strings.Count(text, "\n") + 1,
 		},
 	}, nil
+}
+
+// ValidateReadFileRange rejects explicitly supplied non-positive range
+// values; nil means "not provided" and is always valid. It is exported so
+// alternative read_file implementations (e.g. the ACP override) apply the
+// same contract before doing any I/O.
+func ValidateReadFileRange(line, limit *int) error {
+	if line != nil && *line < 1 {
+		return fmt.Errorf("invalid line %d: line numbers are 1-based and must be >= 1", *line)
+	}
+	if limit != nil && *limit < 1 {
+		return fmt.Errorf("invalid limit %d: limit must be >= 1", *limit)
+	}
+	return nil
+}
+
+// readFileLineRange streams the file at resolved and returns the exact bytes
+// of the requested 1-based line range (line terminators included, so a final
+// newline is preserved when present) plus the file's total line count
+// (newline count + 1, matching the full-read metadata). Only the selected
+// lines are held in memory. A nil line starts at the first line, a nil limit
+// reads through EOF, and a start past the last line yields empty content.
+// Like readFileHeader, it opens the file through rootedAccess so allow-listed
+// paths keep their TOCTOU protection.
+func (t *ToolSet) readFileLineRange(resolved string, line, limit *int) ([]byte, int, error) {
+	start := 1
+	if line != nil {
+		start = *line
+	}
+	maxLines := -1 // -1: read through EOF
+	if limit != nil {
+		maxLines = *limit
+	}
+
+	root, rel, err := t.rootedAccess(resolved)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var file *os.File
+	if root != nil {
+		file, err = root.Open(rel)
+	} else {
+		file, err = os.Open(resolved)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+
+	// bufio.Reader.ReadSlice instead of a Scanner so arbitrarily long lines
+	// never hit a token limit: a long line simply arrives in multiple chunks
+	// sharing one line number, and chunks of unselected lines are discarded
+	// without being retained.
+	reader := bufio.NewReader(file)
+	var selected []byte
+	newlines := 0
+	current := 1
+	for {
+		chunk, readErr := reader.ReadSlice('\n')
+		if len(chunk) > 0 {
+			if current >= start && (maxLines < 0 || current-start < maxLines) {
+				selected = append(selected, chunk...)
+			}
+			if chunk[len(chunk)-1] == '\n' {
+				newlines++
+				current++
+			}
+		}
+		if readErr == nil || errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			return selected, newlines + 1, nil
+		}
+		return nil, 0, readErr
+	}
 }
 
 // readImageFile reads an image file and returns it as base64-encoded image content.
@@ -1143,7 +1357,7 @@ func (t *ToolSet) handleReadMultipleFiles(ctx context.Context, args ReadMultiple
 		if err != nil {
 			errMsg := err.Error()
 			if errors.Is(err, fs.ErrNotExist) {
-				errMsg = "not found"
+				errMsg = "not found" + t.resolutionHint(resolvedPath)
 			}
 			contents = append(contents, PathContent{
 				Path:    path,

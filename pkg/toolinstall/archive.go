@@ -316,7 +316,7 @@ func buildFileMap(files []PackageFile, data templateData) (map[string]string, er
 		if name == "" {
 			name = filepath.Base(src)
 		}
-		m[src] = name
+		m[src] = executableName(name)
 	}
 	return m, nil
 }
@@ -325,7 +325,7 @@ func buildFileMap(files []PackageFile, data templateData) (map[string]string, er
 // An empty fileMap means extract everything.
 func matchFile(entryName string, fileMap map[string]string) (string, bool) {
 	if len(fileMap) == 0 {
-		return filepath.Base(entryName), true
+		return executableName(filepath.Base(entryName)), true
 	}
 
 	for src, dest := range fileMap {

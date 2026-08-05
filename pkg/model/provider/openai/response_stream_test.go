@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/openai/openai-go/v3/responses"
@@ -96,6 +97,28 @@ func drainToolCalls(t *testing.T, adapter *ResponseStreamAdapter) (map[string]ac
 				call.args += tc.Function.Arguments
 				calls[tc.ID] = call
 			}
+		}
+	}
+}
+
+// drainContent runs the adapter to EOF and concatenates text deltas, exactly
+// as the runtime accumulates assistant content. Duplicated emissions
+// therefore show up as doubled text.
+func drainContent(t *testing.T, adapter *ResponseStreamAdapter) (string, chat.FinishReason) {
+	t.Helper()
+	var content strings.Builder
+	var finishReason chat.FinishReason
+	for {
+		resp, err := adapter.Recv()
+		if errors.Is(err, io.EOF) {
+			return content.String(), finishReason
+		}
+		require.NoError(t, err)
+		for _, choice := range resp.Choices {
+			if choice.FinishReason != "" {
+				finishReason = choice.FinishReason
+			}
+			content.WriteString(choice.Delta.Content)
 		}
 	}
 }
@@ -635,6 +658,153 @@ func TestResponseStream_FinalArgumentsBufferedBeforeOutputItemAdded(t *testing.T
 			assert.Equal(t, "shell", calls["call_1"].name)
 			assert.JSONEq(t, args, calls["call_1"].args)
 			assert.Equal(t, chat.FinishReasonToolCalls, finishReason)
+		})
+	}
+}
+
+// TestResponseStream_CopilotUnstableItemIDsOutputTextNotDuplicated is a
+// regression test for https://github.com/docker/docker-agent/issues/3839.
+//
+// GitHub Copilot (api_type=openai_responses) assigns inconsistent item IDs
+// within a single output: output_item.added, content_part.added, each
+// output_text.delta and output_item.done can all carry distinct IDs, while
+// output_index stays stable. Deduplication keyed on item IDs alone then
+// misses the streamed deltas and re-emits the output_item.done snapshot,
+// doubling structured output. The snapshot must still be emitted when no
+// deltas arrived at all: content_part.added stays structural and must not
+// count as emitted content. Tracking is per output_index slot: content
+// streamed for one output must not suppress the snapshot fallback of a
+// sibling output at another index.
+func TestResponseStream_CopilotUnstableItemIDsOutputTextNotDuplicated(t *testing.T) {
+	t.Parallel()
+
+	const text = `{"answer":"structured","confidence":0.9}`
+	const secondText = "A second, distinct message."
+
+	outputItemAdded := map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item": map[string]any{
+			"type": "message",
+			"id":   "msg_A",
+			"role": "assistant",
+		},
+	}
+	contentPartAdded := map[string]any{
+		"type":          "response.content_part.added",
+		"item_id":       "msg_B",
+		"output_index":  0,
+		"content_index": 0,
+		"part": map[string]any{
+			"type": "output_text",
+			"text": text,
+		},
+	}
+	outputItemDone := map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": 0,
+		"item": map[string]any{
+			"type": "message",
+			"id":   "msg_A",
+			"role": "assistant",
+			"content": []any{
+				map[string]any{"type": "output_text", "text": text},
+			},
+			"status": "completed",
+		},
+	}
+	completed := map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":     "resp_copilot_ids",
+			"output": []any{},
+			"usage": map[string]any{
+				"input_tokens":          4,
+				"output_tokens":         4,
+				"total_tokens":          8,
+				"input_tokens_details":  map[string]any{"cached_tokens": 0},
+				"output_tokens_details": map[string]any{"reasoning_tokens": 0},
+			},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		events      []map[string]any
+		wantContent string
+	}{
+		{
+			name: "deltas under a different item id are not re-emitted by the done snapshot",
+			events: []map[string]any{
+				outputItemAdded,
+				contentPartAdded,
+				{
+					"type":         "response.output_text.delta",
+					"item_id":      "msg_C",
+					"output_index": 0,
+					"delta":        `{"answer":"structured",`,
+				},
+				{
+					"type":         "response.output_text.delta",
+					"item_id":      "msg_C",
+					"output_index": 0,
+					"delta":        `"confidence":0.9}`,
+				},
+				outputItemDone,
+				completed,
+			},
+			wantContent: text,
+		},
+		{
+			name: "without deltas the done snapshot is still emitted once",
+			events: []map[string]any{
+				outputItemAdded,
+				contentPartAdded,
+				outputItemDone,
+				completed,
+			},
+			wantContent: text,
+		},
+		{
+			name: "streamed content at index 0 does not suppress the snapshot of a second output",
+			events: []map[string]any{
+				outputItemAdded,
+				contentPartAdded,
+				{
+					"type":         "response.output_text.delta",
+					"item_id":      "msg_C",
+					"output_index": 0,
+					"delta":        text,
+				},
+				outputItemDone,
+				{
+					"type":         "response.output_item.done",
+					"output_index": 1,
+					"item": map[string]any{
+						"type": "message",
+						"id":   "msg_D",
+						"role": "assistant",
+						"content": []any{
+							map[string]any{"type": "output_text", "text": secondText},
+						},
+						"status": "completed",
+					},
+				},
+				completed,
+			},
+			wantContent: text + secondText,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			adapter := newResponseStreamAdapter(&fakeEventStream{events: decodeEvents(t, tt.events)}, true)
+
+			content, finishReason := drainContent(t, adapter)
+			assert.Equal(t, tt.wantContent, content)
+			assert.Equal(t, chat.FinishReasonStop, finishReason)
 		})
 	}
 }

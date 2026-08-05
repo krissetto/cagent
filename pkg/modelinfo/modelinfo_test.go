@@ -96,6 +96,7 @@ func TestSupportsDeferredTools(t *testing.T) {
 		model    string
 		want     bool
 	}{
+		{"anthropic", "claude-opus-5", true},
 		{"anthropic", "claude-opus-4-5", true},
 		{"anthropic", "claude-opus-4-5-20251101", true},
 		{"anthropic", "claude-sonnet-4-5", true},
@@ -300,6 +301,10 @@ func TestRejectsTokenThinking(t *testing.T) {
 		{"claude-opus-4-60", false}, // must not match
 		{"claude-opus-4-70", false},
 		{"claude-opus-4-80", false},
+		// Claude Opus 5 rejects token-based thinking (adaptive-only generation).
+		{"claude-opus-5", true},
+		{"claude-opus-5-20260724", true},
+		{"global.anthropic.claude-opus-5-20260724-v1:0", true},
 		{"", false},
 		// An "openai/" qualifier must NOT be stripped here: normalize() is
 		// generic (not OpenAI-specific), so a qualified id naming a Claude
@@ -388,9 +393,11 @@ func TestSupportsAdaptiveThinkingSupersetOfRejects(t *testing.T) {
 
 	models := []string{
 		"claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
-		"claude-opus-4-8-20260601", "claude-sonnet-4-5", "claude-sonnet-4-6",
+		"claude-opus-4-8-20260601", "claude-opus-5", "claude-opus-5-20260724",
+		"claude-sonnet-4-5", "claude-sonnet-4-6",
 		"claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5",
 		"anthropic.claude-opus-4-8-v1:0", "global.anthropic.claude-opus-4-6-v1:0",
+		"global.anthropic.claude-opus-5-20260724-v1:0",
 	}
 	for _, m := range models {
 		t.Run(m, func(t *testing.T) {
@@ -414,10 +421,11 @@ func TestSupportsFullThinkingDisplay(t *testing.T) {
 		{"claude-sonnet-4-5", true},
 		{"claude-haiku-4-5", true},
 		{"claude-opus-4-5", true},
-		// The adaptive generation (4.6+) only accepts summarized/omitted.
+		// The adaptive generation (4.6+, and Opus 5) only accepts summarized/omitted.
 		{"claude-opus-4-6", false},
 		{"claude-opus-4-7", false},
 		{"claude-opus-4-8", false},
+		{"claude-opus-5", false},
 		{"claude-sonnet-4-6", false},
 		{"claude-sonnet-5", false},
 		{"claude-fable-5", false},

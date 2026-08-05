@@ -77,11 +77,29 @@ type RunResult struct {
 }
 
 // Runner abstracts the runtime dependency for background agent execution.
+//
+// Runners may additionally implement [SessionSubAgentResolver]; HandleRun
+// prefers it for target validation. The legacy CurrentAgentSubAgentNames
+// method stays required so existing out-of-tree Runner implementations
+// remain source-compatible.
 type Runner interface {
 	// CurrentAgentSubAgentNames returns the names of the current agent's sub-agents.
 	CurrentAgentSubAgentNames() []string
 	// RunAgent starts a sub-agent and blocks until completion or cancellation.
 	RunAgent(ctx context.Context, params RunParams) *RunResult
+}
+
+// SessionSubAgentResolver is an optional interface a [Runner] may implement
+// to resolve dispatchable sub-agents from the calling session instead of
+// shared current-agent state. A pinned background session resolves to its
+// pinned agent, so a nested run_background_agent dispatched from a detached
+// background task validates against the actual caller, not whatever the
+// concurrent foreground loop's current agent points at (#3886).
+// LocalRuntime implements it.
+type SessionSubAgentResolver interface {
+	// SubAgentNames returns the names of the sub-agents the given session's
+	// agent may dispatch to.
+	SubAgentNames(sess *session.Session) []string
 }
 
 // taskStatus represents the lifecycle state of a background agent task.
@@ -262,6 +280,19 @@ func (h *Handler) pruneCompleted() {
 	}
 }
 
+// subAgentNames resolves the sub-agents the calling session's agent may
+// dispatch to. The session-aware resolver is preferred when the Runner
+// implements it (LocalRuntime does, so nested background dispatch validates
+// against the pinned caller — #3886); the legacy shared current-agent method
+// is the compatibility fallback for Runners that predate
+// SessionSubAgentResolver.
+func (h *Handler) subAgentNames(sess *session.Session) []string {
+	if resolver, ok := h.runner.(SessionSubAgentResolver); ok {
+		return resolver.SubAgentNames(sess)
+	}
+	return h.runner.CurrentAgentSubAgentNames()
+}
+
 // HandleRun starts a sub-agent task asynchronously and returns a task ID immediately.
 func (h *Handler) HandleRun(ctx context.Context, sess *session.Session, toolCall tools.ToolCall) (*tools.ToolCallResult, error) {
 	var params RunBackgroundAgentArgs
@@ -276,7 +307,7 @@ func (h *Handler) HandleRun(ctx context.Context, sess *session.Session, toolCall
 		return tools.ResultError("task must not be empty"), nil
 	}
 
-	subAgentNames := h.runner.CurrentAgentSubAgentNames()
+	subAgentNames := h.subAgentNames(sess)
 	if !slices.Contains(subAgentNames, params.Agent) {
 		if len(subAgentNames) > 0 {
 			return tools.ResultError(fmt.Sprintf("agent %q is not in the sub-agents list. Available: %s", params.Agent, strings.Join(subAgentNames, ", "))), nil
@@ -511,7 +542,7 @@ func (t *ToolSet) Instructions() string {
 
 Use background agent tasks to dispatch work to sub-agents concurrently.
 
-- **run_background_agent**: Start a command, returns task ID. The sub-agent runs with all tools pre-approved — use only with trusted sub-agents and well-scoped tasks.
+- **run_background_agent**: Start a command and return its task ID. Native sub-agents inherit the current session's safety policy and permissions; calls requiring confirmation are denied because background tasks are non-interactive. External harnesses enforce their own permission model.
 - **list_background_agents**: Show all tasks with status and runtime
 - **view_background_agent**: Get output and status of a task by task_id
 - **stop_background_agent**: Terminate a task by task_id
@@ -525,8 +556,9 @@ func backgroundAgentTools() []tools.Tool {
 			Name:     ToolNameRunBackgroundAgent,
 			Category: "transfer",
 			Description: `Start a sub-agent task in the background and return immediately with a task ID.
-Use this to dispatch work to multiple sub-agents concurrently. The sub-agent runs with all tools
-pre-approved — use only with trusted sub-agents and well-scoped tasks. Check progress with
+Use this to dispatch work to multiple sub-agents concurrently. Native sub-agents inherit the current
+session's safety policy and permissions; calls requiring confirmation are denied because background
+tasks are non-interactive. External harnesses enforce their own permission model. Check progress with
 view_background_agent and collect results once the task is complete.`,
 			Parameters:  tools.MustSchemaFor[RunBackgroundAgentArgs](),
 			Annotations: tools.ToolAnnotations{Title: "Run Background Agent"},

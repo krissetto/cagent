@@ -122,6 +122,12 @@ func anthropicTopTierSupport(m string) (hasXHigh, hasMax bool) {
 		// release adds xhigh while the preview tops out at max.
 		return !strings.Contains(m, "preview"), true
 	}
+	// Claude Opus 5+ ships the full effort ladder (xhigh and max), matching Opus 4.7+.
+	if strings.Contains(m, "opus") {
+		if major, _, ok := claudeOpusSonnetVersion(m); ok && major >= 5 {
+			return true, true
+		}
+	}
 	family, minor, ok := claudeFamilyMinor(m)
 	if !ok {
 		return false, false

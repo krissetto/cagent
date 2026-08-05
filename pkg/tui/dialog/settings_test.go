@@ -100,10 +100,13 @@ func TestSettingsDialogWithoutVisualsTab(t *testing.T) {
 	assert.Contains(t, view, "Appearance")
 	assert.NotContains(t, view, "Sidebar position")
 	assert.NotContains(t, view, "Sidebar info mode")
+	assert.NotContains(t, view, "Active agents only")
 	assert.Contains(t, view, "Split diff view")
 
 	assert.False(t, d.selectable(tabAppearance, rowInfoMode),
 		"the info mode row is not selectable without a sidebar")
+	assert.False(t, d.selectable(tabAppearance, rowActiveAgents),
+		"the agent filter row is not selectable without a sidebar")
 }
 
 func TestSettingsDialogCyclesPositionAndPreviews(t *testing.T) {
@@ -226,6 +229,47 @@ func TestSettingsDialogTogglesSection(t *testing.T) {
 
 	d.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	assert.False(t, d.current.Layout.HideUsage, "space must toggle back")
+}
+
+func TestSettingsDialogTogglesActiveAgentsOnly(t *testing.T) {
+	t.Parallel()
+
+	d := newTestSettingsDialog(t, messages.LayoutSettings{})
+	d.selected[tabAppearance] = rowActiveAgents
+
+	_, cmd := d.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	msgs := collectMsgs(cmd)
+	require.Len(t, msgs, 1)
+	preview, ok := msgs[0].(messages.PreviewLayoutMsg)
+	require.True(t, ok, "toggling the agent filter must emit a live preview")
+	assert.True(t, preview.Layout.ActiveAgentsOnly, "space must enable the filter")
+
+	d.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	assert.False(t, d.current.Layout.ActiveAgentsOnly, "space must toggle back")
+
+	assert.Contains(t, ansi.Strip(d.View()), "Active agents only")
+}
+
+func TestSettingsDialogActiveAgentsRowDisabledWhenAgentsHidden(t *testing.T) {
+	t.Parallel()
+
+	d := newTestSettingsDialog(t, messages.LayoutSettings{HideAgents: true, ActiveAgentsOnly: true})
+	assert.False(t, d.selectable(tabAppearance, rowActiveAgents),
+		"the nested row is not selectable while Agents is hidden")
+
+	d.selected[tabAppearance] = rowAgents
+	d.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	assert.Equal(t, rowTools, d.selected[tabAppearance], "navigation skips the disabled nested row")
+
+	assert.Contains(t, ansi.Strip(d.View()), "Active agents only",
+		"the disabled row still renders (muted)")
+
+	// Re-showing Agents makes the nested row selectable again.
+	d.selected[tabAppearance] = rowAgents
+	d.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	require.False(t, d.current.Layout.HideAgents)
+	d.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	assert.Equal(t, rowActiveAgents, d.selected[tabAppearance])
 }
 
 func TestSettingsDialogTogglesSessionPath(t *testing.T) {
@@ -372,6 +416,7 @@ func TestSettingsDialogViewShowsVisualsRows(t *testing.T) {
 	assert.Contains(t, view, "Session path")
 	assert.Contains(t, view, "Token usage")
 	assert.Contains(t, view, "Agents")
+	assert.Contains(t, view, "Active agents only")
 	assert.Contains(t, view, "Tools")
 	assert.Contains(t, view, "Todos")
 }

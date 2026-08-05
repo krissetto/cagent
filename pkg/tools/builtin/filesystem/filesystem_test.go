@@ -3,17 +3,21 @@ package filesystem
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/docker/docker-agent/pkg/tools"
 )
 
 // initGitRepo initializes a git repository in the given directory
@@ -63,9 +67,10 @@ func TestFilesystemTool_ResolvePath(t *testing.T) {
 	resolvedPath = tool.resolvePath(".")
 	assert.Equal(t, tmpDir, resolvedPath)
 
-	// Test absolute paths are allowed
-	resolvedPath = tool.resolvePath("/etc/hosts")
-	assert.Equal(t, "/etc/hosts", resolvedPath)
+	// Test absolute paths are allowed.
+	absolute := filepath.Join(t.TempDir(), "hosts")
+	resolvedPath = tool.resolvePath(absolute)
+	assert.Equal(t, absolute, resolvedPath)
 }
 
 // TestFilesystemTool_ResolvePath_ExpandsTilde is a regression test for
@@ -105,7 +110,7 @@ func TestFilesystemTool_ReadFile_TildePath(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.IsError)
 	assert.Equal(t, content, result.Output)
-	assert.Equal(t, ReadFileMeta{LineCount: 1}, result.Meta)
+	assert.Equal(t, ReadFileMeta{Path: "~/note.txt", LineCount: 1}, result.Meta)
 }
 
 func TestFilesystemTool_WriteFile(t *testing.T) {
@@ -168,13 +173,207 @@ func TestFilesystemTool_ReadFile(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, content, result.Output)
-	assert.Equal(t, ReadFileMeta{LineCount: 1}, result.Meta)
+	assert.Equal(t, ReadFileMeta{Path: testFile, LineCount: 1}, result.Meta)
 
 	result, err = tool.handleReadFile(t.Context(), ReadFileArgs{
 		Path: "nonexistent.txt",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "not found", result.Output)
+	assert.Contains(t, result.Output, "not found")
+	// The hint must name the resolved path and the working directory so the
+	// model can correct a wrong base instead of retrying the same path.
+	// %q-quoted, so Windows separators appear escaped in the output.
+	assert.Contains(t, result.Output, fmt.Sprintf("%q", filepath.Join(tmpDir, "nonexistent.txt")))
+	assert.Contains(t, result.Output, fmt.Sprintf("%q", tmpDir))
+}
+
+// TestFilesystemTool_ReadFile_LineRange is a regression test for issue
+// #3889: read_file must support optional ACP-style line/limit arguments so
+// large files stay reachable in ranged chunks, while a path-only call keeps
+// returning the exact full content.
+func TestFilesystemTool_ReadFile_LineRange(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	tool := New(tmpDir)
+
+	// Five lines with a final newline, and three lines without one.
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "lines.txt"), []byte("one\ntwo\nthree\nfour\nfive\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "nonewline.txt"), []byte("alpha\nbeta\ngamma"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "empty.txt"), nil, 0o644))
+
+	tests := []struct {
+		name          string
+		args          ReadFileArgs
+		want          string
+		wantLineCount int
+	}{
+		{
+			name:          "path only returns exact full content",
+			args:          ReadFileArgs{Path: "lines.txt"},
+			want:          "one\ntwo\nthree\nfour\nfive\n",
+			wantLineCount: 6,
+		},
+		{
+			name:          "head range",
+			args:          ReadFileArgs{Path: "lines.txt", Line: new(1), Limit: new(2)},
+			want:          "one\ntwo\n",
+			wantLineCount: 6,
+		},
+		{
+			name:          "middle range",
+			args:          ReadFileArgs{Path: "lines.txt", Line: new(2), Limit: new(2)},
+			want:          "two\nthree\n",
+			wantLineCount: 6,
+		},
+		{
+			name:          "line without limit reads through EOF",
+			args:          ReadFileArgs{Path: "lines.txt", Line: new(4)},
+			want:          "four\nfive\n",
+			wantLineCount: 6,
+		},
+		{
+			name:          "limit without line starts at the first line",
+			args:          ReadFileArgs{Path: "lines.txt", Limit: new(3)},
+			want:          "one\ntwo\nthree\n",
+			wantLineCount: 6,
+		},
+		{
+			name:          "limit past EOF stops at EOF",
+			args:          ReadFileArgs{Path: "nonewline.txt", Line: new(2), Limit: new(99)},
+			want:          "beta\ngamma",
+			wantLineCount: 3,
+		},
+		{
+			name:          "last line without final newline is byte-exact",
+			args:          ReadFileArgs{Path: "nonewline.txt", Line: new(3), Limit: new(1)},
+			want:          "gamma",
+			wantLineCount: 3,
+		},
+		{
+			name:          "start beyond EOF returns empty output",
+			args:          ReadFileArgs{Path: "nonewline.txt", Line: new(42)},
+			want:          "",
+			wantLineCount: 3,
+		},
+		{
+			name:          "empty file with range returns empty output",
+			args:          ReadFileArgs{Path: "empty.txt", Line: new(1), Limit: new(1)},
+			want:          "",
+			wantLineCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := tool.handleReadFile(t.Context(), tt.args)
+			require.NoError(t, err)
+			assert.False(t, result.IsError, "unexpected tool error: %s", result.Output)
+			assert.Equal(t, tt.want, result.Output)
+			// LineCount stays the total file line count, not the returned range.
+			assert.Equal(t, ReadFileMeta{Path: tt.args.Path, LineCount: tt.wantLineCount}, result.Meta)
+		})
+	}
+}
+
+// TestFilesystemTool_ReadFile_LineRangeInvalid pins that explicitly invalid
+// range values produce a tool error result (never a panic) and that the file
+// is not read.
+func TestFilesystemTool_ReadFile_LineRangeInvalid(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	tool := New(tmpDir)
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "lines.txt"), []byte("one\ntwo\n"), 0o644))
+
+	tests := []struct {
+		name    string
+		args    ReadFileArgs
+		wantMsg string
+	}{
+		{"zero line", ReadFileArgs{Path: "lines.txt", Line: new(0)}, "invalid line 0"},
+		{"negative line", ReadFileArgs{Path: "lines.txt", Line: new(-3)}, "invalid line -3"},
+		{"zero limit", ReadFileArgs{Path: "lines.txt", Limit: new(0)}, "invalid limit 0"},
+		{"negative limit", ReadFileArgs{Path: "lines.txt", Limit: new(-1)}, "invalid limit -1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := tool.handleReadFile(t.Context(), tt.args)
+			require.NoError(t, err)
+			assert.True(t, result.IsError)
+			assert.Contains(t, result.Output, tt.wantMsg)
+		})
+	}
+}
+
+// TestFilesystemTool_ReadFile_LineRangeLongLine exercises the
+// bufio.ErrBufferFull path: a line longer than the default reader buffer
+// must be returned byte-exact and counted as a single line.
+func TestFilesystemTool_ReadFile_LineRangeLongLine(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	tool := New(tmpDir)
+
+	longLine := strings.Repeat("x", 20000)
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "long.txt"), []byte("short\n"+longLine+"\nend\n"), 0o644))
+
+	result, err := tool.handleReadFile(t.Context(), ReadFileArgs{Path: "long.txt", Line: new(2), Limit: new(1)})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Equal(t, longLine+"\n", result.Output)
+	assert.Equal(t, ReadFileMeta{Path: "long.txt", LineCount: 4}, result.Meta)
+}
+
+// TestFilesystemTool_ReadFile_LineRangeImageRejected pins that images are
+// never silently ranged: read_file with line/limit on an image is a clear
+// tool error.
+func TestFilesystemTool_ReadFile_LineRangeImageRejected(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	tool := New(tmpDir)
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "test.png"), createTestPNG(t, 10, 10), 0o644))
+
+	result, err := tool.handleReadFile(t.Context(), ReadFileArgs{Path: "test.png", Line: new(1), Limit: new(10)})
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Output, "line/limit are only supported for text files")
+	assert.Empty(t, result.Images)
+}
+
+// TestFilesystemTool_ReadFileSchemaExposesLineRange pins the tool contract:
+// the read_file parameter schema must advertise the optional line and limit
+// arguments while keeping only path required, and the description must not
+// promise complete contents only.
+func TestFilesystemTool_ReadFileSchemaExposesLineRange(t *testing.T) {
+	t.Parallel()
+	tool := New(t.TempDir())
+
+	all, err := tool.Tools(t.Context())
+	require.NoError(t, err)
+
+	idx := slices.IndexFunc(all, func(tl tools.Tool) bool { return tl.Name == ToolNameReadFile })
+	require.NotEqual(t, -1, idx, "read_file tool must exist")
+	readFile := all[idx]
+
+	assert.Contains(t, readFile.Description, "line")
+	assert.Contains(t, readFile.Description, "limit")
+
+	data, err := json.Marshal(readFile.Parameters)
+	require.NoError(t, err)
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+	}
+	require.NoError(t, json.Unmarshal(data, &schema))
+	assert.Contains(t, schema.Properties, "line")
+	assert.Contains(t, schema.Properties, "limit")
+	assert.Contains(t, schema.Properties, "path")
+	assert.Equal(t, []string{"path"}, schema.Required)
 }
 
 func TestFilesystemTool_ReadImageFile(t *testing.T) {
@@ -208,7 +407,7 @@ func TestFilesystemTool_ReadImageFile(t *testing.T) {
 	result, err = tool.handleReadFile(t.Context(), ReadFileArgs{Path: "missing.png"})
 	require.NoError(t, err)
 	assert.True(t, result.IsError)
-	assert.Equal(t, "not found", result.Output)
+	assert.Contains(t, result.Output, "not found")
 }
 
 func TestFilesystemTool_ReadMultipleFiles(t *testing.T) {
@@ -263,7 +462,38 @@ func TestFilesystemTool_ListDirectory(t *testing.T) {
 		Path: "nonexistent",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, result.Output, "Error reading directory")
+	assert.Contains(t, result.Output, "not found")
+}
+
+// TestFilesystemTool_ListDirectoryEmpty pins the empty-directory message:
+// with an empty Output the runtime substitutes a generic "(no output)"
+// placeholder, which models read as a tool failure and retry via shell.
+func TestFilesystemTool_ListDirectoryEmpty(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	tool := New(tmpDir)
+
+	result, err := tool.handleListDirectory(t.Context(), ListDirectoryArgs{
+		Path: ".",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Output, "Directory is empty: "+tmpDir)
+}
+
+func TestFilesystemTool_ListDirectoryAllEntriesIgnored(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755))
+	tool := New(tmpDir, WithIgnoreVCS(true))
+
+	result, err := tool.handleListDirectory(t.Context(), ListDirectoryArgs{
+		Path: ".",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Output, "no visible entries (1 hidden by ignore patterns)")
+	assert.Contains(t, result.Output, tmpDir)
 }
 
 func TestFilesystemTool_EditFile(t *testing.T) {
@@ -355,6 +585,37 @@ func TestParseEditFileArgs(t *testing.T) {
 			input:      `{"path": "test.txt", "edits": "not valid json"}`,
 			wantErr:    true,
 			wantErrMsg: "failed to parse double-serialized edits string",
+		},
+		{
+			name:     "repair: double-serialized with extra closing brace in inner payload",
+			input:    `{"edits": "[{\"oldText\": \"a\", \"newText\": \"b\"}}]", "path": "docker-compose.yml"}`,
+			wantPath: "docker-compose.yml",
+			wantEdits: []Edit{
+				{OldText: "a", NewText: "b"},
+			},
+		},
+		{
+			name:     "repair: double-serialized with extra closing bracket in inner payload",
+			input:    `{"path": "f.go", "edits": "[{\"oldText\": \"a\", \"newText\": \"b\"}]]"}`,
+			wantPath: "f.go",
+			wantEdits: []Edit{
+				{OldText: "a", NewText: "b"},
+			},
+		},
+		{
+			name:     "repair: double-serialized with extra closing brace between inner array elements",
+			input:    `{"path": "f.go", "edits": "[{\"oldText\": \"a\", \"newText\": \"b\"}}, {\"oldText\": \"c\", \"newText\": \"d\"}]"}`,
+			wantPath: "f.go",
+			wantEdits: []Edit{
+				{OldText: "a", NewText: "b"},
+				{OldText: "c", NewText: "d"},
+			},
+		},
+		{
+			name:       "repair: rejected when inner repair yields an edit with empty oldText",
+			input:      `{"path": "f.go", "edits": "[{\"oldText\": \"a\"}}, {\"newText\": \"b\"}]"}`,
+			wantErr:    true,
+			wantErrMsg: "empty oldText",
 		},
 		{
 			name:     "missing edits field (partial/streaming args)",
@@ -627,7 +888,7 @@ func main() {
 	postEditConfigs := []PostEditConfig{
 		{
 			Path: "*.go",
-			Cmd:  "touch $file.formatted",
+			Cmd:  postEditMarkerCmd(),
 		},
 	}
 	tool := New(tmpDir, WithPostEditCommands(postEditConfigs))
@@ -948,9 +1209,10 @@ func TestFilesystemTool_EmptyWorkingDir(t *testing.T) {
 	resolvedPath := tool.resolvePath("test.txt")
 	assert.Equal(t, "test.txt", resolvedPath)
 
-	// Absolute paths still work
-	resolvedPath = tool.resolvePath("/etc/hosts")
-	assert.Equal(t, "/etc/hosts", resolvedPath)
+	// Absolute paths still work.
+	absolute := filepath.Join(t.TempDir(), "hosts")
+	resolvedPath = tool.resolvePath(absolute)
+	assert.Equal(t, absolute, resolvedPath)
 }
 
 func TestFilesystemTool_CreateDirectory(t *testing.T) {
@@ -1089,7 +1351,7 @@ func TestFilesystemTool_RemoveDirectory_IsFile(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, result.IsError)
-	assert.Contains(t, result.Output, "not a directory")
+	assert.Contains(t, strings.ToLower(result.Output), "directory")
 }
 
 func TestFilesystemTool_RemoveDirectory_MultipleStopsOnError(t *testing.T) {

@@ -55,6 +55,10 @@ func (c *RawClient) Get(ctx context.Context, endpoint string, v any) error {
 		return err
 	}
 
+	if response.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("GET %s: %s", endpoint, response.Status)
+	}
+
 	if err := json.Unmarshal(buf, &v); err != nil {
 		return err
 	}

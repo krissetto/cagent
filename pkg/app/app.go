@@ -1060,14 +1060,27 @@ func (a *App) NewSession() {
 	// Preserve user-controlled session flags
 	// so they don't reset to default on /new
 	var opts []session.Opt
+	var priorPolicy session.SafetyPolicy
 	if a.session != nil {
+		// WithSafetyPolicy("") is a no-op, so a legacy session (no explicit
+		// mode) keeps relying on the ToolsApproved flag alone; an explicit
+		// strict/balanced choice — which leaves ToolsApproved=false — must be
+		// carried over here or /new silently falls back to legacy behavior.
 		opts = append(opts,
 			session.WithToolsApproved(a.session.ToolsApproved),
+			session.WithSafetyPolicy(a.session.GetSafetyPolicy()),
 			session.WithHideToolResults(a.session.HideToolResults),
 			session.WithWorkingDir(a.session.WorkingDir),
 		)
+		priorPolicy = a.session.GetPriorSafetyPolicy()
 	}
-	a.session = session.New(opts...)
+	// There is no WithPriorSafetyPolicy option; writing the field before the
+	// session is published via a.session keeps the write on an unshared
+	// value, so it is safe. Preserving the toggle memory keeps an autonomous
+	// escalation able to toggle back to its prior mode.
+	sess := session.New(opts...)
+	sess.PriorSafetyPolicy = priorPolicy
+	a.session = sess
 	// Clear first message so it won't be re-sent on re-init
 	a.firstMessage = nil
 	a.firstMessageAttach = ""

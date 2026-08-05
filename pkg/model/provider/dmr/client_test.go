@@ -17,6 +17,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/config/latest"
+	"github.com/docker/docker-agent/pkg/model/provider/dmr/dmrmodels"
 	"github.com/docker/docker-agent/pkg/model/provider/options"
 )
 
@@ -32,6 +33,66 @@ func TestNewClientWithExplicitBaseURL(t *testing.T) {
 	client, err := NewClient(t.Context(), cfg)
 	require.NoError(t, err)
 	assert.Equal(t, "https://custom.example.com:8080/api/v1", client.BaseURL)
+}
+
+func TestNewClientUsesModelsGateway(t *testing.T) {
+	t.Parallel()
+
+	var received *http.Request
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received = r.Clone(r.Context())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":1,"total_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	cfg := &latest.ModelConfig{
+		Provider: "dmr",
+		Model:    "ai/qwen3",
+	}
+
+	client, err := NewClient(t.Context(), cfg, options.WithGateway(server.URL+"/engines?trace=1"))
+	require.NoError(t, err)
+	assert.Equal(t, server.URL+"/engines/v1/", client.BaseURL)
+
+	// A real SDK-backed operation must carry the gateway request contract:
+	// forward target, provider/model identity, and gateway query params.
+	_, err = client.CreateBatchEmbedding(t.Context(), []string{"hello"})
+	require.NoError(t, err)
+
+	require.NotNil(t, received)
+	assert.Equal(t, "/engines/v1/embeddings", received.URL.Path)
+	assert.Equal(t, "1", received.URL.Query().Get("trace"))
+	assert.Equal(t, dmrmodels.DefaultHostURL(), received.Header.Get("X-Cagent-Forward"))
+	assert.Equal(t, "dmr", received.Header.Get("X-Cagent-Provider"))
+	assert.Equal(t, "ai/qwen3", received.Header.Get("X-Cagent-Model"))
+}
+
+func TestNewClientGatewaySkipsLocalDiscovery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping docker CLI shim test on Windows")
+	}
+
+	// A docker CLI that predates Model Runner must not matter when a models
+	// gateway is configured: no local discovery should happen at all.
+	tempDir := t.TempDir()
+	dockerPath := filepath.Join(tempDir, "docker")
+	script := "#!/bin/sh\n" +
+		"printf 'unknown flag: --json\\n' >&2\n" +
+		"exit 1\n"
+	require.NoError(t, os.WriteFile(dockerPath, []byte(script), 0o755))
+
+	t.Setenv("PATH", tempDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MODEL_RUNNER_HOST", "")
+
+	cfg := &latest.ModelConfig{
+		Provider: "dmr",
+		Model:    "ai/qwen3",
+	}
+
+	client, err := NewClient(t.Context(), cfg, options.WithGateway("http://host.docker.internal:12434/engines/"))
+	require.NoError(t, err)
+	assert.Equal(t, "http://host.docker.internal:12434/engines/v1/", client.BaseURL)
 }
 
 func TestNewClientReturnsErrNotInstalledWhenDockerModelUnsupported(t *testing.T) {

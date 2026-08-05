@@ -1,170 +1,216 @@
 package animation
 
 import (
-	"sync"
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func getActiveCount(c *Coordinator) int32 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.active
-}
-
-func runCmdWithTimeout(t *testing.T, cmd tea.Cmd) tea.Msg {
+func runTick(t *testing.T, cmd func() any) TickMsg {
 	t.Helper()
-	require.NotNil(t, cmd)
-
-	done := make(chan tea.Msg, 1)
-	go func() {
-		done <- cmd()
-	}()
-
-	timeout := time.NewTimer(250 * time.Millisecond)
-	defer timeout.Stop()
-
-	select {
-	case msg := <-done:
-		return msg
-	case <-timeout.C:
-		t.Fatal("timed out waiting for tick command")
-	}
-
-	return nil
-}
-
-func runTickCmd(t *testing.T, cmd tea.Cmd) TickMsg {
-	t.Helper()
-
-	msg := runCmdWithTimeout(t, cmd)
-	tickMsg, ok := msg.(TickMsg)
+	msg, ok := cmd().(TickMsg)
 	require.True(t, ok)
-
-	return tickMsg
+	return msg
 }
 
-func TestGlobalCoordinatorLifecycle(t *testing.T) {
-	t.Parallel()
-	c := &Coordinator{}
-
-	// No active animations = no tick
-	require.Nil(t, c.StartTick())
-
-	// First registration starts tick
-	firstTick := c.StartTickIfFirst()
-	tickMsg := runTickCmd(t, firstTick)
-	assert.Equal(t, 1, tickMsg.Frame)
-
-	// Subsequent tick continues
-	nextTick := c.StartTick()
-	tickMsg = runTickCmd(t, nextTick)
-	assert.Equal(t, 2, tickMsg.Frame)
-
-	// Second StartTickIfFirst registers but doesn't return tick (not first)
-	cmd := c.StartTickIfFirst()
-	require.Nil(t, cmd)
-	assert.Equal(t, int32(2), getActiveCount(c))
-
-	// Unregister one, still active
-	c.Unregister()
-	require.True(t, c.HasActive())
-	require.NotNil(t, c.StartTick())
-
-	// Unregister last one
-	c.Unregister()
-	require.False(t, c.HasActive())
-	require.Nil(t, c.StartTick())
+func resetLegacyRuntime(t *testing.T) {
+	t.Helper()
+	legacyRuntime = NewRuntime()
+	t.Cleanup(func() { legacyRuntime = NewRuntime() })
 }
 
-func TestUnregisterNeverGoesNegative(t *testing.T) {
-	t.Parallel()
-	c := &Coordinator{}
+func TestLegacyFacadeContinuesOnDeliveredTickWithoutAccept(t *testing.T) {
+	resetLegacyRuntime(t)
 
-	// Multiple unregisters when already at 0
-	c.Unregister()
-	c.Unregister()
-	c.Unregister()
+	first := StartTickIfFirst()
+	require.NotNil(t, first)
+	require.True(t, HasActive())
 
-	assert.Equal(t, int32(0), getActiveCount(c))
-	require.False(t, c.HasActive())
+	firstTick := runTick(t, func() any { return first() })
+	assert.Equal(t, 1, firstTick.Frame)
+	assert.True(t, IsCurrentGen(firstTick))
+
+	second := StartTick()
+	require.NotNil(t, second, "legacy delivery must release the lease without Runtime.Accept")
+	secondTick := runTick(t, func() any { return second() })
+	assert.Equal(t, 2, secondTick.Frame)
+	assert.True(t, IsCurrentGen(secondTick))
+
+	Unregister()
+	assert.False(t, HasActive())
+	assert.Nil(t, StartTick())
 }
 
-func TestConcurrentRegisterUnregister(t *testing.T) {
-	t.Parallel()
-	c := &Coordinator{}
+func TestLegacyIsCurrentGenIsPureAndRejectsStaleTicks(t *testing.T) {
+	resetLegacyRuntime(t)
 
-	const goroutines = 100
-	const opsPerGoroutine = 100
+	first := StartTickIfFirst()
+	require.NotNil(t, first)
+	firstTick := runTick(t, func() any { return first() })
+	assert.True(t, IsCurrentGen(firstTick))
+	assert.True(t, IsCurrentGen(firstTick), "generation checks are side-effect-free")
 
-	var wg sync.WaitGroup
-	wg.Add(goroutines * 2)
-
-	// Half goroutines do register
-	for range goroutines {
-		go func() {
-			defer wg.Done()
-			for range opsPerGoroutine {
-				c.Register()
-			}
-		}()
-	}
-
-	// Half goroutines do unregister
-	for range goroutines {
-		go func() {
-			defer wg.Done()
-			for range opsPerGoroutine {
-				c.Unregister()
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// Should have exactly goroutines * opsPerGoroutine registers
-	// minus whatever unregisters succeeded (capped at 0)
-	// Final count should be >= 0
-	count := getActiveCount(c)
-	assert.GreaterOrEqual(t, count, int32(0), "active count should never be negative")
+	second := StartTick()
+	require.NotNil(t, second, "generation checks must not interfere with re-arming")
+	Unregister()
+	assert.False(t, IsCurrentGen(runTick(t, func() any { return second() })), "stopped chain is stale")
 }
 
-func TestConcurrentStartTickIfFirst(t *testing.T) {
-	t.Parallel()
-	c := &Coordinator{}
+func TestAcceptedTickCopiesShareDirtyMarker(t *testing.T) {
+	ar := NewRuntime()
+	sub := ar.Subscribe()
+	tick := runTick(t, func() any { return sub.Start()() })
+	accepted, ok := ar.Accept(tick)
+	require.True(t, ok)
+	acceptedCopy := accepted
+	assert.False(t, accepted.Dirty())
+	acceptedCopy.MarkDirty()
+	assert.True(t, accepted.Dirty())
+	elapsedBeforeTick, elapsedAfterTick := accepted.ElapsedBounds()
+	assert.Less(t, elapsedBeforeTick, elapsedAfterTick)
+	sub.Stop()
+}
 
-	const goroutines = 50
-	var wg sync.WaitGroup
-	wg.Add(goroutines)
+func TestRejectedTickCannotBecomeDirty(t *testing.T) {
+	first, second := NewRuntime(), NewRuntime()
+	sub := first.Subscribe()
+	tick := runTick(t, func() any { return sub.Start()() })
+	rejected, ok := second.Accept(tick)
+	assert.False(t, ok)
+	rejected.MarkDirty()
+	assert.False(t, rejected.Dirty())
+	sub.Stop()
+}
 
-	cmds := make(chan tea.Cmd, goroutines)
+func TestRuntimeIsolationAndOwnerToken(t *testing.T) {
+	first, second := NewRuntime(), NewRuntime()
+	firstSub, secondSub := first.Subscribe(), second.Subscribe()
+	firstCmd := firstSub.Start()
+	secondCmd := secondSub.Start()
+	require.NotNil(t, firstCmd)
+	require.NotNil(t, secondCmd)
 
-	// Many goroutines race to be "first"
-	for range goroutines {
-		go func() {
-			defer wg.Done()
-			cmd := c.StartTickIfFirst()
-			cmds <- cmd
-		}()
+	firstTick := runTick(t, func() any { return firstCmd() })
+	secondTick := runTick(t, func() any { return secondCmd() })
+	_, ok := second.Accept(firstTick)
+	assert.False(t, ok, "runtime identity rejects another runtime's tick")
+	assert.Zero(t, second.Now())
+	_, ok = first.Accept(firstTick)
+	require.True(t, ok)
+	assert.Positive(t, first.Now())
+	assert.Zero(t, second.Now())
+	_, ok = second.Accept(secondTick)
+	require.True(t, ok)
+}
+
+func TestRuntimeStopDoesNotAffectAnotherRuntime(t *testing.T) {
+	first, second := NewRuntime(), NewRuntime()
+	firstSub, secondSub := first.Subscribe(), second.Subscribe()
+	firstCmd, secondCmd := firstSub.Start(), secondSub.Start()
+	firstSub.Stop()
+	assert.False(t, first.HasActive())
+	assert.True(t, second.HasActive())
+	assert.Nil(t, first.Continue())
+	secondTick := runTick(t, func() any { return secondCmd() })
+	_, ok := second.Accept(secondTick)
+	require.True(t, ok)
+	assert.NotNil(t, second.Continue())
+	secondSub.Stop()
+	_ = firstCmd
+}
+
+func TestRuntimeAcceptOnlyOnce(t *testing.T) {
+	ar := NewRuntime()
+	sub := ar.Subscribe()
+	tick := runTick(t, func() any { return sub.Start()() })
+	_, ok := ar.Accept(tick)
+	require.True(t, ok)
+	elapsed := ar.Now()
+	_, ok = ar.Accept(tick)
+	assert.False(t, ok)
+	assert.Equal(t, elapsed, ar.Now())
+	sub.Stop()
+}
+
+func TestRuntimeTransitionUsesOwnedClock(t *testing.T) {
+	ar := NewRuntime()
+	transition := ar.Transition()
+	cmd := transition.Start(TickRate, Linear)
+	tick := runTick(t, func() any { return cmd() })
+	_, ok := ar.Accept(tick)
+	require.True(t, ok)
+	transition.Tick()
+	assert.False(t, transition.Running())
+	assert.Equal(t, int32(0), ar.ActiveCount())
+}
+
+func TestTickOwnerIsImmutableAcrossRecovery(t *testing.T) {
+	ar := NewRuntime()
+	sub := ar.Subscribe()
+	staleCmd := sub.Start()
+	freshCmd := ar.EnsureRunning()
+	stale := runTick(t, func() any { return staleCmd() })
+	fresh := runTick(t, func() any { return freshCmd() })
+	_, ok := ar.Accept(stale)
+	assert.False(t, ok)
+	_, ok = ar.Accept(fresh)
+	assert.True(t, ok)
+	sub.Stop()
+}
+
+func TestRuntimeStopInvalidatesQueuedTickAndQuiesces(t *testing.T) {
+	ar := NewRuntime()
+	sub := ar.Subscribe()
+	queued := sub.Start()
+	require.NotNil(t, queued)
+
+	ar.Stop()
+	assert.Equal(t, int32(0), ar.ActiveCount())
+	assert.Nil(t, ar.Continue(), "stopped animation runtime schedules no successor")
+
+	_, accepted := ar.Accept(runTick(t, func() any { return queued() }))
+	assert.False(t, accepted, "queued generation is stale after teardown")
+	assert.Zero(t, ar.Now(), "rejected queued tick does not advance the clock")
+}
+
+func TestExactlyOneContinuationPerAcceptedTick(t *testing.T) {
+	ar := NewRuntime()
+	sub := ar.Subscribe()
+	first := sub.Start()
+	_, accepted := ar.Accept(runTick(t, func() any { return first() }))
+	require.True(t, accepted)
+
+	successor := ar.Continue()
+	require.NotNil(t, successor)
+	assert.Nil(t, ar.Continue(), "a live lease deduplicates parallel continuations")
+	sub.Stop()
+	_, accepted = ar.Accept(runTick(t, func() any { return successor() }))
+	assert.False(t, accepted, "last unregister invalidates queued successor")
+	assert.Nil(t, ar.Continue())
+}
+
+func TestTabBusySpinnerIsOneCellBraille(t *testing.T) {
+	for _, frame := range TabBusy.Frames() {
+		runes := []rune(frame)
+		require.Len(t, runes, 1)
+		assert.GreaterOrEqual(t, runes[0], rune(0x2800))
+		assert.LessOrEqual(t, runes[0], rune(0x28ff))
 	}
+}
 
-	wg.Wait()
-	close(cmds)
-
-	// Count non-nil commands (ticks started)
-	ticksStarted := 0
-	for cmd := range cmds {
-		if cmd != nil {
-			ticksStarted++
-		}
-	}
-
-	// Exactly one should have started the tick
-	assert.Equal(t, 1, ticksStarted, "exactly one goroutine should start the tick")
-	// All should have registered
-	assert.Equal(t, int32(goroutines), getActiveCount(c))
+func TestRuntimeNowAdvancesByDeliveredTime(t *testing.T) {
+	ar := NewRuntime()
+	ar.Register()
+	base := time.Now()
+	ar.mu.Lock()
+	ar.tickScheduled = true
+	ar.generation = 2
+	ar.lastDeliveredAt = base
+	ar.mu.Unlock()
+	_, ok := ar.Accept(TickMsg{runtimeIdentity: ar.runtimeIdentity, generation: 2, deliveredAt: base.Add(125 * time.Millisecond)})
+	require.True(t, ok)
+	assert.Equal(t, 125*time.Millisecond, ar.Now())
+	ar.Unregister()
 }

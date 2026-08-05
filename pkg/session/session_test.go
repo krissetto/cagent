@@ -211,6 +211,36 @@ func TestSummaryMessageContentMatchesGetMessages(t *testing.T) {
 	assert.True(t, found, "GetMessages output must contain the exact SummaryMessageContent string")
 }
 
+// TestGetMessagesAndLastSummary pins the accessor's contract: messages and
+// summary come from the same history snapshot, the summary is exactly the
+// text behind the synthetic "Session Summary: ..." user message, and the
+// most recent summary item wins.
+func TestGetMessagesAndLastSummary(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+	messages, summary := s.GetMessagesAndLastSummary(&agent.Agent{})
+	assert.Empty(t, messages)
+	assert.Empty(t, summary, "fresh session has no summary")
+
+	s.AddMessage(NewAgentMessage("", &chat.Message{Role: chat.MessageRoleUser, Content: "hi"}))
+	s.Messages = append(s.Messages, Item{Summary: "first summary"})
+	s.AddMessage(NewAgentMessage("", &chat.Message{Role: chat.MessageRoleUser, Content: "more"}))
+	s.Messages = append(s.Messages, Item{Summary: "second summary"})
+
+	messages, summary = s.GetMessagesAndLastSummary(&agent.Agent{})
+	assert.Equal(t, "second summary", summary, "most recent summary wins")
+
+	want := SummaryMessageContent(summary)
+	found := false
+	for _, msg := range messages {
+		if msg.Role == chat.MessageRoleUser && msg.Content == want {
+			found = true
+		}
+	}
+	assert.True(t, found, "returned summary must be exactly the synthetic summary message's text")
+}
+
 func TestGetMessages_Instructions(t *testing.T) {
 	t.Parallel()
 

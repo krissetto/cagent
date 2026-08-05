@@ -1,0 +1,56 @@
+# Safety modes can be declared right in the agent YAML:
+#   runtime.safety        — config-wide default for new sessions
+#   agents.<name>.safety  — per-agent override of the config default
+#
+# Only strict, balanced, and autonomous are accepted. These are DEFAULTS
+# only; precedence (highest first) when a new root session starts:
+#
+#   --safety flag > --yolo flag > alias safety/yolo option >
+#   settings.safety/YOLO (user config) > agents.<name>.safety >
+#   runtime.safety > built-in default (read-only tools auto-approve,
+#   everything else asks)
+#
+# A resumed session keeps its stored mode unless an explicit --safety or
+# --yolo flag is passed. Trust warning: YAML defaults come from the agent
+# author — a config pulled from a URL or OCI registry can declare
+# `autonomous`, so review third-party configs before running them; your
+# own settings, alias options, and CLI flags always win over them.
+runtime:
+  safety: balanced
+
+agents:
+  root:
+    model: anthropic/claude-haiku-4-5
+    description: Shell agent demonstrating the three safety modes
+    welcome_message: |
+      Every shell command is classified (safe / destructive / unknown)
+      and gated by the session's safety mode:
+
+        strict      — ask for every tool call
+        balanced    — safe commands run silently; destructive and
+                      unknown commands ask
+        autonomous  — everything runs (legacy --yolo); only custom
+                      deny/ask rules still gate
+
+      This config declares `runtime.safety: balanced`, so fresh sessions
+      start balanced unless you choose otherwise (`--safety`, `--yolo`,
+      an alias option, or `settings.safety` in your user config). The
+      `auditor` agent overrides the config default with `safety: strict`.
+      You can still escalate from a confirmation prompt ([B] balanced,
+      [A] autonomous). Custom permissions rules (see permissions.yaml)
+      always win over the mode.
+    instruction: Use the shell tool to run the command the user asks for.
+    toolsets:
+      - type: shell
+
+  # Per-agent override: `docker-agent run safety_modes.yaml -a auditor`
+  # starts strict even though the config-wide default is balanced.
+  auditor:
+    model: anthropic/claude-haiku-4-5
+    description: Read-oriented agent that asks before every tool call
+    safety: strict
+    instruction: >
+      Inspect the system with the shell tool. Prefer read-only commands
+      and explain what each command does before running it.
+    toolsets:
+      - type: shell

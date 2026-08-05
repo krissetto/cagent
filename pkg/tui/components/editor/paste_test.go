@@ -273,7 +273,10 @@ func createPasteAttachmentInDir(dir, content string) (attachment, error) {
 	}, nil
 }
 
-// File path parsing tests for drag-and-drop feature
+// File path parsing tests for drag-and-drop feature. Only inputs whose
+// parse is platform-independent belong here: ParsePastedFiles dispatches
+// on runtime.GOOS, so backslash-escape semantics are covered by the
+// parser-specific tests below.
 func TestParsePastedFiles(t *testing.T) {
 	t.Parallel()
 
@@ -298,24 +301,9 @@ func TestParsePastedFiles(t *testing.T) {
 			expected: []string{"/path/to/file1.png", "/path/to/file2.jpg"},
 		},
 		{
-			name:     "escaped spaces (Unix)",
-			input:    `/path/to/my\ file.png`,
-			expected: []string{"/path/to/my file.png"},
-		},
-		{
-			name:     "multiple with escaped spaces",
-			input:    `/path/to/file\ 1.png /path/to/file\ 2.jpg`,
-			expected: []string{"/path/to/file 1.png", "/path/to/file 2.jpg"},
-		},
-		{
 			name:     "newline separated",
 			input:    "/path/to/file1.png\n/path/to/file2.jpg",
 			expected: []string{"/path/to/file1.png", "/path/to/file2.jpg"},
-		},
-		{
-			name:     "trailing backslash",
-			input:    "/path/to/file.png\\",
-			expected: []string{"/path/to/file.png"},
 		},
 		{
 			name:     "null chars removed",
@@ -337,6 +325,114 @@ func TestParsePastedFiles(t *testing.T) {
 			for i, path := range result {
 				if path != tt.expected[i] {
 					t.Errorf("ParsePastedFiles() path[%d] = %q, expected %q", i, path, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestUnixParsePastedFiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "escaped spaces",
+			input:    `/path/to/my\ file.png`,
+			expected: []string{"/path/to/my file.png"},
+		},
+		{
+			name:     "multiple with escaped spaces",
+			input:    `/path/to/file\ 1.png /path/to/file\ 2.jpg`,
+			expected: []string{"/path/to/file 1.png", "/path/to/file 2.jpg"},
+		},
+		{
+			name:     "trailing backslash",
+			input:    "/path/to/file.png\\",
+			expected: []string{"/path/to/file.png"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := unixParsePastedFiles(tt.input)
+			if len(result) != len(tt.expected) {
+				t.Errorf("unixParsePastedFiles() got %d paths, expected %d", len(result), len(tt.expected))
+				t.Errorf("  got: %v", result)
+				t.Errorf("  expected: %v", tt.expected)
+				return
+			}
+			for i, path := range result {
+				if path != tt.expected[i] {
+					t.Errorf("unixParsePastedFiles() path[%d] = %q, expected %q", i, path, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestWindowsParsePastedFiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "single bare path keeps backslashes",
+			input:    `C:\path\to\file.png`,
+			expected: []string{`C:\path\to\file.png`},
+		},
+		{
+			name:     "multiple bare paths space-separated",
+			input:    `C:\path\file1.png C:\path\file2.jpg`,
+			expected: []string{`C:\path\file1.png`, `C:\path\file2.jpg`},
+		},
+		{
+			name:     "multiple bare paths newline-separated",
+			input:    "C:\\path\\file1.png\r\nC:\\path\\file2.jpg",
+			expected: []string{`C:\path\file1.png`, `C:\path\file2.jpg`},
+		},
+		{
+			name:     "quoted path with spaces",
+			input:    `"C:\path\my file.png"`,
+			expected: []string{`C:\path\my file.png`},
+		},
+		{
+			name:     "mixed quoted and bare paths",
+			input:    `"C:\path\my file.png" C:\path\other.jpg`,
+			expected: []string{`C:\path\my file.png`, `C:\path\other.jpg`},
+		},
+		{
+			name:     "unclosed quote",
+			input:    `"C:\path\to\file.png`,
+			expected: nil,
+		},
+		{
+			name:     "UNC path",
+			input:    `\\server\share\file.png`,
+			expected: []string{`\\server\share\file.png`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := windowsParsePastedFiles(tt.input)
+			if len(result) != len(tt.expected) {
+				t.Errorf("windowsParsePastedFiles() got %d paths, expected %d", len(result), len(tt.expected))
+				t.Errorf("  got: %v", result)
+				t.Errorf("  expected: %v", tt.expected)
+				return
+			}
+			for i, path := range result {
+				if path != tt.expected[i] {
+					t.Errorf("windowsParsePastedFiles() path[%d] = %q, expected %q", i, path, tt.expected[i])
 				}
 			}
 		})
@@ -447,6 +543,43 @@ func TestParsePastedFilesWithRealFiles(t *testing.T) {
 			t.Errorf("Expected second path to be %q, got %q", file2, result[1])
 		}
 	}
+}
+
+// TestParsePastedFilesWithRealFiles_SpaceSeparated exercises the
+// platform parser dispatch with native paths: space-joined lines fail
+// attemptStatAll, so the paths go through the GOOS-selected parser. On
+// Windows this is the regression test for backslash paths being eaten
+// by the Unix parser's escape handling.
+func TestParsePastedFilesWithRealFiles_SpaceSeparated(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	file1 := filepath.Join(tmpDir, "test1.png")
+	file2 := filepath.Join(tmpDir, "test2.jpg")
+	require.NoError(t, os.WriteFile(file1, []byte("fake png"), 0o644))
+	require.NoError(t, os.WriteFile(file2, []byte("fake jpg"), 0o644))
+
+	result := ParsePastedFiles(file1 + " " + file2)
+
+	assert.Equal(t, []string{file1, file2}, result)
+}
+
+// TestParsePastedFilesWithRealFiles_Quoted covers quote-wrapped native
+// paths containing spaces: the Windows parser handles them on Windows,
+// and the WT_SESSION marker selects the Windows Terminal parser
+// elsewhere (e.g. WSL sessions).
+func TestParsePastedFilesWithRealFiles_Quoted(t *testing.T) {
+	t.Setenv("WT_SESSION", "1")
+
+	tmpDir := t.TempDir()
+	file1 := filepath.Join(tmpDir, "my picture.png")
+	file2 := filepath.Join(tmpDir, "other.jpg")
+	require.NoError(t, os.WriteFile(file1, []byte("fake png"), 0o644))
+	require.NoError(t, os.WriteFile(file2, []byte("fake jpg"), 0o644))
+
+	result := ParsePastedFiles(`"` + file1 + `" "` + file2 + `"`)
+
+	assert.Equal(t, []string{file1, file2}, result)
 }
 
 func TestValidateFilePath(t *testing.T) {

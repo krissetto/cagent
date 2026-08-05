@@ -1,13 +1,14 @@
 ---
 name: triage-prs
-description: Triage open pull requests on docker/docker-agent — apply area/* and kind/* labels, flag merge conflicts (draft + status/needs-rebase + author comment), and clear the needs-rebase label once conflicts are resolved. Idempotent and API-frugal; designed to run on a recurring schedule.
+description: Triage open pull requests on docker/docker-agent — apply area/* and kind/* labels, flag merge conflicts (draft + status/needs-rebase + author comment), clear the needs-rebase label once conflicts are resolved, flag unsigned commits (status/needs-signed-commits + author comment), and clear that flag once all commits are verified. Idempotent and API-frugal; designed to run on a recurring schedule.
 ---
 
 # Triage Pull Requests
 
 Triage open pull requests on the `docker/docker-agent` repository: classify them
-with `area/*` and `kind/*` labels, flag those with merge conflicts, and clear the
-conflict flag once it is resolved.
+with `area/*` and `kind/*` labels, flag those with merge conflicts, clear the
+conflict flag once it is resolved, flag PRs with unsigned commits, and clear that
+flag once every commit is verified.
 
 This skill is designed to run **unattended on a recurring schedule** (every ~30
 minutes). It is written to be **agent-agnostic** — use whatever GitHub access you
@@ -43,25 +44,32 @@ The 60-minute window against the ~30-minute cadence intentionally gives every PR
 ## API budget
 
 1. **One read pass.** Fetch the in-scope candidate set in a single batched query
-   (GraphQL is ideal). For each PR retrieve everything all three rules need at once:
+   (GraphQL is ideal). For each PR retrieve everything all five rules need at once:
    - `updatedAt`, `isDraft`, and `mergeable` state
      (`MERGEABLE` / `CONFLICTING` / `UNKNOWN`)
    - the current set of labels (live)
    - `title`, `body`, and **linked issues** via `closingIssuesReferences`, including
      each linked issue's labels and native **issue type**
    - the changed files / paths (to infer `area/*`)
-   - whether a previous run already posted the conflict comment (to gate
-     re-commenting) — e.g. detect an existing bot comment
+   - per-commit signature verification data:
+     `commits(last: 100) { nodes { commit { oid signature { isValid } } } }`
+     (`signature` is `null` for unsigned commits; `isValid` is `false` for commits
+     signed with an unrecognised or invalid key)
+   - whether a previous run already posted the conflict comment **and** whether a
+     previous run already posted the unsigned-commits comment (two separate bot-comment
+     checks — one gate per rule)
 2. **Decide fully in memory.** For each PR, compute the complete set of mutations
-   for all three rules before issuing any write.
+   for all five rules before issuing any write.
 3. **One grouped label mutation per PR.** Fold every label change for a PR — adding
-   `area/*`, adding `kind/*`, and adding *or* removing `status/needs-rebase` — into a
-   **single** label update call. Never issue one call per label.
+   `area/*`, adding `kind/*`, adding *or* removing `status/needs-rebase`, and adding
+   *or* removing `status/needs-signed-commits` — into a **single** label update call.
+   Never issue one call per label.
 4. **No-op means no call.** If a PR needs no change, make zero write calls for it.
 5. **`UNKNOWN` mergeable → do nothing this run.** GitHub computes mergeability
    asynchronously. If the state is `UNKNOWN`, skip the conflict rules for that PR;
    it will be re-evaluated next run once GitHub finishes. (You may still apply
-   Rule 1 labels, which do not depend on mergeability.)
+   Rule 1 labels and Rule 4/5 signed-commit checks, which do not depend on
+   mergeability.)
 
 ## Label taxonomy
 
@@ -112,6 +120,8 @@ provider integrations → the matching `area/providers/*`; docs/markdown → `ar
 
 - `status/needs-rebase` — the PR has merge conflicts / is out of date with the base
   branch. Applied and removed by this skill (Rules 2 and 3).
+- `status/needs-signed-commits` — the PR contains one or more commits that are not
+  signed and verified by GitHub. Applied and removed by this skill (Rules 4 and 5).
 - `status/needs-triage` — optional fallback when a PR's `kind/*` or `area/*` cannot
   be determined with confidence.
 
@@ -143,7 +153,8 @@ provider integrations → the matching `area/providers/*`; docs/markdown → `ar
 - If `kind/*` or `area/*` is genuinely ambiguous, leave that dimension unset
   (optionally add `status/needs-triage`) rather than guessing.
 - Fold these label additions into the PR's single grouped label mutation, together
-  with any `status/needs-rebase` change from Rules 2/3.
+  with any `status/needs-rebase` or `status/needs-signed-commits` change from
+  Rules 2–5.
 
 ## Rule 2 — Flag merge conflicts
 
@@ -184,19 +195,74 @@ mutation).
 - mark the PR ready for review (leave the draft/ready state to the author), and
 - post any comment.
 
+## Rule 4 — Flag unsigned commits
+
+**Trigger:** an in-scope PR where at least one commit has `signature.isValid ≠ true`
+(either unsigned — `signature` is `null` — or signed with an unrecognised or invalid
+key).
+
+**Idempotency gate (critical):** if the PR **already** has
+`status/needs-signed-commits`, do **nothing** for this rule — do not post another
+comment.
+
+**Action (first time only):**
+
+1. Add `status/needs-signed-commits` (fold into the same grouped label mutation as any
+   Rule 1 / Rule 2 changes).
+2. Post **one** comment addressed to the author that:
+   - lists the short SHAs (7 chars) of the non-verified commits,
+   - explains what "signed and verified by GitHub" means (GPG or SSH key registered in
+     their GitHub account),
+   - links to <https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits>,
+   - notes that the label will be removed automatically once all commits carry a valid
+     GitHub-verified signature.
+
+   Example comment:
+
+   > 👋 Some commits in this PR are not signed and verified by GitHub. Please sign your
+   > commits with a GPG or SSH key registered in your GitHub account, then force-push.
+   >
+   > Commits that are not verified: `abc1234`, `def5678`
+   >
+   > See [GitHub's guide on signing commits](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits)
+   > for setup instructions. I've added `status/needs-signed-commits`; it will be
+   > removed automatically once every commit in this PR carries a valid
+   > GitHub-verified signature.
+
+Because the label and the comment are always applied together, the presence of
+`status/needs-signed-commits` is a reliable gate — use it to avoid duplicate comments.
+
+## Rule 5 — Clear resolved signed-commits flag
+
+**Trigger:** a PR that currently has `status/needs-signed-commits` whose commits now
+**all** have `signature.isValid == true`.
+
+**Action:** remove `status/needs-signed-commits` (fold into the PR's single grouped
+label mutation).
+
+**Do not:**
+- post any comment,
+- change draft/ready state.
+
 ## Execution summary
 
 For each in-scope PR, in one read-then-write cycle:
 
 1. Read its **live** fields (labels, `isDraft`, `mergeable`, linked-issue types,
-   changed paths, prior bot comment).
-2. Compute the combined set of changes from Rules 1–3 in memory:
+   changed paths, prior bot comments — one check for the conflict comment, one for the
+   unsigned-commits comment — and per-commit signature verification data).
+2. Compute the combined set of changes from Rules 1–5 in memory:
    - missing `kind/*` / `area/*` to add (Rule 1),
    - `status/needs-rebase` to add + draft + comment if newly `CONFLICTING` and not
      already flagged (Rule 2),
-   - `status/needs-rebase` to remove if flagged and now `MERGEABLE` (Rule 3).
+   - `status/needs-rebase` to remove if flagged and now `MERGEABLE` (Rule 3),
+   - `status/needs-signed-commits` to add + comment if any commit is unverified and
+     not already flagged (Rule 4),
+   - `status/needs-signed-commits` to remove if flagged and all commits are now
+     verified (Rule 5).
 3. Apply **one grouped label mutation** for all label changes, plus at most one draft
-   conversion (only if newly drafting a not-already-draft PR) and at most one comment.
+   conversion (only if newly drafting a not-already-draft PR) and at most one comment
+   per rule that fires for the first time.
    Skip every PR that needs nothing.
 
 ## Report
@@ -206,6 +272,9 @@ After the run, output a concise summary of what changed:
 - PRs newly labeled, with the `area/*` / `kind/*` added per PR.
 - PRs newly flagged `status/needs-rebase` (drafted + commented).
 - PRs cleared of `status/needs-rebase`.
+- PRs newly flagged `status/needs-signed-commits` (with the list of unsigned commit
+  SHAs per PR).
+- PRs cleared of `status/needs-signed-commits`.
 - PRs skipped because mergeable state was `UNKNOWN` (to be retried next run).
 - Any PR left for human triage (ambiguous `kind/*` / `area/*`).
 

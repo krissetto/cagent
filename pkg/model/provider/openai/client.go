@@ -394,6 +394,8 @@ func (c *Client) CreateChatCompletionStream(
 		return nil, errors.New("at least one message is required")
 	}
 
+	messages = c.withClaudeSchemaInstruction(ctx, messages)
+
 	trackUsage := c.TrackUsageEnabled()
 
 	params := openai.ChatCompletionNewParams{
@@ -618,6 +620,8 @@ func (c *Client) CreateResponseStream(
 		slog.ErrorContext(ctx, "OpenAI responses stream creation failed", "error", "at least one message is required")
 		return nil, errors.New("at least one message is required")
 	}
+
+	messages = c.withClaudeSchemaInstruction(ctx, messages)
 
 	input := c.convertMessagesToResponseInput(ctx, messages)
 	deferredToolsEnabled := c.supportsDeferredTools()

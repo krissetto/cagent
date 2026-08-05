@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/scrollbar"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
@@ -149,7 +150,7 @@ func TestScrollbarGapInOutput(t *testing.T) {
 // This verifies that scrolling uses the render cache instead of re-rendering sections.
 func BenchmarkSidebarVerticalView_Scroll(b *testing.B) {
 	sessionState := &service.SessionState{}
-	m := New(b.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), b.Context(), sessionState).(*model)
 	m.SetSize(35, 50)
 	m.SetMode(ModeVertical)
 
@@ -191,7 +192,7 @@ func BenchmarkSidebarVerticalView_Scroll(b *testing.B) {
 // This shows the cost of full re-rendering for comparison.
 func BenchmarkSidebarVerticalView_NoCache(b *testing.B) {
 	sessionState := &service.SessionState{}
-	m := New(b.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), b.Context(), sessionState).(*model)
 	m.SetSize(35, 50)
 	m.SetMode(ModeVertical)
 

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -30,17 +31,25 @@ func (r *LocalRuntime) handleRunSkill(ctx context.Context, sess *session.Session
 // agent's own system prompt is preserved. Shared by the run_skill tool
 // and the App's slash-command path.
 func (r *LocalRuntime) RunSkillFork(ctx context.Context, sess *session.Session, args skills.RunSkillArgs, evts EventSink) (*tools.ToolCallResult, error) {
-	st := r.CurrentAgentSkillsToolset()
+	// The caller resolves from the session, not the shared current agent:
+	// a fork skill invoked from a pinned background session must use the
+	// pinned agent's skills, identity, and model override, no matter where
+	// the concurrent foreground loop points (#3886).
+	caller := r.resolveSessionAgent(sess)
+	if caller == nil {
+		return nil, errors.New("no agent resolved for the calling session")
+	}
+	ca := caller.Name()
+
+	st := agentSkillsToolset(caller)
 	if st == nil {
-		return tools.ResultError("no skills are available for the current agent"), nil
+		return tools.ResultError("no skills are available for agent " + ca), nil
 	}
 
 	prepared, errResult := st.PrepareForkSubSession(ctx, args)
 	if errResult != nil {
 		return errResult, nil
 	}
-
-	ca := r.currentAgentName()
 
 	// Open the span before any pre-delegation work so model resolution
 	// (inside WithAgentModel) is recorded under runtime.run_skill rather
@@ -101,7 +110,11 @@ func (r *LocalRuntime) RunSkillFork(ctx context.Context, sess *session.Session, 
 	}
 
 	// Skills are sub-sessions of the caller, not delegations, so the
-	// runtime's currentAgent stays put.
+	// runtime's currentAgent stays put and the delegation lineage is
+	// inherited unchanged (no DelegationLineage: not a delegation edge).
+	// When the caller session is itself pinned (a background agent's
+	// session), pin the child to the same agent so RunStream resolves it
+	// as the pinned caller instead of the shared current agent.
 	return r.runForwarding(ctx, sess, evts, delegationRequest{
 		SubSessionConfig: SubSessionConfig{
 			Task:                prepared.Task,
@@ -110,8 +123,10 @@ func (r *LocalRuntime) RunSkillFork(ctx context.Context, sess *session.Session, 
 			AgentName:           ca,
 			Title:               "Skill: " + prepared.SkillName,
 			ToolsApproved:       sess.IsToolsApproved(),
+			SafetyPolicy:        sess.GetSafetyPolicy(),
 			Permissions:         sess.ClonePermissions(),
 			NonInteractive:      sess.NonInteractive,
+			PinAgent:            sess.AgentName != "",
 			ExcludedTools:       []string{skills.ToolNameRunSkill},
 			AllowedTools:        prepared.AllowedTools,
 			ExtraToolSets:       prepared.ToolSets,

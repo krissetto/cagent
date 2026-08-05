@@ -3,7 +3,7 @@
 //
 // Some providers must specialize their behavior depending on the underlying
 // model: pick OpenAI's Responses API for o-series and gpt-5, switch Claude
-// Opus 4.6/4.7/4.8 to adaptive thinking, use level-based thinking for Gemini 3+,
+// Opus 4.6/4.7/4.8/5 to adaptive thinking, use level-based thinking for Gemini 3+,
 // auto-enable interleaved thinking for any Claude model regardless of host
 // (Anthropic, Bedrock, Vertex AI Model Garden), decide which attachment MIME
 // types can be forwarded natively, and so on.
@@ -113,23 +113,24 @@ func AlwaysReasons(modelID string) bool {
 	return isOSeries(normalizeOpenAI(modelID))
 }
 
-// claudeOpus46To48Prefixes lists the bare Claude Opus model families that
+// adaptiveOnlyOpusPrefixes lists the bare Claude Opus model families that
 // reject token-based thinking ([RejectsTokenThinking]) and instead require
 // adaptive thinking. This is an API behavior quirk that models.dev does not
 // describe, so it stays hard-coded here (unlike context windows, which come
 // from the catalogue).
-var claudeOpus46To48Prefixes = []string{"claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"}
+var adaptiveOnlyOpusPrefixes = []string{"claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5"}
 
-// isClaudeOpus46To48 reports whether modelID names a Claude Opus 4.6, 4.7 or
-// 4.8 model (or a dated variant like claude-opus-4-7-20251101). Bedrock-style
-// identifiers such as "global.anthropic.claude-opus-4-8" are recognised by
-// stripping the inference-profile prefix first.
-func isClaudeOpus46To48(modelID string) bool {
+// isAdaptiveOnlyOpus reports whether modelID names a Claude Opus model that
+// rejects token-based thinking (e.g. claude-opus-4-6, claude-opus-5, or a
+// dated variant like claude-opus-4-7-20251101). Bedrock-style identifiers
+// such as "global.anthropic.claude-opus-5" are recognised by stripping the
+// inference-profile prefix first.
+func isAdaptiveOnlyOpus(modelID string) bool {
 	m := normalize(modelID)
 	if bare, ok := bedrockClaudeModelName(m); ok {
 		m = bare
 	}
-	for _, prefix := range claudeOpus46To48Prefixes {
+	for _, prefix := range adaptiveOnlyOpusPrefixes {
 		if m == prefix || strings.HasPrefix(m, prefix+"-") {
 			return true
 		}
@@ -141,15 +142,15 @@ func isClaudeOpus46To48(modelID string) bool {
 // `thinking.type=enabled` (token-based extended thinking) and instead requires
 // `thinking.type=adaptive`.
 //
-// Currently Claude Opus 4.6, 4.7 and 4.8 (and dated variants like
-// claude-opus-4-7-20251101). Bedrock-style identifiers such as
-// "global.anthropic.claude-opus-4-8" are recognised too.
+// Applies to Claude Opus 4.6, 4.7, 4.8, 5, and their dated variants (e.g.
+// claude-opus-4-7-20251101, claude-opus-5-20260724). Bedrock-style identifiers
+// such as "global.anthropic.claude-opus-5" are recognised too.
 // For these models the agent transparently switches a token-based budget to
 // adaptive thinking.
 //
 // See https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
 func RejectsTokenThinking(modelID string) bool {
-	return isClaudeOpus46To48(modelID)
+	return isAdaptiveOnlyOpus(modelID)
 }
 
 // SupportsAdaptiveThinking reports whether an Anthropic Claude model accepts
@@ -161,10 +162,10 @@ func RejectsTokenThinking(modelID string) bool {
 // Claude 3.x) reject `thinking.type=adaptive`/`output_config.effort` with a 400
 // and must use token-based extended thinking (`thinking.type=enabled`) instead.
 //
-// Supported: Opus 4.6/4.7/4.8 (which additionally reject token budgets, see
-// [RejectsTokenThinking]), Sonnet 4.6, the Claude 5 families (e.g. Sonnet 5),
-// and the codenamed frontier models (Fable, Mythos). Bedrock-style identifiers
-// such as "global.anthropic.claude-sonnet-4-6" are recognised too.
+// Supported: Opus 4.6/4.7/4.8/5 (which additionally reject token budgets, see
+// [RejectsTokenThinking]), Sonnet 4.6, the Claude 5 families (e.g. Sonnet 5,
+// Opus 5), and the codenamed frontier models (Fable, Mythos). Bedrock-style
+// identifiers such as "global.anthropic.claude-sonnet-4-6" are recognised too.
 //
 // The set is a superset of [RejectsTokenThinking]: a model that rejects token
 // budgets must accept adaptive thinking.

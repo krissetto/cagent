@@ -4,9 +4,14 @@ package upstream
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/docker/docker-agent/pkg/js"
 )
@@ -41,36 +46,106 @@ func Handler(next http.Handler) http.Handler {
 // by rotating credentials) without going stale on long-lived connections.
 type HeaderResolver func(ctx context.Context, headers map[string]string) map[string]string
 
-// NewHeaderTransport wraps an http.RoundTripper to set custom headers on
-// every outbound request. Header values may contain ${headers.NAME}
-// placeholders that are resolved at request time from upstream headers
-// stored in the request context.
+// NewHeaderTransport wraps an http.RoundTripper to set custom headers. The
+// first request pins the origin; redirects to another origin do not receive
+// the configured headers.
 func NewHeaderTransport(base http.RoundTripper, headers map[string]string) http.RoundTripper {
-	return NewHeaderTransportWithResolver(base, headers, nil)
+	return newHeaderTransport(base, "", headers, nil)
+}
+
+// NewHeaderTransportForOrigin is like NewHeaderTransport, but pins the origin
+// before the first request so a shared transport cannot be initialized by the
+// wrong caller.
+func NewHeaderTransportForOrigin(base http.RoundTripper, origin string, headers map[string]string) http.RoundTripper {
+	return newHeaderTransport(base, origin, headers, nil)
 }
 
 // NewHeaderTransportWithResolver is like NewHeaderTransport but resolves the
-// header values through resolve on every request. A nil resolve falls back
-// to ResolveHeaders (i.e. ${headers.NAME} placeholder resolution only).
+// header values through resolve on every request.
 func NewHeaderTransportWithResolver(base http.RoundTripper, headers map[string]string, resolve HeaderResolver) http.RoundTripper {
+	return newHeaderTransport(base, "", headers, resolve)
+}
+
+// NewHeaderTransportWithResolverForOrigin combines per-request resolution with
+// an explicitly pinned origin.
+func NewHeaderTransportWithResolverForOrigin(base http.RoundTripper, origin string, headers map[string]string, resolve HeaderResolver) http.RoundTripper {
+	return newHeaderTransport(base, origin, headers, resolve)
+}
+
+func newHeaderTransport(base http.RoundTripper, origin string, headers map[string]string, resolve HeaderResolver) http.RoundTripper {
 	if resolve == nil {
 		resolve = ResolveHeaders
 	}
-	return &headerTransport{base: base, headers: headers, resolve: resolve}
+	return &headerTransport{base: base, origin: parseOrigin(origin), headers: headers, resolve: resolve}
 }
 
 type headerTransport struct {
-	base    http.RoundTripper
-	headers map[string]string
-	resolve HeaderResolver
+	base       http.RoundTripper
+	originOnce sync.Once
+	origin     string
+	headers    map[string]string
+	resolve    HeaderResolver
 }
 
 func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Response != nil && req.Response.Request.URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return nil, fmt.Errorf("refusing HTTPS downgrade redirect to %q", req.URL.Redacted())
+	}
+
+	t.originOnce.Do(func() {
+		if t.origin == "" {
+			t.origin = requestOrigin(req)
+		}
+	})
+
 	req = req.Clone(req.Context())
-	for key, value := range t.resolve(req.Context(), t.headers) {
-		req.Header.Set(key, value)
+	if requestOrigin(req) == t.origin {
+		for key, value := range t.resolve(req.Context(), t.headers) {
+			req.Header.Set(key, value)
+		}
 	}
 	return t.base.RoundTrip(req)
+}
+
+// SameOrigin reports whether target has the same scheme, host, and effective
+// port as rawURL.
+func SameOrigin(rawURL string, target *url.URL) bool {
+	return parseOrigin(rawURL) != "" && parseOrigin(rawURL) == origin(target)
+}
+
+func parseOrigin(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return origin(u)
+}
+
+func requestOrigin(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	return origin(req.URL)
+}
+
+func origin(u *url.URL) string {
+	if u == nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	if addr, err := netip.ParseAddr(host); err == nil {
+		host = addr.Unmap().String()
+	}
+
+	port := u.Port()
+	if port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return scheme + "://" + host
 }
 
 // ResolveHeaders resolves ${headers.NAME} placeholders in header values

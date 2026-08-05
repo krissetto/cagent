@@ -34,6 +34,7 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"github.com/docker/docker-agent/pkg/atomicfile"
+	"github.com/docker/docker-agent/pkg/httpclient"
 )
 
 const (
@@ -108,14 +109,19 @@ type Updater struct {
 // targeting the current binary and platform.
 func New(currentVersion string) *Updater {
 	return &Updater{
-		CurrentVersion:    currentVersion,
-		Owner:             defaultRepoOwner,
-		Repo:              defaultRepoName,
-		APIBaseURL:        defaultAPIBaseURL,
-		DownloadBaseURL:   defaultDownloadBaseURL,
-		GOOS:              runtime.GOOS,
-		GOARCH:            runtime.GOARCH,
-		HTTPClient:        &http.Client{Timeout: downloadTimeout},
+		CurrentVersion:  currentVersion,
+		Owner:           defaultRepoOwner,
+		Repo:            defaultRepoName,
+		APIBaseURL:      defaultAPIBaseURL,
+		DownloadBaseURL: defaultDownloadBaseURL,
+		GOOS:            runtime.GOOS,
+		GOARCH:          runtime.GOARCH,
+		HTTPClient: &http.Client{
+			Timeout: downloadTimeout,
+			// GitHub serves release assets through a redirect to its object
+			// storage: follow only HTTPS hops (no downgrade) and bound the chain.
+			CheckRedirect: httpclient.HTTPSOnlyRedirects(10),
+		},
 		resolveExecutable: resolveExecutable,
 		install:           installExecutable,
 		reExec:            reExecProcess,
@@ -237,10 +243,15 @@ type releaseInfo struct {
 	Tag         string
 	Asset       string
 	DownloadURL string
+	// SHA256 is the normalized (lowercase hex) SHA-256 digest of the asset,
+	// extracted from the GitHub API metadata by latestRelease.
+	SHA256 string
 }
 
 // latestRelease fetches the latest GitHub release metadata and locates the
-// asset matching the current platform.
+// asset matching the current platform, validating its download URL and
+// SHA-256 digest so a bad release is rejected before any bytes are
+// downloaded.
 func (u *Updater) latestRelease(ctx context.Context, assetName string) (releaseInfo, error) {
 	endpoint := fmt.Sprintf("%s/repos/%s/%s/releases/latest", u.APIBaseURL, u.Owner, u.Repo)
 
@@ -269,6 +280,7 @@ func (u *Updater) latestRelease(ctx context.Context, assetName string) (releaseI
 		Assets  []struct {
 			Name               string `json:"name"`
 			BrowserDownloadURL string `json:"browser_download_url"`
+			Digest             string `json:"digest"`
 		} `json:"assets"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&release); err != nil {
@@ -279,31 +291,45 @@ func (u *Updater) latestRelease(ctx context.Context, assetName string) (releaseI
 	}
 
 	for _, asset := range release.Assets {
-		if asset.Name == assetName {
-			if asset.BrowserDownloadURL == "" {
-				return releaseInfo{}, fmt.Errorf("release asset %s has no download URL", assetName)
-			}
-			if err := u.validateDownloadURL(asset.BrowserDownloadURL); err != nil {
-				return releaseInfo{}, err
-			}
-			return releaseInfo{
-				Tag:         release.TagName,
-				Asset:       asset.Name,
-				DownloadURL: asset.BrowserDownloadURL,
-			}, nil
+		if asset.Name != assetName {
+			continue
 		}
+		if asset.BrowserDownloadURL == "" {
+			return releaseInfo{}, fmt.Errorf("release asset %s has no download URL", assetName)
+		}
+		if err := u.validateDownloadURL(asset.BrowserDownloadURL, release.TagName, asset.Name); err != nil {
+			return releaseInfo{}, err
+		}
+		// Validate the digest up front: a missing or malformed digest can
+		// never verify, so fail closed now instead of after transferring up
+		// to maxBinarySize bytes.
+		sha256Hex, err := parseSHA256Digest(asset.Digest)
+		if err != nil {
+			return releaseInfo{}, fmt.Errorf("release asset %s: %w", assetName, err)
+		}
+		return releaseInfo{
+			Tag:         release.TagName,
+			Asset:       asset.Name,
+			DownloadURL: asset.BrowserDownloadURL,
+			SHA256:      sha256Hex,
+		}, nil
 	}
 
 	return releaseInfo{}, fmt.Errorf("latest release %s does not contain asset %s", release.TagName, assetName)
 }
 
-// validateDownloadURL rejects asset URLs that do not point at the trusted
-// download host. The asset URL comes from the GitHub API response, so a
-// tampered or compromised response could otherwise redirect the binary
-// download to an attacker-controlled host. The trusted host is derived from
-// the hardcoded DownloadBaseURL (github.com in production), and the scheme of
-// that base URL is enforced too.
-func (u *Updater) validateDownloadURL(rawURL string) error {
+// validateDownloadURL rejects asset URLs that do not point at the canonical
+// release asset location under the trusted DownloadBaseURL (github.com in
+// production): /<owner>/<repo>/releases/download/<tag>/<asset>. The URL comes
+// from the GitHub API response; pinning it to the exact release path stops a
+// tampered or accidental value from steering the initial request to another
+// host, repository, tag or asset. GitHub then redirects that pinned URL to
+// its object storage, and the integrity of the final content rests on the
+// SHA-256 digest from the same metadata API. URL and digest share that trust
+// root, so neither defends against a fully compromised API; the realistic
+// goal is to block redirection of the first hop and, together with the
+// digest, corruption or tampering of the content in transit.
+func (u *Updater) validateDownloadURL(rawURL, tag, asset string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("parsing asset download URL: %w", err)
@@ -315,8 +341,33 @@ func (u *Updater) validateDownloadURL(rawURL string) error {
 	if parsed.Scheme != base.Scheme {
 		return fmt.Errorf("asset download URL %q scheme is not %q", rawURL, base.Scheme)
 	}
+	if parsed.User != nil {
+		return fmt.Errorf("asset download URL %q must not contain user info", rawURL)
+	}
 	if !strings.EqualFold(parsed.Hostname(), base.Hostname()) {
 		return fmt.Errorf("asset download URL host %q is not the trusted host %q", parsed.Hostname(), base.Hostname())
+	}
+	if parsed.Port() != base.Port() {
+		return fmt.Errorf("asset download URL %q port does not match the trusted base URL", rawURL)
+	}
+	if parsed.ForceQuery || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("asset download URL %q must not contain a query or fragment", rawURL)
+	}
+
+	// Compare raw path segments individually and unescape each one before
+	// matching, so an encoded slash (%2F) cannot smuggle extra segments past a
+	// whole-string comparison and an oddly-encoded but equivalent URL still
+	// matches.
+	want := []string{u.Owner, u.Repo, "releases", "download", tag, asset}
+	segments := strings.Split(strings.TrimPrefix(parsed.EscapedPath(), "/"), "/")
+	if len(segments) != len(want) {
+		return fmt.Errorf("asset download URL %q is not the expected release asset path", rawURL)
+	}
+	for i, segment := range segments {
+		got, err := url.PathUnescape(segment)
+		if err != nil || got != want[i] {
+			return fmt.Errorf("asset download URL %q is not the expected release asset path", rawURL)
+		}
 	}
 	return nil
 }
@@ -382,10 +433,10 @@ func (u *Updater) downloadAndStage(ctx context.Context, release releaseInfo, exe
 		return "", fmt.Errorf("setting executable permissions: %w", err)
 	}
 
-	// Integrity check is mandatory for self-update: do not execute or install a
-	// downloaded binary unless GitHub provides a digest or the release publishes
-	// a matching SHA-256 entry in checksums.txt.
-	if err := u.verifyChecksum(ctx, release, hex.EncodeToString(hasher.Sum(nil))); err != nil {
+	// Integrity check is mandatory for self-update: do not execute or install
+	// a downloaded binary unless its SHA-256 matches the digest latestRelease
+	// extracted from the GitHub metadata.
+	if err := verifyChecksum(release, hex.EncodeToString(hasher.Sum(nil))); err != nil {
 		_ = os.Remove(tmpPath)
 		return "", err
 	}
@@ -393,64 +444,40 @@ func (u *Updater) downloadAndStage(ctx context.Context, release releaseInfo, exe
 	return tmpPath, nil
 }
 
-// verifyChecksum verifies gotHex against the SHA-256 listed for the asset in
-// the release's checksums.txt, fetched from the hardcoded DownloadBaseURL
-// rather than any API-supplied value. It fails closed when checksums.txt is
-// missing or does not list the asset, so a tampered API response cannot
-// substitute its own digest for a malicious binary.
-func (u *Updater) verifyChecksum(ctx context.Context, release releaseInfo, gotHex string) error {
-	endpoint := fmt.Sprintf("%s/%s/%s/releases/download/%s/checksums.txt", u.DownloadBaseURL, u.Owner, u.Repo, release.Tag)
-
-	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
-	if err != nil {
-		return err
+// verifyChecksum verifies gotHex against release.SHA256, the digest
+// latestRelease extracted and validated from the GitHub release metadata.
+// Releases of this repository do not publish a checksums.txt, so the API
+// digest is the only integrity source: it protects the downloaded bytes
+// against corruption or tampering in transit (including the redirect to
+// GitHub's object storage), but it comes from the same API response as the
+// download URL, so it is no defence against a fully compromised API. The
+// comparison is case-insensitive; an empty digest fails closed.
+func verifyChecksum(release releaseInfo, gotHex string) error {
+	if release.SHA256 == "" {
+		return fmt.Errorf("release asset %s has no digest to verify against", release.Asset)
 	}
-	setGitHubAuth(req)
-
-	resp, err := u.HTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("fetching checksums.txt: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetching checksums.txt: HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return fmt.Errorf("reading checksums.txt: %w", err)
-	}
-
-	want, ok := checksumFor(string(body), release.Asset)
-	if !ok {
-		return fmt.Errorf("checksums.txt does not list %s", release.Asset)
-	}
-
-	if !strings.EqualFold(want, gotHex) {
-		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", release.Asset, want, gotHex)
+	if !strings.EqualFold(release.SHA256, gotHex) {
+		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", release.Asset, release.SHA256, gotHex)
 	}
 	return nil
 }
 
-// checksumFor parses a "sha256  filename" formatted checksums file and returns
-// the hex digest for the given asset.
-func checksumFor(contents, asset string) (string, bool) {
-	for line := range strings.Lines(contents) {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			continue
-		}
-		// The filename column may carry a leading "*" (binary mode marker).
-		name := strings.TrimPrefix(fields[1], "*")
-		if name == asset {
-			return fields[0], true
-		}
+// parseSHA256Digest extracts the hex digest from a GitHub "sha256:<hex>"
+// asset digest string, rejecting anything that is not exactly a well-formed
+// SHA-256 digest. The returned hex is normalized to lowercase.
+func parseSHA256Digest(digest string) (string, error) {
+	if digest == "" {
+		return "", errors.New("GitHub API reported no digest")
 	}
-	return "", false
+	algo, hexDigest, ok := strings.Cut(digest, ":")
+	if !ok || algo != "sha256" {
+		return "", fmt.Errorf("unsupported digest %q, expected sha256:<hex>", digest)
+	}
+	raw, err := hex.DecodeString(hexDigest)
+	if err != nil || len(raw) != sha256.Size {
+		return "", fmt.Errorf("malformed sha256 digest %q", digest)
+	}
+	return hex.EncodeToString(raw), nil
 }
 
 // verifyBinary sanity-checks the staged binary by executing it with the
@@ -466,17 +493,35 @@ func (u *Updater) verifyBinary(ctx context.Context, path string) error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "version")
-	// Mark the probe so the freshly downloaded binary does not recursively
-	// attempt its own self-update while we are validating it. Keep the
-	// environment minimal so the probe cannot read model/provider secrets.
-	cmd.Env = []string{envReExecMarker + "=1"}
-	if runtime.GOOS == "windows" {
-		cmd.Env = append(cmd.Env, "SYSTEMROOT="+os.Getenv("SYSTEMROOT"), "PATH="+os.Getenv("PATH"))
-	}
+	cmd.Env = verifyEnv(runtime.GOOS, os.Getenv)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("staged binary failed to run (%w): %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// verifyEnv builds the environment for the staged-binary probe. The probe
+// must not read model/provider secrets (API keys, GITHUB_TOKEN, proxy
+// credentials, ...), so instead of filtering the inherited environment it
+// allowlists the few non-secret variables the bare "version" subcommand
+// needs to start: HOME, without which telemetry initialization panics on
+// Unix (pkg/desktop resolves the user home directory), and on Windows
+// SYSTEMROOT and PATH for process startup plus USERPROFILE and ProgramData,
+// the counterparts used by os.UserHomeDir and the Docker Desktop paths
+// there. Unset or empty variables are dropped. The re-exec marker is always
+// present so the probe does not recursively attempt its own self-update.
+func verifyEnv(goos string, getenv func(string) string) []string {
+	keys := []string{"HOME"}
+	if goos == "windows" {
+		keys = append(keys, "SYSTEMROOT", "PATH", "USERPROFILE", "ProgramData")
+	}
+	env := []string{envReExecMarker + "=1"}
+	for _, key := range keys {
+		if value := getenv(key); value != "" {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
 }
 
 // resolveExecutable returns the absolute, symlink-resolved path of the running

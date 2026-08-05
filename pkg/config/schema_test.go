@@ -143,6 +143,7 @@ func TestSchemaMatchesGoTypes(t *testing.T) {
 		"ScriptShellToolConfig": reflect.TypeFor[latest.ScriptShellToolConfig](),
 		"PostEditConfig":        reflect.TypeFor[latest.PostEditConfig](),
 		"PermissionsConfig":     reflect.TypeFor[latest.PermissionsConfig](),
+		"RuntimeDefaults":       reflect.TypeFor[latest.RuntimeDefaults](),
 		"BudgetConfig":          reflect.TypeFor[latest.BudgetConfig](),
 		"HooksConfig":           reflect.TypeFor[latest.HooksConfig](),
 		"HookMatcherConfig":     reflect.TypeFor[latest.HookMatcherConfig](),

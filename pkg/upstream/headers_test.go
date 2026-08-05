@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -49,6 +50,33 @@ func TestHandler_InjectsHeaders(t *testing.T) {
 
 	require.NotNil(t, captured)
 	assert.Equal(t, "hello", captured.Get("X-Test"))
+}
+
+func TestSameOrigin(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		origin string
+		target string
+		want   bool
+	}{
+		{name: "same", origin: "https://example.com/path", target: "https://example.com/other", want: true},
+		{name: "case insensitive", origin: "HTTPS://EXAMPLE.COM/path", target: "https://example.com/other", want: true},
+		{name: "default HTTPS port", origin: "https://example.com", target: "https://example.com:443/other", want: true},
+		{name: "different port", origin: "https://example.com", target: "https://example.com:8443/other", want: false},
+		{name: "different scheme", origin: "https://example.com", target: "http://example.com/other", want: false},
+		{name: "compressed IPv6", origin: "https://[2001:db8::1]", target: "https://[2001:0db8:0:0:0:0:0:1]:443/other", want: true},
+		{name: "IPv4 mapped", origin: "https://[::ffff:192.0.2.1]", target: "https://192.0.2.1/other", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			target, err := url.Parse(tt.target)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, SameOrigin(tt.origin, target))
+		})
+	}
 }
 
 func TestResolveHeaders(t *testing.T) {
@@ -200,4 +228,87 @@ func TestNewHeaderTransportWithResolver_InvokedPerRequest(t *testing.T) {
 	assert.Equal(t, "req-1", capture.seen[0].Get("X-Call"))
 	assert.Equal(t, "req-2", capture.seen[1].Get("X-Call"),
 		"the resolver must run on every request so dynamic values stay fresh")
+}
+
+func TestNewHeaderTransport_DoesNotForwardHeadersAcrossOrigins(t *testing.T) {
+	t.Parallel()
+
+	var redirectedHeader string
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectedHeader = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer destination.Close()
+
+	var sourceHeader string
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sourceHeader = r.Header.Get("Authorization")
+		http.Redirect(w, r, destination.URL, http.StatusFound)
+	}))
+	defer source.Close()
+
+	client := &http.Client{
+		Transport: NewHeaderTransportForOrigin(
+			http.DefaultTransport,
+			source.URL,
+			map[string]string{"Authorization": "Bearer secret"},
+		),
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, source.URL, http.NoBody)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, "Bearer secret", sourceHeader)
+	assert.Empty(t, redirectedHeader)
+}
+
+func TestNewHeaderTransport_ForwardsHeadersOnSameOriginRedirect(t *testing.T) {
+	t.Parallel()
+
+	var redirectedHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		redirectedHeader = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := &http.Client{
+		Transport: NewHeaderTransportForOrigin(
+			http.DefaultTransport,
+			server.URL,
+			map[string]string{"Authorization": "Bearer secret"},
+		),
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/start", http.NoBody)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, "Bearer secret", redirectedHeader)
+}
+
+func TestNewHeaderTransport_RejectsHTTPSDowngradeRedirect(t *testing.T) {
+	t.Parallel()
+
+	capture := &captureTransport{}
+	transport := NewHeaderTransportForOrigin(capture, "https://example.test", map[string]string{
+		"Authorization": "Bearer secret",
+	})
+	original := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.test/start", http.NoBody)
+	redirected := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.test/final", http.NoBody)
+	redirected.Response = &http.Response{Request: original}
+
+	resp, err := transport.RoundTrip(redirected)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
+	require.ErrorContains(t, err, "refusing HTTPS downgrade redirect")
+	assert.Empty(t, capture.seen)
 }

@@ -52,6 +52,11 @@ type SessionManager struct {
 
 	runConfig *config.RuntimeConfig
 
+	// newRuntime, when non-nil, replaces runtime.New as the runtime
+	// constructor in runtimeForSession. Test seam: lets a build fail
+	// deterministically after the team has been loaded.
+	newRuntime func(context.Context, *team.Team, ...runtime.Opt) (runtime.Runtime, error)
+
 	refreshInterval time.Duration
 
 	mux sync.Mutex
@@ -78,6 +83,15 @@ type SessionManager struct {
 	// signalling that the server is ready to accept session-scoped requests.
 	sessionReady     chan struct{}
 	sessionReadyOnce sync.Once
+
+	// pendingSafetyDefaults tracks sessions created by CreateSession in this
+	// process without any user/API safety choice. The author-declared YAML
+	// defaults (selected agent safety, then runtime.safety) are only known
+	// once the team is loaded, so they are applied when the first runtime is
+	// built for such a session (see applyAuthorSafetyDefault) and the ID is
+	// dropped. Older persisted sessions resumed with an empty mode never
+	// appear here and are never re-defaulted.
+	pendingSafetyDefaults *concurrent.Map[string, struct{}]
 
 	// followUpInjectors routes follow-ups and idle recalls for an attached
 	// session to its owner instead of queues that are only drained mid-stream.
@@ -110,17 +124,18 @@ func NewSessionManager(ctx context.Context, sources config.Sources, sessionStore
 	}
 
 	sm := &SessionManager{
-		runtimeSessions:   concurrent.NewMap[string, *activeRuntimes](),
-		deletedSessions:   concurrent.NewMap[string, *activeRuntimes](),
-		eventLogs:         concurrent.NewMap[string, *pumpedEventLog](),
-		deletedEventLogs:  make(map[string]struct{}),
-		followUpInjectors: concurrent.NewMap[string, FollowUpInjector](),
-		followUpKeys:      concurrent.NewMap[string, *idempotencyCache](),
-		sessionStore:      sessionStore,
-		Sources:           loaders,
-		refreshInterval:   refreshInterval,
-		runConfig:         runConfig,
-		sessionReady:      make(chan struct{}),
+		runtimeSessions:       concurrent.NewMap[string, *activeRuntimes](),
+		deletedSessions:       concurrent.NewMap[string, *activeRuntimes](),
+		eventLogs:             concurrent.NewMap[string, *pumpedEventLog](),
+		deletedEventLogs:      make(map[string]struct{}),
+		followUpInjectors:     concurrent.NewMap[string, FollowUpInjector](),
+		followUpKeys:          concurrent.NewMap[string, *idempotencyCache](),
+		pendingSafetyDefaults: concurrent.NewMap[string, struct{}](),
+		sessionStore:          sessionStore,
+		Sources:               loaders,
+		refreshInterval:       refreshInterval,
+		runConfig:             runConfig,
+		sessionReady:          make(chan struct{}),
 	}
 
 	return sm
@@ -471,10 +486,10 @@ func (sm *SessionManager) GetSessionSnapshot(ctx context.Context, id string) (*a
 	// title) and fall back to the store when the session is not attached.
 	var sess *session.Session
 	streaming := false
-	agent := ""
+	agentName := ""
 	if rs, ok := sm.runtimeSessions.Load(id); ok {
 		sess = rs.session
-		agent = rs.runtime.CurrentAgentName(ctx)
+		agentName = rs.runtime.CurrentAgentName(ctx)
 		// Probe streaming state without interfering: TryLock succeeds only
 		// when no RunStream is in progress.
 		if rs.streaming.TryLock() {
@@ -507,7 +522,7 @@ func (sm *SessionManager) GetSessionSnapshot(ctx context.Context, id string) (*a
 		InputTokens:   inputTokens,
 		OutputTokens:  outputTokens,
 		Streaming:     streaming,
-		Agent:         agent,
+		Agent:         agentName,
 		LastEventSeq:  lastSeq,
 		Cost:          sess.TotalCost(),
 	}, nil
@@ -567,7 +582,20 @@ func (sm *SessionManager) CreateSession(ctx context.Context, sessionTemplate *se
 		sess.CustomModelsUsed = append([]string(nil), sessionTemplate.CustomModelsUsed...)
 	}
 
-	return sess, sm.sessionStore.AddSession(ctx, sess)
+	if err := sm.sessionStore.AddSession(ctx, sess); err != nil {
+		return nil, err
+	}
+
+	// The caller expressed no safety choice (no explicit policy, no legacy
+	// tools_approved): the author-declared YAML defaults may seed the mode,
+	// but they are only known once the team is loaded for the first run.
+	// Mark the session so the first runtime build applies them exactly once
+	// (see applyAuthorSafetyDefault); a template-supplied choice stands as-is.
+	if sess.GetSafetyPolicy() == "" {
+		sm.pendingSafetyDefaults.Store(sess.ID, struct{}{})
+	}
+
+	return sess, nil
 }
 
 // Sentinel errors returned by ForkSession. Matched via errors.Is by
@@ -741,6 +769,7 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID string) e
 	sm.dropEventLog(sess.ID)
 	sm.followUpInjectors.Delete(sess.ID)
 	sm.followUpKeys.Delete(sess.ID)
+	sm.pendingSafetyDefaults.Delete(sess.ID)
 
 	return nil
 }
@@ -927,18 +956,18 @@ func (sm *SessionManager) ResumeSession(ctx context.Context, sessionID, confirma
 	}
 
 	// Mirror + persist mid-turn session mutations synchronously —
-	// PersistenceObserver only persists on OnRunStart.
+	// PersistenceObserver only persists on OnRunStart. Legacy verbs
+	// (approve-session, approve-safe, approve-safer) are normalized
+	// so old clients keep working.
+	resumeType := runtime.NormalizeResumeType(runtime.ResumeType(confirmation))
 	if rt.session != nil {
 		mutated := false
-		switch runtime.ResumeType(confirmation) {
-		case runtime.ResumeTypeApproveSafe:
-			rt.session.SetSafetyPolicy(session.SafetyPolicySafeAuto)
+		switch resumeType {
+		case runtime.ResumeTypeApproveBalanced:
+			rt.session.SetSafetyPolicy(session.SafetyPolicyBalanced)
 			mutated = true
-		case runtime.ResumeTypeApproveSafer:
-			rt.session.SetSafetyPolicy(session.SafetyPolicySafer)
-			mutated = true
-		case runtime.ResumeTypeApproveSession:
-			rt.session.SetToolsApproved(true)
+		case runtime.ResumeTypeApproveAutonomous:
+			rt.session.SetSafetyPolicy(session.SafetyPolicyAutonomous)
 			mutated = true
 		case runtime.ResumeTypeApproveTool:
 			// Skip when toolName is empty — the dispatcher's own
@@ -957,7 +986,7 @@ func (sm *SessionManager) ResumeSession(ctx context.Context, sessionID, confirma
 	}
 
 	rt.runtime.Resume(ctx, runtime.ResumeRequest{
-		Type:     runtime.ResumeType(confirmation),
+		Type:     resumeType,
 		Reason:   reason,
 		ToolName: toolName,
 	})
@@ -1145,17 +1174,34 @@ func (sm *SessionManager) ResumeElicitation(ctx context.Context, sessionID, acti
 	return rt.runtime.ResumeElicitation(ctx, tools.ElicitationAction(action), content, elicitationID)
 }
 
-// ToggleToolApproval toggles the tool approval mode for a session.
+// ToggleToolApproval toggles the legacy blanket tool approval for a
+// session. Routed through the safety mode (see [session.Session.ToggleYolo])
+// so the two signals cannot disagree, a toggle-off genuinely revokes the
+// blanket approval, and an explicit Balanced/Strict choice survives a
+// toggle round-trip.
 func (sm *SessionManager) ToggleToolApproval(ctx context.Context, sessionID string) error {
 	sm.mux.Lock()
 	defer sm.mux.Unlock()
+
+	// Mirror onto the live runtime session so the dispatcher picks up
+	// the change on the next tool call, not just the next turn. If the
+	// store write fails, toggle back (ToggleYolo is its own inverse) so
+	// the live session never diverges from what a reload would produce —
+	// the caller got an error, so the toggle must not have half-happened.
+	if rt, ok := sm.runtimeSessions.Load(sessionID); ok && rt.session != nil {
+		rt.session.ToggleYolo()
+		if err := sm.sessionStore.UpdateSession(ctx, rt.session); err != nil {
+			rt.session.ToggleYolo()
+			return err
+		}
+		return nil
+	}
+
 	sess, err := sm.sessionStore.GetSession(ctx, sessionID)
 	if err != nil {
 		return err
 	}
-
-	sess.ToolsApproved = !sess.ToolsApproved
-
+	sess.ToggleYolo()
 	return sm.sessionStore.UpdateSession(ctx, sess)
 }
 
@@ -1298,6 +1344,18 @@ func (sm *SessionManager) runtimeForSession(ctx context.Context, sess *session.S
 	sess.MaxOldToolCallTokens = agt.MaxOldToolCallTokens()
 	sess.MaxToolResultTokens = agt.MaxToolResultTokens()
 
+	// Select (but do not yet commit) the author-declared safety default:
+	// the selected agent's safety first, then the config-wide
+	// runtime.safety. Committing — mutating the session, persisting,
+	// consuming the pending marker — waits until the whole construction
+	// below has succeeded, so a failed build leaves the session eligible
+	// for a retry with a different config/agent whose default may differ
+	// (see applyAuthorSafetyDefault).
+	authorSafetyDefault := session.SafetyPolicy(agt.Safety())
+	if authorSafetyDefault == "" {
+		authorSafetyDefault = session.SafetyPolicy(t.RuntimeSafety())
+	}
+
 	modelSwitcherCfg := &runtime.ModelSwitcherConfig{
 		Models:             loadResult.Models,
 		Providers:          loadResult.Providers,
@@ -1325,10 +1383,24 @@ func (sm *SessionManager) runtimeForSession(ctx context.Context, sess *session.S
 		runtime.WithTracer(otel.Tracer(version.AppName)),
 		runtime.WithModelSwitcherConfig(modelSwitcherCfg),
 	}
-	run, err := runtime.New(ctx, t, opts...)
+	newRuntime := runtime.New
+	if sm.newRuntime != nil {
+		newRuntime = sm.newRuntime
+	}
+	run, err := newRuntime(ctx, t, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
+	// If any later construction step fails, close the runtime before
+	// returning: the caller only ever sees the error, so an unclosed
+	// runtime would leak its tool sets.
+	defer func() {
+		if err != nil {
+			if closeErr := run.Close(); closeErr != nil {
+				slog.WarnContext(ctx, "Failed to close runtime after failed construction", "session_id", sess.ID, "error", closeErr)
+			}
+		}
+	}()
 
 	// Give this session an out-of-band, session-scoped route for
 	// elicitations raised while nobody is synchronously reading this
@@ -1355,9 +1427,52 @@ func (sm *SessionManager) runtimeForSession(ctx context.Context, sess *session.S
 		titleGen = sessiontitle.New(titleModels[0], titleModels[1:]...)
 	}
 
+	// Construction succeeded: the selected author default may now be
+	// committed and the pending marker consumed, exactly once.
+	sm.applyAuthorSafetyDefault(ctx, sess, authorSafetyDefault)
+
 	slog.DebugContext(ctx, "Runtime created for session", "session_id", sess.ID)
 
 	return run, titleGen, nil
+}
+
+// applyAuthorSafetyDefault seeds an API-created session that carries no
+// user safety choice with the author-declared YAML default selected by
+// runtimeForSession (the selected agent's safety first, then the
+// config-wide runtime.safety). It must only run once the session's first
+// runtime has been fully constructed: a failed build keeps the pending
+// marker and leaves the session untouched, so a retry — possibly with a
+// different config or agent — applies that configuration's default
+// instead. Only sessions this process created via CreateSession
+// (pendingSafetyDefaults) are seeded, so an older persisted session
+// resumed with an empty mode is never re-defaulted behind the user's
+// back. The marker is consumed even when no default applies: later
+// rebuilds and agent switches must not change an established mode.
+func (sm *SessionManager) applyAuthorSafetyDefault(ctx context.Context, sess *session.Session, policy session.SafetyPolicy) {
+	if _, pending := sm.pendingSafetyDefaults.Load(sess.ID); !pending {
+		return
+	}
+	sm.pendingSafetyDefaults.Delete(sess.ID)
+
+	// Re-check: the client may have chosen a mode between CreateSession and
+	// this first run (safety_policy update or the legacy tools_approved
+	// toggle); a user choice always wins over author defaults.
+	if sess.GetSafetyPolicy() != "" {
+		return
+	}
+	if policy == "" {
+		return
+	}
+
+	// SetSafetyPolicy keeps the legacy ToolsApproved flag in sync.
+	sess.SetSafetyPolicy(policy)
+	// Persist so the default survives resumes after this process exits.
+	// RunSession persists the session again right after building the
+	// runtime, so a failure here is logged rather than failing the run.
+	if err := sm.sessionStore.UpdateSession(ctx, sess); err != nil {
+		slog.WarnContext(ctx, "failed to persist author-declared safety default",
+			"session_id", sess.ID, "safety_policy", string(policy), "err", err)
+	}
 }
 
 func (sm *SessionManager) loadTeam(ctx context.Context, agentFilename string, runConfig *config.RuntimeConfig) (*team.Team, error) {
@@ -1780,10 +1895,13 @@ func (sm *SessionManager) SetSessionAgentModel(ctx context.Context, sessionID, m
 	title := sess.TitleSnapshot()
 	inputTokens, outputTokens, cost := sess.TokensAndCost()
 	updatedSess := &session.Session{
-		ID:                      sess.ID,
-		Title:                   title,
-		CreatedAt:               sess.CreatedAt,
-		WorkingDir:              sess.WorkingDir,
+		ID:         sess.ID,
+		Title:      title,
+		CreatedAt:  sess.CreatedAt,
+		WorkingDir: sess.WorkingDir,
+		// SafetyPolicy must travel with ToolsApproved: omitting it would
+		// reset a strict/balanced session to the legacy default on reload.
+		SafetyPolicy:            sess.SafetyPolicy,
 		ToolsApproved:           sess.ToolsApproved,
 		Permissions:             sess.Permissions,
 		MaxIterations:           sess.MaxIterations,
@@ -1886,6 +2004,7 @@ func (sm *SessionManager) BatchDeleteSessions(ctx context.Context, sessionIDs []
 			sm.dropEventLog(sessionID)
 			sm.followUpInjectors.Delete(sessionID)
 			sm.followUpKeys.Delete(sessionID)
+			sm.pendingSafetyDefaults.Delete(sessionID)
 		}
 	}
 

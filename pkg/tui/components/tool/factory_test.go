@@ -10,6 +10,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
 	"github.com/docker/docker-agent/pkg/tools/builtin/plan"
 	shelltool "github.com/docker/docker-agent/pkg/tools/builtin/shell"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/core/layout"
 	tuiimage "github.com/docker/docker-agent/pkg/tui/image"
 	"github.com/docker/docker-agent/pkg/tui/service"
@@ -41,24 +42,24 @@ func TestRegisterAndResolve(t *testing.T) {
 
 	// A new tool name resolves to its registered renderer.
 	customCalled := false
-	Register("add", func(*types.Message, service.SessionStateReader) layout.Model {
+	Register("add", func(*animation.Runtime, *types.Message, service.SessionStateReader) layout.Model {
 		customCalled = true
 		return nil
 	})
 	b, ok := resolve("add")
 	assert.True(t, ok)
-	b(nil, nil)
+	b(animation.NewRuntime(), nil, nil)
 	assert.True(t, customCalled)
 
 	// A custom renderer takes precedence over a built-in one for the same key.
 	overrodeBuiltin := false
-	Register(shelltool.ToolNameShell, func(*types.Message, service.SessionStateReader) layout.Model {
+	Register(shelltool.ToolNameShell, func(*animation.Runtime, *types.Message, service.SessionStateReader) layout.Model {
 		overrodeBuiltin = true
 		return nil
 	})
 	b, ok = resolve(shelltool.ToolNameShell)
 	assert.True(t, ok)
-	b(nil, nil)
+	b(animation.NewRuntime(), nil, nil)
 	assert.True(t, overrodeBuiltin)
 
 	// A built-in with no custom override still resolves to its built-in renderer.
@@ -66,7 +67,7 @@ func TestRegisterAndResolve(t *testing.T) {
 	assert.True(t, ok)
 }
 
-// TestNew_Dispatch verifies New()'s renderer selection: a registered renderer is
+// TestNew_Dispatch verifies New(animation.NewRuntime(), )'s renderer selection: a registered renderer is
 // chosen by exact tool name first, then by "category:<category>", with the exact
 // name winning when both match, and an unregistered tool falling through to the
 // default. The factory is origin-agnostic — it keys only on the tool-call name
@@ -85,37 +86,37 @@ func TestNew_Dispatch(t *testing.T) {
 	t.Run("by exact tool name", func(t *testing.T) {
 		withCleanToolRegistry(t)
 		called := false
-		Register("weather_report", func(*types.Message, service.SessionStateReader) layout.Model {
+		Register("weather_report", func(*animation.Runtime, *types.Message, service.SessionStateReader) layout.Model {
 			called = true
 			return nil
 		})
-		New(newMsg(), ss)
+		New(animation.NewRuntime(), newMsg(), ss)
 		assert.True(t, called, "renderer registered under the exact tool name should be selected")
 	})
 
 	t.Run("by category", func(t *testing.T) {
 		withCleanToolRegistry(t)
 		called := false
-		Register("category:external", func(*types.Message, service.SessionStateReader) layout.Model {
+		Register("category:external", func(*animation.Runtime, *types.Message, service.SessionStateReader) layout.Model {
 			called = true
 			return nil
 		})
-		New(newMsg(), ss)
+		New(animation.NewRuntime(), newMsg(), ss)
 		assert.True(t, called, "a category renderer should match any tool in that category")
 	})
 
 	t.Run("exact name wins over category", func(t *testing.T) {
 		withCleanToolRegistry(t)
 		exactCalled, categoryCalled := false, false
-		Register("weather_report", func(*types.Message, service.SessionStateReader) layout.Model {
+		Register("weather_report", func(*animation.Runtime, *types.Message, service.SessionStateReader) layout.Model {
 			exactCalled = true
 			return nil
 		})
-		Register("category:external", func(*types.Message, service.SessionStateReader) layout.Model {
+		Register("category:external", func(*animation.Runtime, *types.Message, service.SessionStateReader) layout.Model {
 			categoryCalled = true
 			return nil
 		})
-		New(newMsg(), ss)
+		New(animation.NewRuntime(), newMsg(), ss)
 		assert.True(t, exactCalled, "exact-name renderer should take precedence")
 		assert.False(t, categoryCalled, "category renderer should not run when an exact-name match exists")
 	})
@@ -141,7 +142,7 @@ func TestNewRendersResultImagesWithinToolWidth(t *testing.T) {
 		}},
 	}
 
-	view := New(msg, service.StaticSessionState{})
+	view := New(animation.NewRuntime(), msg, service.StaticSessionState{})
 	view.SetSize(40, 0)
 	rendered := view.View()
 

@@ -6,12 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/dnaeon/go-vcr.v4/pkg/cassette"
 )
 
 func TestAPIKeyHeaderUpdater(t *testing.T) {
@@ -430,4 +432,19 @@ func TestSimulatedStreamCopy_ContextCancellation(t *testing.T) {
 
 	// Verify first chunk was written (safe to read after goroutine finished)
 	assert.Contains(t, rec.Body.String(), "data: first")
+}
+
+func TestDefaultMatcherNormalizesPromptFilePaths(t *testing.T) {
+	matcher := DefaultMatcher(func(err error) { t.Fatal(err) })
+	cassetteBody := `{"system":[{"text":"Instructions from: FILE\nbody"}]}`
+
+	for _, body := range []string{
+		`{"system":[{"text":"Instructions from: /tmp/repo/AGENTS.md\nbody"}]}`,
+		`{"system":[{"text":"Instructions from: C:\\Users\\runner\\repo\\AGENTS.md\nbody"}]}`,
+	} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://example.test/v1", strings.NewReader(body))
+		if !matcher(req, cassette.Request{Method: http.MethodPost, URL: "https://example.test/v1", Body: cassetteBody}) {
+			t.Fatalf("prompt path was not normalized: %s", body)
+		}
+	}
 }

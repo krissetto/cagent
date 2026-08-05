@@ -3,6 +3,191 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.121.0] - 2026-08-05
+
+This release brings several bug fixes and new features including configurable interrupt confirmation for the Esc key, ranged file reads, and improvements to safety classification and filesystem path handling.
+
+## What's New
+
+- Adds configurable interrupt confirmation for the Esc key: choose `always` (default, shows a dialog) or `double-tap` (requires pressing Esc twice) to interrupt a running stream
+- Adds optional `line` and `limit` arguments to `read_file` for ranged file reads, enabling partial reads of large files
+- Adds `--container-runtime` flag to evaluations, allowing an alternative Docker-compatible CLI (e.g. Podman) to be used for image builds and container runs
+- Broadens the destructive-command taxonomy in the shell safety classifier to cover additional command shapes (e.g. bare `docker rm <id>`)
+- Adds fail-fast detection of foreign-OS paths (e.g. WSL-style paths on Windows) in filesystem tools, with an explanation of path resolution
+- Adds signed-commit checking (Rules 4 and 5) to the `triage-prs` skill, flagging unsigned or invalid commits and managing the `status/needs-signed-commits` label
+
+## Bug Fixes
+
+- Fixes SSE stream truncation when tool results exceed 64 KiB, which previously caused runs to silently stop
+- Fixes the `--models-gateway` flag being ignored when creating the DMR provider client, causing failures in environments where the gateway is the only reachable path
+- Fixes cache entries not expiring when the current time exactly equals their expiry deadline, preventing stale reuse on coarse-resolution clocks (e.g. Windows)
+- Fixes self-update failure by reading and validating the GitHub release asset SHA-256 digest before downloading, instead of looking for a missing `checksums.txt`
+
+## Technical Changes
+
+- Replaces `arduino/setup-task` with the official `go-task/setup-task` action in CI workflows
+- Grants `actions: write` permission to the PR review workflow, restoring PR review runs that were failing during workflow validation
+- Refreshes the embedded models.dev catalog snapshot
+### Pull Requests
+
+- [#3875](https://github.com/docker/docker-agent/pull/3875) - fix(dmr): honor the models gateway when creating the client
+- [#3878](https://github.com/docker/docker-agent/pull/3878) - feat(tui): make current session plans editable
+- [#3883](https://github.com/docker/docker-agent/pull/3883) - fix(runtime): don't truncate the SSE stream on tool results >64 KiB
+- [#3888](https://github.com/docker/docker-agent/pull/3888) - chore: refresh embedded models.dev snapshot
+- [#3891](https://github.com/docker/docker-agent/pull/3891) - docs: update CHANGELOG.md for v1.120.0
+- [#3892](https://github.com/docker/docker-agent/pull/3892) - chore: replace arduino/setup-task with go-task/setup-task
+- [#3894](https://github.com/docker/docker-agent/pull/3894) - feat(eval): support configurable container runtime
+- [#3895](https://github.com/docker/docker-agent/pull/3895) - fix(filesystem): support ranged file reads
+- [#3896](https://github.com/docker/docker-agent/pull/3896) - fix(skills): expire cache entries at deadline
+- [#3897](https://github.com/docker/docker-agent/pull/3897) - fix(selfupdate): verify GitHub release asset digests
+- [#3898](https://github.com/docker/docker-agent/pull/3898) - fix(ci): grant PR reviewer actions write permission
+- [#3899](https://github.com/docker/docker-agent/pull/3899) - feat(tui): configurable interrupt confirmation for Esc key
+- [#3902](https://github.com/docker/docker-agent/pull/3902) - docs: auto-update for merged PRs (2026-08-04)
+- [#3903](https://github.com/docker/docker-agent/pull/3903) - feat: flag unsigned commits in triage-prs skill
+- [#3905](https://github.com/docker/docker-agent/pull/3905) - fix(runtime): guard nested agent delegation
+- [#3907](https://github.com/docker/docker-agent/pull/3907) - feat(safety): broaden destructive-command taxonomy
+- [#3908](https://github.com/docker/docker-agent/pull/3908) - feat(filesystem): fail fast on foreign-OS paths and explain path resolution
+
+
+## [v1.120.0] - 2026-08-03
+
+This release improves Windows compatibility across the full test suite, adds new TUI features for context compaction and session plan editing, and fixes several platform-specific and sandbox issues.
+
+## What's New
+
+- Adds compaction summary display to the `/context` dialog, showing the verbatim summary text when a session has been compacted
+- Makes the current session plan editable from the `/plans` browser and detail views, labeling it as `current session` and distinguishing it from shared workspace-global plans
+
+## Bug Fixes
+
+- Fixes external editors (e.g., Vim) not attaching to the real terminal when editing a plan in sandbox mode
+- Fixes sandbox plan editor to use the available `C.UTF-8` locale, preserving non-ASCII (e.g., German) input
+- Fixes `HOME` environment variable handling to be honored correctly across platforms
+- Fixes Windows executable support in tool installation
+- Fixes handling of Windows file URIs in the LSP implementation
+- Fixes Windows home directory path normalization
+- Logs and recovers from empty or failed Docker Desktop token fetches, rather than silently discarding the error
+
+## Technical Changes
+
+- Runs the full Go test suite natively on Windows as a blocking CI gate
+- Consolidates Windows test jobs and uses the Task-based test entry point consistently across platforms
+- Adds portable filesystem expectations and Windows-specific shell behavior tests
+### Pull Requests
+
+- [#3866](https://github.com/docker/docker-agent/pull/3866) - ci: run full test suite on Windows
+- [#3868](https://github.com/docker/docker-agent/pull/3868) - docs: update CHANGELOG.md for v1.119.0
+- [#3876](https://github.com/docker/docker-agent/pull/3876) - fix: preserve terminal and UTF-8 in sandbox plan editor
+- [#3877](https://github.com/docker/docker-agent/pull/3877) - feat(tui): show compaction summary in context dialog
+- [#3878](https://github.com/docker/docker-agent/pull/3878) - feat(tui): make current session plans editable
+- [#3880](https://github.com/docker/docker-agent/pull/3880) - docs: auto-update for merged PRs (2026-08-01)
+- [#3890](https://github.com/docker/docker-agent/pull/3890) - desktop: log and recover empty or failed token fetches
+
+
+## [v1.119.0] - 2026-07-30
+
+This release introduces first-class plan management with a new CLI command group and TUI browser, adds YAML safety mode defaults, and includes several bug fixes for runtime stability and structured output handling.
+
+## What's New
+
+- Adds `docker agent plans` CLI command group and a host-facing plan service package for managing plans from outside the agent runtime
+- Adds a `/plans` browser, detail view, and action dialogs to the TUI for interactive plan management
+- Adds YAML safety mode defaults to team runtime, individual agents, user settings, and aliases, with declarative precedence rules
+- Adds an `Active agents only` option in TUI settings to filter the sidebar to agents participating in the current session
+- Logs a warning when Docker Desktop serves an expired token to the models gateway
+
+## Bug Fixes
+
+- Fixes runtime re-entry loop when a content-only turn ends with a bare EOF and no `finish_reason` from the provider
+- Fixes structured output handling for Claude models served through OpenAI-compatible endpoints by reinforcing schema constraints in system instructions
+- Fixes evaluation budget termination outcomes so `budget_exceeded` results are preserved correctly across transcripts, SQLite, and session JSON
+- Hardens host plan management and stabilizes asynchronous TUI workflows for plans
+- Fixes atomic file replacement on Windows to allow plan storage reads during open file operations
+
+## Technical Changes
+
+- Exports `ValidateName`, `CorruptPlanError`, `SharedStorage`, and `ChangeNotifier` from the plan package
+- Adds `PlanChangedEvent` emission on shared plan mutations in the runtime
+- Centralizes plan editor handling in the TUI
+- Adds plan storage testing on Windows as a CI gate
+- Adds documentation for the Provider Credentials section in eval containers, clarifying `GITHUB_TOKEN` forwarding behavior
+### Pull Requests
+
+- [#3669](https://github.com/docker/docker-agent/pull/3669) - fix(runtime): stop content-only turns that end with a bare EOF (no `finish_reason`)
+- [#3844](https://github.com/docker/docker-agent/pull/3844) - Merge pull request #3853 from docker/feat/host-plan-management-3844
+- [#3853](https://github.com/docker/docker-agent/pull/3853) - feat: add first-class host UX for plan management (#3844)
+- [#3857](https://github.com/docker/docker-agent/pull/3857) - docs: explain GITHUB_TOKEN forwarding for eval containers
+- [#3860](https://github.com/docker/docker-agent/pull/3860) - feat(config): add YAML safety mode defaults
+- [#3861](https://github.com/docker/docker-agent/pull/3861) - docs: update CHANGELOG.md for v1.118.0
+- [#3862](https://github.com/docker/docker-agent/pull/3862) - fix(eval): preserve budget termination outcomes
+- [#3863](https://github.com/docker/docker-agent/pull/3863) - fix(openai): reinforce structured output for Claude proxies
+- [#3864](https://github.com/docker/docker-agent/pull/3864) - feat(tui): filter sidebar to active agents
+- [#3865](https://github.com/docker/docker-agent/pull/3865) - fix(plans): address review follow-ups from #3853
+- [#3867](https://github.com/docker/docker-agent/pull/3867) - feat(desktop): log when Docker Desktop serves an expired token
+
+
+## [v1.118.0] - 2026-07-28
+
+This release brings TUI animation infrastructure improvements, several bug fixes for session isolation, credential security, and model discovery, plus a new desktop token staleness logging feature.
+
+## What's New
+
+- Adds a program-scoped animation runtime to the TUI, centralizing spinners, durations, and transitions for more consistent and robust animations
+- Adds token staleness logging when Docker Desktop refresh recovery fails, promoting failure paths to Warn/Info level for better observability
+
+## Improvements
+
+- Bounds progressive Markdown rendering in the TUI, enabling segmented output that avoids repeatedly re-processing completed blocks
+- Adopts the program-scoped animation runtime across TUI animation consumers, migrating to elapsed-time updates and dirty-tick-driven root-view caching
+- Compacts detailed sidebar metrics in the TUI to adapt to available width, using short forms (`Eff`, `Ctx`, `Cost`) at constrained widths and restoring full labels and gauges when space allows
+
+## Bug Fixes
+
+- Fixes concurrent `LoadWithConfig` calls from sharing a working directory, preventing sessions from observing each other's working directory under concurrent load
+- Fixes duplicated text in GitHub Copilot responses by deduplicating streamed content tracked by both item ID and `output_index`
+- Unifies gateway model discovery between `docker agent models` and the interactive `/model` picker so that a non-empty `/v1/models` response is the source of truth
+- Fixes safety modes (autonomous, legacy approval, YOLO state) not being preserved across session flows and `/new` transitions
+- Fixes credential leaks in remote tool transports (MCP and A2A) by restricting bearer tokens and custom headers to requests whose origin matches the transport's configured origin
+
+## Technical Changes
+
+- Removes unused dead TUI code including an unused lean TUI transcript reset method, package-level animation registration shim, and user-theme existence helper
+### Pull Requests
+
+- [#3836](https://github.com/docker/docker-agent/pull/3836) - chore: remove dead TUI code
+- [#3838](https://github.com/docker/docker-agent/pull/3838) - docs: update CHANGELOG.md for v1.117.0
+- [#3842](https://github.com/docker/docker-agent/pull/3842) - fix: prevent concurrent LoadWithConfig calls from sharing working dir
+- [#3843](https://github.com/docker/docker-agent/pull/3843) - TUI - Program-scoped animation runtime
+- [#3846](https://github.com/docker/docker-agent/pull/3846) - fix(openai): deduplicate Copilot response text
+- [#3847](https://github.com/docker/docker-agent/pull/3847) - fix(models): unify gateway model discovery
+- [#3848](https://github.com/docker/docker-agent/pull/3848) - fix: preserve safety modes across session flows
+- [#3850](https://github.com/docker/docker-agent/pull/3850) - fix: prevent credential leaks in remote tool transports
+- [#3851](https://github.com/docker/docker-agent/pull/3851) - TUI - enable segmented markdown rendering
+- [#3852](https://github.com/docker/docker-agent/pull/3852) - chore: update docker-agent-action to v2.0.3
+- [#3854](https://github.com/docker/docker-agent/pull/3854) - chore: bump direct go dependencies
+- [#3855](https://github.com/docker/docker-agent/pull/3855) - Adopt program-scoped animation runtime
+- [#3858](https://github.com/docker/docker-agent/pull/3858) - fix(tui): compact detailed sidebar metrics
+- [#3859](https://github.com/docker/docker-agent/pull/3859) - feat(desktop): log token staleness when refresh recovery fails
+
+
+## [v1.117.0] - 2026-07-27
+
+This release adds support for Claude Opus 5 and introduces a new three-mode safety policy system for tool approval control.
+
+## What's New
+- Adds support for Claude Opus 5 (released 2026-07-24, 1M context window, 128k output)
+- Adds a three-mode safety policy (strict / balanced / autonomous) with native shell classification, providing a middle ground between per-call approval and blanket session-wide approval
+
+## Technical Changes
+- Refreshes the embedded models.dev catalog snapshot to 2026-07-24
+### Pull Requests
+
+- [#3828](https://github.com/docker/docker-agent/pull/3828) - docs: update CHANGELOG.md for v1.116.0
+- [#3830](https://github.com/docker/docker-agent/pull/3830) - feat: support Claude Opus 5
+- [#3834](https://github.com/docker/docker-agent/pull/3834) - chore: refresh embedded models.dev snapshot
+- [#3835](https://github.com/docker/docker-agent/pull/3835) - feat: three-mode safety policy (strict / balanced / autonomous) with native shell classification
+
+
 ## [v1.116.0] - 2026-07-24
 
 This release adds sandbox authentication improvements, compaction-model context visibility in the TUI, MCP lifecycle enforcement, and a range of bug fixes across the TUI, CLI, and OpenAI integration.
@@ -5144,3 +5329,13 @@ This release improves the terminal user interface with better error handling and
 [v1.115.0]: https://github.com/docker/docker-agent/releases/tag/v1.115.0
 
 [v1.116.0]: https://github.com/docker/docker-agent/releases/tag/v1.116.0
+
+[v1.117.0]: https://github.com/docker/docker-agent/releases/tag/v1.117.0
+
+[v1.118.0]: https://github.com/docker/docker-agent/releases/tag/v1.118.0
+
+[v1.119.0]: https://github.com/docker/docker-agent/releases/tag/v1.119.0
+
+[v1.120.0]: https://github.com/docker/docker-agent/releases/tag/v1.120.0
+
+[v1.121.0]: https://github.com/docker/docker-agent/releases/tag/v1.121.0

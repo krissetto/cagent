@@ -355,14 +355,19 @@ func (r *LocalRuntime) enforceBudget(
 		"max", breach.Max,
 	)
 
-	events.Emit(BudgetExceeded(sess.ID, a.Name(), *breach))
-	r.notifyBudgetExceeded(ctx, a, sess.ID, breach.Message())
-
-	addAgentMessage(sess, a, &chat.Message{
+	// Build the stop message first so the budget_exceeded event and the
+	// session share one canonical message: message_added is not serialized,
+	// so the event's stop_message is what JSON consumers rebuild it from.
+	stopMsg := &chat.Message{
 		Role:      chat.MessageRoleAssistant,
 		Content:   breach.Message(),
 		CreatedAt: r.now().Format(time.RFC3339),
-	}, events)
+	}
+
+	events.Emit(BudgetExceeded(sess.ID, a.Name(), *breach, stopMsg))
+	r.notifyBudgetExceeded(ctx, a, sess.ID, breach.Message())
+
+	addAgentMessage(sess, a, stopMsg, events)
 
 	return iterationStop
 }

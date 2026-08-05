@@ -37,7 +37,7 @@ func TestReasoningBlockCollapsedByDefaultFromSessionState(t *testing.T) {
 	useEmptyUserConfig(t)
 
 	sessionState := service.NewSessionState(&session.Session{})
-	block := New("test-default-collapsed", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-default-collapsed", "root", sessionState)
 	block.SetSize(80, 24)
 	longReasoning := `1. First point about the problem
 2. Second point to consider
@@ -56,7 +56,7 @@ func TestReasoningBlockCanDefaultExpandedFromSessionState(t *testing.T) {
 
 	sessionState := service.NewSessionState(&session.Session{})
 	sessionState.SetExpandThinking(true)
-	block := New("test-default-expanded", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-default-expanded", "root", sessionState)
 	block.SetSize(80, 24)
 	block.SetReasoning("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6")
 
@@ -68,7 +68,7 @@ func TestReasoningBlockCollapsed(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	reasoning := "Let me think about this problem carefully."
@@ -92,7 +92,7 @@ func TestReasoningBlockCollapsedWithLongContent(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	// Long reasoning that definitely exceeds previewLines (4 lines) after rendering
@@ -119,7 +119,7 @@ func TestReasoningBlockExpanded(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	reasoning := "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6"
@@ -143,7 +143,7 @@ func TestReasoningBlockWithToolCall(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	block.SetReasoning("Let me think...")
@@ -174,7 +174,7 @@ func TestReasoningBlockExpandedShowsFullToolRenderer(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("old line\n"), 0o644))
 
 	sessionState := &service.SessionState{}
-	block := New("test-expanded-tool-renderer", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-expanded-tool-renderer", "root", sessionState)
 	block.SetSize(100, 24)
 	block.SetExpanded(true)
 	block.SetReasoning("Need to edit the file.")
@@ -203,7 +203,7 @@ func TestReasoningBlockCollapsedUsesCollapsedToolRenderer(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("old line\n"), 0o644))
 
 	sessionState := &service.SessionState{}
-	block := New("test-collapsed-tool-renderer", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-collapsed-tool-renderer", "root", sessionState)
 	block.SetSize(100, 24)
 	block.SetExpanded(false)
 	block.SetReasoning("Need to edit the file.")
@@ -227,7 +227,7 @@ func TestReasoningBlockCollapsedShowsToolViews(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	block.SetReasoning("Thinking...")
@@ -253,7 +253,7 @@ func TestReasoningBlockCollapsedHidesCompletedTools(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	block.SetReasoning("Thinking...")
@@ -288,7 +288,7 @@ func TestReasoningBlockToggle(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 	block.SetReasoning("Some reasoning")
 
@@ -308,7 +308,7 @@ func TestReasoningBlockHeaderFooterLineDetection(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 	// Use markdown list to ensure content exceeds previewLines (4) after rendering
 	block.SetReasoning(`1. First point
@@ -335,7 +335,7 @@ func TestReasoningBlockAgentBadge(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-badge", "developer", sessionState)
+	block := New(animation.NewRuntime(), "test-badge", "developer", sessionState)
 	block.SetSize(80, 24)
 	block.SetReasoning("Working through the problem.")
 	// Expand so the header is toggleable regardless of extra content;
@@ -367,7 +367,7 @@ func TestReasoningBlockMultipleToolCalls(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	block.SetReasoning("Planning steps...")
@@ -398,7 +398,7 @@ func TestReasoningBlockAppendReasoning(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	block.SetReasoning("First part")
@@ -412,7 +412,7 @@ func TestReasoningBlockEmptyReasoning(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	// Add running tool call without reasoning (in-progress tools show)
@@ -434,7 +434,7 @@ func TestReasoningBlockUpdateToolCall(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	// Add a pending tool call
@@ -455,7 +455,7 @@ func TestReasoningBlockUpdateToolResult(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	// Add a running tool call
@@ -480,7 +480,7 @@ func TestReasoningBlockCompletedToolGracePeriod(t *testing.T) {
 	fakeNow := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.now = func() time.Time { return fakeNow }
 	block.SetSize(80, 24)
 
@@ -531,7 +531,7 @@ func TestReasoningBlockFadingState(t *testing.T) {
 	fakeNow := completionTime
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.now = func() time.Time { return fakeNow }
 	block.SetSize(80, 24)
 
@@ -602,7 +602,7 @@ func TestReasoningBlockCompletedToolNoGracePeriodWhenAddedAsCompleted(t *testing
 	// do NOT get a grace period and are hidden immediately in collapsed view.
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.SetSize(80, 24)
 
 	block.SetReasoning("Thinking...")
@@ -630,7 +630,7 @@ func TestReasoningBlockID(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	block := New("test-block-123", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-block-123", "root", sessionState)
 	block.SetSize(80, 24)
 
 	// Verify the block ID is correct
@@ -644,7 +644,7 @@ func TestReasoningBlockNeedsTick(t *testing.T) {
 	fakeNow := completionTime
 
 	sessionState := &service.SessionState{}
-	block := New("test-1", "root", sessionState)
+	block := New(animation.NewRuntime(), "test-1", "root", sessionState)
 	block.now = func() time.Time { return fakeNow }
 	block.SetSize(80, 24)
 

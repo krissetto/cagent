@@ -28,7 +28,8 @@ $ docker agent run [config] [message...] [flags]
 | Flag                                    | Description                                                                                                                               |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `-a, --agent <name>`                    | Run a specific agent from the config                                                                                                      |
-| `--yolo`                                | Auto-approve tool calls (unless explicitly denied)                                                                                        |
+| `--yolo`                                | Auto-approve tool calls (unless explicitly denied). Legacy alias for `--safety autonomous`.                                              |
+| `--safety <mode>`                       | Safety mode for tool approval: `strict` (ask for everything), `balanced` (auto-approve safe calls), or `autonomous` (approve everything). Wins over `--yolo` when both are given. Without the flag, the mode falls back to alias/user-config defaults, then the agent YAML's `agents.<name>.safety` / `runtime.safety`; a resumed session keeps its stored mode unless `--safety`/`--yolo` is passed explicitly. See [Safety Modes](../../configuration/permissions/index.md#safety-modes). |
 | `--model <ref>`                         | Override model(s). Use `provider/model` for all agents, or `agent=provider/model` for specific agents. Comma-separate multiple overrides. |
 | `--session <id>`                        | Resume a previous session. Supports relative refs (`-1` = newest by creation time, `-2` = second-newest, … — creation order, not last-used). An explicit ID that does not exist yet is created with that ID, so a supervisor can own the session ID upfront and reuse it across runs. |
 | `-s, --session-db <path>`               | Path to the SQLite session database (default: `<data-dir>/session.db`, so `~/.cagent/session.db` unless `--data-dir` is set)              |
@@ -209,6 +210,8 @@ $ docker agent models --all                           # every provider the catal
 $ docker agent models --provider openai
 $ docker agent models --format json | jq
 ```
+
+When a models gateway is configured (`--models-gateway`, `DOCKER_AGENT_MODELS_GATEWAY`, or the user config), the command first queries the gateway's `/v1/models` endpoint. A non-empty response is authoritative for the models routed through the gateway: the listing shows the models the gateway serves (`--provider` filters within it), alongside any custom providers you have configured, which serve their models from their own endpoints rather than through the gateway. If the gateway cannot be queried or serves no usable model (endpoint not implemented, empty list, invalid response, timeout, missing authentication), the command falls back to the providers you have configured directly — provider API keys, provider aliases, and custom providers — plus the model catalog; a failure of one source never prevents the others from being listed. The Docker Desktop token is only sent (and required) when the gateway targets a trusted Docker URL.
 
 ### `docker agent toolsets`
 
@@ -455,10 +458,11 @@ $ docker agent eval <agent-file>|<registry-ref> [<eval-dir>|./evals] [flags]
 | Flag                | Default                              | Description                                                                |
 | ------------------- | ------------------------------------ | -------------------------------------------------------------------------- |
 | `-c, --concurrency` | num CPUs                             | Number of concurrent evaluation runs                                       |
-| `--judge-model`     | `anthropic/claude-opus-4-5-20251101` | Model for LLM-as-a-judge relevance scoring (format: `provider/model`)      |
+| `--judge-model`     | `anthropic/claude-opus-5` | Model for LLM-as-a-judge relevance scoring (format: `provider/model`)      |
 | `--output <dir>`    | `<eval-dir>/results`                 | Directory for results, logs, and session databases                         |
 | `--only <pattern>`  | (all)                                | Only run evals with file names matching these patterns (repeatable)        |
-| `--base-image`      | (default)                            | Custom base Docker image for eval containers                               |
+| `--base-image`      | (default)                            | Custom base image for eval containers                                      |
+| `--container-runtime` | `docker`                           | Container runtime executable for building and running evaluations (e.g. `podman`) |
 | `--keep-containers` | `false`                              | Keep containers after evaluation (don't remove with `--rm`)                |
 | `-e, --env`         | (none)                               | Environment variables to pass to container (`KEY` or `KEY=VALUE`, repeatable) |
 | `--repeat <n>`      | `1`                                  | Number of times to repeat each evaluation (useful for computing baselines) |
@@ -473,6 +477,7 @@ $ docker agent eval agent.yaml -c 8                       # 8 concurrent evaluat
 $ docker agent eval agent.yaml --keep-containers          # keep containers for debugging
 $ docker agent eval agent.yaml --only "auth*"             # only run matching evals
 $ docker agent eval agent.yaml --repeat 5                 # repeat each eval 5 times
+$ docker agent eval agent.yaml --container-runtime podman # use a Docker-compatible runtime such as Podman
 ```
 
 See [Evaluation](../evaluation/index.md) for details on creating eval sessions and interpreting results.
@@ -504,6 +509,7 @@ $ docker agent alias add other ociReference
 
 # Add an alias with runtime options
 $ docker agent alias add yolo-coder myorg/coder --yolo
+$ docker agent alias add careful-coder myorg/coder --safety balanced
 $ docker agent alias add fast-coder myorg/coder --model openai/gpt-4o-mini
 $ docker agent alias add safe-coder myorg/coder --sandbox
 $ docker agent alias add turbo myorg/coder --yolo --model anthropic/claude-sonnet-4-5
@@ -515,10 +521,13 @@ $ docker agent run yolo-coder
 
 **Alias Options:** Aliases can include runtime options that apply automatically when used:
 
-- `--yolo` — Auto-approve tool calls (unless explicitly denied) when running the alias
+- `--yolo` — Auto-approve tool calls (unless explicitly denied) when running the alias. Legacy alias for `--safety autonomous`.
+- `--safety <mode>` — Default [safety mode](../../configuration/permissions/index.md#safety-modes) (`strict`, `balanced`, or `autonomous`) when running the alias. Wins over the alias's `yolo` option; both are stored declaratively in the user config (`aliases.<name>.safety` / `aliases.<name>.yolo`), so you can also edit them there by hand.
 - `--model <ref>` — Override the model for the alias
 - `--hide-tool-results` — Hide tool call results in the TUI when running the alias
 - `--sandbox` — Always run the alias inside a [Docker sandbox](../../configuration/sandbox/index.md)
+
+Alias safety options are defaults for new sessions: an explicit `--safety`/`--yolo` on the command line wins over them, they win over `settings.safety`/`settings.YOLO` and over anything declared in the agent YAML, and they never change the mode of a resumed session.
 
 When listing aliases, options are shown in brackets:
 
@@ -594,6 +603,63 @@ $ docker agent sandbox deny api.example.com
 ```
 
 Entries are unioned with the gateway, the kit-resolved tool install hosts, and any `runtime.network_allowlist` declared by the agent. The launch summary lists every source separately so you can see which holes were punched by which layer.
+
+### `docker agent plans`
+
+Manage the plans agents collaborate on, from the host — without starting a session. Two plan systems are covered:
+
+- **Shared plans** — the named, versioned documents of the [plan toolset](../../tools/plan/index.md). Fully manageable: create, update, set status, export, delete.
+- **Session plans** — the single per-session plan of the "draft, review, execute" workflow. Read-only here (`list`, `get`, `export`); they belong to their session and are changed from within it. A mutation aimed at a session plan fails with an `unsupported` error explaining what to do instead.
+
+```bash
+$ docker agent plans <subcommand> [flags]
+```
+
+| Subcommand | Description |
+| ---------- | ----------- |
+| `list [--session <id>]` | List shared plans with scope, name, status, version, updated time, and title. With `--session`, that session's plan is listed first when it exists. Plans that exist but cannot be read are reported as warnings on stderr (in the `warnings` field with `--json`), so they are never mistaken for missing. |
+| `get <name>` | Print a plan. Content goes to stdout and a concise metadata line goes to stderr, so `> file` captures the content alone (use `export` for a byte-exact copy). `get --session <id>` prints a session's plan; the name is then omitted (`--scope shared\|session` disambiguates explicitly, and `--session` alone implies session scope). |
+| `create <name> --file <path>` | Create a new shared plan with content from `--file` (required — the CLI never prompts; `--file -` reads stdin). Create-only: an existing name fails with a version conflict instead of overwriting. `--title`, `--author`, and `--status` set metadata. |
+| `update <name> --file <path>` | Replace the content of an existing shared plan (never creates). Omitted `--title`/`--author`/`--status` flags preserve the current values; passing them (even empty) overwrites. |
+| `status <name> <status>` | Set a shared plan's free-form status without touching its body (bumps the version). |
+| `export <name> --output <path>` | Write a plan's content, byte-exact, to a file (parents created, atomic write). An existing destination is refused (`invalid_argument`) and left untouched; add `--force` to replace an existing regular file atomically. Works for both scopes: `export --session <id> --output <path>`. |
+| `delete <name>` | Delete a shared plan. A `--force` delete also recovers a corrupt plan. |
+
+Plan content passed via `--file` (a regular file, or stdin with `--file -`) is capped at 10 MiB — the same limit the plan storage itself enforces — and a directory or non-regular file (device, named pipe) is rejected up front; violations fail with an `invalid_argument` error.
+
+**Concurrency guard:** every mutation (`update`, `status`, `delete`) requires exactly one of two mutually exclusive flags — the CLI is headless and never prompts:
+
+- `--expected-version <n>` — the version you last read (from `get` or `list`; must be ≥ 1). When the plan changed in the meantime the command fails with a version conflict, reports the current version, leaves the plan untouched, and exits with code **3** (all other failures exit with 1).
+- `--force` — deliberately write without the optimistic-lock guard (last writer wins).
+
+`create` takes no guard: it is inherently create-only and conflicts (exit code 3) when the name already exists.
+
+**JSON output:** every subcommand accepts `--json`. Success documents go to stdout with a top-level `"schema_version": "1"` marker and stable service-model keys (`plans`, `plan`, `export`, `deleted`) whose fields are snake_case (`updated_at`, `session_id`, `bytes_written`; a zero/unknown `updated_at` is omitted); empty plan lists encode as `[]`, and no prose or ANSI is mixed in. Failures print a single JSON object to stderr:
+
+```json
+{"schema_version":"1","error":{"code":"conflict","message":"...","scope":"shared","name":"p","expected_version":1,"current_version":2}}
+```
+
+with `code` one of `conflict` (including `expected_version` and `current_version`), `not_found`, `invalid_argument`, `unsupported`, `corrupt`, `storage`, or `error`; `scope`, `name`, and `op` are included where the failure carries them. Validation performed before a subcommand runs is covered too: a missing required flag, a violated `--expected-version`/`--force` group rule, and wrong positional arguments are reported as the same JSON object (code `invalid_argument`) whenever `--json` is present. One residual: flags are parsed left-to-right and parsing stops at the first unknown flag or invalid flag value, so such an error is reported as JSON only when `--json` appears before it on the command line; errors raised before a `plans` subcommand is resolved at all (e.g. an unknown subcommand) also remain plain text.
+
+```bash
+# Examples
+$ docker agent plans list
+$ docker agent plans list --json | jq '.plans[].name'
+$ docker agent plans create release --file ./plan.md --title "Release plan" --status draft
+$ cat plan.md | docker agent plans create release --file -
+$ docker agent plans get release > plan.md            # content only; metadata on stderr
+$ docker agent plans update release --file ./plan.md --expected-version 1
+$ docker agent plans status release done --expected-version 2
+$ docker agent plans export release --output ./plan.md
+$ docker agent plans export release --output ./plan.md --force   # replace an existing file
+$ docker agent plans delete release --expected-version 3
+$ docker agent plans delete scratch --force
+$ docker agent plans get --session <session-id>       # a session's plan
+$ docker agent plans export --session <session-id> --output ./session-plan.md
+```
+
+Plans live under the data directory (`~/.cagent/plans/` and `~/.cagent/session_plans/` by default), so `--data-dir` selects which store the commands operate on.
 
 ### `docker agent debug`
 

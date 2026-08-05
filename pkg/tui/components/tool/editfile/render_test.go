@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/types"
 )
@@ -120,7 +121,7 @@ func TestEditFileViewFallsBackToToolHeaderWhenArgumentsCannotParse(t *testing.T)
 		},
 	}, tools.Tool{Name: "edit_file"}, types.ToolStatusPending)
 
-	view := New(msg, service.StaticSessionState{})
+	view := New(animation.NewRuntime(), msg, service.StaticSessionState{})
 	_ = view.SetSize(80, 0)
 
 	assert.Contains(t, ansi.Strip(view.View()), "edit_file")

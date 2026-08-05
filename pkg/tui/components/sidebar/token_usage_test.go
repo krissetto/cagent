@@ -9,6 +9,7 @@ import (
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/styles"
 )
@@ -73,7 +74,7 @@ func TestActiveSessionTokens_FallbackToSingleSession(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	m.sessionUsage["session-1"] = &runtime.Usage{
 		InputTokens:  5000,
@@ -90,7 +91,7 @@ func TestActiveSessionTokens_Empty(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	tokens, found := m.activeSessionTokens()
 	assert.False(t, found)
@@ -230,7 +231,7 @@ func TestTokenUsageSummary_NoUsageYet_ShowsZeroLine(t *testing.T) {
 
 	sess := session.New()
 	sessionState := service.NewSessionState(sess)
-	m := New(t.Context(), sessionState).(*model)
+	m := New(animation.NewRuntime(), t.Context(), sessionState).(*model)
 
 	summary := ansi.Strip(m.tokenUsageSummary())
 	assert.Contains(t, summary, styles.TokenGlyph+" 0")

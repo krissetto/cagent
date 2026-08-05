@@ -103,6 +103,7 @@ type Model interface {
 	RemoveSpinner()
 	ScrollToBottom() tea.Cmd
 	AdjustBottomSlack(delta int)
+	VisualGeneration() uint64
 
 	// IsScrollbarDragging returns true when the scrollbar thumb is being dragged.
 	IsScrollbarDragging() bool
@@ -148,6 +149,7 @@ func nextBlockID() string {
 
 // model implements Model
 type model struct {
+	ar       *animation.Runtime
 	messages []*types.Message
 	views    []layout.Model
 	width    int // Full width including scrollbar space
@@ -163,6 +165,7 @@ type model struct {
 	lineOffsets       []int                            // Prefix-sum: lineOffsets[i] = starting global line of view i
 	totalHeight       int                              // Total height of all content in lines
 	renderDirty       bool                             // True when rendered content needs rebuild
+	visualGeneration  uint64
 
 	selection selectionState
 
@@ -197,22 +200,27 @@ type model struct {
 }
 
 // New creates a new message list component
-func New(sessionState SessionState) Model {
-	return newModel(120, 24, sessionState)
+func New(ar *animation.Runtime, sessionState SessionState) Model {
+	return newModel(ar, 120, 24, sessionState)
 }
 
 // NewScrollableView creates a simple scrollable view for displaying messages in dialogs
 // This is a lightweight version that doesn't require app or session state management
-func NewScrollableView(width, height int, sessionState SessionState) Model {
-	return newModel(width, height, sessionState)
+func NewScrollableView(ar *animation.Runtime, width, height int, sessionState SessionState) Model {
+	return newModel(ar, width, height, sessionState)
 }
 
-func newModel(width, height int, sessionState SessionState) *model {
+func newModel(ar *animation.Runtime, width, height int, sessionState SessionState) *model {
 	sv := scrollview.New(
 		scrollview.WithReserveScrollbarSpace(true),
 	)
 	sv.SetSize(width, height)
+	if ar == nil {
+		panic("messages: nil animation runtime")
+	}
 	return &model{
+		ar:                   ar,
+		slackAnimationSub:    ar.Subscribe(),
 		width:                width,
 		height:               height,
 		renderedItems:        lrucache.New[int, renderedItem](renderedItemsCacheSize),
@@ -308,12 +316,8 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case animation.TickMsg:
-		// Invalidate render cache if there's animated content that needs redrawing.
-		// This ensures fades, spinners, etc. actually update visually on each tick.
-		if m.hasAnimatedContent() {
-			m.renderDirty = true
-		}
-		// Fall through to forward tick to all views
+		// Child owners mark the shared tick dirty only at visible frame
+		// boundaries. Invalidate after fanout below.
 
 	case tea.PasteMsg:
 		// Insert paste content into the inline edit textarea
@@ -344,8 +348,11 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	// fades out. Must run after children update so reasoning blocks have
 	// applied their fade state, and before tui.go's HasActive() check so the
 	// subscription is registered when the next tick is scheduled.
-	if _, ok := msg.(animation.TickMsg); ok {
-		cmds = append(cmds, m.handleAnimationTick())
+	if tick, ok := msg.(animation.TickMsg); ok {
+		cmds = append(cmds, m.handleAnimationTick(tick))
+		if tick.Dirty() {
+			m.renderDirty = true
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -744,10 +751,11 @@ func (m *model) maxBottomSlack() int {
 // one line, and keeps the slack subscription alive while slack > 0 so
 // further ticks fire even after fade animations finish. Returns the command
 // to schedule the next tick when the subscription transitions to active.
-func (m *model) handleAnimationTick() tea.Cmd {
+func (m *model) handleAnimationTick(tick animation.TickMsg) tea.Cmd {
 	m.updateScrollState()
 	if !m.userHasScrolled && m.bottomSlack > 0 {
 		m.bottomSlack--
+		tick.MarkDirty()
 	}
 	if m.bottomSlack > 0 {
 		return m.slackAnimationSub.Start()
@@ -892,6 +900,11 @@ func (m *model) Help() help.KeyMap {
 }
 
 // Scrolling methods
+// invalidateView must be called after any state change that can affect View output.
+func (m *model) invalidateView() { m.visualGeneration++ }
+
+func (m *model) VisualGeneration() uint64 { return m.visualGeneration }
+
 const (
 	defaultScrollAmount = 1
 	wheelScrollAmount   = 2
@@ -956,9 +969,13 @@ func (m *model) scrollByWheel(delta int) {
 }
 
 func (m *model) setScrollOffset(offset int) {
+	before := m.scrollOffset
 	maxOffset := max(0, m.totalScrollableHeight()-m.height)
 	m.scrollOffset = max(0, min(offset, maxOffset))
 	m.scrollview.SetScrollOffset(m.scrollOffset)
+	if before != m.scrollOffset {
+		m.invalidateView()
+	}
 }
 
 func (m *model) isAtBottom() bool {
@@ -1285,6 +1302,7 @@ func (m *model) invalidateItem(index int) {
 	// shouldCacheMessage could leave a stale entry behind.
 	m.renderedItems.Delete(index)
 	m.renderDirty = true
+	m.invalidateView()
 }
 
 func (m *model) invalidateAllItems() {
@@ -1294,6 +1312,7 @@ func (m *model) invalidateAllItems() {
 	m.totalHeight = 0
 	m.urlSpans.clear()
 	m.renderDirty = true
+	m.invalidateView()
 }
 
 // finalizePreviousMessageView releases per-message render state on the most
@@ -1408,6 +1427,7 @@ func (m *model) addMessage(msg *types.Message) tea.Cmd {
 	m.sessionState.SetPreviousMessage(msg)
 	m.views = append(m.views, view)
 	m.renderDirty = true
+	m.invalidateView()
 
 	var cmds []tea.Cmd
 	if initCmd := view.Init(); initCmd != nil {
@@ -1444,7 +1464,7 @@ func (m *model) LoadFromSession(sess *session.Session) tea.Cmd {
 		}
 
 		// Create new reasoning block
-		block := reasoningblock.New(nextBlockID(), agentName, m.sessionState)
+		block := reasoningblock.New(m.ar, nextBlockID(), agentName, m.sessionState)
 		block.SetShowAgentBadge(showReasoningAgentBadge(m.lastMessage(), agentName))
 		block.SetSize(m.contentWidth(), 0)
 
@@ -1800,7 +1820,7 @@ func (m *model) addReasoningBlock(agentName, content string) tea.Cmd {
 		Content: content,
 	}
 
-	block := reasoningblock.New(nextBlockID(), agentName, m.sessionState)
+	block := reasoningblock.New(m.ar, nextBlockID(), agentName, m.sessionState)
 	block.SetShowAgentBadge(showReasoningAgentBadge(m.lastMessage(), agentName))
 	block.SetReasoning(content)
 	block.SetSize(m.contentWidth(), 0)
@@ -1867,13 +1887,13 @@ func (m *model) totalScrollableHeight() int {
 
 // Helper methods
 func (m *model) createToolCallView(msg *types.Message) layout.Model {
-	view := tool.New(msg, m.sessionState)
+	view := tool.New(m.ar, msg, m.sessionState)
 	view.SetSize(m.contentWidth(), 0)
 	return view
 }
 
 func (m *model) createMessageView(msg *types.Message) layout.Model {
-	view := message.New(msg, m.sessionState.PreviousMessage())
+	view := message.New(m.ar, msg, m.sessionState.PreviousMessage())
 	view.SetSize(m.contentWidth(), 0)
 	return view
 }
@@ -1909,6 +1929,7 @@ func (m *model) removeSpinner() {
 		m.totalHeight = 0
 		m.urlSpans.clear()
 		m.renderDirty = true
+		m.invalidateView()
 	}
 }
 

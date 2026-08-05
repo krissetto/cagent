@@ -442,6 +442,56 @@ func TestApp_NewSession_PreservesToolsApproved(t *testing.T) {
 	assert.True(t, app.Session().ToolsApproved, "NewSession should preserve ToolsApproved")
 }
 
+// Explicit strict/balanced modes leave ToolsApproved=false, so preserving
+// only that legacy flag silently dropped the mode on /new.
+func TestApp_NewSession_PreservesSafetyPolicy(t *testing.T) {
+	t.Parallel()
+
+	for _, policy := range []session.SafetyPolicy{session.SafetyPolicyStrict, session.SafetyPolicyBalanced} {
+		t.Run(string(policy), func(t *testing.T) {
+			t.Parallel()
+
+			rt := &mockRuntime{}
+
+			initialSess := session.New(session.WithSafetyPolicy(policy))
+			require.Equal(t, policy, initialSess.GetSafetyPolicy())
+
+			app := New(t.Context(), rt, initialSess)
+
+			app.NewSession()
+
+			assert.Equal(t, policy, app.Session().GetSafetyPolicy(), "NewSession should preserve the safety policy")
+			assert.False(t, app.Session().ToolsApproved, "non-autonomous modes must not grant blanket approval")
+		})
+	}
+}
+
+// An autonomous escalation must keep its toggle-back destination across
+// /new, or toggling yolo off afterwards drops to the legacy default
+// instead of the mode the user escalated from.
+func TestApp_NewSession_PreservesPriorSafetyPolicy(t *testing.T) {
+	t.Parallel()
+
+	rt := &mockRuntime{}
+
+	initialSess := session.New(session.WithSafetyPolicy(session.SafetyPolicyBalanced))
+	initialSess.ToggleYolo() // escalate: autonomous with prior=balanced
+	require.Equal(t, session.SafetyPolicyAutonomous, initialSess.GetSafetyPolicy())
+	require.Equal(t, session.SafetyPolicyBalanced, initialSess.GetPriorSafetyPolicy())
+
+	app := New(t.Context(), rt, initialSess)
+
+	app.NewSession()
+
+	sess := app.Session()
+	assert.Equal(t, session.SafetyPolicyAutonomous, sess.GetSafetyPolicy(), "NewSession should preserve the escalated mode")
+	assert.Equal(t, session.SafetyPolicyBalanced, sess.GetPriorSafetyPolicy(), "NewSession should preserve the toggle-back memory")
+
+	// The preserved memory must actually work: toggling off restores balanced.
+	sess.ToggleYolo()
+	assert.Equal(t, session.SafetyPolicyBalanced, sess.GetSafetyPolicy())
+}
+
 func TestApp_NewSession_PreservesHideToolResults(t *testing.T) {
 	t.Parallel()
 
@@ -753,6 +803,9 @@ func TestApp_InjectUserMessage(t *testing.T) {
 
 func TestApp_DropAttachedFile(t *testing.T) {
 	t.Parallel()
+	abs := t.TempDir()
+	foo := filepath.Join(abs, "foo.go")
+	bar := filepath.Join(abs, "bar.go")
 
 	newAppWithAttachments := func(store session.Store, paths ...string) (*App, *session.Session) {
 		sess := session.New(session.WithAttachedFiles(paths))
@@ -762,31 +815,34 @@ func TestApp_DropAttachedFile(t *testing.T) {
 	t.Run("drops by exact path and syncs the store", func(t *testing.T) {
 		t.Parallel()
 		store := session.NewInMemorySessionStore()
-		app, sess := newAppWithAttachments(store, "/abs/foo.go", "/abs/bar.go")
+		app, sess := newAppWithAttachments(store, foo, bar)
 
-		dropped, err := app.DropAttachedFile(t.Context(), "/abs/foo.go")
+		dropped, err := app.DropAttachedFile(t.Context(), foo)
 		require.NoError(t, err)
-		assert.Equal(t, "/abs/foo.go", dropped)
-		assert.Equal(t, []string{"/abs/bar.go"}, sess.AttachedFilesSnapshot())
+		assert.Equal(t, foo, dropped)
+		assert.Equal(t, []string{bar}, sess.AttachedFilesSnapshot())
 
 		stored, err := store.GetSession(t.Context(), sess.ID)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"/abs/bar.go"}, stored.AttachedFilesSnapshot())
+		assert.Equal(t, []string{bar}, stored.AttachedFilesSnapshot())
 	})
 
 	t.Run("drops by unique base name", func(t *testing.T) {
 		t.Parallel()
-		app, sess := newAppWithAttachments(nil, "/abs/dir/foo.go", "/abs/dir/bar.go")
+		dir := filepath.Join(abs, "dir")
+		foo := filepath.Join(dir, "foo.go")
+		bar := filepath.Join(dir, "bar.go")
+		app, sess := newAppWithAttachments(nil, foo, bar)
 
 		dropped, err := app.DropAttachedFile(t.Context(), "foo.go")
 		require.NoError(t, err)
-		assert.Equal(t, "/abs/dir/foo.go", dropped)
-		assert.Equal(t, []string{"/abs/dir/bar.go"}, sess.AttachedFilesSnapshot())
+		assert.Equal(t, foo, dropped)
+		assert.Equal(t, []string{bar}, sess.AttachedFilesSnapshot())
 	})
 
 	t.Run("rejects ambiguous base names", func(t *testing.T) {
 		t.Parallel()
-		app, sess := newAppWithAttachments(nil, "/abs/a/foo.go", "/abs/b/foo.go")
+		app, sess := newAppWithAttachments(nil, filepath.Join(abs, "a", "foo.go"), filepath.Join(abs, "b", "foo.go"))
 
 		_, err := app.DropAttachedFile(t.Context(), "foo.go")
 		require.ErrorContains(t, err, "matches 2 attached files")
@@ -795,9 +851,9 @@ func TestApp_DropAttachedFile(t *testing.T) {
 
 	t.Run("rejects unknown files and blank input", func(t *testing.T) {
 		t.Parallel()
-		app, _ := newAppWithAttachments(nil, "/abs/foo.go")
+		app, _ := newAppWithAttachments(nil, foo)
 
-		_, err := app.DropAttachedFile(t.Context(), "/abs/other.go")
+		_, err := app.DropAttachedFile(t.Context(), filepath.Join(abs, "other.go"))
 		require.ErrorContains(t, err, "not attached")
 
 		_, err = app.DropAttachedFile(t.Context(), "   ")

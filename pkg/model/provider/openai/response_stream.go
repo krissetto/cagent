@@ -23,8 +23,20 @@ type ResponseStreamAdapter struct {
 	trackUsage     bool
 	itemCallIDMap  map[string]string
 	itemHasContent map[string]bool
-	itemHasArgs    map[string]bool
-	pendingArgs    map[string]string
+	// outputIndexHasContent mirrors itemHasContent keyed by output_index.
+	// The key identifies an output slot of the response, not a specific item:
+	// all events sharing an output_index belong to the same output whatever
+	// item IDs they carry, and distinct slots are deduplicated independently.
+	// Some providers (GitHub Copilot) use inconsistent item IDs across the
+	// events of a single output while output_index stays stable, so an
+	// ID-only lookup misses the streamed deltas and would re-emit the
+	// output_item.done snapshot, doubling the text. Only events that actually
+	// carry an output_index participate (checked via JSON metadata, since the
+	// scalar field cannot distinguish absent from a legitimate 0), so streams
+	// omitting it cannot collide on the zero value.
+	outputIndexHasContent map[int64]bool
+	itemHasArgs           map[string]bool
+	pendingArgs           map[string]string
 	// itemArgsFinal marks items whose complete final arguments were already
 	// received: emitted (function_call_arguments.done, output_item.done
 	// snapshot), buffered in pendingArgs, or streamed as deltas and confirmed
@@ -36,18 +48,35 @@ type ResponseStreamAdapter struct {
 
 func newResponseStreamAdapter(stream responseEventStream, trackUsage bool) *ResponseStreamAdapter {
 	return &ResponseStreamAdapter{
-		stream:         stream,
-		trackUsage:     trackUsage,
-		itemCallIDMap:  make(map[string]string),
-		itemHasContent: make(map[string]bool),
-		itemHasArgs:    make(map[string]bool),
-		pendingArgs:    make(map[string]string),
-		itemArgsFinal:  make(map[string]bool),
+		stream:                stream,
+		trackUsage:            trackUsage,
+		itemCallIDMap:         make(map[string]string),
+		itemHasContent:        make(map[string]bool),
+		outputIndexHasContent: make(map[int64]bool),
+		itemHasArgs:           make(map[string]bool),
+		pendingArgs:           make(map[string]string),
+		itemArgsFinal:         make(map[string]bool),
 	}
 }
 
 func isTextContentPart(partType string) bool {
 	return partType == "text" || partType == "output_text"
+}
+
+// markContentEmitted records that text was emitted for this output, keyed by
+// item ID and, when the event carries one, by output_index.
+func (a *ResponseStreamAdapter) markContentEmitted(event responses.ResponseStreamEventUnion, itemID string) {
+	a.itemHasContent[itemID] = true
+	if event.JSON.OutputIndex.Valid() {
+		a.outputIndexHasContent[event.OutputIndex] = true
+	}
+}
+
+// hasEmittedContent reports whether text for this output was already emitted,
+// matching by item ID or by output_index when the event carries one.
+func (a *ResponseStreamAdapter) hasEmittedContent(event responses.ResponseStreamEventUnion, itemID string) bool {
+	return a.itemHasContent[itemID] ||
+		(event.JSON.OutputIndex.Valid() && a.outputIndexHasContent[event.OutputIndex])
 }
 
 // Recv gets the next completion chunk
@@ -67,7 +96,7 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 	case "response.output_text.delta":
 		content := cmp.Or(event.Delta, event.Text)
 		if content != "" {
-			a.itemHasContent[event.ItemID] = true
+			a.markContentEmitted(event, event.ItemID)
 			response.Choices = []chat.MessageStreamChoice{
 				{
 					Delta: chat.MessageDelta{
@@ -94,7 +123,7 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 	case "response.content_part.delta":
 		content := cmp.Or(event.Delta, event.Text, event.Code, event.Part.Text)
 		if content != "" {
-			a.itemHasContent[event.ItemID] = true
+			a.markContentEmitted(event, event.ItemID)
 			response.Choices = []chat.MessageStreamChoice{
 				{
 					Delta: chat.MessageDelta{
@@ -276,8 +305,10 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 		// Don't set finish reason here - wait for response.completed.
 		// Just handle any missed content. Some Responses API transports omit
 		// the top-level item_id on output_item.done while still providing
-		// item.id, so use the resolved itemID for deduplication.
-		if event.Item.Type == "message" && !a.itemHasContent[itemID] {
+		// item.id, so use the resolved itemID for deduplication. Others
+		// (GitHub Copilot) use different item IDs for the deltas and the done
+		// event of the same output, so also match on output_index.
+		if event.Item.Type == "message" && !a.hasEmittedContent(event, itemID) {
 			for _, content := range event.Item.Content {
 				if isTextContentPart(content.Type) && content.Text != "" {
 					response.Choices = append(response.Choices, chat.MessageStreamChoice{
@@ -286,7 +317,7 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 							Role:    "assistant",
 						},
 					})
-					a.itemHasContent[itemID] = true
+					a.markContentEmitted(event, itemID)
 				}
 			}
 		}

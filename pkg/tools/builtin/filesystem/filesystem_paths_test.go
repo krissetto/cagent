@@ -1,8 +1,10 @@
 package filesystem
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,15 +20,26 @@ func resetHomeDir(t *testing.T, dir string) {
 	t.Setenv("USERPROFILE", dir)
 }
 
+// newTestToolSet builds a ToolSet and releases it when the test ends. Allow-
+// and deny-lists hold *os.Root directory handles; leaving them open would
+// make t.TempDir cleanup fail on Windows.
+func newTestToolSet(t *testing.T, workingDir string, opts ...Opt) *ToolSet {
+	t.Helper()
+	tool := New(workingDir, opts...)
+	t.Cleanup(func() { _ = tool.Close() })
+	return tool
+}
+
 func TestFilesystemTool_DefaultIsUnrestricted(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
 	tool := New(tmpDir)
 
 	// No allow_list, no deny_list: everything resolvable goes through.
-	resolved, err := tool.resolveAndCheckPath("/etc/hosts")
+	resolved, err := tool.resolveAndCheckPath(outside)
 	require.NoError(t, err)
-	assert.Equal(t, "/etc/hosts", resolved)
+	assert.Equal(t, outside, resolved)
 
 	resolved, err = tool.resolveAndCheckPath("../../some/escape")
 	require.NoError(t, err)
@@ -35,10 +48,63 @@ func TestFilesystemTool_DefaultIsUnrestricted(t *testing.T) {
 	assert.Equal(t, want, resolved)
 }
 
+func TestCheckForeignPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		path   string
+		goos   string
+		reject bool
+	}{
+		{"/mnt/c/Users/x/compose.yml", "windows", true},
+		{`\foo\bar`, "windows", true},
+		{"C:foo", "windows", true},
+		{"C:", "windows", true},
+		{`C:\Users\x`, "windows", false},
+		{"C:/Users/x", "windows", false},
+		{"//server/share", "windows", false},
+		{`\\server\share`, "windows", false},
+		{"./mnt/c/x", "windows", false},
+		{"rel/path", "windows", false},
+		{"~/file.txt", "windows", false},
+		{`C:\Users\x`, "linux", true},
+		{"C:/Users/x", "darwin", true},
+		{"/mnt/c/Users/x", "linux", false},
+		{`./C:\weird`, "linux", false},
+		{"C:foo", "linux", false},
+		{"rel/path", "linux", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.goos+" "+tt.path, func(t *testing.T) {
+			err := checkForeignPath(tt.path, tt.goos)
+			if tt.reject {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// A foreign-OS absolute path must be rejected with guidance instead of
+// silently joining onto the working directory (issue seen on Windows with
+// "/mnt/c/..." resolving to "<wd>\mnt\c\...").
+func TestResolveAndCheckPath_RejectsForeignPath(t *testing.T) {
+	t.Parallel()
+	tool := New(t.TempDir())
+
+	foreign := `C:\Users\x\compose.yml`
+	if runtime.GOOS == "windows" {
+		foreign = "/mnt/c/Users/x/compose.yml"
+	}
+	_, err := tool.resolveAndCheckPath(foreign)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "relative to the working directory")
+}
+
 func TestFilesystemTool_AllowList_DotMeansWorkingDir(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	tool := New(tmpDir, WithAllowList([]string{"."}))
+	tool := newTestToolSet(t, tmpDir, WithAllowList([]string{"."}))
 
 	// Inside working dir is fine.
 	_, err := tool.resolveAndCheckPath("file.txt")
@@ -48,7 +114,8 @@ func TestFilesystemTool_AllowList_DotMeansWorkingDir(t *testing.T) {
 	require.NoError(t, err)
 
 	// Outside working dir is rejected.
-	_, err = tool.resolveAndCheckPath("/etc/hosts")
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	_, err = tool.resolveAndCheckPath(outside)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outside the allowed directories")
 
@@ -62,7 +129,7 @@ func TestFilesystemTool_AllowList_TildeMeansHome(t *testing.T) {
 	resetHomeDir(t, homeDir)
 	wd := t.TempDir()
 
-	tool := New(wd, WithAllowList([]string{"~"}))
+	tool := newTestToolSet(t, wd, WithAllowList([]string{"~"}))
 
 	// A path under $HOME is allowed via ~/...
 	resolved, err := tool.resolveAndCheckPath(filepath.Join(homeDir, "doc.md"))
@@ -81,7 +148,7 @@ func TestFilesystemTool_AllowList_TildeSubdirectory(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, "projects"), 0o755))
 	wd := t.TempDir()
 
-	tool := New(wd, WithAllowList([]string{"~/projects"}))
+	tool := newTestToolSet(t, wd, WithAllowList([]string{"~/projects"}))
 
 	// Inside the listed subdir.
 	_, err := tool.resolveAndCheckPath(filepath.Join(homeDir, "projects", "app", "main.go"))
@@ -101,7 +168,7 @@ func TestFilesystemTool_AllowList_MultipleRoots(t *testing.T) {
 	wd := t.TempDir()
 	otherDir := t.TempDir()
 
-	tool := New(wd, WithAllowList([]string{".", otherDir}))
+	tool := newTestToolSet(t, wd, WithAllowList([]string{".", otherDir}))
 
 	_, err := tool.resolveAndCheckPath("file.txt")
 	require.NoError(t, err)
@@ -109,7 +176,8 @@ func TestFilesystemTool_AllowList_MultipleRoots(t *testing.T) {
 	_, err = tool.resolveAndCheckPath(filepath.Join(otherDir, "file.txt"))
 	require.NoError(t, err)
 
-	_, err = tool.resolveAndCheckPath("/etc/hosts")
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	_, err = tool.resolveAndCheckPath(outside)
 	require.Error(t, err)
 }
 
@@ -118,15 +186,16 @@ func TestFilesystemTool_AllowList_AbsolutePath(t *testing.T) {
 	wd := t.TempDir()
 	allowed := t.TempDir()
 
-	tool := New(wd, WithAllowList([]string{allowed}))
+	tool := newTestToolSet(t, wd, WithAllowList([]string{allowed}))
 
 	// Absolute path inside the allowed root is fine.
 	_, err := tool.resolveAndCheckPath(filepath.Join(allowed, "x", "y.txt"))
 	require.NoError(t, err)
 
 	// Absolute path outside is rejected.
-	_, err = tool.resolveAndCheckPath("/etc/hosts")
+	_, err = tool.resolveAndCheckPath(filepath.Join(t.TempDir(), "outside.txt"))
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside the allowed directories")
 }
 
 func TestFilesystemTool_DenyList_RejectsMatchingPaths(t *testing.T) {
@@ -135,7 +204,7 @@ func TestFilesystemTool_DenyList_RejectsMatchingPaths(t *testing.T) {
 	denied := filepath.Join(wd, "secret")
 	require.NoError(t, os.Mkdir(denied, 0o755))
 
-	tool := New(wd, WithDenyList([]string{"secret"}))
+	tool := newTestToolSet(t, wd, WithDenyList([]string{"secret"}))
 
 	// Anything under the denied subtree is rejected.
 	_, err := tool.resolveAndCheckPath("secret/key.pem")
@@ -148,7 +217,7 @@ func TestFilesystemTool_DenyList_RejectsMatchingPaths(t *testing.T) {
 
 	// And — because no allow-list is set — paths outside the working dir
 	// are still allowed (deny-only configurations preserve broad access).
-	_, err = tool.resolveAndCheckPath("/etc/hosts")
+	_, err = tool.resolveAndCheckPath(filepath.Join(t.TempDir(), "outside.txt"))
 	require.NoError(t, err)
 }
 
@@ -158,7 +227,7 @@ func TestFilesystemTool_DenyList_TakesPrecedenceOverAllowList(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(wd, "src"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(wd, "src", "vendor"), 0o755))
 
-	tool := New(wd,
+	tool := newTestToolSet(t, wd,
 		WithAllowList([]string{"."}),
 		WithDenyList([]string{"src/vendor"}))
 
@@ -182,7 +251,7 @@ func TestFilesystemTool_AllowList_SymlinkEscapeRejected(t *testing.T) {
 	link := filepath.Join(wd, "escape")
 	require.NoError(t, os.Symlink(target, link))
 
-	tool := New(wd, WithAllowList([]string{"."}))
+	tool := newTestToolSet(t, wd, WithAllowList([]string{"."}))
 
 	// Following the symlink escapes the allow-list and must be rejected.
 	_, err := tool.resolveAndCheckPath("escape/secret.txt")
@@ -201,7 +270,7 @@ func TestFilesystemTool_DenyList_SymlinkIntoDeniedAreaRejected(t *testing.T) {
 	link := filepath.Join(wd, "shortcut")
 	require.NoError(t, os.Symlink(denied, link))
 
-	tool := New(wd, WithDenyList([]string{"secret"}))
+	tool := newTestToolSet(t, wd, WithDenyList([]string{"secret"}))
 
 	// Reading via the symlink must still trigger the deny-list.
 	_, err := tool.resolveAndCheckPath("shortcut/key.pem")
@@ -212,7 +281,7 @@ func TestFilesystemTool_DenyList_SymlinkIntoDeniedAreaRejected(t *testing.T) {
 func TestFilesystemTool_AllowList_NewFilePath(t *testing.T) {
 	t.Parallel()
 	wd := t.TempDir()
-	tool := New(wd, WithAllowList([]string{"."}))
+	tool := newTestToolSet(t, wd, WithAllowList([]string{"."}))
 
 	// A path that doesn't exist yet (e.g. about to be created by write_file)
 	// must still be accepted when its lexical location is inside the allow-list.
@@ -229,10 +298,12 @@ func TestFilesystemTool_AllowList_EmptyDisablesCheck(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+
 	// nil and empty slice both leave the allow-list disabled.
 	for _, roots := range [][]string{nil, {}} {
-		tool := New(tmpDir, WithAllowList(roots))
-		_, err := tool.resolveAndCheckPath("/etc/hosts")
+		tool := newTestToolSet(t, tmpDir, WithAllowList(roots))
+		_, err := tool.resolveAndCheckPath(outside)
 		require.NoError(t, err, "empty/nil allow-list must not constrain")
 	}
 }
@@ -246,7 +317,7 @@ func TestFilesystemTool_HandlersUseAllowList(t *testing.T) {
 	outsideFile := filepath.Join(other, "outside.txt")
 	require.NoError(t, os.WriteFile(outsideFile, []byte("nope"), 0o644))
 
-	tool := New(wd, WithAllowList([]string{"."}))
+	tool := newTestToolSet(t, wd, WithAllowList([]string{"."}))
 
 	// read_file: must refuse the outside path.
 	res, err := tool.handleReadFile(t.Context(), ReadFileArgs{Path: outsideFile})
@@ -315,7 +386,7 @@ func TestFilesystemTool_HandlersUseDenyList(t *testing.T) {
 	require.NoError(t, os.Mkdir(filepath.Join(wd, "secrets"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(wd, "secrets", "key.pem"), []byte("k"), 0o644))
 
-	tool := New(wd, WithDenyList([]string{"secrets"}))
+	tool := newTestToolSet(t, wd, WithDenyList([]string{"secrets"}))
 
 	// edit_file: must refuse to read the file in a denied directory.
 	res, err := tool.handleEditFile(t.Context(), EditFileArgs{
@@ -335,19 +406,24 @@ func TestFilesystemTool_Instructions_MentionsRestrictions(t *testing.T) {
 	t.Parallel()
 	wd := t.TempDir()
 
-	// Default instructions: no restriction text.
+	// Default instructions: working directory stated (%q-quoted), no
+	// restriction text.
 	plain := New(wd).Instructions()
+	assert.Contains(t, plain, fmt.Sprintf("%q", wd))
 	assert.NotContains(t, plain, "restricted")
 	assert.NotContains(t, plain, "must not access")
 
+	// No working directory configured: no dangling `The working directory is ""`.
+	assert.NotContains(t, New("").Instructions(), "working directory is")
+
 	// With an allow-list: instructions mention the restriction.
-	allowed := New(wd, WithAllowList([]string{".", "~"})).Instructions()
+	allowed := newTestToolSet(t, wd, WithAllowList([]string{".", "~"})).Instructions()
 	assert.Contains(t, allowed, "restricted")
 	assert.Contains(t, allowed, ".")
 	assert.Contains(t, allowed, "~")
 
 	// With a deny-list: instructions mention the deny entries.
-	denied := New(wd, WithDenyList([]string{"~/.ssh"})).Instructions()
+	denied := newTestToolSet(t, wd, WithDenyList([]string{"~/.ssh"})).Instructions()
 	assert.Contains(t, denied, "must not access")
 	assert.Contains(t, denied, "~/.ssh")
 }
@@ -356,7 +432,10 @@ func TestExpandPathToken(t *testing.T) {
 	homeDir := t.TempDir()
 	resetHomeDir(t, homeDir)
 	wd := t.TempDir()
-	t.Setenv("MY_VAR", "/var/data")
+	absoluteDir := filepath.Join(t.TempDir(), "srv", "data")
+	envDir := filepath.Join(t.TempDir(), "var", "data")
+	t.Setenv("MY_VAR", envDir)
+	t.Setenv("MY_SUBDIR", filepath.Join("var", "data"))
 	t.Setenv("EMPTY_VAR", "")
 	os.Unsetenv("DEFINITELY_NOT_SET")
 
@@ -369,13 +448,13 @@ func TestExpandPathToken(t *testing.T) {
 		{name: "dot", token: ".", want: wd},
 		{name: "tilde", token: "~", want: homeDir},
 		{name: "tilde-subdir", token: "~/projects", want: filepath.Join(homeDir, "projects")},
-		{name: "absolute", token: "/srv/data", want: "/srv/data"},
+		{name: "absolute", token: absoluteDir, want: absoluteDir},
 		{name: "relative", token: "src", want: filepath.Join(wd, "src")},
-		{name: "env-var", token: "$MY_VAR", want: "/var/data"},
-		{name: "env-var-braces", token: "${MY_VAR}", want: "/var/data"},
-		{name: "env-var-js-alias", token: "${env.MY_VAR}", want: "/var/data"},
-		{name: "env-var-js-alias-inside-tilde", token: "~/${env.MY_VAR}", want: filepath.Join(homeDir, "var", "data")},
-		{name: "env-var-inside-tilde", token: "~/${MY_VAR}", want: filepath.Join(homeDir, "var", "data")},
+		{name: "env-var", token: "$MY_VAR", want: envDir},
+		{name: "env-var-braces", token: "${MY_VAR}", want: envDir},
+		{name: "env-var-js-alias", token: "${env.MY_VAR}", want: envDir},
+		{name: "env-var-js-alias-inside-tilde", token: "~/${env.MY_SUBDIR}", want: filepath.Join(homeDir, "var", "data")},
+		{name: "env-var-inside-tilde", token: "~/${MY_SUBDIR}", want: filepath.Join(homeDir, "var", "data")},
 		{name: "empty", token: "", wantErr: "empty"},
 		{name: "whitespace", token: "   ", wantErr: "empty"},
 		// Regression: an undefined env var must NOT silently expand to the
@@ -406,11 +485,11 @@ func TestWithAllowList_RejectsUndefinedEnvVar(t *testing.T) {
 	// fail-closed: reject all operations when list construction fails.
 	os.Unsetenv("DEFINITELY_NOT_SET")
 	wd := t.TempDir()
-	tool := New(wd, WithAllowList([]string{"$DEFINITELY_NOT_SET"}))
+	tool := newTestToolSet(t, wd, WithAllowList([]string{"$DEFINITELY_NOT_SET"}))
 
 	// The allow-list construction failed, so the toolset is disabled
 	// (fail-closed). All operations must be rejected.
-	_, err := tool.resolveAndCheckPath("/etc/hosts")
+	_, err := tool.resolveAndCheckPath(filepath.Join(t.TempDir(), "outside.txt"))
 	require.Error(t, err, "undefined env var must cause toolset to fail-closed")
 	assert.Contains(t, err.Error(), "disabled due to invalid")
 
@@ -425,15 +504,16 @@ func TestWithAllowList_AcceptsDefinedEnvVar(t *testing.T) {
 	allowed := t.TempDir()
 	t.Setenv("ALLOWED_DIR", allowed)
 
-	tool := New(wd, WithAllowList([]string{"$ALLOWED_DIR"}))
+	tool := newTestToolSet(t, wd, WithAllowList([]string{"$ALLOWED_DIR"}))
 
 	// Inside the env-var-resolved root.
 	_, err := tool.resolveAndCheckPath(filepath.Join(allowed, "file.txt"))
 	require.NoError(t, err)
 
 	// Outside is rejected — confirms the allow-list is actually active.
-	_, err = tool.resolveAndCheckPath("/etc/hosts")
+	_, err = tool.resolveAndCheckPath(filepath.Join(t.TempDir(), "outside.txt"))
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside the allowed directories")
 }
 
 func TestDenyList_NonExistentPath(t *testing.T) {
@@ -444,7 +524,7 @@ func TestDenyList_NonExistentPath(t *testing.T) {
 	resetHomeDir(t, homeDir)
 	wd := t.TempDir()
 
-	tool := New(wd, WithDenyList([]string{"~/.ssh"}))
+	tool := newTestToolSet(t, wd, WithDenyList([]string{"~/.ssh"}))
 
 	// ~/.ssh does not exist yet — a write to a path inside it must be
 	// rejected before the directory is even created.

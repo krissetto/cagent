@@ -291,6 +291,48 @@ func TestSaveRunSessionsJSON(t *testing.T) {
 	assert.Equal(t, "no explanation given", sess2Loaded.EvalResult.Checks.Relevance.Results[1].Reason)
 }
 
+func TestSaveRunSessionsJSONContainerRuntime(t *testing.T) {
+	t.Parallel()
+
+	save := func(t *testing.T, cfg Config) []byte {
+		t.Helper()
+		run := &EvalRun{
+			Name:      "test-runtime-001",
+			Timestamp: time.Now(),
+			Config:    cfg,
+		}
+
+		sessionsPath, err := SaveRunSessionsJSON(run, t.TempDir())
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(sessionsPath)
+		require.NoError(t, err)
+		return data
+	}
+
+	t.Run("recorded when configured", func(t *testing.T) {
+		t.Parallel()
+
+		data := save(t, Config{ContainerRuntime: "podman"})
+
+		var output RunOutput
+		require.NoError(t, json.Unmarshal(data, &output))
+		assert.Equal(t, "podman", output.Config.ContainerRuntime)
+	})
+
+	t.Run("omitted when empty", func(t *testing.T) {
+		t.Parallel()
+
+		data := save(t, Config{})
+
+		var raw struct {
+			Config map[string]any `json:"config"`
+		}
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.NotContains(t, raw.Config, "container_runtime")
+	})
+}
+
 func TestSaveRunSessionsWithCost(t *testing.T) {
 	t.Parallel()
 
@@ -758,4 +800,458 @@ func TestInputIDPassthrough(t *testing.T) {
 	assert.Equal(t, knownInputID, sess.InputID)
 	assert.NotEmpty(t, sess.ID)
 	assert.NotEqual(t, knownInputID, sess.ID)
+}
+
+// budgetStopText is the assistant stop message the runtime emits when a
+// budget ceiling stops a run, reused across the termination tests.
+const budgetStopText = "Execution stopped after reaching the configured budget.max_cost limit (used $0.03 of $0.03)."
+
+// budgetExceededTestEvent returns a fresh copy of the runtime's native
+// budget_exceeded event as decoded from `run --exec --json` output,
+// embedding the assistant stop message under stop_message.
+func budgetExceededTestEvent() map[string]any {
+	event := budgetExceededTestEventWithoutStop()
+	event["stop_message"] = stopMessagePayload("root", budgetStopText)
+	return event
+}
+
+// budgetExceededTestEventWithoutStop returns a budget_exceeded event that
+// carries no embedded stop message: the marker must then stand alone.
+func budgetExceededTestEventWithoutStop() map[string]any {
+	return map[string]any{
+		"type":        "budget_exceeded",
+		"session_id":  "sess-1",
+		"agent_name":  "root",
+		"timestamp":   "2024-01-15T10:30:00Z",
+		"budget":      "run",
+		"limit":       "max_cost",
+		"used":        "$0.03",
+		"max":         "$0.03",
+		"config_path": "budget.max_cost",
+		"message":     budgetStopText,
+	}
+}
+
+// stopMessagePayload mirrors the decoded wire shape of
+// BudgetExceededEvent.StopMessage: the runtime's dedicated DTO carrying
+// only the agent name and the assistant message's safe fields.
+func stopMessagePayload(agentName, content string) map[string]any {
+	return map[string]any{
+		"agent_name": agentName,
+		"message": map[string]any{
+			"role":       "assistant",
+			"content":    content,
+			"created_at": "2024-01-15T10:30:01Z",
+		},
+	}
+}
+
+// messageAddedTestEvent returns a message_added event carrying a full
+// message payload, as a hostile or foreign producer could serialize it.
+// The pipeline must ignore every message_added event.
+func messageAddedTestEvent(sessionID, agentName, content string) map[string]any {
+	return map[string]any{
+		"type":       "message_added",
+		"session_id": sessionID,
+		"agent_name": agentName,
+		"timestamp":  "2024-01-15T10:30:01Z",
+		"message":    stopMessagePayload(agentName, content),
+	}
+}
+
+func TestSessionFromEventsBudgetTermination(t *testing.T) {
+	t.Parallel()
+
+	sess := SessionFromEvents([]map[string]any{
+		{"type": "agent_choice", "content": "Working on it.", "agent_name": "root"},
+		budgetExceededTestEvent(),
+		// The runtime still emits message_added after budget_exceeded; it
+		// must be ignored even when a payload is present.
+		messageAddedTestEvent("sess-1", "root", budgetStopText),
+		{"type": "stream_stopped"},
+	}, "budget-case", []string{"do work"})
+
+	// user question, buffered assistant content, termination marker,
+	// assistant stop: in that chronological order.
+	require.Len(t, sess.Messages, 4)
+	assert.Equal(t, chat.MessageRoleUser, sess.Messages[0].Message.Message.Role)
+	assert.Equal(t, "Working on it.", sess.Messages[1].Message.Message.Content)
+
+	require.True(t, sess.Messages[2].IsTermination())
+	term := sess.Messages[2].Termination
+	assert.Equal(t, session.TerminationReasonBudgetExceeded, term.Reason)
+	assert.Equal(t, "run", term.Budget)
+	assert.Equal(t, "max_cost", term.Limit)
+	assert.Equal(t, "budget.max_cost", term.ConfigPath)
+
+	stop := sess.Messages[3].Message
+	require.NotNil(t, stop)
+	assert.Equal(t, chat.MessageRoleAssistant, stop.Message.Role)
+	assert.Equal(t, budgetStopText, stop.Message.Content)
+	assert.Equal(t, "root", stop.AgentName)
+	assert.Equal(t, "2024-01-15T10:30:01Z", stop.Message.CreatedAt)
+	// Only the safe representation is imported.
+	assert.Empty(t, stop.Message.ToolCalls)
+	assert.Empty(t, stop.Message.ReasoningContent)
+	assert.Empty(t, stop.Message.Model)
+	assert.Nil(t, stop.Message.Usage)
+
+	// The helper surfaces the marker for populateEvalResult.
+	require.NotNil(t, sess.Termination())
+	assert.Equal(t, *term, *sess.Termination())
+}
+
+func TestSessionFromEventsBudgetTerminationRepeatedEvents(t *testing.T) {
+	t.Parallel()
+
+	sess := SessionFromEvents([]map[string]any{
+		budgetExceededTestEvent(),
+		messageAddedTestEvent("sess-1", "root", budgetStopText),
+		budgetExceededTestEvent(),
+		messageAddedTestEvent("sess-1", "root", budgetStopText),
+		{"type": "stream_stopped"},
+	}, "budget-case", []string{"do work"})
+
+	var markers, stops int
+	for _, item := range sess.Messages {
+		if item.IsTermination() {
+			markers++
+		}
+		if item.Message != nil && item.Message.Message.Content == budgetStopText {
+			stops++
+		}
+	}
+	assert.Equal(t, 1, markers, "repeated budget_exceeded events must not duplicate the marker")
+	assert.Equal(t, 1, stops, "repeated budget_exceeded events must not duplicate the stop message")
+}
+
+func TestSessionFromEventsForeignMessageAddedIgnored(t *testing.T) {
+	t.Parallel()
+
+	sess := SessionFromEvents([]map[string]any{
+		messageAddedTestEvent("sess-1", "root", "before any marker"),
+		{"type": "agent_choice", "content": "All done.", "agent_name": "root"},
+		messageAddedTestEvent("other-session", "intruder", "after the turn"),
+		{"type": "stream_stopped"},
+	}, "normal-case", []string{"do work"})
+
+	// user question + assistant turn only; no termination, no imported
+	// message_added content.
+	require.Len(t, sess.Messages, 2)
+	assert.Nil(t, sess.Termination())
+	for _, item := range sess.Messages {
+		assert.False(t, item.IsTermination())
+		if item.Message != nil {
+			assert.NotContains(t, item.Message.Message.Content, "before any marker")
+			assert.NotContains(t, item.Message.Message.Content, "after the turn")
+		}
+	}
+}
+
+func TestSessionFromEventsBudgetTerminationMalformedFields(t *testing.T) {
+	t.Parallel()
+
+	event := budgetExceededTestEvent()
+	event["budget"] = 42          // wrong type
+	event["used"] = nil           // wrong type
+	delete(event, "config_path")  // missing
+	event["message"] = " \x01\t " // empty after sanitization
+
+	sess := SessionFromEvents([]map[string]any{
+		event,
+		{"type": "stream_stopped"},
+	}, "budget-case", []string{"do work"})
+
+	term := sess.Termination()
+	require.NotNil(t, term, "malformed optional fields must not drop the marker")
+	assert.Equal(t, session.TerminationReasonBudgetExceeded, term.Reason)
+	assert.Empty(t, term.Budget)
+	assert.Empty(t, term.Used)
+	assert.Empty(t, term.ConfigPath)
+	assert.Empty(t, term.Message)
+	assert.Equal(t, "max_cost", term.Limit)
+}
+
+func TestSessionFromEventsBudgetTerminationWithoutStopMessage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event map[string]any
+	}{
+		{"stop_message absent", budgetExceededTestEventWithoutStop()},
+		{"stop_message wrong type", func() map[string]any {
+			event := budgetExceededTestEventWithoutStop()
+			event["stop_message"] = "not a map"
+			return event
+		}()},
+		{"stop_message wrong role", func() map[string]any {
+			event := budgetExceededTestEventWithoutStop()
+			payload := stopMessagePayload("root", budgetStopText)
+			payload["message"].(map[string]any)["role"] = "user"
+			event["stop_message"] = payload
+			return event
+		}()},
+		{"stop_message empty content", func() map[string]any {
+			event := budgetExceededTestEventWithoutStop()
+			event["stop_message"] = stopMessagePayload("root", " \x00 ")
+			return event
+		}()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			sess := SessionFromEvents([]map[string]any{
+				{"type": "agent_choice", "content": "Working on it.", "agent_name": "root"},
+				tt.event,
+				{"type": "stream_stopped"},
+			}, "budget-case", []string{"do work"})
+
+			require.NotNil(t, sess.Termination(), "the marker stands alone")
+			// No assistant message may be invented from termination.message.
+			assert.Equal(t, "Working on it.", sess.GetLastAssistantMessageContent())
+		})
+	}
+}
+
+// TestSessionFromEventsForeignEventsCannotDisturbBudgetStop pins the
+// atomicity of the association: the stop message travels inside the
+// budget_exceeded event itself, so a message_added from another session
+// and a foreign stream_stopped can neither be captured as the stop nor
+// suppress the real one.
+func TestSessionFromEventsForeignEventsCannotDisturbBudgetStop(t *testing.T) {
+	t.Parallel()
+
+	sess := SessionFromEvents([]map[string]any{
+		{"type": "agent_choice", "content": "Working on it.", "agent_name": "root"},
+		messageAddedTestEvent("other-session", "intruder", "fake stop"),
+		{"type": "stream_stopped", "session_id": "other-session"},
+		budgetExceededTestEvent(),
+		messageAddedTestEvent("other-session", "intruder", "another fake stop"),
+		{"type": "stream_stopped"},
+	}, "budget-case", []string{"do work"})
+
+	require.NotNil(t, sess.Termination())
+
+	markerIdx, stopIdx := -1, -1
+	for i, item := range sess.Messages {
+		if item.IsTermination() {
+			markerIdx = i
+		}
+		if item.Message != nil {
+			assert.NotEqual(t, "intruder", item.Message.AgentName)
+			assert.NotContains(t, item.Message.Message.Content, "fake stop")
+			if item.Message.Message.Content == budgetStopText {
+				stopIdx = i
+			}
+		}
+	}
+	require.GreaterOrEqual(t, markerIdx, 0, "the real marker must be recorded")
+	assert.Equal(t, markerIdx+1, stopIdx, "the real stop must directly follow its marker")
+}
+
+func TestSaveRunSessionsBudgetTerminationRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	outputDir := t.TempDir()
+
+	budgetSess := SessionFromEvents([]map[string]any{
+		{"type": "agent_choice", "content": "Working on it.", "agent_name": "root"},
+		budgetExceededTestEvent(),
+		messageAddedTestEvent("sess-1", "root", budgetStopText),
+		{"type": "stream_stopped"},
+	}, "budget-case", []string{"do work"})
+
+	normalSess := SessionFromEvents([]map[string]any{
+		{"type": "agent_choice", "content": "All done.", "agent_name": "root"},
+		{"type": "stream_stopped"},
+	}, "normal-case", []string{"do work"})
+
+	run := &EvalRun{
+		Name:      "test-termination-001",
+		Timestamp: time.Now(),
+		Results: []Result{
+			{Title: "budget-case", Session: budgetSess},
+			{Title: "normal-case", Session: normalSess},
+		},
+	}
+
+	dbPath, err := SaveRunSessions(ctx, run, outputDir)
+	require.NoError(t, err)
+
+	store, err := sqlitestore.New(ctx, dbPath)
+	require.NoError(t, err)
+	defer func() {
+		if closer, ok := store.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}()
+
+	sessions, err := store.GetSessions(ctx)
+	require.NoError(t, err)
+	require.Len(t, sessions, 2)
+
+	byTitle := make(map[string]*session.Session)
+	for _, sess := range sessions {
+		byTitle[sess.Title] = sess
+	}
+
+	loaded := byTitle["budget-case"]
+	require.NotNil(t, loaded)
+	require.Len(t, loaded.Messages, 4)
+	require.True(t, loaded.Messages[2].IsTermination())
+	assert.Equal(t, session.Termination{
+		Reason:     session.TerminationReasonBudgetExceeded,
+		Budget:     "run",
+		Limit:      "max_cost",
+		Used:       "$0.03",
+		Max:        "$0.03",
+		ConfigPath: "budget.max_cost",
+		Message:    budgetStopText,
+	}, *loaded.Messages[2].Termination)
+
+	stop := loaded.Messages[3].Message
+	require.NotNil(t, stop)
+	assert.Equal(t, chat.MessageRoleAssistant, stop.Message.Role)
+	assert.Equal(t, budgetStopText, stop.Message.Content)
+	assert.Equal(t, "root", stop.AgentName)
+
+	// The other case is isolated: no termination leaks across sessions.
+	normal := byTitle["normal-case"]
+	require.NotNil(t, normal)
+	assert.Nil(t, normal.Termination())
+	for _, item := range normal.Messages {
+		assert.False(t, item.IsTermination())
+	}
+}
+
+func TestSaveRunSessionsJSONBudgetTermination(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+
+	budgetSess := SessionFromEvents([]map[string]any{
+		{"type": "agent_choice", "content": "Working on it.", "agent_name": "root"},
+		budgetExceededTestEvent(),
+		messageAddedTestEvent("sess-1", "root", budgetStopText),
+		{"type": "stream_stopped"},
+	}, "budget-case", []string{"do work"})
+
+	normalSess := SessionFromEvents([]map[string]any{
+		{"type": "agent_choice", "content": "All done.", "agent_name": "root"},
+		{"type": "stream_stopped"},
+	}, "normal-case", []string{"do work"})
+
+	errorSess := SessionFromEvents([]map[string]any{
+		{"type": "error", "error": "boom"},
+		{"type": "stream_stopped"},
+	}, "error-case", []string{"do work"})
+
+	run := &EvalRun{
+		Name:      "test-termination-json-001",
+		Timestamp: time.Now(),
+		Results: []Result{
+			{Title: "budget-case", Session: budgetSess},
+			{Title: "normal-case", Session: normalSess},
+			{Title: "error-case", Error: "container failed", Session: errorSess},
+		},
+	}
+
+	sessionsPath, err := SaveRunSessionsJSON(run, outputDir)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(sessionsPath)
+	require.NoError(t, err)
+
+	var output RunOutput
+	require.NoError(t, json.Unmarshal(data, &output))
+	require.Len(t, output.Sessions, 3)
+
+	byTitle := make(map[string]*session.Session)
+	for _, sess := range output.Sessions {
+		byTitle[sess.Title] = sess
+	}
+
+	// The budget session round-trips marker, stop message, and
+	// eval_result.termination; scoring is untouched by the termination.
+	budgetLoaded := byTitle["budget-case"]
+	require.NotNil(t, budgetLoaded)
+	require.True(t, budgetLoaded.Messages[2].IsTermination())
+	assert.Equal(t, budgetStopText, budgetLoaded.Messages[3].Message.Message.Content)
+	require.NotNil(t, budgetLoaded.EvalResult)
+	require.NotNil(t, budgetLoaded.EvalResult.Termination)
+	assert.Equal(t, session.TerminationReasonBudgetExceeded, budgetLoaded.EvalResult.Termination.Reason)
+	assert.Equal(t, "budget.max_cost", budgetLoaded.EvalResult.Termination.ConfigPath)
+	assert.True(t, budgetLoaded.EvalResult.Passed, "termination must not affect scoring")
+	assert.Empty(t, budgetLoaded.EvalResult.Error)
+
+	// Normal and errored runs expose no termination at all.
+	normalLoaded := byTitle["normal-case"]
+	require.NotNil(t, normalLoaded)
+	require.NotNil(t, normalLoaded.EvalResult)
+	assert.Nil(t, normalLoaded.EvalResult.Termination)
+	assert.Nil(t, normalLoaded.Termination())
+
+	errorLoaded := byTitle["error-case"]
+	require.NotNil(t, errorLoaded)
+	require.NotNil(t, errorLoaded.EvalResult)
+	assert.Nil(t, errorLoaded.EvalResult.Termination)
+	assert.Equal(t, "container failed", errorLoaded.EvalResult.Error)
+	assert.False(t, errorLoaded.EvalResult.Passed)
+
+	// Raw JSON contract: the serialized termination carries only
+	// allow-listed keys, and sessions without one omit the field.
+	var raw struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	require.NoError(t, json.Unmarshal(data, &raw))
+	allowed := []string{"reason", "budget", "limit", "used", "max", "config_path", "message"}
+	for _, rawSess := range raw.Sessions {
+		evalResult, ok := rawSess["eval_result"].(map[string]any)
+		require.True(t, ok)
+		rawTerm, hasTerm := evalResult["termination"]
+		if rawSess["title"] != "budget-case" {
+			assert.False(t, hasTerm, "session %v must not expose a termination", rawSess["title"])
+			continue
+		}
+		termKeys, ok := rawTerm.(map[string]any)
+		require.True(t, ok)
+		for key := range termKeys {
+			assert.Contains(t, allowed, key)
+		}
+	}
+}
+
+// TestSessionJSONWithoutTerminationLoads pins backward compatibility:
+// sessions and eval results serialized before the termination field
+// existed must load with no termination.
+func TestSessionJSONWithoutTerminationLoads(t *testing.T) {
+	t.Parallel()
+
+	legacy := `{
+		"id": "old-session",
+		"title": "old-eval",
+		"messages": [
+			{"message": {"agent_name": "", "message": {"role": "user", "content": "hi", "created_at": "2024-01-15T10:30:00Z"}}},
+			{"message": {"agent_name": "root", "message": {"role": "assistant", "content": "hello", "created_at": "2024-01-15T10:30:01Z"}}}
+		],
+		"eval_result": {"passed": true, "cost": 0, "output_tokens": 0, "checks": {}},
+		"created_at": "2024-01-15T10:30:00Z",
+		"tools_approved": false,
+		"hide_tool_results": false,
+		"max_iterations": 0,
+		"starred": false,
+		"input_tokens": 0,
+		"output_tokens": 0,
+		"cost": 0
+	}`
+
+	var sess session.Session
+	require.NoError(t, json.Unmarshal([]byte(legacy), &sess))
+	assert.Nil(t, sess.Termination())
+	require.NotNil(t, sess.EvalResult)
+	assert.Nil(t, sess.EvalResult.Termination)
+	assert.Len(t, sess.Messages, 2)
 }

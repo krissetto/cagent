@@ -99,6 +99,10 @@ func testLoadSessionThenClickEditLabel(t *testing.T, newTab bool, width int) {
 
 	model := New(ctx, spawner, application, dir, func() {})
 	m := model.(*appModel)
+	// New opened the tui_state.db SQLite store under dir/data; release it
+	// through the model's shutdown path so t.TempDir cleanup can delete the
+	// file on Windows.
+	t.Cleanup(m.cleanupManagedResources)
 
 	var cmd tea.Cmd
 	var mm tea.Model = m

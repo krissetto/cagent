@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -731,7 +732,7 @@ func (h *lspHandler) ensureInitialized(ctx context.Context) error {
 // initializeLocked performs the LSP initialize/initialized handshake.
 // The caller must hold h.mu and the process must be running.
 func (h *lspHandler) initializeLocked() error {
-	rootURI := "file://" + h.workingDir
+	rootURI := pathToURI(h.workingDir)
 
 	result, err := h.sendRequestLocked("initialize", map[string]any{
 		"processId": os.Getpid(),
@@ -1353,7 +1354,10 @@ func (h *lspHandler) applyWorkspaceEdit(edit *lspWorkspaceEdit, newName string) 
 
 	if len(edit.DocumentChanges) > 0 {
 		for _, docEdit := range edit.DocumentChanges {
-			filePath := strings.TrimPrefix(docEdit.TextDocument.URI, "file://")
+			filePath, err := uriToPath(docEdit.TextDocument.URI)
+			if err != nil {
+				return tools.ResultError(fmt.Sprintf("Failed to apply changes: %s", err))
+			}
 			if err := applyTextEditsToFile(filePath, docEdit.Edits); err != nil {
 				return tools.ResultError(fmt.Sprintf("Failed to apply changes to %s: %s", filePath, err))
 			}
@@ -1365,7 +1369,10 @@ func (h *lspHandler) applyWorkspaceEdit(edit *lspWorkspaceEdit, newName string) 
 
 	if len(edit.Changes) > 0 {
 		for uri, edits := range edit.Changes {
-			filePath := strings.TrimPrefix(uri, "file://")
+			filePath, err := uriToPath(uri)
+			if err != nil {
+				return tools.ResultError(fmt.Sprintf("Failed to apply changes: %s", err))
+			}
 			if err := applyTextEditsToFile(filePath, edits); err != nil {
 				return tools.ResultError(fmt.Sprintf("Failed to apply changes to %s: %s", filePath, err))
 			}
@@ -1661,7 +1668,10 @@ func (h *lspHandler) openFileOnDemand(_ context.Context, uri string) error {
 		return nil
 	}
 
-	filePath := strings.TrimPrefix(uri, "file://")
+	filePath, err := uriToPath(uri)
+	if err != nil {
+		return err
+	}
 
 	if !h.handlesFile(filePath) {
 		return fmt.Errorf("LSP does not handle file type: %s", filepath.Ext(filePath))
@@ -1712,7 +1722,10 @@ func (h *lspHandler) NotifyFileChange(_ context.Context, uri string) error {
 // notifyFileChangeLocked re-reads a file from disk and sends a
 // textDocument/didChange notification. The caller must hold h.mu.
 func (h *lspHandler) notifyFileChangeLocked(uri string) error {
-	filePath := strings.TrimPrefix(uri, "file://")
+	filePath, err := uriToPath(uri)
+	if err != nil {
+		return err
+	}
 
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -1752,12 +1765,102 @@ func (h *lspHandler) waitForDiagnostics(ctx context.Context, timeout time.Durati
 	}
 }
 
+// pathToURI converts a filesystem path to a file URI (RFC 8089). The
+// path is made absolute, separators are normalized to slashes and
+// special characters are percent-encoded. Windows drive paths become
+// "file:///C:/..." and UNC paths \\host\share become "file://host/share".
 func pathToURI(path string) string {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "file://" + path
+	if absPath, err := filepath.Abs(path); err == nil {
+		path = absPath
 	}
-	return "file://" + absPath
+	path = filepath.ToSlash(path)
+
+	u := url.URL{Scheme: "file"}
+	switch {
+	case strings.HasPrefix(path, "//"):
+		// UNC path //host/share/...: the host is the URI authority.
+		host, rest, _ := strings.Cut(strings.TrimPrefix(path, "//"), "/")
+		u.Host = host
+		u.Path = "/" + rest
+	case !strings.HasPrefix(path, "/"):
+		// Windows drive path (C:/...): the URI path needs a leading slash.
+		u.Path = "/" + path
+	default:
+		u.Path = path
+	}
+	return u.String()
+}
+
+// uriToPath converts a file URI to a native filesystem path, decoding
+// percent escapes. It returns an error for malformed or non-file URIs
+// and must be used whenever the resulting path is accessed on disk.
+func uriToPath(uri string) (string, error) {
+	path, err := uriToSlashPath(uri)
+	if err != nil {
+		return "", err
+	}
+	return filepath.FromSlash(path), nil
+}
+
+// uriToDisplayPath renders a file URI as a path for human-readable
+// output. Best effort: slashes are kept as-is so formatting is stable
+// across platforms, and URIs that cannot be converted are returned
+// unchanged.
+func uriToDisplayPath(uri string) string {
+	path, err := uriToSlashPath(uri)
+	if err != nil {
+		return uri
+	}
+	return path
+}
+
+// uriToSlashPath converts a file URI to a slash-separated filesystem path.
+func uriToSlashPath(uri string) (string, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return "", fmt.Errorf("malformed file URI %q: %w", uri, err)
+	}
+	if !strings.EqualFold(u.Scheme, "file") {
+		return "", fmt.Errorf("not a file URI: %q", uri)
+	}
+
+	path := u.Path
+	switch {
+	case u.Host != "" && !strings.EqualFold(u.Host, "localhost"):
+		if isWindowsDrive(u.Host) {
+			// Non-standard file://C:/... form: the drive letter was
+			// parsed as the URI authority.
+			path = u.Host + path
+		} else {
+			// UNC share: reattach the authority as the host part of the
+			// path, yielding \\host\share once separators are converted.
+			path = "//" + u.Host + path
+		}
+	case isWindowsDriveURIPath(path):
+		// Standard file:///C:/... form: drop the leading slash.
+		path = path[1:]
+	}
+	if path == "" {
+		return "", fmt.Errorf("file URI %q has no path", uri)
+	}
+	return path, nil
+}
+
+// isWindowsDriveURIPath reports whether a URI path carries a Windows
+// drive letter, e.g. "/C:/Users". net/url does not special-case Windows
+// paths (golang.org/issue/6027), so the leading slash must be stripped
+// by hand.
+func isWindowsDriveURIPath(path string) bool {
+	return len(path) >= 3 && path[0] == '/' && isASCIILetter(path[1]) && path[2] == ':'
+}
+
+// isWindowsDrive reports whether s is a bare Windows drive such as "C:".
+func isWindowsDrive(s string) bool {
+	return len(s) == 2 && isASCIILetter(s[0]) && s[1] == ':'
+}
+
+func isASCIILetter(c byte) bool {
+	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
 }
 
 func detectLanguageID(path string) string {
@@ -1901,7 +2004,7 @@ func formatLocations(data json.RawMessage) string {
 
 func formatLocation(loc lspLocation) string {
 	return fmt.Sprintf("- %s:%d:%d",
-		strings.TrimPrefix(loc.URI, "file://"),
+		uriToDisplayPath(loc.URI),
 		loc.Range.Start.Line+1,
 		loc.Range.Start.Character+1)
 }
@@ -1921,7 +2024,7 @@ func formatSymbols(data json.RawMessage) string {
 		var lines []string
 		for _, s := range symbols {
 			kind := symbolKindName(s.Kind)
-			loc := strings.TrimPrefix(s.Location.URI, "file://")
+			loc := uriToDisplayPath(s.Location.URI)
 			line := fmt.Sprintf("- %s %s (%s:%d)", kind, s.Name, loc, s.Location.Range.Start.Line+1)
 			if s.ContainerName != "" {
 				line += fmt.Sprintf(" [in %s]", s.ContainerName)
@@ -2002,7 +2105,7 @@ func formatIncomingCalls(targetName string, data json.RawMessage) string {
 	var lines []string
 	lines = append(lines, fmt.Sprintf("Incoming calls to '%s':", targetName))
 	for _, call := range calls {
-		filePath := strings.TrimPrefix(call.From.URI, "file://")
+		filePath := uriToDisplayPath(call.From.URI)
 		line := call.From.Range.Start.Line + 1
 		detail := ""
 		if call.From.Detail != "" {
@@ -2033,7 +2136,7 @@ func formatOutgoingCalls(sourceName string, data json.RawMessage) string {
 	var lines []string
 	lines = append(lines, fmt.Sprintf("Outgoing calls from '%s':", sourceName))
 	for _, call := range calls {
-		filePath := strings.TrimPrefix(call.To.URI, "file://")
+		filePath := uriToDisplayPath(call.To.URI)
 		line := call.To.Range.Start.Line + 1
 		detail := ""
 		if call.To.Detail != "" {
@@ -2058,7 +2161,7 @@ func formatTypeHierarchy(typeName, direction string, data json.RawMessage) strin
 	var lines []string
 	lines = append(lines, fmt.Sprintf("%s of '%s':", direction, typeName))
 	for _, item := range items {
-		filePath := strings.TrimPrefix(item.URI, "file://")
+		filePath := uriToDisplayPath(item.URI)
 		line := item.Range.Start.Line + 1
 		detail := ""
 		if item.Detail != "" {

@@ -21,6 +21,35 @@ import tea "charm.land/bubbletea/v2"
 //	}
 type Subscription struct {
 	active bool
+	ar     *Runtime
+}
+
+// NewSubscription returns an inactive subscription owned by an animation runtime.
+func NewSubscription(ar *Runtime) Subscription {
+	if ar == nil {
+		panic("animation: nil runtime")
+	}
+	return Subscription{ar: ar}
+}
+
+// SetRuntime binds an inactive subscription to a program's animation runtime.
+func (s *Subscription) SetRuntime(ar *Runtime) {
+	if ar == nil {
+		panic("animation: nil runtime")
+	}
+	if s.active {
+		panic("animation: cannot rebind active subscription")
+	}
+	s.ar = ar
+}
+
+func (s *Subscription) boundRuntime() *Runtime {
+	if s.ar == nil {
+		// Preserve zero-value Subscription behavior for components that have not
+		// yet adopted explicit program ownership.
+		return legacyRuntime
+	}
+	return s.ar
 }
 
 // Start activates the subscription if not already active.
@@ -31,7 +60,10 @@ func (s *Subscription) Start() tea.Cmd {
 		return nil
 	}
 	s.active = true
-	return StartTickIfFirst()
+	if s.ar == nil {
+		return legacyRuntime.legacyStart()
+	}
+	return s.ar.start()
 }
 
 // Stop deactivates the subscription if currently active.
@@ -41,7 +73,7 @@ func (s *Subscription) Stop() {
 		return
 	}
 	s.active = false
-	Unregister()
+	s.boundRuntime().Unregister()
 }
 
 // IsActive returns whether the subscription is currently active.
@@ -52,6 +84,7 @@ func (s *Subscription) IsActive() bool {
 // Reset returns a new inactive subscription.
 // Useful when recreating a component that needs fresh animation state.
 func (s *Subscription) Reset() Subscription {
+	ar := s.ar
 	s.Stop()
-	return Subscription{}
+	return Subscription{ar: ar}
 }

@@ -41,6 +41,8 @@ func (s stubModelStore) GetDatabase(context.Context) (*modelsdev.Database, error
 
 // gatewayRuntime builds a LocalRuntime wired to the given gateway URL with
 // a Docker token available (httptest servers are localhost, hence trusted).
+// A direct OpenAI credential is also set: the catalog fallback taken when
+// gateway discovery fails is credential-based, not gateway-based.
 func gatewayRuntime(gatewayURL string, store ModelStore) *LocalRuntime {
 	return &LocalRuntime{
 		modelsStore: store,
@@ -48,6 +50,7 @@ func gatewayRuntime(gatewayURL string, store ModelStore) *LocalRuntime {
 			ModelsGateway: gatewayURL,
 			EnvProvider: environment.NewMapEnvProvider(map[string]string{
 				environment.DockerDesktopTokenEnv: "test-token",
+				"OPENAI_API_KEY":                  "sk-test",
 			}),
 			Models: map[string]latest.ModelConfig{
 				"root_model": {Provider: "anthropic", Model: "claude-sonnet-4-0"},
@@ -360,5 +363,26 @@ func TestAvailableModels_GatewayEmbeddingFilteredByCatalogFamily(t *testing.T) {
 	got := refs(r.AvailableModels(t.Context()))
 
 	assert.NotContains(t, got, "openai/some-vector-model", "embedding models identified by catalog family must be filtered")
+	assert.Contains(t, got, "openai/gpt-4o")
+}
+
+func TestAvailableModels_GatewayNonTextFilteredByCatalogModalities(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"openai/image-gen"},{"id":"openai/gpt-4o"}]}`))
+	}))
+	defer server.Close()
+
+	// The catalog declares image-only output for image-gen, so it is not a
+	// chat model. gpt-4o has no catalog entry and must be kept (no signal).
+	store := stubModelStore{models: map[string]*modelsdev.Model{
+		"openai/image-gen": {Name: "Image Gen", Modalities: modelsdev.Modalities{Output: []string{"image"}}},
+	}}
+	r := gatewayRuntime(server.URL, store)
+
+	got := refs(r.AvailableModels(t.Context()))
+
+	assert.NotContains(t, got, "openai/image-gen", "models whose catalog metadata declares non-text output must be filtered")
 	assert.Contains(t, got, "openai/gpt-4o")
 }

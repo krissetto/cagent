@@ -127,7 +127,7 @@ func oauthHTTPClientWithHeaders(rawURL string, headers map[string]string, allowP
 		CheckRedirect: base.CheckRedirect,
 		Transport: &hostScopedHeaderTransport{
 			host:        hostWithoutDefaultPort(u.Host, u.Scheme),
-			withHeaders: upstream.NewHeaderTransportWithResolver(inner, headers, resolve),
+			withHeaders: upstream.NewHeaderTransportWithResolverForOrigin(inner, rawURL, headers, resolve),
 			base:        inner,
 		},
 	}

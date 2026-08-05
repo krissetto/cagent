@@ -5,7 +5,6 @@ package modelsgateway
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -39,6 +38,13 @@ type listResponse struct {
 // that isn't a valid OpenAI-style model list. Callers are expected to fall
 // back to their non-discovery behavior in that case.
 func ListModels(ctx context.Context, gatewayURL string, env environment.Provider) ([]string, error) {
+	return listModelsWith(ctx, gatewayURL, env, nil)
+}
+
+// listModelsWith is ListModels with an injectable HTTP client. A nil client
+// uses the standard instrumented client; tests inject one to reach a
+// non-trusted hostname without touching the network.
+func listModelsWith(ctx context.Context, gatewayURL string, env environment.Provider, client *http.Client) ([]string, error) {
 	u, err := url.Parse(gatewayURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid gateway URL: %w", err)
@@ -57,15 +63,18 @@ func ListModels(ctx context.Context, gatewayURL string, env environment.Provider
 		return nil, err
 	}
 
-	if environment.IsTrustedDockerURL(gatewayURL) {
-		token, _ := env.Get(ctx, environment.DockerDesktopTokenEnv)
-		if token == "" {
-			return nil, errors.New(base.NoDesktopTokenErrorMessage)
-		}
+	token, err := base.GatewayAuthToken(ctx, env, gatewayURL)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := httpclient.NewHTTPClient(ctx).Do(req)
+	if client == nil {
+		client = httpclient.NewHTTPClient(ctx)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("querying gateway models: %w", err)
 	}

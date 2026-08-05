@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -359,13 +360,15 @@ func formatCommandOutput(timeoutCtx, ctx context.Context, err error, rawOutput s
 }
 
 func (t *ToolSet) Instructions() string {
-	return `## Shell Tools
+	return fmt.Sprintf(`## Shell Tools
 
+- Commands are executed by %s on %s — write them in that shell's syntax
 - Each call runs in a fresh shell session — no state persists between calls
 - Default timeout: 30s. Set "timeout" for longer operations (builds, tests)
 - Use "cwd" parameter instead of cd within commands
 - Combine operations with pipes, redirections, and heredocs
-- Non-zero exit codes return error info with output; timed-out commands are terminated`
+- Non-zero exit codes return error info with output; timed-out commands are terminated`,
+		shellBaseName(t.handler.shell), displayOS())
 }
 
 func (t *ToolSet) Tools(context.Context) ([]tools.Tool, error) {
@@ -373,7 +376,7 @@ func (t *ToolSet) Tools(context.Context) ([]tools.Tool, error) {
 		{
 			Name:                    ToolNameShell,
 			Category:                "shell",
-			Description:             `Executes the given shell command in the user's default shell.`,
+			Description:             shellToolDescription(t.handler.shell),
 			Parameters:              tools.MustSchemaFor[RunShellArgs](),
 			OutputSchema:            tools.MustSchemaFor[string](),
 			Handler:                 tools.NewRuntimeHandler(t.handler.RunShell),
@@ -398,4 +401,63 @@ func (t *ToolSet) Start(context.Context) error {
 func (t *ToolSet) Stop(context.Context) error {
 	t.handler.stopAskpass()
 	return nil
+}
+
+// shellToolDescription names the interpreter that will run the command.
+// Models default to POSIX syntax when the description only says "the
+// user's default shell", which wastes turns on Windows where the
+// resolved shell is PowerShell or cmd.exe (e.g. "pwd && ls -la" is a
+// parse error under Windows PowerShell 5.1).
+func shellToolDescription(shellPath string) string {
+	name := shellBaseName(shellPath)
+	desc := fmt.Sprintf("Executes the given shell command with %s on %s.", name, displayOS())
+	if hint := shellSyntaxHint(name); hint != "" {
+		desc += " " + hint
+	}
+	return desc
+}
+
+// shellSyntaxHint returns a dialect warning for shells that models
+// commonly mistake for a POSIX shell. Empty for shells where the name
+// alone is enough of a cue.
+func shellSyntaxHint(name string) string {
+	switch name {
+	case "powershell":
+		// Windows PowerShell 5.1: '&&' / '||' are parse errors and
+		// POSIX flags don't exist ('ls -la' fails on the alias).
+		return `Use Windows PowerShell 5.1 syntax: chain commands with ";" (not "&&"), and avoid POSIX commands/flags like "ls -la".`
+	case "pwsh":
+		return `Use PowerShell syntax; POSIX commands/flags like "ls -la" are not available.`
+	case "cmd":
+		return `Use cmd.exe syntax, not POSIX shell syntax.`
+	default:
+		return ""
+	}
+}
+
+// shellBaseName reduces a resolved shell path to a lowercase name the
+// model can recognize (C:\...\powershell.exe -> powershell, /bin/zsh -> zsh).
+// Splits on both separators instead of filepath.Base so the result is
+// deterministic regardless of the host OS the path came from.
+func shellBaseName(shellPath string) string {
+	base := shellPath
+	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+		base = base[i+1:]
+	}
+	return strings.ToLower(strings.TrimSuffix(base, filepath.Ext(base)))
+}
+
+// displayOS returns a friendlier label for the common values of
+// runtime.GOOS, falling back to GOOS itself for anything exotic.
+func displayOS() string {
+	switch goruntime.GOOS {
+	case "darwin":
+		return "macOS"
+	case "windows":
+		return "Windows"
+	case "linux":
+		return "Linux"
+	default:
+		return goruntime.GOOS
+	}
 }

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -151,7 +152,7 @@ func TestReadFileForInline(t *testing.T) {
 	result, err := ReadFileForInline(testFile)
 	require.NoError(t, err)
 
-	assert.Contains(t, result, `<attached_file path="`+testFile+`">`)
+	assert.Contains(t, result, fmt.Sprintf("<attached_file path=%q>", testFile))
 	assert.Contains(t, result, content)
 	assert.Contains(t, result, `</attached_file>`)
 }

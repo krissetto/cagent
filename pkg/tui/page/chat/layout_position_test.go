@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
 	msgtypes "github.com/docker/docker-agent/pkg/tui/messages"
@@ -22,8 +23,8 @@ func newLayoutTestPage(t *testing.T, position msgtypes.SidebarPosition) *chatPag
 	t.Helper()
 	sessionState := &service.SessionState{}
 	p := &chatPage{
-		sidebar:      sidebar.New(t.Context(), sessionState),
-		messages:     messages.New(sessionState),
+		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
+		messages:     messages.New(animation.NewRuntime(), sessionState),
 		sessionState: sessionState,
 		width:        160,
 		height:       40,
@@ -186,7 +187,9 @@ func TestAgentInfoModeMapsValues(t *testing.T) {
 
 // TestSetLayoutSettingsForwardsInfoModeToSidebar verifies the info mode
 // reaches the sidebar's roster renderer and can be switched live: the
-// detailed cards carry the "Effort" metric label, the compact roster does not.
+// detailed cards carry the labeled effort metric — "Eff high" in the compact
+// vocabulary the cards adapt to at the default sidebar width — while the
+// compact roster shows only the gauge badge, never the label.
 func TestSetLayoutSettingsForwardsInfoModeToSidebar(t *testing.T) {
 	t.Parallel()
 
@@ -197,15 +200,15 @@ func TestSetLayoutSettingsForwardsInfoModeToSidebar(t *testing.T) {
 	})
 	p.SetSize(160, 40)
 
-	require.NotContains(t, ansi.Strip(p.View()), "Effort",
+	require.NotContains(t, ansi.Strip(p.View()), "Eff high",
 		"the default layout renders the compact roster")
 
 	p.SetLayoutSettings(msgtypes.LayoutSettings{SidebarInfoMode: msgtypes.InfoModeDetailed})
-	assert.Contains(t, ansi.Strip(p.View()), "Effort",
+	assert.Contains(t, ansi.Strip(p.View()), "Eff high",
 		"detailed mode renders the labeled agent cards")
 
 	p.SetLayoutSettings(msgtypes.LayoutSettings{})
-	assert.NotContains(t, ansi.Strip(p.View()), "Effort",
+	assert.NotContains(t, ansi.Strip(p.View()), "Eff high",
 		"switching back live restores the compact roster")
 }
 
@@ -217,8 +220,8 @@ func TestWithLayoutSettingsAppliesInfoMode(t *testing.T) {
 	sessionState := &service.SessionState{}
 	sessionState.SetCurrentAgentName("root")
 	p := &chatPage{
-		sidebar:      sidebar.New(t.Context(), sessionState),
-		messages:     messages.New(sessionState),
+		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
+		messages:     messages.New(animation.NewRuntime(), sessionState),
 		sessionState: sessionState,
 	}
 	WithLayoutSettings(msgtypes.LayoutSettings{SidebarInfoMode: msgtypes.InfoModeDetailed})(p)
@@ -227,8 +230,35 @@ func TestWithLayoutSettingsAppliesInfoMode(t *testing.T) {
 	})
 	p.SetSize(160, 40)
 
-	assert.Contains(t, ansi.Strip(p.View()), "Effort",
+	assert.Contains(t, ansi.Strip(p.View()), "Eff high",
 		"the initial layout option applies the detailed mode")
+}
+
+// TestSetLayoutSettingsForwardsActiveAgentsOnlyToSidebar verifies the agent
+// filter reaches the sidebar's roster and can be switched live: an agent
+// without session participation disappears while the filter is on and
+// returns when it is turned off.
+func TestSetLayoutSettingsForwardsActiveAgentsOnlyToSidebar(t *testing.T) {
+	t.Parallel()
+
+	p := newLayoutTestPage(t, msgtypes.SidebarRight)
+	p.sessionState.SetCurrentAgentName("root")
+	p.sidebar.SetTeamInfo([]runtime.AgentDetails{
+		{Name: "root", Provider: "openai", Model: "gpt-4"},
+		{Name: "idle", Provider: "openai", Model: "gpt-4o"},
+	})
+	p.SetSize(160, 40)
+
+	require.Contains(t, ansi.Strip(p.View()), "idle",
+		"the default layout renders the whole team")
+
+	p.SetLayoutSettings(msgtypes.LayoutSettings{ActiveAgentsOnly: true})
+	assert.NotContains(t, ansi.Strip(p.View()), "idle",
+		"the filter hides agents without session participation")
+
+	p.SetLayoutSettings(msgtypes.LayoutSettings{})
+	assert.Contains(t, ansi.Strip(p.View()), "idle",
+		"switching the filter off live restores the whole team")
 }
 
 func TestSetLayoutSettingsBeforeSizingReturnsNil(t *testing.T) {
@@ -236,8 +266,8 @@ func TestSetLayoutSettingsBeforeSizingReturnsNil(t *testing.T) {
 
 	sessionState := &service.SessionState{}
 	p := &chatPage{
-		sidebar:      sidebar.New(t.Context(), sessionState),
-		messages:     messages.New(sessionState),
+		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
+		messages:     messages.New(animation.NewRuntime(), sessionState),
 		sessionState: sessionState,
 	}
 

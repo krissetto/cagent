@@ -14,6 +14,14 @@ func newAgent(name string) *agent.Agent {
 	return agent.New(name, "")
 }
 
+// RuntimeSafety returns the config-wide default set via WithRuntimeSafety,
+// empty when unset.
+func TestRuntimeSafety(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, latest.SafetyMode(""), New().RuntimeSafety())
+	assert.Equal(t, latest.SafetyModeBalanced, New(WithRuntimeSafety(latest.SafetyModeBalanced)).RuntimeSafety())
+}
+
 func TestDefaultAgent(t *testing.T) {
 	t.Parallel()
 	t.Run("empty team returns error", func(t *testing.T) {
