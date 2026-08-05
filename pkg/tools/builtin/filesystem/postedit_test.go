@@ -94,7 +94,18 @@ func TestMatchPostEdit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := matchPostEdit(ctx, tt.pattern, tt.workingDir, tt.filePath)
+			var relPath string
+			if tt.workingDir != "" {
+				rel, err := filepath.Rel(tt.workingDir, tt.filePath)
+				if err == nil {
+					relPath = filepath.ToSlash(rel)
+				} else {
+					relPath = filepath.ToSlash(tt.filePath)
+				}
+			} else {
+				relPath = filepath.ToSlash(tt.filePath)
+			}
+			got := matchPostEdit(ctx, tt.pattern, relPath, tt.filePath)
 			assert.Equal(t, tt.wantMatch, got)
 		})
 	}

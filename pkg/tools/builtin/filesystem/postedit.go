@@ -16,8 +16,21 @@ import (
 
 // runPostEditCommands executes configured shell commands after a file edit.
 func runPostEditCommands(ctx context.Context, workingDir string, postEditCommands []PostEditConfig, filePath string) error {
+	var relPath string
+	if workingDir != "" {
+		rel, err := filepath.Rel(workingDir, filePath)
+		if err == nil {
+			relPath = filepath.ToSlash(rel)
+		} else {
+			slog.DebugContext(ctx, "Failed to resolve relative path for post-edit pattern", "workingDir", workingDir, "filePath", filePath, "error", err)
+			relPath = filepath.ToSlash(filePath)
+		}
+	} else {
+		relPath = filepath.ToSlash(filePath)
+	}
+
 	for _, postEdit := range postEditCommands {
-		if !matchPostEdit(ctx, postEdit.Path, workingDir, filePath) {
+		if !matchPostEdit(ctx, postEdit.Path, relPath, filePath) {
 			continue
 		}
 
@@ -33,21 +46,11 @@ func runPostEditCommands(ctx context.Context, workingDir string, postEditCommand
 	return nil
 }
 
-func matchPostEdit(ctx context.Context, patternStr, workingDir, filePath string) bool {
+func matchPostEdit(ctx context.Context, patternStr, relPath, filePath string) bool {
 	pattern := filepath.ToSlash(patternStr)
 	target := filepath.Base(filePath)
 	if strings.Contains(pattern, "/") {
-		if workingDir != "" {
-			rel, err := filepath.Rel(workingDir, filePath)
-			if err == nil {
-				target = filepath.ToSlash(rel)
-			} else {
-				slog.DebugContext(ctx, "Failed to resolve relative path for post-edit pattern", "workingDir", workingDir, "filePath", filePath, "error", err)
-				target = filepath.ToSlash(filePath)
-			}
-		} else {
-			target = filepath.ToSlash(filePath)
-		}
+		target = relPath
 	}
 	matched, err := path.Match(pattern, target)
 	if err != nil {

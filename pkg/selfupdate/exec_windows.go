@@ -27,9 +27,9 @@ func swapBinary(dst, src string) error {
 		if cpErr := atomicWriteFromFile(dst, src); cpErr != nil {
 			// Roll back so we never leave the install without a binary.
 			if rbErr := os.Rename(old, dst); rbErr != nil {
-				return fmt.Errorf("installing new binary: %w (copy fallback failed: %v; rollback also failed: %v)", err, cpErr, rbErr)
+				return fmt.Errorf("installing new binary: %w (copy fallback failed: %w; rollback also failed: %w)", err, cpErr, rbErr)
 			}
-			return fmt.Errorf("installing new binary: %w (copy fallback failed: %v)", err, cpErr)
+			return fmt.Errorf("installing new binary: %w (copy fallback failed: %w)", err, cpErr)
 		}
 		_ = os.Remove(src)
 	}
@@ -48,7 +48,7 @@ func reExecProcess(path string, args, env []string) error {
 		childArgs = args[1:]
 	}
 
-	cmd := exec.Command(path, childArgs...) //nolint:gosec // path is our own freshly installed binary
+	cmd := exec.Command(path, childArgs...) //nolint:noctx // path is our own freshly installed binary; no context needed for re-exec
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
