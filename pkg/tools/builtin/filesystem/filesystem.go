@@ -1052,6 +1052,18 @@ func (t *ToolSet) handleListDirectory(ctx context.Context, args ListDirectoryArg
 		}
 	}
 
+	// An empty Output is rendered as a generic "(no output)" placeholder
+	// upstream, which the model cannot distinguish from a tool failure and
+	// typically retries with a shell command. Say explicitly that the
+	// listing succeeded and the directory is empty.
+	if count == 0 {
+		if len(entries) == 0 {
+			fmt.Fprintf(&result, "Directory is empty: %s\n", resolvedPath)
+		} else {
+			fmt.Fprintf(&result, "Directory has no visible entries (%d hidden by ignore patterns): %s\n", len(entries), resolvedPath)
+		}
+	}
+
 	return &tools.ToolCallResult{
 		Output: result.String(),
 		Meta:   meta,
