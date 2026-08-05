@@ -3,6 +3,37 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.122.0] - 2026-08-05
+
+This release delivers a set of bug fixes and improvements across filesystem handling, the TUI, shell tooling, and cross-platform compatibility.
+
+## What's New
+- Adds the resolved interpreter name to the shell tool description so the model knows which shell will execute commands
+- Adds an explicit message when `list_directory` finds an empty directory, distinguishing an empty result from a tool failure
+- Adds configurable interrupt confirmation for the Esc key, supporting `always` (confirmation dialog), `double-tap` (press twice), or `none` (immediate interruption) modes
+
+## Bug Fixes
+- Fixes cross-platform root directory detection and fallback paths in TUI file and directory pickers, ensuring correct behavior on Windows
+- Fixes support for path-scoped glob patterns (e.g. `pkg/*.go`) in post-edit hooks by matching against full relative paths instead of just the base filename
+- Fixes a deadlock in the RAG file watcher that could occur when `Start` fails and `Stop` is subsequently called
+- Fixes malformed inner JSON in double-serialized `edit_file` payloads, handling the case where both double-serialization and brace-counting errors occur together
+- Fixes stream cancellation state being lost after automatic compaction completes mid-run in the TUI
+- Fixes agent security and linting issues including goroutine leak prevention in RAG toolset and environment handling improvements
+### Pull Requests
+
+- [#3792](https://github.com/docker/docker-agent/pull/3792) - fix: resolve POSIX path handling and test failures on Windows
+- [#3795](https://github.com/docker/docker-agent/pull/3795) - fix(tui): resolve cross-platform root detection and fallback paths in pickers
+- [#3831](https://github.com/docker/docker-agent/pull/3831) - fix: agent security and linting improvements
+- [#3899](https://github.com/docker/docker-agent/pull/3899) - feat(tui): configurable interrupt confirmation for Esc key
+- [#3908](https://github.com/docker/docker-agent/pull/3908) - feat(filesystem): fail fast on foreign-OS paths and explain path resolution
+- [#3909](https://github.com/docker/docker-agent/pull/3909) - docs: auto-update for merged PRs (2026-08-05)
+- [#3910](https://github.com/docker/docker-agent/pull/3910) - docs: update CHANGELOG.md for v1.121.0
+- [#3911](https://github.com/docker/docker-agent/pull/3911) - feat(shell): name the resolved interpreter in the shell tool description
+- [#3912](https://github.com/docker/docker-agent/pull/3912) - feat(filesystem): say when list_directory finds an empty directory
+- [#3913](https://github.com/docker/docker-agent/pull/3913) - fix(filesystem): repair malformed inner JSON in double-serialized edits
+- [#3914](https://github.com/docker/docker-agent/pull/3914) - fix(tui): preserve stream cancellation after compaction
+
+
 ## [v1.121.0] - 2026-08-05
 
 This release brings several bug fixes and new features including configurable interrupt confirmation for the Esc key, ranged file reads, and improvements to safety classification and filesystem path handling.
@@ -5339,3 +5370,5 @@ This release improves the terminal user interface with better error handling and
 [v1.120.0]: https://github.com/docker/docker-agent/releases/tag/v1.120.0
 
 [v1.121.0]: https://github.com/docker/docker-agent/releases/tag/v1.121.0
+
+[v1.122.0]: https://github.com/docker/docker-agent/releases/tag/v1.122.0
