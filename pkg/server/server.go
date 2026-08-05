@@ -43,8 +43,8 @@ type Server struct {
 	heartbeatInterval time.Duration
 }
 
-func New(ctx context.Context, sessionStore session.Store, runConfig *config.RuntimeConfig, refreshInterval time.Duration, agentSources config.Sources, authToken string) (*Server, error) {
-	return NewWithManager(NewSessionManager(ctx, agentSources, sessionStore, refreshInterval, runConfig), authToken), nil
+func New(ctx context.Context, sessionStore session.Store, runConfig *config.RuntimeConfig, refreshInterval time.Duration, agentSources config.Sources, authToken string, opts ...SessionManagerOpt) (*Server, error) {
+	return NewWithManager(NewSessionManager(ctx, agentSources, sessionStore, refreshInterval, runConfig, opts...), authToken), nil
 }
 
 const defaultMaxRequestBytes int64 = 1 << 20 // 1 MiB

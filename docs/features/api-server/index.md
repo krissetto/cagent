@@ -192,6 +192,7 @@ docker agent serve api <agent-file>|<agents-dir> [flags]
 | ------------------ | ---------------- | ------------------------------------------------ |
 | `-l, --listen`     | `127.0.0.1:8080` | Address to listen on                             |
 | `--auth-token`     | (none)           | Bearer token required for all API requests. Leave empty to disable authentication (safe when listening on loopback interfaces only). Recommended when `--listen` binds to a network-reachable interface. |
+| `--session-workingdir-root` | (none — unrestricted) | Confine the `working_dir` accepted by `POST /api/sessions` to this directory: after resolving symlinks, the requested directory must be the root or one of its descendants. By default any host directory is accepted — the intended behaviour for local single-user daemons that open arbitrary workspaces. Set a root whenever the API serves callers that must not reach arbitrary host paths (multi-user or network-exposed deployments). |
 | `-s, --session-db` | `session.db`     | Path to the SQLite session database              |
 | `--pull-interval`  | `0` (disabled)   | Auto-pull OCI reference every N minutes          |
 | `--fake`           | (none)           | Replay AI responses from cassette file (testing) |

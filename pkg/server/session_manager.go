@@ -52,6 +52,13 @@ type SessionManager struct {
 
 	runConfig *config.RuntimeConfig
 
+	// sessionWorkingDirRoot, when non-empty, confines the user-supplied
+	// working_dir of POST /api/sessions to that directory (see
+	// WithSessionWorkingDirRoot). It is a dedicated boundary: deriving it
+	// from runConfig.WorkingDir or the process cwd broke long-lived daemons
+	// that open arbitrary host workspaces and was reverted (#3788).
+	sessionWorkingDirRoot string
+
 	// newRuntime, when non-nil, replaces runtime.New as the runtime
 	// constructor in runtimeForSession. Test seam: lets a build fail
 	// deterministically after the team has been loaded.
@@ -116,8 +123,24 @@ type EventSource func(ctx context.Context, send func(any))
 // [SessionManager.RegisterFollowUpInjector].
 type FollowUpInjector func(ctx context.Context, content string)
 
+// SessionManagerOpt configures a SessionManager created by NewSessionManager.
+type SessionManagerOpt func(*SessionManager)
+
+// WithSessionWorkingDirRoot confines the working_dir accepted by
+// CreateSession (POST /api/sessions) to root: after resolving symlinks,
+// the requested directory must be root or one of its descendants. Empty
+// (the default) keeps the API unrestricted — the intended behaviour for
+// local single-user daemons that legitimately open arbitrary host
+// workspaces. Multi-user or network-exposed deployments should set a
+// root (--session-workingdir-root).
+func WithSessionWorkingDirRoot(root string) SessionManagerOpt {
+	return func(sm *SessionManager) {
+		sm.sessionWorkingDirRoot = root
+	}
+}
+
 // NewSessionManager creates a new session manager.
-func NewSessionManager(ctx context.Context, sources config.Sources, sessionStore session.Store, refreshInterval time.Duration, runConfig *config.RuntimeConfig) *SessionManager {
+func NewSessionManager(ctx context.Context, sources config.Sources, sessionStore session.Store, refreshInterval time.Duration, runConfig *config.RuntimeConfig, opts ...SessionManagerOpt) *SessionManager {
 	loaders := make(config.Sources)
 	for name, source := range sources {
 		loaders[name] = newSourceLoader(ctx, source, refreshInterval)
@@ -136,6 +159,10 @@ func NewSessionManager(ctx context.Context, sources config.Sources, sessionStore
 		refreshInterval:       refreshInterval,
 		runConfig:             runConfig,
 		sessionReady:          make(chan struct{}),
+	}
+
+	for _, opt := range opts {
+		opt(sm)
 	}
 
 	return sm
@@ -554,14 +581,23 @@ func (sm *SessionManager) CreateSession(ctx context.Context, sessionTemplate *se
 		if err != nil {
 			return nil, err
 		}
-		info, err := os.Stat(absWd)
+		resolvedWd, err := sm.resolveWithinRoot(absWd)
+		if err != nil {
+			return nil, err
+		}
+		// Without a configured root, resolvedWd is the caller-chosen
+		// directory, untouched: local daemons intentionally open sessions
+		// on arbitrary host paths (#3788). Deployments serving untrusted
+		// callers opt in to containment via WithSessionWorkingDirRoot,
+		// enforced by resolveWithinRoot above.
+		info, err := os.Stat(resolvedWd) // codeql[go/path-injection] -- unrestricted default is intentional; opt-in containment enforced by resolveWithinRoot above
 		if err != nil {
 			return nil, err
 		}
 		if !info.IsDir() {
 			return nil, errors.New("working directory must be a directory")
 		}
-		opts = append(opts, session.WithWorkingDir(absWd))
+		opts = append(opts, session.WithWorkingDir(resolvedWd))
 	}
 
 	if sessionTemplate.Permissions != nil {
@@ -596,6 +632,61 @@ func (sm *SessionManager) CreateSession(ctx context.Context, sessionTemplate *se
 	}
 
 	return sess, nil
+}
+
+// workingDirRoot returns the absolute containment root for user-supplied
+// session working directories, or "" when none was configured and the API
+// is intentionally unrestricted. A configured root that trims to empty
+// (e.g. an unresolved shell variable) is a misconfiguration: the operator
+// asked for containment, so it fails loudly instead of silently disabling
+// the protection. runConfig.WorkingDir is deliberately never consulted:
+// it is a default cwd for tools, not a security boundary (#3788).
+func (sm *SessionManager) workingDirRoot() (string, error) {
+	if sm.sessionWorkingDirRoot == "" {
+		return "", nil
+	}
+	root := strings.TrimSpace(sm.sessionWorkingDirRoot)
+	if root == "" {
+		return "", errors.New("session working-dir root is empty after trimming whitespace")
+	}
+	return filepath.Abs(root)
+}
+
+// resolveWithinRoot enforces the opt-in containment of user-supplied
+// session working directories (go/path-injection, CodeQL alert #57).
+// When a root is configured (WithSessionWorkingDirRoot), root and
+// candidate are both canonicalised via filepath.EvalSymlinks and
+// inclusion is checked component-wise on the filepath.Rel result — never
+// a raw prefix comparison — so ".." traversal, absolute escapes and
+// symlinks pointing outside the root are all rejected; the canonicalised
+// path is returned for storage. Without a root, absPath is returned
+// untouched: arbitrary host directories are the intended,
+// backwards-compatible default, and neither the process cwd nor
+// --working-dir may serve as an implicit boundary (#3788).
+func (sm *SessionManager) resolveWithinRoot(absPath string) (string, error) {
+	root, err := sm.workingDirRoot()
+	if err != nil {
+		return "", err
+	}
+	if root == "" {
+		return absPath, nil
+	}
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedPath)
+	// IsLocal accepts "." (the root itself) and any descendant, and
+	// rejects "", absolute paths and anything whose first component is
+	// ".." — without misclassifying siblings like "..foo".
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("working directory %q is outside the permitted root %q", absPath, root)
+	}
+	return resolvedPath, nil
 }
 
 // Sentinel errors returned by ForkSession. Matched via errors.Is by
