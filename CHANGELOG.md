@@ -3,6 +3,39 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.123.0] - 2026-08-06
+
+This release adds Alt+Enter follow-up messaging in the TUI and session recovery error exports, along with several bug fixes for Windows reliability and context overflow messaging.
+
+## What's New
+
+- Adds Alt+Enter keyboard shortcut to submit follow-up messages in both the full TUI and lean TUI, with attachment preservation and pending follow-up display
+- Includes recorded errors in the session recovery export
+
+## Bug Fixes
+
+- Fixes a status race condition and subprocess pipe hang in background jobs
+- Fixes `promote()` retry on Windows when an `ACCESS_DENIED` error occurs during kit rename operations
+- Makes the context overflow error message frontend-agnostic, removing references to `/compact` that are not applicable to all consumers
+
+## Technical Changes
+
+- Updates test for torn-file concurrency to tolerate Windows file sharing violations
+- Clarifies sandbox documentation to reflect `sbx` integration and removes references to the retired `docker sandbox` CLI path
+### Pull Requests
+
+- [#3833](https://github.com/docker/docker-agent/pull/3833) - fix(backgroundjobs): resolve status race condition and subprocess pipe hang
+- [#3911](https://github.com/docker/docker-agent/pull/3911) - feat(shell): name the resolved interpreter in the shell tool description
+- [#3912](https://github.com/docker/docker-agent/pull/3912) - feat(filesystem): say when list_directory finds an empty directory
+- [#3915](https://github.com/docker/docker-agent/pull/3915) - docs: update CHANGELOG.md for v1.122.0
+- [#3917](https://github.com/docker/docker-agent/pull/3917) - fix(kit): retry promote() retire-rename on Windows ACCESS_DENIED
+- [#3918](https://github.com/docker/docker-agent/pull/3918) - feat(tui): add Alt+Enter follow-up messages
+- [#3919](https://github.com/docker/docker-agent/pull/3919) - docs: auto-update for merged PRs (2026-08-06)
+- [#3920](https://github.com/docker/docker-agent/pull/3920) - fix: frontend-agnostic context overflow message, export recorded errors for recovery
+- [#3921](https://github.com/docker/docker-agent/pull/3921) - test(cache): fix Windows flake in the torn-file concurrency test
+- [#3924](https://github.com/docker/docker-agent/pull/3924) - docs: clarify sbx sandbox integration
+
+
 ## [v1.122.0] - 2026-08-05
 
 This release delivers a set of bug fixes and improvements across filesystem handling, the TUI, shell tooling, and cross-platform compatibility.
@@ -5372,3 +5405,5 @@ This release improves the terminal user interface with better error handling and
 [v1.121.0]: https://github.com/docker/docker-agent/releases/tag/v1.121.0
 
 [v1.122.0]: https://github.com/docker/docker-agent/releases/tag/v1.122.0
+
+[v1.123.0]: https://github.com/docker/docker-agent/releases/tag/v1.123.0
