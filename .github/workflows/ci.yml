@@ -199,7 +199,7 @@ jobs:
         id: docker_oidc
         uses: docker/oidc-action@b048fb089ace3e15a5fbdd784f4784d284ce5e8d # v1.1.0
         with:
-          connection-id: fc5234a6-aee3-4f2b-ae8a-75a1c690c1b2
+          connection-id: ${{ vars.DOCKERHUB_OIDC_CONNECTION_ID }}
           expires-in: 3600
 
       - name: Hub login
@@ -300,7 +300,7 @@ jobs:
         id: docker_oidc
         uses: docker/oidc-action@b048fb089ace3e15a5fbdd784f4784d284ce5e8d # v1.1.0
         with:
-          connection-id: fc5234a6-aee3-4f2b-ae8a-75a1c690c1b2
+          connection-id: ${{ vars.DOCKERHUB_OIDC_CONNECTION_ID }}
           expires-in: 3600
 
       - name: Hub login
@@ -355,7 +355,7 @@ jobs:
         id: docker_oidc
         uses: docker/oidc-action@b048fb089ace3e15a5fbdd784f4784d284ce5e8d # v1.1.0
         with:
-          connection-id: fc5234a6-aee3-4f2b-ae8a-75a1c690c1b2
+          connection-id: ${{ vars.DOCKERHUB_OIDC_CONNECTION_ID }}
           expires-in: 3600
 
       - name: Hub login
