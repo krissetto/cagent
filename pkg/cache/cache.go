@@ -168,11 +168,11 @@ func (c *Cache) Store(question, response string) {
 
 // persistToDisk takes the cross-process lock on c.path's sibling .lock
 // file, reloads the on-disk entries, merges (key, response), writes
-// atomically, and refreshes c.mtime. The caller must hold c.mu.
+// atomically, and adopts the merged state. The caller must hold c.mu.
 //
-// Skips the write — but still refreshes c.mtime — when the on-disk
-// state already has key → response, which keeps cross-process replays
-// free of redundant disk traffic.
+// Skips the write — but still adopts the on-disk state — when it already
+// has key → response, which keeps cross-process replays free of redundant
+// disk traffic.
 func (c *Cache) persistToDisk(key, response string) error {
 	unlock, err := lockFile(c.path)
 	if err != nil {
@@ -186,7 +186,7 @@ func (c *Cache) persistToDisk(key, response string) error {
 	}
 
 	if existing, ok := entries[key]; ok && existing == response {
-		c.mtime = mtimeOf(c.path)
+		c.adopt(entries)
 		return nil
 	}
 
@@ -194,8 +194,22 @@ func (c *Cache) persistToDisk(key, response string) error {
 	if err := writeJSON(c.path, entries); err != nil {
 		return err
 	}
-	c.mtime = mtimeOf(c.path)
+	c.adopt(entries)
 	return nil
+}
+
+// adopt merges the on-disk state read under the lock into the in-memory map and
+// refreshes c.mtime. Both must happen together: advancing the mtime alone would
+// mark this instance up to date against a file whose sibling-written entries it
+// never loaded, and [Cache.maybeReload] would then never reload them.
+//
+// The merge is deliberate — replacing c.entries would discard entries an earlier
+// failed [Cache.Store] kept in memory on purpose. The caller must hold c.mu.
+func (c *Cache) adopt(entries map[string]string) {
+	for k, v := range entries {
+		c.entries[k] = v
+	}
+	c.mtime = mtimeOf(c.path)
 }
 
 // maybeReload reloads c.entries from disk when the file mtime has
