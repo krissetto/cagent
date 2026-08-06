@@ -112,6 +112,11 @@ func (m *model) handleUserMessageEvent(e *runtime.UserMessageEvent) {
 		m.addUserEcho(pending.Display)
 		return
 	}
+	if pending, ok := m.consumePendingUser(ui.PendingUserFollowUp, e.Message); ok {
+		m.screen.Transcript.FlushPending()
+		m.addUserEcho(pending.Display)
+		return
+	}
 	m.screen.Transcript.FlushPending()
 	m.addUserEcho(e.Message)
 }

@@ -34,7 +34,7 @@ func (m *model) handleKey(ctx context.Context, k ui.Key) {
 	case ui.KeyEnter:
 		m.handleEnter(ctx)
 	case ui.KeyAltEnter:
-		m.screen.Editor.InsertNewline()
+		m.submitEditorMode(ctx, m.screen.Editor.Text(), busySubmitFollowUp)
 	case ui.KeyTab:
 		m.handleTab()
 	case ui.KeyShiftTab:
@@ -188,6 +188,7 @@ type busySubmitMode int
 const (
 	busySubmitSteer busySubmitMode = iota
 	busySubmitQueue
+	busySubmitFollowUp
 )
 
 type submitOptions struct {
@@ -196,7 +197,11 @@ type submitOptions struct {
 }
 
 func (m *model) submitEditor(ctx context.Context, text string) {
-	m.submit(ctx, text, submitOptions{fromEditor: true, busyMode: busySubmitSteer})
+	m.submitEditorMode(ctx, text, busySubmitSteer)
+}
+
+func (m *model) submitEditorMode(ctx context.Context, text string, mode busySubmitMode) {
+	m.submit(ctx, text, submitOptions{fromEditor: true, busyMode: mode})
 }
 
 func (m *model) submitFollowUp(ctx context.Context, text string) {
@@ -335,16 +340,25 @@ func (m *model) dispatchUserMessage(ctx context.Context, display, content string
 		return
 	}
 	if m.busy {
-		if mode == busySubmitSteer {
+		switch mode {
+		case busySubmitSteer:
 			if err := m.app.Steer(ctx, runtime.QueuedMessage{Content: content}); err != nil {
 				m.addNotice("⚠ ", "Could not steer current response: "+err.Error(), ui.StWarning())
 				return
 			}
 			m.addPendingUser(display, content, ui.PendingUserSteer)
 			return
+		case busySubmitFollowUp:
+			if err := m.app.FollowUp(ctx, runtime.QueuedMessage{Content: content}); err != nil {
+				m.addNotice("⚠ ", "Could not enqueue follow-up: "+err.Error(), ui.StWarning())
+				return
+			}
+			m.addPendingUser(display, content, ui.PendingUserFollowUp)
+			return
+		default:
+			m.enqueueFollowUp(display, content)
+			return
 		}
-		m.enqueueFollowUp(display, content)
-		return
 	}
 	m.addUserEcho(display)
 	m.ignoreUserEcho(content)

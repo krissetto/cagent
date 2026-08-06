@@ -1015,6 +1015,11 @@ func (a *App) Steer(ctx context.Context, msg runtime.QueuedMessage) error {
 	return a.runtime.Steer(ctx, msg)
 }
 
+// FollowUp queues a user message for a separate turn after the current turn.
+func (a *App) FollowUp(ctx context.Context, msg runtime.QueuedMessage) error {
+	return a.runtime.FollowUp(ctx, msg)
+}
+
 // SteerMessage resolves attachments into message parts and queues the result
 // for mid-turn injection into the running agent. The runtime appends the
 // message to the session (and emits the matching UserMessageEvent) when the
@@ -1025,6 +1030,16 @@ func (a *App) SteerMessage(ctx context.Context, content string, attachments []me
 		msg.MultiContent = a.buildUserMultiContent(ctx, content, attachments)
 	}
 	return a.runtime.Steer(ctx, msg)
+}
+
+// FollowUpMessage resolves attachments and queues a message for a separate turn
+// after the current agent turn finishes.
+func (a *App) FollowUpMessage(ctx context.Context, content string, attachments []messages.Attachment) error {
+	msg := runtime.QueuedMessage{Content: content}
+	if len(attachments) > 0 {
+		msg.MultiContent = a.buildUserMultiContent(ctx, content, attachments)
+	}
+	return a.runtime.FollowUp(ctx, msg)
 }
 
 // TogglePause toggles whether the runtime loop is paused at iteration

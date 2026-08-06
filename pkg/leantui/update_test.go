@@ -25,6 +25,7 @@ type cycleThinkingRuntime struct {
 	cycleCalls int
 	setCalls   int
 	setLevel   effort.Level
+	followUps  []runtime.QueuedMessage
 	steered    []runtime.QueuedMessage
 	steerErr   error
 	models     []runtime.ModelChoice
@@ -96,8 +97,12 @@ func (r *cycleThinkingRuntime) Steer(_ context.Context, msg runtime.QueuedMessag
 	r.steered = append(r.steered, msg)
 	return nil
 }
-func (r *cycleThinkingRuntime) FollowUp(context.Context, runtime.QueuedMessage) error { return nil }
-func (r *cycleThinkingRuntime) QueueStatus() runtime.QueueStatus                      { return runtime.QueueStatus{} }
+
+func (r *cycleThinkingRuntime) FollowUp(_ context.Context, msg runtime.QueuedMessage) error {
+	r.followUps = append(r.followUps, msg)
+	return nil
+}
+func (r *cycleThinkingRuntime) QueueStatus() runtime.QueueStatus { return runtime.QueueStatus{} }
 
 func (r *cycleThinkingRuntime) TogglePause(context.Context) (bool, error) {
 	return false, nil
@@ -227,6 +232,25 @@ func TestModelCommandOpensModelAutocomplete(t *testing.T) {
 		assert.Equal(t, "openai/gpt-5", cmd.Name)
 		assert.Equal(t, "/model default", m.screen.Autocomplete.Completion(cmd))
 	}
+}
+
+func TestAltEnterWhileBusyQueuesRuntimeFollowUp(t *testing.T) {
+	t.Parallel()
+	rt := &cycleThinkingRuntime{}
+	m := bareModel(24)
+	m.app = app.New(t.Context(), rt, session.New())
+	m.busy = true
+	m.screen.Editor.SetText("do this next")
+
+	m.handleKey(t.Context(), ui.Key{Typ: ui.KeyAltEnter})
+
+	if assert.Len(t, rt.followUps, 1) {
+		assert.Equal(t, "do this next", rt.followUps[0].Content)
+	}
+	assert.Empty(t, rt.steered)
+	assert.Empty(t, m.queue)
+	assert.Len(t, m.pendingUsers, 1)
+	assert.True(t, m.screen.Editor.IsEmpty())
 }
 
 func TestEditorSubmitWhileBusySteersAndRendersAtStreamEnd(t *testing.T) {
