@@ -635,9 +635,14 @@ func FormatError(err error) string {
 	case OverflowKindMedia:
 		return "An image or file in this conversation is too large for the AI provider. " +
 			"Try a smaller file or remove it from context."
+	// Frontend-agnostic by design too: this error reaches every consumer of
+	// the runtime event stream, and not all of them expose a /compact
+	// command, so name the action ("compact") rather than a command. It also
+	// avoids claiming compaction "is not enabled": this path is reached both
+	// when compaction is disabled and when its retries are exhausted.
 	case OverflowKindTokens:
-		return "The conversation has exceeded the model's context window and automatic compaction is not enabled. " +
-			"Try running /compact to reduce the conversation size, or start a new session."
+		return "The conversation has exceeded the model's context window. " +
+			"Compact the conversation to reduce its size, or start a new session."
 	}
 
 	if IsStreamTruncationError(err) {

@@ -389,12 +389,14 @@ func TestFormatError_OverflowKinds(t *testing.T) {
 		assert.NotContains(t, msg, "/compact")
 	})
 
-	t.Run("token overflow keeps the /compact hint", func(t *testing.T) {
+	t.Run("token overflow suggests compacting without naming a command", func(t *testing.T) {
 		t.Parallel()
 		err := errors.New(`prompt is too long: 200000 tokens > 128000 maximum`)
 		msg := FormatError(err)
 		assert.Contains(t, msg, "context window")
-		assert.Contains(t, msg, "/compact")
+		assert.Contains(t, msg, "Compact the conversation")
+		// Not every frontend exposes a /compact command.
+		assert.NotContains(t, msg, "/compact")
 	})
 }
 
@@ -529,7 +531,7 @@ func TestFormatError(t *testing.T) {
 		err := NewContextOverflowError(errors.New("prompt is too long"))
 		msg := FormatError(err)
 		assert.Contains(t, msg, "context window")
-		assert.Contains(t, msg, "/compact")
+		assert.Contains(t, msg, "Compact the conversation")
 		assert.NotContains(t, msg, "prompt is too long")
 	})
 
@@ -538,7 +540,7 @@ func TestFormatError(t *testing.T) {
 		err := fmt.Errorf("outer: %w", NewContextOverflowError(errors.New("prompt is too long")))
 		msg := FormatError(err)
 		assert.Contains(t, msg, "context window")
-		assert.Contains(t, msg, "/compact")
+		assert.Contains(t, msg, "Compact the conversation")
 	})
 
 	t.Run("generic error preserves message", func(t *testing.T) {
@@ -553,7 +555,7 @@ func TestFormatError(t *testing.T) {
 		wrapped := NewContextOverflowError(&StatusError{StatusCode: 400, Err: underlying})
 		msg := FormatError(wrapped)
 		assert.Contains(t, msg, "context window")
-		assert.Contains(t, msg, "/compact")
+		assert.Contains(t, msg, "Compact the conversation")
 	})
 }
 

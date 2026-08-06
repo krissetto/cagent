@@ -2058,7 +2058,7 @@ func (sm *SessionManager) ExportSessionForRecovery(ctx context.Context, sessionI
 	}
 
 	inputTokens, outputTokens := sess.Usage()
-	return map[string]any{
+	export := map[string]any{
 		"id":             sess.ID,
 		"title":          sess.TitleSnapshot(),
 		"created_at":     sess.CreatedAt,
@@ -2068,5 +2068,13 @@ func (sm *SessionManager) ExportSessionForRecovery(ctx context.Context, sessionI
 		"working_dir":    sess.WorkingDir,
 		"tools_approved": sess.ToolsApproved,
 		"permissions":    sess.Permissions,
-	}, nil
+	}
+	// Recorded errors are session items, not messages, so GetAllMessages
+	// drops them. Export them separately: recovery exports feed diagnostics,
+	// and a run that died with e.g. a context overflow is invisible without
+	// the error that ended it.
+	if errs := sess.GetAllErrors(); len(errs) > 0 {
+		export["errors"] = errs
+	}
+	return export, nil
 }
