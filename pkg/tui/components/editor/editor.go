@@ -635,6 +635,10 @@ func (e *editor) ScrollByWheel(delta int) {
 // resetAndSend prepares a message for sending: processes pending file refs,
 // collects attachments, resets editor state, and returns the SendMsg command.
 func (e *editor) resetAndSend(content string) tea.Cmd {
+	return e.resetAndSendMode(content, false)
+}
+
+func (e *editor) resetAndSendMode(content string, followUp bool) tea.Cmd {
 	e.tryAddFileRef(e.pendingFileRef)
 	e.pendingFileRef = ""
 	attachments := e.collectAttachments(content)
@@ -663,7 +667,7 @@ func (e *editor) resetAndSend(content string) tea.Cmd {
 	e.textarea.Reset()
 	e.userTyped = false
 	e.clearSuggestion()
-	return core.CmdHandler(messages.SendMsg{Content: content, Attachments: finalAttachments})
+	return core.CmdHandler(messages.SendMsg{Content: content, Attachments: finalAttachments, FollowUp: followUp})
 }
 
 // configureNewlineKeybinding sets up the newline keybinding from the
@@ -856,6 +860,20 @@ func (e *editor) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		// multi-codepoint characters like emoji (e.g., ⚠️ = U+26A0 + U+FE0F).
 		if key.Matches(msg, e.textarea.KeyMap.DeleteCharacterBackward) {
 			return e.handleGraphemeBackspace()
+		}
+
+		// Alt+Enter submits an end-of-turn follow-up. It is handled before the
+		// configurable newline binding so the two delivery modes are always
+		// available independently.
+		if msg.String() == "alt+enter" {
+			if !e.textarea.Focused() {
+				return e, nil
+			}
+			if value := e.textarea.Value(); value != "" {
+				cmd := e.resetAndSendMode(value, true)
+				return e, cmd
+			}
+			return e, nil
 		}
 
 		// Handle send/newline keys (both user-configurable, see issue #1626):

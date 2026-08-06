@@ -584,6 +584,18 @@ func (p *chatPage) update(msg tea.Msg) (layout.Model, tea.Cmd) {
 			cmd,
 		)
 
+	case followUpSentMsg:
+		return p, notification.InfoCmd("Follow-up queued for the next turn")
+
+	case followUpFailedMsg:
+		msg.original.FollowUp = false
+		msg.original.Queue = true
+		model, cmd := p.handleSendMsg(msg.original)
+		return model, tea.Batch(
+			notification.WarningCmd("Could not enqueue the follow-up"),
+			cmd,
+		)
+
 	case msgtypes.RetryMsg:
 		return p.handleRetry()
 
@@ -946,6 +958,13 @@ func (p *chatPage) handleSendMsg(msg msgtypes.SendMsg) (layout.Model, tea.Cmd) {
 		return p, cmd
 	}
 
+	// Alt+Enter explicitly requests a separate end-of-turn follow-up. When the
+	// agent is idle there is no active turn to follow, so process it normally.
+	if msg.FollowUp && p.working && p.app != nil {
+		cmd := p.followUpMessage(msg)
+		return p, cmd
+	}
+
 	// While the agent is working, the configured send mode decides the
 	// default: steer injects the message into the ongoing stream so the
 	// agent picks it up mid-turn without breaking the stream (issue #3547);
@@ -992,8 +1011,10 @@ func (p *chatPage) enqueueMessage(msg msgtypes.SendMsg) tea.Cmd {
 // queue; steerFailedMsg carries the message back for local queueing when
 // steering was rejected (e.g. steer queue full).
 type (
-	steerSentMsg   struct{}
-	steerFailedMsg struct{ original msgtypes.SendMsg }
+	steerSentMsg      struct{}
+	steerFailedMsg    struct{ original msgtypes.SendMsg }
+	followUpSentMsg   struct{}
+	followUpFailedMsg struct{ original msgtypes.SendMsg }
 )
 
 // steerMessage injects the message into the ongoing stream via the runtime's
@@ -1010,6 +1031,18 @@ func (p *chatPage) steerMessage(msg msgtypes.SendMsg) tea.Cmd {
 			return steerFailedMsg{original: msg}
 		}
 		return steerSentMsg{}
+	}
+}
+
+func (p *chatPage) followUpMessage(msg msgtypes.SendMsg) tea.Cmd {
+	ctx := p.ctx()
+	return func() tea.Msg {
+		content := p.app.ResolveInput(ctx, msg.Content)
+		if err := p.app.FollowUpMessage(ctx, content, msg.Attachments); err != nil {
+			slog.Warn("Failed to enqueue follow-up; falling back to local queue", "error", err)
+			return followUpFailedMsg{original: msg}
+		}
+		return followUpSentMsg{}
 	}
 }
 
