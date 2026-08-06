@@ -1114,6 +1114,24 @@ func (s *Session) GetAllMessages() []Message {
 	return messages
 }
 
+// GetAllErrors extracts all recorded errors from the session, including from
+// sub-sessions, in item order. Recorded errors live alongside messages as
+// session items but are not part of the conversation, so exports that build
+// on GetAllMessages need this to surface failures for diagnostics.
+func (s *Session) GetAllErrors() []Error {
+	items := s.snapshotItems()
+
+	var errs []Error
+	for _, item := range items {
+		if item.IsError() {
+			errs = append(errs, *item.Error)
+		} else if item.IsSubSession() {
+			errs = append(errs, item.SubSession.GetAllErrors()...)
+		}
+	}
+	return errs
+}
+
 // OwnMessages extracts this session's direct messages, excluding system
 // messages and WITHOUT recursing into sub-sessions. This is the set of
 // messages that actually enters this session's prompt (GetMessages skips

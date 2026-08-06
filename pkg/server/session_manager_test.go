@@ -2252,3 +2252,52 @@ func TestApplyAgentSwitchCommands_RollsBackOnBatchFailure(t *testing.T) {
 	assert.Equal(t, "root", rt.currentAgent, "runtime must be restored to the pre-batch agent")
 	assert.Equal(t, []string{"planner", "nonexistent", "root"}, rt.setCalls)
 }
+
+// TestExportSessionForRecovery_IncludesErrors verifies that recorded error
+// items reach the recovery export. GetAllMessages filters them out, so
+// without a dedicated "errors" key a run that died with e.g. a context
+// overflow would look like it just stopped mid-conversation.
+func TestExportSessionForRecovery_IncludesErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	sess := session.New(session.WithUserMessage("hi"))
+	require.NoError(t, store.AddSession(ctx, sess))
+	require.NoError(t, store.AddError(ctx, sess.ID, &session.Error{
+		Message:   "the conversation has exceeded the model's context window",
+		Code:      "context_exceeded",
+		AgentName: "root",
+	}))
+
+	sm := NewSessionManager(ctx, config.Sources{}, store, 0, &config.RuntimeConfig{})
+	export, err := sm.ExportSessionForRecovery(ctx, sess.ID)
+	require.NoError(t, err)
+
+	errs, ok := export["errors"].([]session.Error)
+	require.True(t, ok, "export must carry recorded errors")
+	require.Len(t, errs, 1)
+	assert.Equal(t, "context_exceeded", errs[0].Code)
+
+	messages, ok := export["messages"].([]session.Message)
+	require.True(t, ok)
+	require.Len(t, messages, 1, "error items must not leak into messages")
+}
+
+// TestExportSessionForRecovery_OmitsErrorsKeyWhenNone verifies the export
+// shape is unchanged for sessions without recorded errors.
+func TestExportSessionForRecovery_OmitsErrorsKeyWhenNone(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	sess := session.New(session.WithUserMessage("hi"))
+	require.NoError(t, store.AddSession(ctx, sess))
+
+	sm := NewSessionManager(ctx, config.Sources{}, store, 0, &config.RuntimeConfig{})
+	export, err := sm.ExportSessionForRecovery(ctx, sess.ID)
+	require.NoError(t, err)
+
+	_, present := export["errors"]
+	assert.False(t, present)
+}
