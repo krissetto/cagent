@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,9 +207,7 @@ func (c *Cache) persistToDisk(key, response string) error {
 // The merge is deliberate — replacing c.entries would discard entries an earlier
 // failed [Cache.Store] kept in memory on purpose. The caller must hold c.mu.
 func (c *Cache) adopt(entries map[string]string) {
-	for k, v := range entries {
-		c.entries[k] = v
-	}
+	maps.Copy(c.entries, entries)
 	c.mtime = mtimeOf(c.path)
 }
 
