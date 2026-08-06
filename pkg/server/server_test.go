@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -104,6 +105,67 @@ func TestServer_OversizedBodyRejected(t *testing.T) {
 	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 }
 
+// TestServer_MaxRequestBytesOption verifies that WithMaxRequestBytes wires a
+// custom body-size cap: bodies under the limit reach handlers normally, while
+// bodies over the limit are rejected with 413 before any handler runs.
+//
+// The test targets POST /api/sessions/:id/messages because the issue (#3937)
+// specifically calls out that route. With a nil SessionManager the handler
+// returns 400 ("message is required") for an under-limit request — any
+// non-413 status confirms the body cap was not exceeded.
+func TestServer_MaxRequestBytesOption(t *testing.T) {
+	t.Parallel()
+
+	const bodyLimit = 16
+	srv := NewWithManager(nil, "", WithMaxRequestBytes(bodyLimit))
+
+	cases := []struct {
+		name    string
+		body    string
+		want413 bool
+	}{
+		{"under limit", `{}`, false},
+		{"over limit", `{"message":{"role":"user","content":"exceeds the cap"}}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/sessions/abc/messages", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			srv.e.ServeHTTP(rec, req)
+			if tc.want413 {
+				assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+			} else {
+				// A body under the limit reaches the handler; addMessage returns
+				// 400 for an empty message before it touches the SessionManager.
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+			}
+		})
+	}
+}
+
+// TestServer_WithMaxRequestBytesZeroFallback verifies that zero and negative
+// values fall back to the 1 MiB default. A body just over 1 MiB must still
+// trigger 413 even when WithMaxRequestBytes received 0 or -1.
+func TestServer_WithMaxRequestBytesZeroFallback(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []int64{0, -1} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			t.Parallel()
+			srv := NewWithManager(nil, "", WithMaxRequestBytes(n))
+			// A body over the default 1 MiB cap must still be rejected.
+			body := bytes.Repeat([]byte("a"), int(defaultMaxRequestBytes)+1)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/sessions", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			srv.e.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+		})
+	}
+}
+
 func TestServer_ListSessions(t *testing.T) {
 	t.Parallel()
 
@@ -144,7 +206,7 @@ func startServer(t *testing.T, ctx context.Context, agentsDir string) string {
 
 	sources, err := config.ResolveSources(agentsDir, nil)
 	require.NoError(t, err)
-	srv, err := New(ctx, store, &runConfig, 0, sources, "")
+	srv, err := New(ctx, store, &runConfig, 0, sources, "", 0)
 	require.NoError(t, err)
 
 	socketPath := "unix://" + filepath.Join(t.TempDir(), "sock")
@@ -481,7 +543,7 @@ func startServerWithStore(t *testing.T, ctx context.Context, agentsDir string, s
 
 	sources, err := config.ResolveSources(agentsDir, nil)
 	require.NoError(t, err)
-	srv, err := New(ctx, store, &runConfig, 0, sources, "")
+	srv, err := New(ctx, store, &runConfig, 0, sources, "", 0)
 	require.NoError(t, err)
 
 	socketPath := "unix://" + filepath.Join(t.TempDir(), "sock")
