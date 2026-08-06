@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -264,13 +263,6 @@ func (s *Server) createSession(c echo.Context) error {
 	var sessionTemplate session.Session
 	if err := c.Bind(&sessionTemplate); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
-	}
-
-	if wd := strings.TrimSpace(sessionTemplate.WorkingDir); wd != "" {
-		if filepath.IsAbs(wd) || strings.Contains(wd, "/") || strings.Contains(wd, "\\") || strings.Contains(wd, "..") {
-			return echo.NewHTTPError(http.StatusBadRequest, "invalid workingDir")
-		}
-		sessionTemplate.WorkingDir = wd
 	}
 
 	sess, err := s.sm.CreateSession(c.Request().Context(), &sessionTemplate)

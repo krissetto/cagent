@@ -586,11 +586,13 @@ func (sm *SessionManager) CreateSession(ctx context.Context, sessionTemplate *se
 			return nil, err
 		}
 		// Without a configured root, resolvedWd is the caller-chosen
-		// directory, untouched: local daemons intentionally open sessions
-		// on arbitrary host paths (#3788). Deployments serving untrusted
-		// callers opt in to containment via WithSessionWorkingDirRoot,
-		// enforced by resolveWithinRoot above.
-		info, err := os.Stat(resolvedWd) // codeql[go/path-injection] -- unrestricted default is intentional; opt-in containment enforced by resolveWithinRoot above
+		// directory, untouched: the unrestricted default is intentional
+		// for trusted local daemons, which open sessions on arbitrary
+		// host paths (#3788). Deployments that need containment must
+		// configure WithSessionWorkingDirRoot, enforced by
+		// resolveWithinRoot above.
+		// codeql[go/path-injection]
+		info, err := os.Stat(resolvedWd)
 		if err != nil {
 			return nil, err
 		}

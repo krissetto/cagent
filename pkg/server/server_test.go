@@ -248,6 +248,41 @@ func TestServer_UpdateSessionTitle(t *testing.T) {
 	assert.Equal(t, newTitle, sessionResp.Title)
 }
 
+// TestServer_CreateSessionWorkingDirWithSeparators pins the removal of a
+// Copilot-autofix validation that rejected any working_dir containing path
+// separators, an absolute path, or "..": POST /api/sessions must accept a
+// real host directory (which always contains separators) and store it on
+// the session. Containment stays opt-in via WithSessionWorkingDirRoot
+// (CodeQL alert #57); the unrestricted default is intentional (#3788).
+func TestServer_CreateSessionWorkingDirWithSeparators(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sm := NewSessionManager(ctx, config.Sources{}, session.NewInMemorySessionStore(), 0, &config.RuntimeConfig{})
+	srv := NewWithManager(sm, "")
+
+	wd := t.TempDir()
+	require.True(t, strings.ContainsAny(wd, `/\`))
+
+	body, err := json.Marshal(map[string]any{"working_dir": wd})
+	require.NoError(t, err)
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/sessions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.e.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var created session.Session
+	unmarshal(t, rec.Body.Bytes(), &created)
+	require.NotEmpty(t, created.ID)
+	assert.Equal(t, wd, created.WorkingDir)
+
+	stored, err := sm.GetSession(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, wd, stored.WorkingDir)
+}
+
 // TestServer_GetSessionsRace pins the data-race fix for the GET
 // /api/sessions and GET /api/sessions/:id handlers (#3591): the in-memory
 // store hands them live *session.Session pointers, so reading
