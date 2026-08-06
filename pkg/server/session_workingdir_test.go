@@ -29,7 +29,9 @@ func symlinkOrSkip(t *testing.T, target, link string) {
 // default: without WithSessionWorkingDirRoot, POST /api/sessions may point
 // a session at any existing host directory, stored exactly as supplied
 // (absolute, not canonicalised), and neither the process cwd nor
-// runConfig.WorkingDir acts as an implicit boundary (#3788).
+// runConfig.WorkingDir acts as an implicit boundary (#3788). The one
+// exception: a raw value containing ".." is rejected before any path
+// resolution or filesystem access.
 func TestCreateSession_WorkingDirUnrestrictedDefault(t *testing.T) {
 	t.Parallel()
 
@@ -72,6 +74,7 @@ func TestCreateSession_WorkingDirUnrestrictedDefault(t *testing.T) {
 		sm := newSM(&config.RuntimeConfig{})
 		_, err := sm.CreateSession(ctx, &session.Session{WorkingDir: filepath.Join(elsewhere, "does-not-exist")})
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidWorkingDir)
 	})
 
 	t.Run("working_dir that is a file is rejected", func(t *testing.T) {
@@ -81,8 +84,54 @@ func TestCreateSession_WorkingDirUnrestrictedDefault(t *testing.T) {
 		sm := newSM(&config.RuntimeConfig{})
 		_, err := sm.CreateSession(ctx, &session.Session{WorkingDir: f})
 		require.Error(t, err)
-		assert.EqualError(t, err, "working directory must be a directory")
+		require.ErrorIs(t, err, ErrInvalidWorkingDir)
+		assert.Contains(t, err.Error(), "is not a directory")
 	})
+
+	t.Run("raw dot-dot traversal is rejected even when it resolves to an existing dir", func(t *testing.T) {
+		t.Parallel()
+		// filepath.Join would clean the ".." away, so build the raw string
+		// by hand. It resolves back to elsewhere (which exists): rejection
+		// happens on the raw value, before any resolution.
+		sep := string(filepath.Separator)
+		wd := elsewhere + sep + ".." + sep + filepath.Base(elsewhere)
+		sm := newSM(&config.RuntimeConfig{})
+		_, err := sm.CreateSession(ctx, &session.Session{WorkingDir: wd})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidWorkingDir)
+		assert.Contains(t, err.Error(), `must not contain ".."`)
+	})
+
+	t.Run("filename component containing dot-dot is rejected without stat", func(t *testing.T) {
+		t.Parallel()
+		// "foo..bar" is a normal filename, but the deliberately conservative
+		// raw ".." check refuses it up front. The directory is never created:
+		// the assertion pins the validation error, not an os.Stat failure.
+		wd := elsewhere + string(filepath.Separator) + "foo..bar"
+		sm := newSM(&config.RuntimeConfig{})
+		_, err := sm.CreateSession(ctx, &session.Session{WorkingDir: wd})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidWorkingDir)
+		assert.Contains(t, err.Error(), `must not contain ".."`)
+	})
+}
+
+// TestCreateSession_WorkingDirRelativeCleanPath pins that a clean relative
+// working_dir stays accepted, resolved against the process cwd via
+// filepath.Abs. Not parallel: t.Chdir mutates the process-wide cwd.
+func TestCreateSession_WorkingDirRelativeCleanPath(t *testing.T) {
+	base := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(base, "child"), 0o755))
+	t.Chdir(base)
+
+	ctx := t.Context()
+	sm := NewSessionManager(ctx, config.Sources{}, session.NewInMemorySessionStore(), 0, &config.RuntimeConfig{})
+	created, err := sm.CreateSession(ctx, &session.Session{WorkingDir: "child"})
+	require.NoError(t, err)
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(cwd, "child"), created.WorkingDir)
 }
 
 // TestCreateSession_WorkingDirRootConfigured covers the opt-in containment
@@ -135,6 +184,7 @@ func TestCreateSession_WorkingDirRootConfigured(t *testing.T) {
 		sm := newSM()
 		_, err := sm.CreateSession(ctx, &session.Session{WorkingDir: outside})
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidWorkingDir)
 		assert.Contains(t, err.Error(), "outside the permitted root")
 	})
 
@@ -155,6 +205,7 @@ func TestCreateSession_WorkingDirRootConfigured(t *testing.T) {
 		sm := newSM()
 		_, err := sm.CreateSession(ctx, &session.Session{WorkingDir: link})
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidWorkingDir)
 		assert.Contains(t, err.Error(), "outside the permitted root")
 	})
 
@@ -178,6 +229,7 @@ func TestCreateSession_WorkingDirRootConfigured(t *testing.T) {
 		sm := newSM()
 		_, err := sm.CreateSession(ctx, &session.Session{WorkingDir: filepath.Join(root, "does-not-exist")})
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidWorkingDir)
 	})
 
 	t.Run("working_dir that is a file is rejected", func(t *testing.T) {
@@ -188,12 +240,15 @@ func TestCreateSession_WorkingDirRootConfigured(t *testing.T) {
 		sm := newSM()
 		_, err := sm.CreateSession(ctx, &session.Session{WorkingDir: f})
 		require.Error(t, err)
-		assert.EqualError(t, err, "working directory must be a directory")
+		require.ErrorIs(t, err, ErrInvalidWorkingDir)
+		assert.Contains(t, err.Error(), "is not a directory")
 	})
 }
 
 // TestCreateSession_WorkingDirWhitespaceRoot: a root that trims to empty is
 // a misconfiguration and must fail instead of silently disabling containment.
+// It is the operator's fault, not the caller's, so it must not read as an
+// invalid working_dir (which the HTTP handler maps to 400).
 func TestCreateSession_WorkingDirWhitespaceRoot(t *testing.T) {
 	t.Parallel()
 
@@ -203,6 +258,7 @@ func TestCreateSession_WorkingDirWhitespaceRoot(t *testing.T) {
 
 	_, err := sm.CreateSession(ctx, &session.Session{WorkingDir: t.TempDir()})
 	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrInvalidWorkingDir)
 	assert.Contains(t, err.Error(), "whitespace")
 }
 
@@ -239,6 +295,7 @@ func TestResolveWithinRoot(t *testing.T) {
 		sibling := t.TempDir()
 		_, err := sm.resolveWithinRoot(sibling)
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidWorkingDir)
 		assert.Contains(t, err.Error(), "outside the permitted root")
 	})
 
@@ -246,6 +303,7 @@ func TestResolveWithinRoot(t *testing.T) {
 		t.Parallel()
 		_, err := sm.resolveWithinRoot(filepath.Join(root, "ghost"))
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidWorkingDir)
 	})
 
 	t.Run("symlink inside root pointing outside root is rejected", func(t *testing.T) {
@@ -282,7 +340,17 @@ func TestResolveWithinRoot(t *testing.T) {
 			WithSessionWorkingDirRoot(" \t"))
 		_, err := wsSM.resolveWithinRoot(t.TempDir())
 		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrInvalidWorkingDir)
 		assert.Contains(t, err.Error(), "whitespace")
+	})
+
+	t.Run("missing configured root is an operator error, not an invalid working_dir", func(t *testing.T) {
+		t.Parallel()
+		goneSM := NewSessionManager(t.Context(), config.Sources{}, session.NewInMemorySessionStore(), 0, &config.RuntimeConfig{},
+			WithSessionWorkingDirRoot(filepath.Join(t.TempDir(), "gone")))
+		_, err := goneSM.resolveWithinRoot(t.TempDir())
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrInvalidWorkingDir)
 	})
 }
 

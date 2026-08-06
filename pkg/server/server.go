@@ -267,6 +267,9 @@ func (s *Server) createSession(c echo.Context) error {
 
 	sess, err := s.sm.CreateSession(c.Request().Context(), &sessionTemplate)
 	if err != nil {
+		if errors.Is(err, ErrInvalidWorkingDir) {
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("failed to create session: %v", err))
 	}
 

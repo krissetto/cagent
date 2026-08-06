@@ -555,6 +555,13 @@ func (sm *SessionManager) GetSessionSnapshot(ctx context.Context, id string) (*a
 	}, nil
 }
 
+// ErrInvalidWorkingDir marks a rejected client-supplied working_dir in
+// CreateSession (raw "..", nonexistent or non-directory path, outside the
+// configured root). Matched via errors.Is by the HTTP handler to answer
+// 400 instead of 500; operator misconfiguration (a broken configured
+// root) deliberately does not wrap it.
+var ErrInvalidWorkingDir = errors.New("invalid working directory")
+
 // CreateSession creates a new session from a template.
 func (sm *SessionManager) CreateSession(ctx context.Context, sessionTemplate *session.Session) (*session.Session, error) {
 	var opts []session.Opt
@@ -577,9 +584,18 @@ func (sm *SessionManager) CreateSession(ctx context.Context, sessionTemplate *se
 	}
 
 	if wd := strings.TrimSpace(sessionTemplate.WorkingDir); wd != "" {
+		// Refuse any raw ".." here in CreateSession, before filepath.Abs
+		// cleans it away: the traversal rejection is auditable on the raw
+		// value and CodeQL recognizes the direct guard (go/path-injection).
+		// Deliberately conservative — even a plain filename like "foo..bar"
+		// is rejected. Absolute, already-clean paths — what callers
+		// actually send — pass through untouched (#3788).
+		if strings.Contains(wd, "..") {
+			return nil, fmt.Errorf("%w: %q must not contain %q", ErrInvalidWorkingDir, wd, "..")
+		}
 		absWd, err := filepath.Abs(wd)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrInvalidWorkingDir, err)
 		}
 		resolvedWd, err := sm.resolveWithinRoot(absWd)
 		if err != nil {
@@ -591,13 +607,12 @@ func (sm *SessionManager) CreateSession(ctx context.Context, sessionTemplate *se
 		// host paths (#3788). Deployments that need containment must
 		// configure WithSessionWorkingDirRoot, enforced by
 		// resolveWithinRoot above.
-		// codeql[go/path-injection]
 		info, err := os.Stat(resolvedWd)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrInvalidWorkingDir, err)
 		}
 		if !info.IsDir() {
-			return nil, errors.New("working directory must be a directory")
+			return nil, fmt.Errorf("%w: %q is not a directory", ErrInvalidWorkingDir, resolvedWd)
 		}
 		opts = append(opts, session.WithWorkingDir(resolvedWd))
 	}
@@ -665,6 +680,8 @@ func (sm *SessionManager) workingDirRoot() (string, error) {
 // untouched: arbitrary host directories are the intended,
 // backwards-compatible default, and neither the process cwd nor
 // --working-dir may serve as an implicit boundary (#3788).
+// Failures caused by the submitted path wrap ErrInvalidWorkingDir;
+// a broken configured root does not.
 func (sm *SessionManager) resolveWithinRoot(absPath string) (string, error) {
 	root, err := sm.workingDirRoot()
 	if err != nil {
@@ -675,7 +692,7 @@ func (sm *SessionManager) resolveWithinRoot(absPath string) (string, error) {
 	}
 	resolvedPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrInvalidWorkingDir, err)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -686,7 +703,7 @@ func (sm *SessionManager) resolveWithinRoot(absPath string) (string, error) {
 	// rejects "", absolute paths and anything whose first component is
 	// ".." — without misclassifying siblings like "..foo".
 	if err != nil || !filepath.IsLocal(rel) {
-		return "", fmt.Errorf("working directory %q is outside the permitted root %q", absPath, root)
+		return "", fmt.Errorf("%w: %q is outside the permitted root %q", ErrInvalidWorkingDir, absPath, root)
 	}
 	return resolvedPath, nil
 }
