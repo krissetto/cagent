@@ -532,6 +532,58 @@ func TestFilesystemTool_EditFile(t *testing.T) {
 	assert.Contains(t, result.Output, "old text not found")
 }
 
+// An empty oldText is never a meaningful edit: strings.Contains(s, "") is always
+// true and strings.Replace(s, "", new, 1) inserts at offset 0, so without a guard
+// the file is silently prepended to and the tool still reports success.
+func TestFilesystemTool_EditFileRejectsEmptyOldText(t *testing.T) {
+	t.Parallel()
+
+	const original = "line one\nline two\n"
+
+	t.Run("single empty edit", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		tool := New(tmpDir)
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte(original), 0o644))
+
+		result, err := tool.handleEditFile(t.Context(), EditFileArgs{
+			Path:  "f.txt",
+			Edits: []Edit{{OldText: "", NewText: "INJECTED"}},
+		})
+		require.NoError(t, err)
+		assert.True(t, result.IsError)
+		assert.Contains(t, result.Output, "oldText must not be empty")
+
+		after, err := os.ReadFile(filepath.Join(tmpDir, "f.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, original, string(after), "the file must be left untouched")
+	})
+
+	// The write happens once after every edit is applied in memory, so rejecting
+	// a later edit must not leave the earlier one persisted.
+	t.Run("empty edit after a valid one leaves the file untouched", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		tool := New(tmpDir)
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte(original), 0o644))
+
+		result, err := tool.handleEditFile(t.Context(), EditFileArgs{
+			Path: "f.txt",
+			Edits: []Edit{
+				{OldText: "line one", NewText: "LINE ONE"},
+				{OldText: "", NewText: "INJECTED"},
+			},
+		})
+		require.NoError(t, err)
+		assert.True(t, result.IsError)
+		assert.Contains(t, result.Output, "Edit 2")
+
+		after, err := os.ReadFile(filepath.Join(tmpDir, "f.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, original, string(after), "no edit may be persisted when a later one is rejected")
+	})
+}
+
 func TestParseEditFileArgs(t *testing.T) {
 	t.Parallel()
 
@@ -689,6 +741,30 @@ func TestParseEditFileArgs(t *testing.T) {
 			input:      `{totally broken <<<>>>`,
 			wantErr:    true,
 			wantErrMsg: "failed to parse edit_file arguments",
+		},
+		// Dropping the stray backslash closes the string early, leaving an empty
+		// oldText. That means the repair removed a load-bearing character, so the
+		// payload must be rejected — the double-serialized path already does this.
+		{
+			name:       "repair that empties oldText is rejected (outer payload)",
+			input:      `{"path": "target.txt", "edits": [{"oldText":\"", "newText": "INJECTED"}]}`,
+			wantErr:    true,
+			wantErrMsg: "empty oldText",
+		},
+		{
+			name:       "repair that empties oldText is rejected (double-serialized payload)",
+			input:      `{"path": "target.txt", "edits": "[{\"oldText\":\\\"\",\"newText\":\"INJECTED\"}]"}`,
+			wantErr:    true,
+			wantErrMsg: "empty oldText",
+		},
+		// Well-formed JSON is never second-guessed here: the TUI parses
+		// partially-streamed arguments with this function, where a not-yet-filled
+		// oldText is normal. handleEditFile is the layer that refuses to apply it.
+		{
+			name:      "well-formed empty oldText still parses for streaming renderers",
+			input:     `{"path": "target.txt", "edits": [{"oldText": "", "newText": "x"}]}`,
+			wantPath:  "target.txt",
+			wantEdits: []Edit{{OldText: "", NewText: "x"}},
 		},
 	}
 
