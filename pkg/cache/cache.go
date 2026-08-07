@@ -19,9 +19,11 @@
 // back atomically via a temp file + rename. Two processes simultaneously
 // caching different keys both see their writes preserved; the lock
 // serializes the read-modify-write window so neither can clobber the
-// other. [Cache.Lookup] reloads the in-memory map when the file's mtime
-// has advanced since its last load, so cross-process writes become
-// visible without a restart.
+// other. Storing also adopts the state it read under the lock, so a
+// sibling's entries become visible to this process without waiting for a
+// reload. [Cache.Lookup] reloads the in-memory map when the file's mtime
+// has advanced since its last load, so cross-process writes made while
+// this process was idle become visible without a restart.
 //
 // Two normalization options are exposed:
 //
@@ -204,8 +206,21 @@ func (c *Cache) persistToDisk(key, response string) error {
 // mark this instance up to date against a file whose sibling-written entries it
 // never loaded, and [Cache.maybeReload] would then never reload them.
 //
-// The merge is deliberate — replacing c.entries would discard entries an earlier
-// failed [Cache.Store] kept in memory on purpose. The caller must hold c.mu.
+// The merge is deliberate: replacing c.entries outright would discard every
+// in-memory entry the on-disk state does not mention, including one an earlier
+// failed [Cache.Store] kept on purpose.
+//
+// That preservation is narrow, and deliberately so — do not read it as making
+// unpersisted entries durable:
+//   - it lasts only until the next reload. [Cache.maybeReload] still replaces
+//     c.entries wholesale, so the first sibling write after a failed Store drops
+//     an unpersisted entry anyway.
+//   - it covers only keys absent from disk. When the on-disk state does mention
+//     the key, the value read under the lock wins and overwrites the in-memory
+//     one. Converging on what the lock protected is the right call for a cache,
+//     and [Cache.Store] overwrites by key by design.
+//
+// The caller must hold c.mu.
 func (c *Cache) adopt(entries map[string]string) {
 	maps.Copy(c.entries, entries)
 	c.mtime = mtimeOf(c.path)
