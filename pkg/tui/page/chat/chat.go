@@ -376,14 +376,15 @@ func defaultKeyMap() KeyMap {
 // New creates a new chat page
 func New(ar *animation.Runtime, ctx context.Context, a *app.App, sessionState *service.SessionState, opts ...PageOption) Page {
 	p := &chatPage{
-		ar:            ar,
-		ctx:           func() context.Context { return context.WithoutCancel(ctx) },
-		sidebar:       sidebar.New(ar, ctx, sessionState),
-		messages:      messages.New(ar, sessionState),
-		app:           a,
-		keyMap:        defaultKeyMap(),
-		commandParser: commands.NewParser(),
-		sessionState:  sessionState,
+		ar:                ar,
+		ctx:               func() context.Context { return context.WithoutCancel(ctx) },
+		sidebar:           sidebar.New(ar, ctx, sessionState),
+		messages:          messages.New(ar, sessionState),
+		app:               a,
+		keyMap:            defaultKeyMap(),
+		commandParser:     commands.NewParser(),
+		sessionState:      sessionState,
+		showStartupBanner: true,
 	}
 
 	for _, opt := range opts {

@@ -24,14 +24,26 @@ func newLayoutTestPage(t *testing.T, position msgtypes.SidebarPosition) *chatPag
 	t.Helper()
 	sessionState := &service.SessionState{}
 	p := &chatPage{
-		sidebar:      sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
-		messages:     messages.New(animation.NewRuntime(), sessionState),
-		sessionState: sessionState,
-		width:        160,
-		height:       40,
+		sidebar:           sidebar.New(animation.NewRuntime(), t.Context(), sessionState),
+		messages:          messages.New(animation.NewRuntime(), sessionState),
+		sessionState:      sessionState,
+		width:             160,
+		height:            40,
+		showStartupBanner: true,
 	}
 	p.layoutSettings = msgtypes.LayoutSettings{SidebarPosition: position}
 	return p
+}
+
+func TestNewChatPageShowsBannerBeforeAgentInfo(t *testing.T) {
+	t.Parallel()
+
+	sessionState := &service.SessionState{}
+	p := New(animation.NewRuntime(), t.Context(), nil, sessionState).(*chatPage)
+	p.SetSize(160, 40)
+
+	assert.True(t, p.showStartupBanner)
+	assert.Contains(t, ansi.Strip(p.messagesView(p.computeSidebarLayout())), tuibanner.Lines[0])
 }
 
 func TestStartupBannerIsCenteredInEmptyChat(t *testing.T) {
@@ -81,6 +93,17 @@ func TestStartupBannerHiddenWhenChatIsTooSmall(t *testing.T) {
 			}))
 		})
 	}
+}
+
+func TestEmptyAgentInfoDoesNotReactivateStartupBanner(t *testing.T) {
+	t.Parallel()
+
+	p := newLayoutTestPage(t, msgtypes.SidebarRight)
+	p.showStartupBanner = false
+	handled, _ := p.handleRuntimeEvent(runtime.AgentInfo("root", "model", "", ""))
+
+	require.True(t, handled)
+	assert.False(t, p.showStartupBanner)
 }
 
 func TestAgentWelcomeMessageControlsStartupBanner(t *testing.T) {
