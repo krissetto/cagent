@@ -1612,3 +1612,38 @@ func TestFilesystemTool_RootedListDirRefusesSymlinkSwap(t *testing.T) {
 	require.Error(t, err,
 		"rooted readDir must refuse a directory symlink that escapes the allow-list")
 }
+
+// The two layers are deliberately asymmetric: ParseEditFileArgs accepts a
+// well-formed empty oldText (the TUI parses partially-streamed arguments with
+// it, where a not-yet-filled oldText is normal) while handleEditFile refuses to
+// apply one. Each half is tested in isolation elsewhere; this pins the
+// composition end to end through the real tool handler, so a future refactor
+// cannot satisfy both halves while breaking how they combine.
+func TestFilesystemTool_EditFileHandlerRefusesWellFormedEmptyOldText(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	tool := New(tmpDir)
+	const original = "line one\nline two\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte(original), 0o644))
+
+	const payload = `{"path":"f.txt","edits":[{"oldText":"","newText":"INJECTED"}]}`
+
+	// The parser accepts it: this is the streaming contract.
+	args, err := ParseEditFileArgs([]byte(payload))
+	require.NoError(t, err, "the parser must not reject a well-formed payload")
+	require.Len(t, args.Edits, 1)
+	require.Empty(t, args.Edits[0].OldText)
+
+	// The handler refuses to apply it, and the file is untouched.
+	result, err := tool.editFileHandler()(t.Context(), tools.ToolCall{
+		Function: tools.FunctionCall{Name: ToolNameEditFile, Arguments: payload},
+	}, nil)
+	require.NoError(t, err)
+	assert.True(t, result.IsError, result.Output)
+	assert.Contains(t, result.Output, "oldText must not be empty")
+
+	after, err := os.ReadFile(filepath.Join(tmpDir, "f.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, original, string(after))
+}
