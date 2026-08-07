@@ -73,6 +73,24 @@ func trimLinePadding(value string) string {
 	return strings.Join(lines, "\n")
 }
 
+func TestLatexUnclosedDelimitersKeepRenderingMarkdown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{`See \( x more examples and **note** this`, "See ( x more examples and note this"},
+		{`See \[ x more examples and **note** this`, "See [ x more examples and note this"},
+	}
+	for _, test := range tests {
+		result, err := NewFastRenderer(100).Render(test.input)
+		require.NoError(t, err)
+		assert.Contains(t, stripANSI(result), test.expected)
+		assert.Contains(t, result, "\x1b[1m", "bold Markdown after an unclosed delimiter should still render")
+	}
+}
+
 func TestLatexDoesNotRenderInsideCode(t *testing.T) {
 	t.Parallel()
 

@@ -2003,7 +2003,11 @@ func renderInlineLatex(source string) (string, int, bool) {
 
 	end := findUnescapedDelimiter(source, closing, len(opening))
 	if end < 0 {
-		return source, len(source), looksLikePendingMath(source[len(opening):]) || opening[0] == '\\'
+		pending := source[len(opening):]
+		if looksLikePendingMath(pending) && !containsMarkdownFormatting(pending) {
+			return source, len(source), true
+		}
+		return "", 0, false
 	}
 	inner := source[len(opening):end]
 	if inner == "" || strings.ContainsRune(inner, '\n') {
@@ -2044,6 +2048,11 @@ func findUnescapedDelimiter(source, delimiter string, start int) int {
 		offset = index + len(delimiter)
 	}
 	return -1
+}
+
+func containsMarkdownFormatting(source string) bool {
+	return strings.Contains(source, "**") || strings.Contains(source, "__") ||
+		strings.Contains(source, "~~") || strings.ContainsRune(source, '`')
 }
 
 func looksLikePendingMath(source string) bool {
