@@ -406,7 +406,7 @@ func (p *parser) matrix(env, body string) string {
 			}
 			parts[j] = v + strings.Repeat("\uf002", widths[j]-runewidth.StringWidth(v))
 		}
-		content := strings.Join(parts, " │ ")
+		content := strings.Join(parts, "\uf002\uf002")
 		left, right := "", ""
 		switch env {
 		case "pmatrix":

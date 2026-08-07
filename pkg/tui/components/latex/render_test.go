@@ -21,6 +21,13 @@ func TestRender(t *testing.T) {
 		{"operators", `\sum_{i=0}^n \alpha_i + \int_0^\infty e^{-x^2}\,dx`, false},
 		{"root and relation", `x=\frac{-b\pm\sqrt{b^2-4ac}}{2a}`, false},
 		{"matrix", `\begin{pmatrix}1&200\\3000&4\end{pmatrix}`, false},
+		{"matrix equation", `A =
+\begin{pmatrix}
+1 & 2 \\
+3 & 4
+\end{pmatrix},
+\qquad
+\det(A) = -2`, true},
 		{"display fraction", `\frac{0.1\ \text{lux}}{100\ \text{lm/W}}`, true},
 	}
 
