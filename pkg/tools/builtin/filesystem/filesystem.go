@@ -416,10 +416,14 @@ func ParseEditFileArgs(data []byte) (EditFileArgs, error) {
 }
 
 // validateRepairedEdits guards against repair output that is structurally
-// valid but semantically corrupted. An empty oldText is never a meaningful
-// edit (handleEditFile's strings.Replace would silently insert newText at
-// the start of the file), so its presence after a repair means the repair
-// removed a load-bearing character rather than a spurious one.
+// valid but semantically corrupted: an empty oldText after a repair means the
+// repair removed a load-bearing character (a quote closing the string) rather
+// than a spurious one, so the whole repaired payload is untrustworthy.
+//
+// This is about distrusting the repair, not about protecting the edit loop —
+// handleEditFile refuses an empty oldText on its own. Rejecting here just
+// reports the real problem at the parse boundary, where the message can say
+// the payload was mis-repaired.
 func validateRepairedEdits(edits []Edit) error {
 	for i, edit := range edits {
 		if edit.OldText == "" {
