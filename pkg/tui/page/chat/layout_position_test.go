@@ -11,6 +11,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/tui/animation"
+	tuibanner "github.com/docker/docker-agent/pkg/tui/banner"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/sidebar"
 	msgtypes "github.com/docker/docker-agent/pkg/tui/messages"
@@ -31,6 +32,61 @@ func newLayoutTestPage(t *testing.T, position msgtypes.SidebarPosition) *chatPag
 	}
 	p.layoutSettings = msgtypes.LayoutSettings{SidebarPosition: position}
 	return p
+}
+
+func TestStartupBannerIsCenteredInEmptyChat(t *testing.T) {
+	t.Parallel()
+
+	p := newLayoutTestPage(t, msgtypes.SidebarRight)
+	p.showStartupBanner = true
+	p.SetSize(p.width, p.height)
+	sl := p.computeSidebarLayout()
+
+	lines := strings.Split(p.messagesView(sl), "\n")
+	require.Len(t, lines, sl.chatHeight)
+
+	firstBannerLine := -1
+	for i, line := range lines {
+		if strings.Contains(ansi.Strip(line), tuibanner.Lines[0]) {
+			firstBannerLine = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, firstBannerLine)
+	assert.Equal(t, (sl.chatHeight-len(tuibanner.Lines))/2, firstBannerLine)
+	assert.Equal(t, (sl.chatWidth-ansi.StringWidth(tuibanner.Lines[0]))/2,
+		strings.Index(ansi.Strip(lines[firstBannerLine]), "█"))
+}
+
+func TestAgentWelcomeMessageControlsStartupBanner(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		welcomeMessage string
+		wantBanner     bool
+	}{
+		{name: "empty welcome", wantBanner: true},
+		{name: "configured welcome", welcomeMessage: "Welcome to the agent"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newLayoutTestPage(t, msgtypes.SidebarRight)
+			event := runtime.AgentInfo("root", "model", "", tt.welcomeMessage)
+			handled, _ := p.handleRuntimeEvent(event)
+
+			require.True(t, handled)
+			assert.Equal(t, tt.wantBanner, p.showStartupBanner)
+			out := ansi.Strip(p.messagesView(p.computeSidebarLayout()))
+			if tt.wantBanner {
+				assert.Contains(t, out, tuibanner.Lines[0])
+			} else {
+				assert.Contains(t, out, tt.welcomeMessage)
+				assert.NotContains(t, out, tuibanner.Lines[0])
+			}
+		})
+	}
 }
 
 func TestComputeSidebarLayout_RightDefault(t *testing.T) {
