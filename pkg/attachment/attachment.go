@@ -99,17 +99,17 @@ const delimiterPlaceholder = "[docker-agent: envelope delimiter removed]"
 // defuseDelimiters replaces every occurrence of this envelope's own opening or
 // closing delimiter inside body.
 //
-// Matching is case-insensitive and tolerant of whitespace inside the angle
-// brackets, because a model reading the transcript treats `</DOCUMENT-X >` as
-// closing the region just as readily as the exact byte sequence. Only this
-// envelope's own tag is targeted, so unrelated markup in an HTML or Markdown
-// attachment (`</div>`, `</script>`, another document's tag) is preserved
-// verbatim.
+// Matching is case-insensitive, tolerant of whitespace inside the angle
+// brackets, and covers the self-closing form, because a model reading the
+// transcript treats `</DOCUMENT-X >` and `<DOCUMENT-X/>` as ending the region
+// just as readily as the exact byte sequence. Only this envelope's own tag is
+// targeted, so unrelated markup in an HTML or Markdown attachment (`</div>`,
+// `</script>`, another document's tag) is preserved verbatim.
 func defuseDelimiters(body, tag string) string {
 	if body == "" {
 		return body
 	}
-	re, err := regexp.Compile(`(?i)<\s*/?\s*` + regexp.QuoteMeta(tag) + `\s*>`)
+	re, err := regexp.Compile(`(?i)<\s*/?\s*` + regexp.QuoteMeta(tag) + `\s*/?\s*>`)
 	if err != nil {
 		// Unreachable: tag is QuoteMeta-escaped. Fall back to literal removal
 		// rather than letting a delimiter through on a pattern error.
