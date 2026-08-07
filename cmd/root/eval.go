@@ -1,6 +1,7 @@
 package root
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,6 +26,13 @@ type evalFlags struct {
 
 	runConfig config.RuntimeConfig
 	outputDir string
+
+	// baseline is a previously saved run (an -eval.json written by a prior
+	// invocation) to compare this run against; empty disables the check.
+	baseline string
+	// regressionTolerance is how far an aggregate quality rate may fall before
+	// the comparison fails. See evaluation.Compare for the exact semantics.
+	regressionTolerance float64
 }
 
 func newEvalCmd() *cobra.Command {
@@ -48,6 +56,8 @@ func newEvalCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flags.KeepContainers, "keep-containers", false, "Keep containers after evaluation (don't use --rm)")
 	cmd.Flags().StringSliceVarP(&flags.EnvVars, "env", "e", nil, "Environment variables to pass to container (KEY or KEY=VALUE)")
 	cmd.Flags().IntVar(&flags.Repeat, "repeat", 1, "Number of times to repeat each evaluation (useful for computing baselines)")
+	cmd.Flags().StringVar(&flags.baseline, "baseline", "", "Compare against a previously saved run JSON and exit non-zero on regression")
+	cmd.Flags().Float64Var(&flags.regressionTolerance, "regression-tolerance", 0, "How far an aggregate quality rate may fall before --baseline reports a regression (0-1)")
 
 	return cmd
 }
@@ -149,5 +159,33 @@ func (f *evalFlags) runEvalCommand(cmd *cobra.Command, args []string) (commandEr
 
 	fmt.Fprintf(teeOut, "Log: %s\n", logPath)
 
+	if regressionErr := f.checkBaseline(teeOut, run); regressionErr != nil && evalErr == nil {
+		// When the run itself also errored, that is the more fundamental
+		// problem and keeps the exit code.
+		return regressionErr
+	}
+
 	return evalErr
+}
+
+// checkBaseline compares run against the configured baseline and returns a
+// non-nil error when it regressed, so CI fails on the exit code. A no-op when
+// --baseline was not supplied.
+func (f *evalFlags) checkBaseline(out io.Writer, run *evaluation.EvalRun) error {
+	if f.baseline == "" {
+		return nil
+	}
+
+	baseline, err := evaluation.LoadBaseline(f.baseline)
+	if err != nil {
+		return err
+	}
+
+	comparison := evaluation.Compare(baseline, run, f.regressionTolerance)
+	evaluation.PrintComparison(out, comparison)
+
+	if comparison.Regressed {
+		return errors.New("evaluation regressed against baseline")
+	}
+	return nil
 }
