@@ -1,5 +1,10 @@
 package banner
 
+const (
+	Width  = 56
+	Height = 13
+)
+
 // Lines is the Docker Agent ASCII-art startup banner.
 var Lines = []string{
 	`██████╗  ██████╗  ██████╗██╗  ██╗███████╗██████╗ `,

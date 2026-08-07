@@ -58,6 +58,31 @@ func TestStartupBannerIsCenteredInEmptyChat(t *testing.T) {
 		strings.Index(ansi.Strip(lines[firstBannerLine]), "█"))
 }
 
+func TestStartupBannerHiddenWhenChatIsTooSmall(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "too narrow", width: tuibanner.Width - 1, height: tuibanner.Height},
+		{name: "too short", width: tuibanner.Width, height: tuibanner.Height - 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newLayoutTestPage(t, msgtypes.SidebarRight)
+			p.showStartupBanner = true
+
+			assert.Empty(t, p.messagesView(sidebarLayout{
+				chatWidth:  tt.width,
+				chatHeight: tt.height,
+			}))
+		})
+	}
+}
+
 func TestAgentWelcomeMessageControlsStartupBanner(t *testing.T) {
 	t.Parallel()
 

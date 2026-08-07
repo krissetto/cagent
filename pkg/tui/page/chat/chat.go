@@ -730,6 +730,9 @@ func (p *chatPage) messagesView(sl sidebarLayout) string {
 	if messagesView != "" || !p.showStartupBanner {
 		return messagesView
 	}
+	if sl.chatWidth < tuibanner.Width || sl.chatHeight < tuibanner.Height {
+		return ""
+	}
 
 	banner := styles.BaseStyle.Foreground(styles.Accent).Render(strings.Join(tuibanner.Lines, "\n"))
 	return lipgloss.Place(
