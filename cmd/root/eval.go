@@ -56,13 +56,18 @@ func newEvalCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flags.KeepContainers, "keep-containers", false, "Keep containers after evaluation (don't use --rm)")
 	cmd.Flags().StringSliceVarP(&flags.EnvVars, "env", "e", nil, "Environment variables to pass to container (KEY or KEY=VALUE)")
 	cmd.Flags().IntVar(&flags.Repeat, "repeat", 1, "Number of times to repeat each evaluation (useful for computing baselines)")
-	cmd.Flags().StringVar(&flags.baseline, "baseline", "", "Compare against a previously saved run JSON and exit non-zero on regression")
+	cmd.Flags().StringVar(&flags.baseline, "baseline", "", "Compare against a previously saved run JSON (<output>/<run>.json) and exit non-zero on regression")
 	cmd.Flags().Float64Var(&flags.regressionTolerance, "regression-tolerance", 0, "How far an aggregate quality rate may fall before --baseline reports a regression (0-1)")
 
 	return cmd
 }
 
 func (f *evalFlags) runEvalCommand(cmd *cobra.Command, args []string) (commandErr error) {
+	if f.regressionTolerance > evaluation.MaxTolerance {
+		return fmt.Errorf("--regression-tolerance must be between 0 and %v; %v would disable the aggregate gate",
+			evaluation.MaxTolerance, f.regressionTolerance)
+	}
+
 	telemetry.TrackCommand(cmd.Context(), "eval", args)
 	defer func() { // do not inline this defer so that commandErr is not resolved early
 		telemetry.TrackCommandError(cmd.Context(), "eval", args, commandErr)
@@ -159,13 +164,18 @@ func (f *evalFlags) runEvalCommand(cmd *cobra.Command, args []string) (commandEr
 
 	fmt.Fprintf(teeOut, "Log: %s\n", logPath)
 
-	if regressionErr := f.checkBaseline(teeOut, run); regressionErr != nil && evalErr == nil {
-		// When the run itself also errored, that is the more fundamental
-		// problem and keeps the exit code.
-		return regressionErr
+	// Only compare a run that completed. A partial run's missing evaluations
+	// register as "absent" and do not gate, so comparing would print
+	// "✅ No regression against baseline" for a broken run and then exit
+	// non-zero — contradictory, and the reassuring half is the one people read.
+	if evalErr != nil {
+		if f.baseline != "" {
+			fmt.Fprintln(teeOut, "\nSkipping baseline comparison: the run did not complete.")
+		}
+		return evalErr
 	}
 
-	return evalErr
+	return f.checkBaseline(teeOut, run)
 }
 
 // checkBaseline compares run against the configured baseline and returns a
@@ -181,7 +191,10 @@ func (f *evalFlags) checkBaseline(out io.Writer, run *evaluation.EvalRun) error 
 		return err
 	}
 
-	comparison := evaluation.Compare(baseline, run, f.regressionTolerance)
+	comparison, err := evaluation.Compare(baseline, run, f.regressionTolerance)
+	if err != nil {
+		return err
+	}
 	evaluation.PrintComparison(out, comparison)
 
 	if comparison.Regressed {

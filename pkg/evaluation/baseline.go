@@ -3,6 +3,7 @@ package evaluation
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,7 +12,7 @@ import (
 )
 
 // Metrics is the comparable shape of an evaluation run: the rates a regression
-// gate can be built on, derived from the same fields [computeSummary] uses.
+// gate can be built on, derived from the same [Summary] the run prints.
 //
 // Rates are 0 when their denominator is 0, and the corresponding Has… flag says
 // whether the rate means anything. Without that distinction "no size
@@ -34,13 +35,8 @@ type Metrics struct {
 	TotalCost float64 `json:"total_cost"`
 }
 
-// MetricsOf derives [Metrics] from a run's results.
-func MetricsOf(run *EvalRun) Metrics {
-	if run == nil {
-		return Metrics{}
-	}
-	s := computeSummary(run.Results)
-
+// metricsOfSummary derives [Metrics] from a run summary.
+func metricsOfSummary(s Summary) Metrics {
 	m := Metrics{
 		TotalEvals:  s.TotalEvals,
 		FailedEvals: s.FailedEvals,
@@ -64,6 +60,26 @@ func MetricsOf(run *EvalRun) Metrics {
 	return m
 }
 
+// MetricsOf derives [Metrics] from a run's results.
+func MetricsOf(run *EvalRun) Metrics {
+	if run == nil {
+		return Metrics{}
+	}
+	return metricsOfSummary(computeSummary(run.Results))
+}
+
+// Baseline is a previously saved run, reduced to what a regression gate needs.
+//
+// It is loaded from the JSON the eval command actually writes — a [RunOutput]
+// from SaveRunSessionsJSON — rather than from [EvalRun], which has no producer
+// outside tests and whose Duration field is typed incompatibly.
+type Baseline struct {
+	Name    string
+	Summary Summary
+	// Passed maps an evaluation's key (see evalKey) to whether it passed.
+	Passed map[string]bool
+}
+
 // MetricDelta is one metric's movement between two runs. Higher is better for
 // quality rates and worse for FailureRate, so Regressed — not the sign of Delta
 // — is what a gate reads.
@@ -80,7 +96,7 @@ type MetricDelta struct {
 
 // EvalChange records one evaluation's pass/fail transition between runs.
 type EvalChange struct {
-	InputPath string `json:"input_path"`
+	Eval string `json:"eval"`
 	// Was and Now are "pass", "fail", or "absent".
 	Was       string `json:"was"`
 	Now       string `json:"now"`
@@ -99,17 +115,57 @@ type Comparison struct {
 	Regressed bool `json:"regressed"`
 }
 
-// LoadBaseline reads a run previously written by [SaveRunJSON].
-func LoadBaseline(path string) (*EvalRun, error) {
+// MaxTolerance is the largest accepted --regression-tolerance. A rate cannot
+// move by more than 1.0, so anything above it silently disables the aggregate
+// gate — better rejected at startup than discovered when a regression sails
+// through.
+const MaxTolerance = 1.0
+
+// ErrNoBaselineEvals reports a baseline carrying no evaluations. A gate built on
+// one would compare against all-zero metrics and pass unconditionally.
+var ErrNoBaselineEvals = errors.New("baseline contains no evaluations")
+
+// ErrNoCurrentEvals reports a run that produced no evaluations — an --only
+// pattern that matched nothing, for instance. There is nothing to gate on.
+var ErrNoCurrentEvals = errors.New("run produced no evaluations to compare")
+
+// ErrNothingComparable reports a baseline and run with no metric and no
+// evaluation in common, so the comparison could only ever pass.
+var ErrNothingComparable = errors.New("baseline and run share no metric or evaluation to compare")
+
+// LoadBaseline reads the run JSON the eval command writes.
+//
+// A file that parses but carries no evaluations is rejected rather than treated
+// as an empty baseline: every rate would be skipped by the has-flag guards and
+// the gate would report success while every evaluation in the current run
+// failed. A gate must fail closed.
+func LoadBaseline(path string) (*Baseline, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading baseline %q: %w", path, err)
 	}
-	var run EvalRun
-	if err := json.Unmarshal(data, &run); err != nil {
+
+	var output RunOutput
+	if err := json.Unmarshal(data, &output); err != nil {
 		return nil, fmt.Errorf("parsing baseline %q: %w", path, err)
 	}
-	return &run, nil
+
+	baseline := &Baseline{
+		Name:    output.Name,
+		Summary: output.Summary,
+		Passed:  make(map[string]bool, len(output.Sessions)),
+	}
+	for _, sess := range output.Sessions {
+		if sess == nil || sess.EvalResult == nil {
+			continue
+		}
+		baseline.Passed[sessionEvalKey(sess.InputID, sess.Title)] = sess.EvalResult.Passed
+	}
+
+	if baseline.Summary.TotalEvals == 0 && len(baseline.Passed) == 0 {
+		return nil, fmt.Errorf("%w: %q is not an evaluation run written by `docker agent eval`", ErrNoBaselineEvals, path)
+	}
+	return baseline, nil
 }
 
 // Compare checks current against baseline.
@@ -133,19 +189,25 @@ func LoadBaseline(path string) (*EvalRun, error) {
 // and gating on it would make the check fire on provider price changes.
 //
 // A metric absent from either run is skipped rather than treated as 0 — adding
-// the first size expectation to a suite must not look like a regression.
-func Compare(baseline, current *EvalRun, tolerance float64) Comparison {
-	if tolerance < 0 {
-		tolerance = 0
+// the first size expectation to a suite must not look like a regression. If that
+// leaves nothing to gate on and no evaluation in common, an error is returned:
+// a comparison that can only ever pass is worse than no comparison.
+func Compare(baseline *Baseline, current *EvalRun, tolerance float64) (Comparison, error) {
+	if baseline == nil {
+		return Comparison{}, ErrNoBaselineEvals
 	}
+	if current == nil || len(current.Results) == 0 {
+		return Comparison{}, ErrNoCurrentEvals
+	}
+	tolerance = max(tolerance, 0)
 
 	c := Comparison{
-		Baseline:  MetricsOf(baseline),
+		Baseline:  metricsOfSummary(baseline.Summary),
 		Current:   MetricsOf(current),
 		Tolerance: tolerance,
 	}
 
-	// Quality rates: a drop beyond the tolerance regresses.
+	gating := 0
 	for _, q := range []struct {
 		name            string
 		base, cur       float64
@@ -161,9 +223,9 @@ func Compare(baseline, current *EvalRun, tolerance float64) Comparison {
 		d := MetricDelta{Name: q.name, Baseline: q.base, Current: q.cur, Delta: q.cur - q.base}
 		d.Regressed = q.cur < q.base-tolerance
 		c.Deltas = append(c.Deltas, d)
+		gating++
 	}
 
-	// Failure rate: a climb beyond the tolerance regresses.
 	if c.Baseline.TotalEvals > 0 && c.Current.TotalEvals > 0 {
 		d := MetricDelta{
 			Name:     "failure rate",
@@ -173,6 +235,15 @@ func Compare(baseline, current *EvalRun, tolerance float64) Comparison {
 		}
 		d.Regressed = c.Current.FailureRate > c.Baseline.FailureRate+tolerance
 		c.Deltas = append(c.Deltas, d)
+		gating++
+	}
+
+	c.Changes = compareEvals(baseline, current)
+
+	// Nothing comparable: no shared metric and no shared evaluation. Reporting
+	// "no regression" here would be a gate that cannot fail.
+	if gating == 0 && !anyShared(baseline, current) {
+		return Comparison{}, ErrNothingComparable
 	}
 
 	c.Deltas = append(c.Deltas, MetricDelta{
@@ -182,8 +253,6 @@ func Compare(baseline, current *EvalRun, tolerance float64) Comparison {
 		Delta:         c.Current.TotalCost - c.Baseline.TotalCost,
 		Informational: true,
 	})
-
-	c.Changes = compareEvals(baseline, current)
 
 	for _, d := range c.Deltas {
 		if d.Regressed && !d.Informational {
@@ -195,33 +264,48 @@ func Compare(baseline, current *EvalRun, tolerance float64) Comparison {
 			c.Regressed = true
 		}
 	}
-	return c
+	return c, nil
 }
 
-// compareEvals pairs evaluations by input path and reports transitions. Only
-// pass → fail is a regression; appearing and disappearing evaluations are
-// reported so a reviewer notices a suite change, but do not gate.
-func compareEvals(baseline, current *EvalRun) []EvalChange {
-	was := passByPath(baseline)
-	now := passByPath(current)
-
-	paths := make(map[string]struct{}, len(was)+len(now))
-	for p := range was {
-		paths[p] = struct{}{}
-	}
-	for p := range now {
-		paths[p] = struct{}{}
-	}
-
-	changes := make([]EvalChange, 0, len(paths))
-	for p := range paths {
-		bs, inBase := was[p]
-		cs, inCur := now[p]
-		change := EvalChange{
-			InputPath: p,
-			Was:       passLabel(bs, inBase),
-			Now:       passLabel(cs, inCur),
+// anyShared reports whether the two runs have an evaluation in common.
+func anyShared(baseline *Baseline, current *EvalRun) bool {
+	for _, r := range current.Results {
+		if _, ok := baseline.Passed[resultEvalKey(r)]; ok {
+			return true
 		}
+	}
+	return false
+}
+
+// compareEvals pairs evaluations by key and reports transitions. Only pass →
+// fail is a regression; appearing and disappearing evaluations are reported so a
+// reviewer notices a suite change, but do not gate.
+func compareEvals(baseline *Baseline, current *EvalRun) []EvalChange {
+	now := map[string]bool{}
+	for _, r := range current.Results {
+		key := resultEvalKey(r)
+		// Repeated runs of the same evaluation collapse pessimistically: if any
+		// repetition failed, it counts as failed. A flaky pass is not a pass.
+		if prev, seen := now[key]; seen {
+			now[key] = prev && resultPassed(r)
+			continue
+		}
+		now[key] = resultPassed(r)
+	}
+
+	keys := make(map[string]struct{}, len(baseline.Passed)+len(now))
+	for k := range baseline.Passed {
+		keys[k] = struct{}{}
+	}
+	for k := range now {
+		keys[k] = struct{}{}
+	}
+
+	changes := make([]EvalChange, 0, len(keys))
+	for k := range keys {
+		bs, inBase := baseline.Passed[k]
+		cs, inCur := now[k]
+		change := EvalChange{Eval: k, Was: passLabel(bs, inBase), Now: passLabel(cs, inCur)}
 		if change.Was == change.Now {
 			continue
 		}
@@ -237,26 +321,25 @@ func compareEvals(baseline, current *EvalRun) []EvalChange {
 			}
 			return 1
 		}
-		return cmp.Compare(a.InputPath, b.InputPath)
+		return cmp.Compare(a.Eval, b.Eval)
 	})
 	return changes
 }
 
-func passByPath(run *EvalRun) map[string]bool {
-	out := map[string]bool{}
-	if run == nil {
-		return out
+// resultEvalKey identifies an evaluation the same way [sessionEvalKey] does for
+// the baseline side, so the two runs pair up. The session's InputID is preferred
+// because it is the caller-supplied correlation ID; the display title is the
+// fallback and carries the "#N" suffix that distinguishes repetitions.
+func resultEvalKey(r Result) string {
+	var inputID string
+	if r.Session != nil {
+		inputID = r.Session.InputID
 	}
-	for _, r := range run.Results {
-		// Repeated runs of the same input (Config.Repeat > 1) collapse
-		// pessimistically: if any repetition failed, the eval counts as failed.
-		if prev, seen := out[r.InputPath]; seen {
-			out[r.InputPath] = prev && resultPassed(r)
-			continue
-		}
-		out[r.InputPath] = resultPassed(r)
-	}
-	return out
+	return sessionEvalKey(inputID, cmp.Or(r.Title, r.InputPath))
+}
+
+func sessionEvalKey(inputID, title string) string {
+	return cmp.Or(inputID, title)
 }
 
 func passLabel(passed, present bool) string {
@@ -270,23 +353,15 @@ func passLabel(passed, present bool) string {
 	}
 }
 
-// resultPassed reports whether one result met every expectation declared for it,
-// mirroring the fields [computeSummary] scores. An expectation that was not
-// declared is not a failure.
+// resultPassed reports whether one result met every expectation declared for it.
+//
+// It delegates to [Result.checkResults] — the same function that decides the
+// PASS/FAIL the eval command prints and the `passed` flag written into the saved
+// run. A second definition here would let the gate drift from the product: an
+// evaluation whose printed status flipped would be recorded as no change.
 func resultPassed(r Result) bool {
-	if r.Error != "" {
-		return false
-	}
-	if r.SizeExpected != "" && r.SizeExpected != r.Size {
-		return false
-	}
-	if r.ToolCallsExpected > 0 && r.ToolCallsScore < r.ToolCallsExpected {
-		return false
-	}
-	if r.RelevanceExpected > 0 && r.RelevancePassed < r.RelevanceExpected {
-		return false
-	}
-	return true
+	_, failures := r.checkResults()
+	return len(failures) == 0
 }
 
 // PrintComparison writes a human-readable comparison.
@@ -315,7 +390,7 @@ func PrintComparison(out io.Writer, c Comparison) {
 			if ch.Regressed {
 				marker = "! "
 			}
-			fmt.Fprintf(ctw, "%s%s\t%s → %s\t\n", marker, ch.InputPath, ch.Was, ch.Now)
+			fmt.Fprintf(ctw, "%s%s\t%s → %s\t\n", marker, ch.Eval, ch.Was, ch.Now)
 		}
 		_ = ctw.Flush()
 	}
