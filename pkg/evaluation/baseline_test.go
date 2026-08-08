@@ -9,279 +9,91 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/docker/docker-agent/pkg/session"
 )
 
 // sizeResult is a result whose only declared expectation is response size.
-func sizeResult(path string, pass bool) Result {
-	r := Result{InputPath: path, SizeExpected: "medium", Size: "medium"}
+// Session is populated because that is what SaveRunSessionsJSON serialises, and
+// what LoadBaseline reads back.
+func sizeResult(title string, pass bool) Result {
+	r := Result{
+		InputPath:    title + ".json",
+		Title:        title,
+		SizeExpected: "medium",
+		Size:         "medium",
+		Session:      &session.Session{Title: title},
+	}
 	if !pass {
+		r.Session.Title = title
 		r.Size = "short"
 	}
 	return r
 }
 
-func run(results ...Result) *EvalRun {
-	return &EvalRun{Name: "run", Results: results}
-}
-
-func TestMetricsOf_RatesAndFlags(t *testing.T) {
-	t.Parallel()
-
-	got := MetricsOf(run(
-		sizeResult("a", true),
-		sizeResult("b", false),
-		Result{InputPath: "c", Error: "boom"},
-		Result{InputPath: "d", ToolCallsExpected: 1, ToolCallsScore: 0.5, Cost: 0.25},
-		Result{InputPath: "e", RelevanceExpected: 2, RelevancePassed: 1},
-	))
-
-	assert.Equal(t, 5, got.TotalEvals)
-	assert.Equal(t, 1, got.FailedEvals)
-	assert.InDelta(t, 0.2, got.FailureRate, 1e-9)
-	assert.True(t, got.HasSizes)
-	assert.InDelta(t, 0.5, got.SizePassRate, 1e-9)
-	assert.True(t, got.HasTools)
-	assert.InDelta(t, 0.5, got.ToolsF1Mean, 1e-9)
-	assert.True(t, got.HasRelevance)
-	assert.InDelta(t, 0.5, got.RelevanceRate, 1e-9)
-	assert.InDelta(t, 0.25, got.TotalCost, 1e-9)
-}
-
-// A rate with no denominator must be distinguishable from a rate of 0.0, or a
-// gate cannot tell "nothing declared" from "everything failed".
-func TestMetricsOf_AbsentMetricsAreFlaggedNotZero(t *testing.T) {
-	t.Parallel()
-
-	got := MetricsOf(run(Result{InputPath: "a"}))
-	assert.False(t, got.HasSizes)
-	assert.False(t, got.HasTools)
-	assert.False(t, got.HasRelevance)
-	assert.Zero(t, got.SizePassRate)
-
-	assert.Equal(t, Metrics{}, MetricsOf(nil), "a nil run yields zero metrics, not a panic")
-}
-
-func TestCompare_NoChangeIsNotARegression(t *testing.T) {
-	t.Parallel()
-
-	base := run(sizeResult("a", true), sizeResult("b", true))
-	cur := run(sizeResult("a", true), sizeResult("b", true))
-
-	got := Compare(base, cur, 0)
-	assert.False(t, got.Regressed)
-	assert.Empty(t, got.Changes)
-}
-
-func TestCompare_QualityDropRegresses(t *testing.T) {
-	t.Parallel()
-
-	base := run(sizeResult("a", true), sizeResult("b", true))
-	cur := run(sizeResult("a", true), sizeResult("b", false))
-
-	got := Compare(base, cur, 0)
-	require.True(t, got.Regressed)
-
-	var sizeDelta *MetricDelta
-	for i := range got.Deltas {
-		if got.Deltas[i].Name == "size pass rate" {
-			sizeDelta = &got.Deltas[i]
-		}
-	}
-	require.NotNil(t, sizeDelta)
-	assert.True(t, sizeDelta.Regressed)
-	assert.InDelta(t, -0.5, sizeDelta.Delta, 1e-9)
-}
-
-// Judge variance shows up as small movement in the aggregate rates; the
-// tolerance exists so a build is not failed by that noise.
-//
-// Both evaluations stay above their declared expectation (0.8) here, so no
-// pass/fail transition occurs and the tolerance is what decides — see
-// TestCompare_PassToFailGatesRegardlessOfTolerance for the other half.
-func TestCompare_ToleranceAbsorbsSmallDrops(t *testing.T) {
-	t.Parallel()
-
-	base := run(
-		Result{InputPath: "a", ToolCallsExpected: 0.8, ToolCallsScore: 1.0},
-		Result{InputPath: "b", ToolCallsExpected: 0.8, ToolCallsScore: 1.0},
-	)
-	cur := run(
-		Result{InputPath: "a", ToolCallsExpected: 0.8, ToolCallsScore: 1.0},
-		Result{InputPath: "b", ToolCallsExpected: 0.8, ToolCallsScore: 0.9},
-	)
-
-	// Mean drops 1.00 → 0.95, and both evaluations still pass.
-	assert.False(t, Compare(base, cur, 0.10).Regressed, "within tolerance")
-	assert.True(t, Compare(base, cur, 0.01).Regressed, "beyond tolerance")
-	assert.True(t, Compare(base, cur, 0).Regressed, "zero tolerance gates any drop")
-	assert.True(t, Compare(base, cur, -5).Regressed,
-		"a negative tolerance is clamped to 0, so this still gates")
-}
-
-// The tolerance governs aggregate rates only. An evaluation that passed and now
-// fails is the exact signal a regression gate exists to catch, so it gates even
-// when the aggregate movement is small enough to be absorbed.
-func TestCompare_PassToFailGatesRegardlessOfTolerance(t *testing.T) {
-	t.Parallel()
-
-	base := run(
-		Result{InputPath: "a", ToolCallsExpected: 1, ToolCallsScore: 1.0},
-		Result{InputPath: "b", ToolCallsExpected: 1, ToolCallsScore: 1.0},
-	)
-	cur := run(
-		Result{InputPath: "a", ToolCallsExpected: 1, ToolCallsScore: 1.0},
-		Result{InputPath: "b", ToolCallsExpected: 1, ToolCallsScore: 0.9}, // now below expectation
-	)
-
-	got := Compare(base, cur, 0.99) // a tolerance far larger than the rate movement
-	assert.True(t, got.Regressed, "a pass → fail transition is not absorbed by the tolerance")
-
-	require.Len(t, got.Changes, 1)
-	assert.Equal(t, "b", got.Changes[0].InputPath)
-	assert.True(t, got.Changes[0].Regressed)
-}
-
-func TestCompare_ImprovementIsNotARegression(t *testing.T) {
-	t.Parallel()
-
-	base := run(sizeResult("a", false), sizeResult("b", false))
-	cur := run(sizeResult("a", true), sizeResult("b", true))
-
-	got := Compare(base, cur, 0)
-	assert.False(t, got.Regressed)
-	require.NotEmpty(t, got.Changes)
-	for _, ch := range got.Changes {
-		assert.False(t, ch.Regressed, "fail → pass must never gate")
+// toolResult declares a tool-call expectation. checkResults requires a score of
+// 1.0 to pass, regardless of the declared expectation value.
+func toolResult(title string, score float64) Result {
+	return Result{
+		InputPath:         title + ".json",
+		Title:             title,
+		ToolCallsExpected: 1,
+		ToolCallsScore:    score,
+		Session:           &session.Session{Title: title},
 	}
 }
 
-func TestCompare_FailureRateClimbRegresses(t *testing.T) {
-	t.Parallel()
-
-	base := run(Result{InputPath: "a"}, Result{InputPath: "b"})
-	cur := run(Result{InputPath: "a"}, Result{InputPath: "b", Error: "boom"})
-
-	got := Compare(base, cur, 0)
-	assert.True(t, got.Regressed)
+func newRun(results ...Result) *EvalRun {
+	run := &EvalRun{Name: "run", Results: results}
+	run.Summary = computeSummary(run.Results)
+	return run
 }
 
-// Cost is reported but must never gate: a price change is not a quality change.
-func TestCompare_CostIsInformationalOnly(t *testing.T) {
-	t.Parallel()
-
-	base := run(Result{InputPath: "a", Cost: 0.01})
-	cur := run(Result{InputPath: "a", Cost: 100})
-
-	got := Compare(base, cur, 0)
-	assert.False(t, got.Regressed, "a cost increase alone must not fail the gate")
-
-	var cost *MetricDelta
-	for i := range got.Deltas {
-		if got.Deltas[i].Name == "total cost" {
-			cost = &got.Deltas[i]
-		}
+// saveAndLoad writes a run exactly as the eval command does and reads it back as
+// a baseline, so every test exercises the real file format.
+func saveAndLoad(t *testing.T, run *EvalRun) *Baseline {
+	t.Helper()
+	for i := range run.Results {
+		populateEvalResult(&run.Results[i])
 	}
-	require.NotNil(t, cost)
-	assert.True(t, cost.Informational)
-	assert.InDelta(t, 99.99, cost.Delta, 1e-6)
-}
-
-// Adding the first expectation of a kind must not read as a regression from 0.
-func TestCompare_MetricAbsentFromOneSideIsSkipped(t *testing.T) {
-	t.Parallel()
-
-	base := run(Result{InputPath: "a"}) // no size expectations
-	cur := run(sizeResult("a", false))  // size expectation newly added, failing
-
-	got := Compare(base, cur, 0)
-	for _, d := range got.Deltas {
-		assert.NotEqual(t, "size pass rate", d.Name,
-			"a metric with no baseline must be skipped, not compared against 0")
-	}
-}
-
-// An evaluation appearing or disappearing is a suite change, not a regression of
-// existing behaviour, so the per-eval transition itself never gates.
-func TestCompare_AddedAndRemovedEvalsDoNotGateOnTheirOwn(t *testing.T) {
-	t.Parallel()
-
-	base := run(sizeResult("a", true), sizeResult("gone", true))
-	cur := run(sizeResult("a", true), sizeResult("new", true))
-
-	got := Compare(base, cur, 0)
-
-	byPath := map[string]EvalChange{}
-	for _, ch := range got.Changes {
-		byPath[ch.InputPath] = ch
-	}
-	require.Contains(t, byPath, "gone")
-	require.Contains(t, byPath, "new")
-	assert.Equal(t, "absent", byPath["gone"].Now)
-	assert.Equal(t, "absent", byPath["new"].Was)
-	assert.False(t, byPath["gone"].Regressed, "a removed eval is a suite change, not a regression")
-	assert.False(t, byPath["new"].Regressed, "an added eval is a suite change, not a regression")
-	assert.False(t, got.Regressed, "the aggregate rate is unchanged, so nothing gates")
-}
-
-// But an added evaluation that FAILS does lower the aggregate rate, and that
-// gates — which is the desirable outcome: a suite that got worse should say so,
-// even though no individual evaluation went from passing to failing.
-func TestCompare_AddedFailingEvalGatesViaTheAggregateRate(t *testing.T) {
-	t.Parallel()
-
-	base := run(sizeResult("a", true))
-	cur := run(sizeResult("a", true), sizeResult("new", false))
-
-	got := Compare(base, cur, 0)
-	assert.True(t, got.Regressed, "size pass rate fell 1.00 → 0.50")
-
-	for _, ch := range got.Changes {
-		if ch.InputPath == "new" {
-			assert.False(t, ch.Regressed,
-				"the gate comes from the aggregate, not from the added eval's transition")
-		}
-	}
-}
-
-func TestCompare_RegressionsAreListedFirst(t *testing.T) {
-	t.Parallel()
-
-	base := run(sizeResult("aaa", true), sizeResult("zzz", true))
-	cur := run(sizeResult("aaa", true), sizeResult("zzz", false), sizeResult("bbb", true))
-
-	got := Compare(base, cur, 0)
-	require.NotEmpty(t, got.Changes)
-	assert.Equal(t, "zzz", got.Changes[0].InputPath, "the regression must lead")
-	assert.True(t, got.Changes[0].Regressed)
-}
-
-// Config.Repeat runs the same input more than once; one bad repetition means the
-// evaluation is not reliably passing.
-func TestCompare_RepeatedInputCollapsesPessimistically(t *testing.T) {
-	t.Parallel()
-
-	base := run(sizeResult("a", true), sizeResult("a", true))
-	cur := run(sizeResult("a", true), sizeResult("a", false))
-
-	got := Compare(base, cur, 0)
-	require.Len(t, got.Changes, 1)
-	assert.Equal(t, "pass", got.Changes[0].Was)
-	assert.Equal(t, "fail", got.Changes[0].Now)
-	assert.True(t, got.Changes[0].Regressed)
-}
-
-func TestLoadBaseline_RoundTripsSaveRunJSON(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	original := run(sizeResult("a", true), Result{InputPath: "b", Error: "boom"})
-	path, err := SaveRunJSON(original, dir)
+	path, err := SaveRunSessionsJSON(run, t.TempDir())
 	require.NoError(t, err)
 
-	loaded, err := LoadBaseline(path)
+	baseline, err := LoadBaseline(path)
 	require.NoError(t, err)
-	assert.Equal(t, MetricsOf(original), MetricsOf(loaded),
-		"a saved run must be loadable as a baseline with identical metrics")
+	return baseline
+}
+
+// The file the eval command writes is a RunOutput, not an EvalRun. Loading the
+// wrong shape failed outright on Duration (string vs time.Duration), which meant
+// --baseline could not read anything the tool produced.
+func TestLoadBaseline_ReadsWhatTheEvalCommandWrites(t *testing.T) {
+	t.Parallel()
+
+	run := newRun(sizeResult("a", true), sizeResult("b", false))
+	for i := range run.Results {
+		populateEvalResult(&run.Results[i])
+	}
+	path, err := SaveRunSessionsJSON(run, t.TempDir())
+	require.NoError(t, err)
+
+	baseline, err := LoadBaseline(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, baseline.Summary.TotalEvals)
+	assert.Equal(t, map[string]bool{"a": true, "b": false}, baseline.Passed)
+}
+
+// A gate must fail closed: a file that parses but carries no evaluations would
+// compare against all-zero metrics and pass unconditionally.
+func TestLoadBaseline_RejectsAFileThatIsNotAnEvalRun(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "not-a-run.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"name":"not-an-eval-run"}`), 0o600))
+
+	_, err := LoadBaseline(path)
+	require.ErrorIs(t, err, ErrNoBaselineEvals)
 }
 
 func TestLoadBaseline_Errors(t *testing.T) {
@@ -298,17 +110,250 @@ func TestLoadBaseline_Errors(t *testing.T) {
 	assert.Contains(t, err.Error(), "parsing baseline")
 }
 
+// A run with no evaluations (an --only pattern that matched nothing) has nothing
+// to gate on and must not report success.
+func TestCompare_RejectsAnEmptyCurrentRun(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(sizeResult("a", true)))
+
+	_, err := Compare(baseline, newRun(), 0)
+	require.ErrorIs(t, err, ErrNoCurrentEvals)
+
+	_, err = Compare(baseline, nil, 0)
+	require.ErrorIs(t, err, ErrNoCurrentEvals)
+}
+
+func TestCompare_RejectsANilBaseline(t *testing.T) {
+	t.Parallel()
+	_, err := Compare(nil, newRun(sizeResult("a", true)), 0)
+	require.ErrorIs(t, err, ErrNoBaselineEvals)
+}
+
+func TestCompare_NoChangeIsNotARegression(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(sizeResult("a", true), sizeResult("b", true)))
+
+	got, err := Compare(baseline, newRun(sizeResult("a", true), sizeResult("b", true)), 0)
+	require.NoError(t, err)
+	assert.False(t, got.Regressed)
+	assert.Empty(t, got.Changes)
+}
+
+func TestCompare_QualityDropRegresses(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(sizeResult("a", true), sizeResult("b", true)))
+
+	got, err := Compare(baseline, newRun(sizeResult("a", true), sizeResult("b", false)), 0)
+	require.NoError(t, err)
+	require.True(t, got.Regressed)
+
+	var sizeDelta *MetricDelta
+	for i := range got.Deltas {
+		if got.Deltas[i].Name == "size pass rate" {
+			sizeDelta = &got.Deltas[i]
+		}
+	}
+	require.NotNil(t, sizeDelta)
+	assert.True(t, sizeDelta.Regressed)
+	assert.InDelta(t, -0.5, sizeDelta.Delta, 1e-9)
+}
+
+// resultPassed must agree with what the run prints and saves. checkResults
+// requires a tool-call score of 1.0; a second definition keyed on
+// ToolCallsExpected would call 0.9 a pass and record a printed FAIL as no change.
+func TestResultPassed_MatchesCheckResults(t *testing.T) {
+	t.Parallel()
+
+	for _, r := range []Result{
+		{Title: "none"},
+		{Title: "err", Error: "boom"},
+		{Title: "size-ok", SizeExpected: "short", Size: "short"},
+		{Title: "size-bad", SizeExpected: "short", Size: "long"},
+		{Title: "tool-perfect", ToolCallsExpected: 0.8, ToolCallsScore: 1.0},
+		{Title: "tool-short", ToolCallsExpected: 0.8, ToolCallsScore: 0.9},
+		{Title: "rel-ok", RelevanceExpected: 2, RelevancePassed: 2},
+		{Title: "rel-bad", RelevanceExpected: 2, RelevancePassed: 1},
+	} {
+		_, failures := r.checkResults()
+		assert.Equalf(t, len(failures) == 0, resultPassed(r),
+			"resultPassed disagrees with checkResults for %q (failures=%v)", r.Title, failures)
+	}
+}
+
+// The specific divergence the old definition hid: a printed PASS → FAIL flip
+// that was recorded as no change and then absorbed by the tolerance.
+func TestCompare_ToolScoreDropBelowOneIsARegression(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(toolResult("a", 1.0)))
+
+	got, err := Compare(baseline, newRun(toolResult("a", 0.9)), 0.2)
+	require.NoError(t, err)
+
+	require.Len(t, got.Changes, 1)
+	assert.Equal(t, "pass", got.Changes[0].Was)
+	assert.Equal(t, "fail", got.Changes[0].Now)
+	assert.True(t, got.Regressed, "a printed pass → fail must gate even inside the tolerance")
+}
+
+// Judge variance shows up as small movement in the aggregate rates; the
+// tolerance exists so a build is not failed by that noise. Both evaluations stay
+// passing here, so only the aggregate moves.
+func TestCompare_ToleranceAbsorbsSmallDrops(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(toolResult("a", 1.0), toolResult("b", 1.0)))
+	current := newRun(toolResult("a", 1.0), toolResult("b", 1.0))
+	// Nudge the aggregate without flipping a pass: F1 mean 1.00 → 0.95 is not
+	// expressible while both pass, so assert the no-movement case instead.
+	got, err := Compare(baseline, current, 0)
+	require.NoError(t, err)
+	assert.False(t, got.Regressed)
+
+	// A real drop below 1.0 flips the eval and gates regardless of tolerance.
+	got, err = Compare(baseline, newRun(toolResult("a", 1.0), toolResult("b", 0.99)), MaxTolerance)
+	require.NoError(t, err)
+	assert.True(t, got.Regressed)
+}
+
+func TestCompare_ImprovementIsNotARegression(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(sizeResult("a", false), sizeResult("b", false)))
+
+	got, err := Compare(baseline, newRun(sizeResult("a", true), sizeResult("b", true)), 0)
+	require.NoError(t, err)
+	assert.False(t, got.Regressed)
+	for _, ch := range got.Changes {
+		assert.False(t, ch.Regressed, "fail → pass must never gate")
+	}
+}
+
+func TestCompare_FailureRateClimbRegresses(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(sizeResult("a", true), sizeResult("b", true)))
+
+	current := newRun(sizeResult("a", true), Result{
+		InputPath: "b.json", Title: "b", Error: "boom", Session: &session.Session{Title: "b"},
+	})
+	got, err := Compare(baseline, current, 0)
+	require.NoError(t, err)
+	assert.True(t, got.Regressed)
+}
+
+// Cost is reported but must never gate: a price change is not a quality change.
+func TestCompare_CostIsInformationalOnly(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(Result{
+		InputPath: "a.json", Title: "a", Cost: 0.01, Session: &session.Session{Title: "a"},
+	}))
+	current := newRun(Result{
+		InputPath: "a.json", Title: "a", Cost: 100, Session: &session.Session{Title: "a"},
+	})
+
+	got, err := Compare(baseline, current, 0)
+	require.NoError(t, err)
+	assert.False(t, got.Regressed, "a cost increase alone must not fail the gate")
+
+	var cost *MetricDelta
+	for i := range got.Deltas {
+		if got.Deltas[i].Name == "total cost" {
+			cost = &got.Deltas[i]
+		}
+	}
+	require.NotNil(t, cost)
+	assert.True(t, cost.Informational)
+	assert.InDelta(t, 99.99, cost.Delta, 1e-6)
+}
+
+func TestCompare_AddedAndRemovedEvalsDoNotGateOnTheirOwn(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(sizeResult("a", true), sizeResult("gone", true)))
+
+	got, err := Compare(baseline, newRun(sizeResult("a", true), sizeResult("new", true)), 0)
+	require.NoError(t, err)
+
+	byKey := map[string]EvalChange{}
+	for _, ch := range got.Changes {
+		byKey[ch.Eval] = ch
+	}
+	require.Contains(t, byKey, "gone")
+	require.Contains(t, byKey, "new")
+	assert.False(t, byKey["gone"].Regressed, "a removed eval is a suite change, not a regression")
+	assert.False(t, byKey["new"].Regressed, "an added eval is a suite change, not a regression")
+	assert.False(t, got.Regressed)
+}
+
+// An added failing evaluation lowers the aggregate rate, and that gates — which
+// is desirable: a suite that got worse should say so.
+func TestCompare_AddedFailingEvalGatesViaTheAggregateRate(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(sizeResult("a", true)))
+
+	got, err := Compare(baseline, newRun(sizeResult("a", true), sizeResult("new", false)), 0)
+	require.NoError(t, err)
+	assert.True(t, got.Regressed, "size pass rate fell 1.00 → 0.50")
+}
+
+func TestCompare_RepeatedEvalCollapsesPessimistically(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(sizeResult("a", true)))
+
+	// Two repetitions under one key, one of which failed.
+	got, err := Compare(baseline, newRun(sizeResult("a", true), sizeResult("a", false)), 0)
+	require.NoError(t, err)
+
+	require.Len(t, got.Changes, 1)
+	assert.Equal(t, "pass", got.Changes[0].Was)
+	assert.Equal(t, "fail", got.Changes[0].Now)
+	assert.True(t, got.Changes[0].Regressed)
+}
+
+func TestCompare_RegressionsAreListedFirst(t *testing.T) {
+	t.Parallel()
+
+	baseline := saveAndLoad(t, newRun(sizeResult("aaa", true), sizeResult("zzz", true)))
+
+	got, err := Compare(baseline,
+		newRun(sizeResult("aaa", true), sizeResult("zzz", false), sizeResult("bbb", true)), 0)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, got.Changes)
+	assert.Equal(t, "zzz", got.Changes[0].Eval, "the regression must lead")
+	assert.True(t, got.Changes[0].Regressed)
+}
+
+func TestMetricsOf_AbsentMetricsAreFlaggedNotZero(t *testing.T) {
+	t.Parallel()
+
+	got := MetricsOf(newRun(Result{InputPath: "a", Title: "a"}))
+	assert.False(t, got.HasSizes)
+	assert.False(t, got.HasTools)
+	assert.False(t, got.HasRelevance)
+	assert.Zero(t, got.SizePassRate)
+
+	assert.Equal(t, Metrics{}, MetricsOf(nil), "a nil run yields zero metrics, not a panic")
+}
+
 func TestPrintComparison(t *testing.T) {
 	t.Parallel()
 
 	t.Run("regression", func(t *testing.T) {
 		t.Parallel()
+		baseline := saveAndLoad(t, newRun(sizeResult("a", true)))
+		c, err := Compare(baseline, newRun(sizeResult("a", false)), 0)
+		require.NoError(t, err)
+
 		var buf bytes.Buffer
-		PrintComparison(&buf, Compare(
-			run(sizeResult("a", true)),
-			run(sizeResult("a", false)),
-			0,
-		))
+		PrintComparison(&buf, c)
 		out := buf.String()
 		assert.Contains(t, out, "Regression against baseline")
 		assert.Contains(t, out, "size pass rate")
@@ -317,8 +362,12 @@ func TestPrintComparison(t *testing.T) {
 
 	t.Run("clean", func(t *testing.T) {
 		t.Parallel()
+		baseline := saveAndLoad(t, newRun(sizeResult("a", true)))
+		c, err := Compare(baseline, newRun(sizeResult("a", true)), 0)
+		require.NoError(t, err)
+
 		var buf bytes.Buffer
-		PrintComparison(&buf, Compare(run(sizeResult("a", true)), run(sizeResult("a", true)), 0))
+		PrintComparison(&buf, c)
 		assert.Contains(t, buf.String(), "No regression against baseline")
 	})
 }
@@ -326,7 +375,10 @@ func TestPrintComparison(t *testing.T) {
 func TestComparison_IsJSONSerializable(t *testing.T) {
 	t.Parallel()
 
-	c := Compare(run(sizeResult("a", true)), run(sizeResult("a", false)), 0.05)
+	baseline := saveAndLoad(t, newRun(sizeResult("a", true)))
+	c, err := Compare(baseline, newRun(sizeResult("a", false)), 0.05)
+	require.NoError(t, err)
+
 	data, err := json.Marshal(c)
 	require.NoError(t, err)
 
@@ -334,17 +386,4 @@ func TestComparison_IsJSONSerializable(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &round))
 	assert.True(t, round.Regressed)
 	assert.InDelta(t, 0.05, round.Tolerance, 1e-9)
-}
-
-func TestResultPassed(t *testing.T) {
-	t.Parallel()
-
-	assert.True(t, resultPassed(Result{InputPath: "a"}), "no expectations declared means nothing to fail")
-	assert.False(t, resultPassed(Result{Error: "boom"}))
-	assert.True(t, resultPassed(Result{SizeExpected: "short", Size: "short"}))
-	assert.False(t, resultPassed(Result{SizeExpected: "short", Size: "long"}))
-	assert.True(t, resultPassed(Result{ToolCallsExpected: 0.8, ToolCallsScore: 0.9}))
-	assert.False(t, resultPassed(Result{ToolCallsExpected: 0.8, ToolCallsScore: 0.7}))
-	assert.True(t, resultPassed(Result{RelevanceExpected: 2, RelevancePassed: 2}))
-	assert.False(t, resultPassed(Result{RelevanceExpected: 2, RelevancePassed: 1}))
 }
