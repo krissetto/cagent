@@ -16,6 +16,14 @@
 // said around a divergence; it just does not decide whether a divergence
 // happened.
 //
+// # Delegated work
+//
+// A turn taken by a sub-agent is still a turn the run took, so sub-sessions are
+// walked in place: their turns appear in sequence where the delegation happened.
+// Skipping them would report "identical behaviour" for two runs whose sub-agents
+// did entirely different things — the precise wrong answer to the question this
+// package exists for.
+//
 // # First divergence only
 //
 // Once two runs differ, everything after that point is downstream of the
@@ -24,10 +32,13 @@
 package replay
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 
+	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/session"
 )
 
@@ -86,29 +97,46 @@ type Result struct {
 // Identical reports whether the two runs behaved the same the whole way.
 func (r Result) Identical() bool { return r.Divergence == nil }
 
-// TurnsOf extracts the assistant turns from a session, in order.
+// TurnsOf extracts the assistant turns from a session, in order, including
+// those taken by delegated sub-agents.
 //
 // Only assistant messages are turns: user messages are inputs and tool messages
 // are results, neither of which is a decision the model made. A nil session
 // yields no turns.
 func TurnsOf(sess *session.Session) []Turn {
-	if sess == nil {
-		return nil
+	var turns []Turn
+	appendTurns(&turns, sess, 0)
+	return turns
+}
+
+// maxSubSessionDepth bounds the sub-session walk. Delegation nests only a few
+// levels in practice; the bound exists so a cyclic or pathological session
+// cannot recurse without end.
+const maxSubSessionDepth = 32
+
+func appendTurns(turns *[]Turn, sess *session.Session, depth int) {
+	if sess == nil || depth > maxSubSessionDepth {
+		return
 	}
 
-	var turns []Turn
-	for i := range sess.Messages {
-		item := &sess.Messages[i]
-		if item.Message == nil {
+	// MessagesSnapshot copies under the session lock, so a live session being
+	// written to cannot race this walk.
+	for _, item := range sess.MessagesSnapshot() {
+		if item.IsSubSession() {
+			appendTurns(turns, item.SubSession, depth+1)
 			continue
 		}
+		if !item.IsMessage() {
+			continue
+		}
+
 		msg := &item.Message.Message
-		if msg.Role != "assistant" {
+		if msg.Role != chat.MessageRoleAssistant {
 			continue
 		}
 
 		turn := Turn{
-			Index:   len(turns),
+			Index:   len(*turns),
 			Agent:   item.Message.AgentName,
 			Content: msg.Content,
 		}
@@ -118,9 +146,8 @@ func TurnsOf(sess *session.Session) []Turn {
 				Arguments: tc.Function.Arguments,
 			})
 		}
-		turns = append(turns, turn)
+		*turns = append(*turns, turn)
 	}
-	return turns
 }
 
 // Compare walks two runs' turns and reports the first behavioural divergence.
@@ -165,11 +192,34 @@ func sameBehaviour(a, b Turn) bool {
 		return false
 	}
 	for i := range a.ToolCalls {
-		if a.ToolCalls[i] != b.ToolCalls[i] {
+		if a.ToolCalls[i].Name != b.ToolCalls[i].Name {
+			return false
+		}
+		if !sameArguments(a.ToolCalls[i].Arguments, b.ToolCalls[i].Arguments) {
 			return false
 		}
 	}
 	return true
+}
+
+// sameArguments compares two tool-call argument payloads semantically.
+//
+// Argument JSON is model-generated, so key order and whitespace vary run to run
+// while the call means the same thing. A byte comparison would report those as
+// divergences — the same nondeterminism noise that "compare behaviour, not
+// prose" exists to eliminate — so equal JSON values compare equal.
+//
+// Falls back to string equality when either side is not valid JSON, which is
+// the only honest answer for a payload with no structure to compare.
+func sameArguments(a, b string) bool {
+	if a == b {
+		return true
+	}
+	var av, bv any
+	if json.Unmarshal([]byte(a), &av) != nil || json.Unmarshal([]byte(b), &bv) != nil {
+		return false
+	}
+	return reflect.DeepEqual(av, bv)
 }
 
 // PrintResult writes a human-readable comparison.
@@ -209,18 +259,52 @@ func printCalls(out io.Writer, t *Turn) {
 		fmt.Fprintln(out, "     (no tool calls — a final answer)")
 		return
 	}
-	for _, tc := range t.ToolCalls {
-		fmt.Fprintf(out, "     %s(%s)\n", tc.Name, truncateArgs(tc.Arguments))
+	for i, tc := range t.ToolCalls {
+		if i == maxPrintedCalls {
+			fmt.Fprintf(out, "     … and %d more call(s)\n", len(t.ToolCalls)-maxPrintedCalls)
+			return
+		}
+		fmt.Fprintf(out, "     %s(%s)\n", sanitizeForTerminal(tc.Name), truncateArgs(tc.Arguments))
 	}
 }
 
-// truncateArgs bounds argument text so a large payload cannot flood the report.
+const (
+	// maxArgRunes bounds one call's rendered arguments.
+	maxArgRunes = 120
+	// maxPrintedCalls bounds how many calls of a single turn are rendered.
+	// Per-call truncation alone is unbounded in the number of parallel calls, so
+	// a turn with hundreds of them could still flood the report.
+	maxPrintedCalls = 10
+)
+
+// truncateArgs bounds argument text and strips terminal control characters.
 func truncateArgs(args string) string {
-	const maxRunes = 120
-	args = strings.ReplaceAll(args, "\n", " ")
+	args = sanitizeForTerminal(args)
 	runes := []rune(args)
-	if len(runes) <= maxRunes {
+	if len(runes) <= maxArgRunes {
 		return args
 	}
-	return string(runes[:maxRunes-1]) + "…"
+	return string(runes[:maxArgRunes-1]) + "…"
+}
+
+// sanitizeForTerminal removes control characters that let text redraw the
+// terminal rather than appear in it.
+//
+// Tool arguments are model-generated and routinely carry content the agent read
+// from a file or the web, so the diagnostic's own output can be shaped by the
+// material being diagnosed: a carriage return plus an erase-line sequence
+// rewrites the line, letting one tool call be displayed as another. The runtime
+// scrubs the same characters before rendering markdown, for the same reason.
+func sanitizeForTerminal(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', '\b', '\f', '\v':
+			return ' '
+		}
+		// C0 controls (including ESC) and DEL.
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
 }
