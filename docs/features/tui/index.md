@@ -227,6 +227,24 @@ The TUI renders Mermaid diagram blocks inline rather than displaying raw syntax.
 
 Mermaid rendering works in both the full TUI and the lean TUI. Unsupported or syntactically invalid diagram blocks are displayed as ordinary fenced code blocks — no configuration is required and there is no way to disable it.
 
+### LaTeX Math Rendering
+
+The TUI renders LaTeX math expressions as terminal-friendly Unicode text. When an assistant message contains inline math (delimited by `$…$`) or display math (delimited by `$$…$$`), the TUI converts supported LaTeX commands to their Unicode equivalents and displays them directly in the conversation.
+
+Supported features include:
+
+- Greek letters (`\alpha`, `\beta`, `\gamma`, …)
+- Mathematical operators (`\times`, `\div`, `\pm`, `\oplus`, …)
+- Relations (`\le`, `\ge`, `\approx`, `\equiv`, …)
+- Set operators (`\cap`, `\cup`, `\subset`, `\in`, …)
+- Calculus symbols (`\int`, `\sum`, `\prod`, `\partial`, `\nabla`, …)
+- Arrows and logic (`\to`, `\implies`, `\forall`, `\exists`, …)
+- Superscripts and subscripts (e.g., `x^2`, `a_i`)
+- Fractions (`\frac{a}{b}`), square roots (`\sqrt{x}`), and matrices
+- Common functions (`\sin`, `\cos`, `\log`, `\lim`, …)
+
+Unsupported or syntactically invalid LaTeX expressions fall back to displaying the raw source. LaTeX rendering works in both the full TUI and the lean TUI, requires no configuration, and cannot be disabled.
+
 ### Markdown Images
 
 The TUI fetches and renders images referenced in agent responses using the Kitty graphics protocol. When an assistant message contains a standard Markdown image reference, the TUI downloads the image in the background and displays it inline at the point of the reference. While the image is loading a placeholder is shown; once loaded, the message re-renders with the image in place.
