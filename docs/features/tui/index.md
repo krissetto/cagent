@@ -13,6 +13,8 @@ _Docker Agent's default interface is a rich, interactive terminal UI with file a
 
 ## Launching the TUI
 
+Both the full TUI and the lean TUI display a centered ASCII art Docker Agent banner on startup when the chat is empty. The banner is automatically hidden once the agent starts responding or when a custom welcome message is configured.
+
 ```bash
 # Launch with a config
 $ docker agent run agent.yaml
@@ -226,6 +228,24 @@ The TUI renders Mermaid diagram blocks inline rather than displaying raw syntax.
 | Other types (`classDiagram`, `erDiagram`, …) | Falls back to a syntax-highlighted code block     |
 
 Mermaid rendering works in both the full TUI and the lean TUI. Unsupported or syntactically invalid diagram blocks are displayed as ordinary fenced code blocks — no configuration is required and there is no way to disable it.
+
+### LaTeX Math Rendering
+
+The TUI renders LaTeX math expressions as terminal-friendly Unicode text. When an assistant message contains inline math (delimited by `$…$`) or display math (delimited by `$$…$$`), the TUI converts supported LaTeX commands to their Unicode equivalents and displays them directly in the conversation.
+
+Supported features include:
+
+- Greek letters (`\alpha`, `\beta`, `\gamma`, …)
+- Mathematical operators (`\times`, `\div`, `\pm`, `\oplus`, …)
+- Relations (`\le`, `\ge`, `\approx`, `\equiv`, …)
+- Set operators (`\cap`, `\cup`, `\subset`, `\in`, …)
+- Calculus symbols (`\int`, `\sum`, `\prod`, `\partial`, `\nabla`, …)
+- Arrows and logic (`\to`, `\implies`, `\forall`, `\exists`, …)
+- Superscripts and subscripts (e.g., `x^2`, `a_i`)
+- Fractions (`\frac{a}{b}`), square roots (`\sqrt{x}`), and matrices
+- Common functions (`\sin`, `\cos`, `\log`, `\lim`, …)
+
+Unsupported or syntactically invalid LaTeX expressions fall back to displaying the raw source. LaTeX rendering works in both the full TUI and the lean TUI, requires no configuration, and cannot be disabled.
 
 ### Markdown Images
 
