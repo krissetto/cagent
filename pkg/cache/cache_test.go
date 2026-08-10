@@ -260,7 +260,11 @@ func TestFileCache_concurrentStoreNeverYieldsTornFile(t *testing.T) {
 	// half-written content and json.Unmarshal would error.
 	for range 100 {
 		data, err := os.ReadFile(path)
-		if errors.Is(err, os.ErrNotExist) {
+		// Tolerate transient open failures caused by the writer itself:
+		// the file may not exist yet, and on Windows the open can race a
+		// rename replacing it. Only successfully read bytes are asserted
+		// on — the torn-write check is about content, not availability.
+		if errors.Is(err, os.ErrNotExist) || isTransientSharingViolation(err) {
 			continue
 		}
 		require.NoError(t, err)

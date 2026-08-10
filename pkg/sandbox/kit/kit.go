@@ -34,6 +34,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -341,12 +342,22 @@ func classifyRef(ref string) (tag, key string) {
 // leftover .old-* sibling from a crashed run is harmless and will be
 // reaped on the next successful build.
 //
-// Publishing is wrapped in a bounded retry loop to absorb a three-way
-// race: between our failed rename and our recovery Stat, a *different*
-// concurrent build can retire finalDir to publish its own kit, leaving
-// finalDir transiently absent. A single Stat would misread that as a
-// hard failure; retrying lets us simply take the now-empty slot. The
-// contention window is microseconds and real concurrency is a handful
+// Publishing is wrapped in a bounded retry loop to absorb two races:
+//
+//  1. Three-way rename race: between our failed rename and our
+//     recovery Stat, a *different* concurrent build can retire
+//     finalDir to publish its own kit, leaving finalDir transiently
+//     absent. A single Stat would misread that as a hard failure;
+//     retrying lets us simply take the now-empty slot.
+//
+//  2. Windows access-denied race: Windows refuses to rename a
+//     directory while another goroutine holds an open handle to it
+//     (ERROR_ACCESS_DENIED). A concurrent Build holding finalDir open
+//     makes the retire rename fail; retrying waits for the handle to
+//     be released. On POSIX, renames succeed regardless of open
+//     handles, so this path is never taken there.
+//
+// Both windows are microseconds wide and real concurrency is a handful
 // of builds, so the loop converges in one or two iterations.
 func promote(stagingDir, finalDir string) error {
 	const maxAttempts = 100
@@ -369,6 +380,14 @@ func promote(stagingDir, finalDir string) error {
 		if _, err := os.Stat(finalDir); err == nil {
 			retired := fmt.Sprintf("%s.old-%s-%d", finalDir, filepath.Base(stagingDir), attempt)
 			if err := os.Rename(finalDir, retired); err != nil && !os.IsNotExist(err) {
+				// On Windows another goroutine may hold finalDir open,
+				// causing ERROR_ACCESS_DENIED. That's transient — retry
+				// rather than failing the build.
+				if isRetryableRenameErr(err) {
+					lastErr = err
+					runtime.Gosched() // yield to the goroutine holding the handle
+					continue
+				}
 				return fmt.Errorf("retiring previous kit: %w", err)
 			}
 			retiredDirs = append(retiredDirs, retired)

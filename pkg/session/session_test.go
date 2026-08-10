@@ -1029,3 +1029,29 @@ func TestEmbeddedSubSessionCost(t *testing.T) {
 	assert.InDelta(t, 0.10, sess.OwnCost(), 1e-9)
 	assert.InDelta(t, 0.18, sess.TotalCost(), 1e-9, "TotalCost counts embedded and live sub-sessions")
 }
+
+// TestGetAllErrors verifies recorded errors are collected in item order,
+// including from sub-sessions, and that GetAllMessages keeps excluding them.
+func TestGetAllErrors(t *testing.T) {
+	t.Parallel()
+
+	sess := New(WithUserMessage("hi"))
+	sess.AddError(&Error{Message: "first failure", Code: "model_error", AgentName: "root"})
+
+	sub := New(WithParentID(sess.ID))
+	sub.AddError(&Error{Message: "sub failure", Code: "tool_failed", AgentName: "child"})
+	sess.AddSubSession(sub)
+
+	sess.AddError(&Error{Message: "second failure", Code: "context_exceeded", AgentName: "root"})
+
+	errs := sess.GetAllErrors()
+	require.Len(t, errs, 3)
+	assert.Equal(t, "first failure", errs[0].Message)
+	assert.Equal(t, "sub failure", errs[1].Message)
+	assert.Equal(t, "second failure", errs[2].Message)
+	assert.Equal(t, "context_exceeded", errs[2].Code)
+
+	for _, msg := range sess.GetAllMessages() {
+		assert.NotContains(t, msg.Message.Content, "failure", "errors must not leak into messages")
+	}
+}

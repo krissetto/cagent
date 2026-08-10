@@ -620,6 +620,9 @@ func (sm *SessionManager) CreateSession(ctx context.Context, sessionTemplate *se
 	if sessionTemplate.Permissions != nil {
 		opts = append(opts, session.WithPermissions(sessionTemplate.Permissions))
 	}
+	if attributes := sessionTemplate.AttributesSnapshot(); len(attributes) > 0 {
+		opts = append(opts, session.WithAttributes(attributes))
+	}
 
 	sess := session.New(opts...)
 
@@ -2014,6 +2017,7 @@ func (sm *SessionManager) SetSessionAgentModel(ctx context.Context, sessionID, m
 		SafetyPolicy:            sess.SafetyPolicy,
 		ToolsApproved:           sess.ToolsApproved,
 		Permissions:             sess.Permissions,
+		Attributes:              sess.AttributesSnapshot(),
 		MaxIterations:           sess.MaxIterations,
 		MaxConsecutiveToolCalls: sess.MaxConsecutiveToolCalls,
 		MaxOldToolCallTokens:    sess.MaxOldToolCallTokens,
@@ -2168,7 +2172,7 @@ func (sm *SessionManager) ExportSessionForRecovery(ctx context.Context, sessionI
 	}
 
 	inputTokens, outputTokens := sess.Usage()
-	return map[string]any{
+	export := map[string]any{
 		"id":             sess.ID,
 		"title":          sess.TitleSnapshot(),
 		"created_at":     sess.CreatedAt,
@@ -2178,5 +2182,13 @@ func (sm *SessionManager) ExportSessionForRecovery(ctx context.Context, sessionI
 		"working_dir":    sess.WorkingDir,
 		"tools_approved": sess.ToolsApproved,
 		"permissions":    sess.Permissions,
-	}, nil
+	}
+	// Recorded errors are session items, not messages, so GetAllMessages
+	// drops them. Export them separately: recovery exports feed diagnostics,
+	// and a run that died with e.g. a context overflow is invisible without
+	// the error that ended it.
+	if errs := sess.GetAllErrors(); len(errs) > 0 {
+		export["errors"] = errs
+	}
+	return export, nil
 }

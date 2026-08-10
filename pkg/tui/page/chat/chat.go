@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/tui/animation"
+	tuibanner "github.com/docker/docker-agent/pkg/tui/banner"
 	"github.com/docker/docker-agent/pkg/tui/commands"
 	"github.com/docker/docker-agent/pkg/tui/components/messages"
 	"github.com/docker/docker-agent/pkg/tui/components/notification"
@@ -230,6 +231,7 @@ type chatPage struct {
 	// Track whether we've received content from an assistant response
 	// Used by --exit-after-response to ensure we don't exit before receiving content
 	hasReceivedAssistantContent bool
+	showStartupBanner           bool
 
 	// Message queue for enqueuing messages while agent is working
 	messageQueue []queuedMessage
@@ -374,14 +376,15 @@ func defaultKeyMap() KeyMap {
 // New creates a new chat page
 func New(ar *animation.Runtime, ctx context.Context, a *app.App, sessionState *service.SessionState, opts ...PageOption) Page {
 	p := &chatPage{
-		ar:            ar,
-		ctx:           func() context.Context { return context.WithoutCancel(ctx) },
-		sidebar:       sidebar.New(ar, ctx, sessionState),
-		messages:      messages.New(ar, sessionState),
-		app:           a,
-		keyMap:        defaultKeyMap(),
-		commandParser: commands.NewParser(),
-		sessionState:  sessionState,
+		ar:                ar,
+		ctx:               func() context.Context { return context.WithoutCancel(ctx) },
+		sidebar:           sidebar.New(ar, ctx, sessionState),
+		messages:          messages.New(ar, sessionState),
+		app:               a,
+		keyMap:            defaultKeyMap(),
+		commandParser:     commands.NewParser(),
+		sessionState:      sessionState,
+		showStartupBanner: true,
 	}
 
 	for _, opt := range opts {
@@ -584,6 +587,18 @@ func (p *chatPage) update(msg tea.Msg) (layout.Model, tea.Cmd) {
 			cmd,
 		)
 
+	case followUpSentMsg:
+		return p, notification.InfoCmd("Follow-up queued for the next turn")
+
+	case followUpFailedMsg:
+		msg.original.FollowUp = false
+		msg.original.Queue = true
+		model, cmd := p.handleSendMsg(msg.original)
+		return model, tea.Batch(
+			notification.WarningCmd("Could not enqueue the follow-up"),
+			cmd,
+		)
+
 	case msgtypes.RetryMsg:
 		return p.handleRetry()
 
@@ -711,11 +726,30 @@ func (p *chatPage) renderCollapsedSidebar(sl sidebarLayout) string {
 		Render(sidebarWithDivider)
 }
 
+func (p *chatPage) messagesView(sl sidebarLayout) string {
+	messagesView := p.messages.View()
+	if messagesView != "" || !p.showStartupBanner {
+		return messagesView
+	}
+	if sl.chatWidth < tuibanner.Width || sl.chatHeight < tuibanner.Height {
+		return ""
+	}
+
+	banner := styles.BaseStyle.Foreground(styles.Accent).Render(strings.Join(tuibanner.Lines, "\n"))
+	return lipgloss.Place(
+		sl.chatWidth,
+		sl.chatHeight,
+		lipgloss.Center,
+		lipgloss.Center,
+		banner,
+	)
+}
+
 // View renders the chat page (messages + sidebar only, no editor or resize handle)
 func (p *chatPage) View() string {
 	sl := p.computeSidebarLayout()
 
-	messagesView := p.messages.View()
+	messagesView := p.messagesView(sl)
 
 	var bodyContent string
 
@@ -946,6 +980,13 @@ func (p *chatPage) handleSendMsg(msg msgtypes.SendMsg) (layout.Model, tea.Cmd) {
 		return p, cmd
 	}
 
+	// Alt+Enter explicitly requests a separate end-of-turn follow-up. When the
+	// agent is idle there is no active turn to follow, so process it normally.
+	if msg.FollowUp && p.working && p.app != nil {
+		cmd := p.followUpMessage(msg)
+		return p, cmd
+	}
+
 	// While the agent is working, the configured send mode decides the
 	// default: steer injects the message into the ongoing stream so the
 	// agent picks it up mid-turn without breaking the stream (issue #3547);
@@ -992,8 +1033,10 @@ func (p *chatPage) enqueueMessage(msg msgtypes.SendMsg) tea.Cmd {
 // queue; steerFailedMsg carries the message back for local queueing when
 // steering was rejected (e.g. steer queue full).
 type (
-	steerSentMsg   struct{}
-	steerFailedMsg struct{ original msgtypes.SendMsg }
+	steerSentMsg      struct{}
+	steerFailedMsg    struct{ original msgtypes.SendMsg }
+	followUpSentMsg   struct{}
+	followUpFailedMsg struct{ original msgtypes.SendMsg }
 )
 
 // steerMessage injects the message into the ongoing stream via the runtime's
@@ -1010,6 +1053,18 @@ func (p *chatPage) steerMessage(msg msgtypes.SendMsg) tea.Cmd {
 			return steerFailedMsg{original: msg}
 		}
 		return steerSentMsg{}
+	}
+}
+
+func (p *chatPage) followUpMessage(msg msgtypes.SendMsg) tea.Cmd {
+	ctx := p.ctx()
+	return func() tea.Msg {
+		content := p.app.ResolveInput(ctx, msg.Content)
+		if err := p.app.FollowUpMessage(ctx, content, msg.Attachments); err != nil {
+			slog.Warn("Failed to enqueue follow-up; falling back to local queue", "error", err)
+			return followUpFailedMsg{original: msg}
+		}
+		return followUpSentMsg{}
 	}
 }
 

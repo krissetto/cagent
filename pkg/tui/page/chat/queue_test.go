@@ -560,9 +560,10 @@ func TestReadOnly_RejectsBypassQueueCommands(t *testing.T) {
 type steerRecordingRuntime struct {
 	queueTestRuntime
 
-	mu       sync.Mutex
-	steerErr error
-	steers   []runtime.QueuedMessage
+	mu        sync.Mutex
+	steerErr  error
+	steers    []runtime.QueuedMessage
+	followUps []runtime.QueuedMessage
 }
 
 func (r *steerRecordingRuntime) Steer(_ context.Context, msg runtime.QueuedMessage) error {
@@ -575,10 +576,42 @@ func (r *steerRecordingRuntime) Steer(_ context.Context, msg runtime.QueuedMessa
 	return nil
 }
 
+func (r *steerRecordingRuntime) FollowUp(_ context.Context, msg runtime.QueuedMessage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.followUps = append(r.followUps, msg)
+	return nil
+}
+
+func (r *steerRecordingRuntime) followedUp() []runtime.QueuedMessage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]runtime.QueuedMessage(nil), r.followUps...)
+}
+
 func (r *steerRecordingRuntime) steered() []runtime.QueuedMessage {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]runtime.QueuedMessage(nil), r.steers...)
+}
+
+func TestFollowUpFlow_BusyAgent_UsesRuntimeFollowUpQueue(t *testing.T) {
+	t.Parallel()
+
+	rt := &steerRecordingRuntime{}
+	sess := session.New()
+	p := New(animation.NewRuntime(), t.Context(), app.New(t.Context(), rt, sess), service.NewSessionState(sess)).(*chatPage)
+	p.working = true
+
+	_, cmd := p.handleSendMsg(messages.SendMsg{Content: "do this next", FollowUp: true})
+
+	require.NotNil(t, cmd)
+	assert.IsType(t, followUpSentMsg{}, cmd())
+	assert.Empty(t, p.messageQueue)
+	assert.Empty(t, rt.steered())
+	if assert.Len(t, rt.followedUp(), 1) {
+		assert.Equal(t, "do this next", rt.followedUp()[0].Content)
+	}
 }
 
 // TestSteerFlow_BusyAgent_SteersMessage pins the issue #3547 contract: a
