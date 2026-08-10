@@ -25,6 +25,31 @@ $ docker agent run --exec agent.yaml "question 1" "question 2" "question 3"
 
 See [`docker agent run --exec`](../../features/cli/index.md#docker-agent-run---exec) for the full flag reference.
 
+## Choosing a Large-Input Strategy
+
+Docker Agent has several unrelated mechanisms for getting a large document, file, or dataset in front of an agent. Which one fits depends on whether the content is local to the machine running Docker Agent, how often it needs to be revisited, and whether you're driving the agent through the CLI/TUI or over one of the HTTP servers:
+
+| You have… | Use… | Notes |
+| --- | --- | --- |
+| A file on disk, for one interactive turn | `@path` or `/attach` in the TUI (see [File Attachments](../../features/tui/index.md#file-attachments)) | Read from the local filesystem and inlined into the message once it passes Docker Agent's own text/binary inlining size checks. Never goes over HTTP. |
+| Instructions/context every agent turn should see | `add_prompt_files` in the agent config, or `--prompt-file` on the CLI (see [Prompt Files](../../configuration/agents/index.md#prompt-files)) | Re-read from disk **in full** on every turn and injected as instruction context; local, not an HTTP upload, and not subject to the attachment inlining checks above — memory and the model's context window are the practical ceilings. |
+| A one-off piece of text for a **local** headless run | stdin, without `--remote` (see [`--exec` Mode Basics](#--exec-mode-basics) above) | The piped text becomes the message directly; there's no Docker Agent HTTP hop and no size cap of its own. |
+| A one-off piece of text driving a **remote** runtime | stdin with `docker agent run --remote ... -` | The CLI serializes that stdin text into a native API run request sent to the remote `serve api` process, so it's measured against *that* server's `--max-request-size` — see the HTTP body limit below. Local attachments (`@path`/`/attach`) and client-side `--prompt-file` values are **not** forwarded to a remote runtime today; only the message text travels. Prompt files configured on the agent itself (`add_prompt_files`) still resolve, but on the server's filesystem, not the client's. |
+| A document collection you'll query repeatedly, or one too large to inline at all | The [`rag` toolset](../../tools/rag/index.md) | Indexed once in the background; each query retrieves only the relevant chunks into context, instead of the whole collection. |
+| An OpenAI-compatible client driving Docker Agent over HTTP | [Chat Server](../../features/chat-server/index.md) | Accepts OpenAI-style `text` and [`image_url`](../../features/chat-server/index.md#image-inputs) content parts. The whole request travels as a single HTTP body capped by that server's `--max-request-size`; a data URL's bytes count toward it, while a remote `http(s)://` image URL is passed to the provider rather than fetched by the chat server, and works only if that provider/model supports it. |
+| A native integration driving Docker Agent's own session/control protocol | [API Server](../../features/api-server/index.md) | Supports the documented session, run, and event-streaming flows over a single capped HTTP body; see the note below on the upload contract this does *not* provide. |
+
+Three independent ceilings apply, and hitting one says nothing about the others:
+
+1. **The HTTP body limit** — only for requests that actually reach `docker agent serve api` or `docker agent serve chat`, which includes the native run request that `docker agent run --remote ... -` builds from stdin. Each server enforces its own `--max-request-size` (1 MiB by default) and returns `413 Request Entity Too Large` above it; see [Troubleshooting: HTTP 413](../../community/troubleshooting/index.md#http-413-request-body-too-large) for how to diagnose and resolve it. Local (non-`--remote`) stdin, `@path`/`/attach`, and prompt files never cross this boundary.
+2. **Local read-time limits, which differ by path** — `@path`/`/attach` apply Docker Agent's own text/binary inlining size checks before a file is added to a message; a file too large to inline is skipped with a warning rather than silently truncated or allowed to exhaust memory. Prompt files (`add_prompt_files`/`--prompt-file`) have no equivalent guard — they're read in full on every turn regardless of size, so memory and the model's context window are what actually bound them.
+3. **Model/provider context and media limits** — even content that clears the first two layers still has to fit the model's token/context window, and binary attachments (images, PDF, audio, video) only work if the model declares support for that media type (see [Attachment Capability Overrides](../../configuration/models/index.md#attachment-capability-overrides)). Exceeding the context window is a separate failure from either limit above — see [Context Window Exceeded](../../community/troubleshooting/index.md#context-window-exceeded).
+
+> [!NOTE]
+> **No file-upload endpoint**
+>
+> Neither the API server nor the chat server exposes a multipart file-upload endpoint, and neither one fetches a remote URL on your behalf — the chat server's `image_url` support only ever passes a remote URL through to the provider (see the table above). Content reaches an agent either locally (`@path`/`/attach`, prompt files, `rag`) or embedded directly in the HTTP message body those servers already document; there is no separate attachment channel over either API.
+
 ## Structured Output for Machines
 
 Two independent things make an `--exec` run's output easy to parse: how the transcript is emitted, and what shape the model's own answer takes.
