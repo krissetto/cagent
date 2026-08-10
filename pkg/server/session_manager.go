@@ -567,6 +567,9 @@ func (sm *SessionManager) CreateSession(ctx context.Context, sessionTemplate *se
 	if sessionTemplate.Permissions != nil {
 		opts = append(opts, session.WithPermissions(sessionTemplate.Permissions))
 	}
+	if attributes := sessionTemplate.AttributesSnapshot(); len(attributes) > 0 {
+		opts = append(opts, session.WithAttributes(attributes))
+	}
 
 	sess := session.New(opts...)
 
@@ -1904,6 +1907,7 @@ func (sm *SessionManager) SetSessionAgentModel(ctx context.Context, sessionID, m
 		SafetyPolicy:            sess.SafetyPolicy,
 		ToolsApproved:           sess.ToolsApproved,
 		Permissions:             sess.Permissions,
+		Attributes:              sess.AttributesSnapshot(),
 		MaxIterations:           sess.MaxIterations,
 		MaxConsecutiveToolCalls: sess.MaxConsecutiveToolCalls,
 		MaxOldToolCallTokens:    sess.MaxOldToolCallTokens,
