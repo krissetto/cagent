@@ -248,6 +248,74 @@ func TestServer_UpdateSessionTitle(t *testing.T) {
 	assert.Equal(t, newTitle, sessionResp.Title)
 }
 
+// TestServer_CreateSessionWorkingDirWithSeparators pins the removal of a
+// Copilot-autofix validation that rejected any working_dir containing path
+// separators or an absolute path: POST /api/sessions must accept a real
+// host directory (which always contains separators) and store it on the
+// session. Only a raw working_dir containing ".." is rejected up front.
+// Containment stays opt-in via WithSessionWorkingDirRoot (CodeQL alert
+// #57); the unrestricted default is intentional (#3788).
+func TestServer_CreateSessionWorkingDirWithSeparators(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sm := NewSessionManager(ctx, config.Sources{}, session.NewInMemorySessionStore(), 0, &config.RuntimeConfig{})
+	srv := NewWithManager(sm, "")
+
+	wd := t.TempDir()
+	require.True(t, strings.ContainsAny(wd, `/\`))
+
+	body, err := json.Marshal(map[string]any{"working_dir": wd})
+	require.NoError(t, err)
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/sessions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.e.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var created session.Session
+	unmarshal(t, rec.Body.Bytes(), &created)
+	require.NotEmpty(t, created.ID)
+	assert.Equal(t, wd, created.WorkingDir)
+
+	stored, err := sm.GetSession(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, wd, stored.WorkingDir)
+}
+
+// TestServer_CreateSessionWorkingDirDotDotRejected pins the HTTP mapping of
+// the raw ".." rejection: POST /api/sessions with a traversal-carrying
+// working_dir must answer 400 (ErrInvalidWorkingDir), not 500, and create
+// no session.
+func TestServer_CreateSessionWorkingDirDotDotRejected(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sm := NewSessionManager(ctx, config.Sources{}, session.NewInMemorySessionStore(), 0, &config.RuntimeConfig{})
+	srv := NewWithManager(sm, "")
+
+	wd := t.TempDir() + string(filepath.Separator) + ".."
+	body, err := json.Marshal(map[string]any{"working_dir": wd})
+	require.NoError(t, err)
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/sessions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.e.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	var errResp struct {
+		Message string `json:"message"`
+	}
+	unmarshal(t, rec.Body.Bytes(), &errResp)
+	assert.Contains(t, errResp.Message, `must not contain ".."`)
+
+	sessions, err := sm.GetSessions(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, sessions)
+}
+
 // TestServer_GetSessionsRace pins the data-race fix for the GET
 // /api/sessions and GET /api/sessions/:id handlers (#3591): the in-memory
 // store hands them live *session.Session pointers, so reading
