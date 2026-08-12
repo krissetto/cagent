@@ -362,6 +362,15 @@ type Session struct {
 	// filter (the skill explicitly asked for them).
 	ExtraToolSets []tools.ToolSet `json:"-"`
 
+	// DisableStructuredOutput, when true, exempts this session from tool-mode
+	// structured-output enforcement: the internal output tool is not offered
+	// and plain-text finals are accepted. Used by fork-mode skill
+	// sub-sessions, whose answer is free-form text for the calling agent, not
+	// the agent's schema-constrained final output. Not persisted: like the
+	// other transient sub-session state, a restored or branched session
+	// starts with enforcement re-enabled.
+	DisableStructuredOutput bool `json:"-"`
+
 	// AgentName, when set, tells RunStream which agent to use for this session
 	// instead of reading from the shared runtime currentAgent field. This is
 	// required for background agent tasks where multiple sessions may run
@@ -1538,6 +1547,15 @@ func WithAllowedTools(names []string) Opt {
 func WithExtraToolSets(toolSets []tools.ToolSet) Opt {
 	return func(s *Session) {
 		s.ExtraToolSets = toolSets
+	}
+}
+
+// WithStructuredOutputDisabled exempts the session from tool-mode
+// structured-output enforcement. Used by fork-mode skill sub-sessions whose
+// answers are free-form text for the calling agent.
+func WithStructuredOutputDisabled(disabled bool) Opt {
+	return func(s *Session) {
+		s.DisableStructuredOutput = disabled
 	}
 }
 
