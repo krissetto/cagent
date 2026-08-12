@@ -677,7 +677,7 @@ $ docker agent debug <subcommand> [flags]
 | `toolsets <agent-file>` | List every toolset each agent in the config exposes, with each tool's name and description. |
 | `skills <agent-file>` | List the skills discovered for each agent, marking forked skills. |
 | `title <agent-file> <question>` | Generate a session title for `<question>` using the same title-generation path the TUI uses (including any configured `title_model`), without starting a session. See [Session Titles](../sessions/index.md#session-titles). |
-| `auth` | Print parsed Docker Desktop authentication info from the locally stored JWT (subject, issuer, expiry, username/email). Add `--json` for machine-readable output. |
+| `auth` | Print parsed Docker authentication info from the token in use (source, subject, issuer, expiry, username/email). Add `--json` for machine-readable output. |
 | `oauth list` | List stored MCP OAuth tokens (resource, scope, expiry, redacted access token). Add `--json` for machine-readable output. |
 | `oauth remove <resource-url>` | Remove a stored MCP OAuth token. |
 | `oauth login <agent-file> <mcp-name>` | Perform an interactive OAuth login for a remote MCP server declared in the config, by its name or URL. See [Remote MCP Servers](../remote-mcp/index.md). |
@@ -696,7 +696,9 @@ $ docker agent debug oauth login agent.yaml github
 > [!WARNING]
 > **`debug auth --json` prints the full bearer token**
 >
-> The text output of `debug auth` truncates the token to a short preview, but `--json` includes the complete, unredacted JWT in its `token` field. Never paste `debug auth --json` output into logs, issue trackers, or bug reports — anyone with that token can act as you against Docker Desktop's backend. Use the plain-text output (or redact the `token` field yourself) when sharing diagnostic output.
+> The text output of `debug auth` truncates the token to a short preview, but `--json` includes the complete, unredacted JWT in its `token` field. Never paste `debug auth --json` output into logs, issue trackers, or bug reports — anyone with that token can act as you against Docker. Use the plain-text output (or redact the `token` field yourself) when sharing diagnostic output.
+
+The `Source` field says where the token came from: `docker desktop`, or `minted from the stored access token` when it was obtained by exchanging the access token `docker login` stored. See [Docker authentication](../../guides/secrets/index.md#docker-authentication).
 
 The `config`, `toolsets`, `skills`, and `title` subcommands also accept [runtime configuration flags](#runtime-configuration-flags) (`--working-dir`, `--models-gateway`, …); `title` additionally accepts `--model` to override the model used to resolve the config before generating the title.
 
