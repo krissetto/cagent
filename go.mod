@@ -30,7 +30,7 @@ require (
 	github.com/coder/acp-go-sdk v0.13.5
 	github.com/creack/pty v1.1.24
 	github.com/docker/aijson v0.1.0
-	github.com/docker/cli v29.6.2+incompatible
+	github.com/docker/cli v29.7.2+incompatible
 	github.com/docker/go-units v0.5.0
 	github.com/docker/portcullis v1.0.0
 	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
