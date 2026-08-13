@@ -1203,6 +1203,10 @@ agents:
     model: openai/gpt-4o
     instruction: test
     safety: balanced
+  headless:
+    model: openai/gpt-4o
+    instruction: test
+    safety: restricted
   careful:
     model: openai/gpt-4o
     instruction: test
@@ -1216,6 +1220,10 @@ agents:
 	root, err := team.Agent("root")
 	require.NoError(t, err)
 	assert.Equal(t, latest.SafetyModeBalanced, root.Safety())
+
+	headless, err := team.Agent("headless")
+	require.NoError(t, err)
+	assert.Equal(t, latest.SafetyModeRestricted, headless.Safety())
 
 	careful, err := team.Agent("careful")
 	require.NoError(t, err)
@@ -1260,7 +1268,7 @@ agents:
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Load(t.Context(), config.NewBytesSource("bad.yaml", []byte(tt.data)), &config.RuntimeConfig{}, withTestProviderRegistry()...)
 			require.ErrorContains(t, err, tt.wantErr)
-			require.ErrorContains(t, err, "strict, balanced, autonomous")
+			require.ErrorContains(t, err, "strict, balanced, restricted, autonomous")
 		})
 	}
 }

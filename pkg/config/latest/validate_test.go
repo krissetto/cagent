@@ -571,7 +571,7 @@ func TestConfigValidateErrorWrapping(t *testing.T) {
 		{
 			name:    "runtime safety error",
 			config:  Config{Runtime: &RuntimeDefaults{Safety: "yolo"}},
-			wantErr: "runtime.safety: invalid safety mode \"yolo\" (valid: strict, balanced, autonomous)",
+			wantErr: "runtime.safety: invalid safety mode \"yolo\" (valid: strict, balanced, restricted, autonomous)",
 		},
 		{
 			name:    "runtime safety legacy alias rejected",
@@ -581,7 +581,7 @@ func TestConfigValidateErrorWrapping(t *testing.T) {
 		{
 			name:    "agent safety error",
 			config:  Config{Agents: Agents{{Name: "root", Safety: "Strict"}}},
-			wantErr: "agents.root.safety: invalid safety mode \"Strict\" (valid: strict, balanced, autonomous)",
+			wantErr: "agents.root.safety: invalid safety mode \"Strict\" (valid: strict, balanced, restricted, autonomous)",
 		},
 	}
 
@@ -622,7 +622,7 @@ func TestConfigValidateValidConfig(t *testing.T) {
 		Toolsets: map[string]Toolset{
 			"web": {Type: "fetch", AllowedDomains: []string{"example.com", "*.example.org"}},
 		},
-		// All three canonical modes are explicitly permitted at runtime and
+		// All four canonical modes are explicitly permitted at runtime and
 		// agent scope, autonomous included.
 		Runtime: &RuntimeDefaults{Safety: SafetyModeAutonomous},
 		Agents: Agents{
@@ -640,6 +640,7 @@ func TestConfigValidateValidConfig(t *testing.T) {
 				Hooks: &HooksConfig{Stop: HookDefinitions{{Type: "command", Command: "echo done"}}},
 			},
 			{Name: "careful", Model: "main", Safety: SafetyModeStrict},
+			{Name: "headless", Model: "main", Safety: SafetyModeRestricted},
 		},
 	}
 
@@ -653,15 +654,17 @@ func TestSafetyModeValidate(t *testing.T) {
 		"":                   true,
 		SafetyModeStrict:     true,
 		SafetyModeBalanced:   true,
+		SafetyModeRestricted: true,
 		SafetyModeAutonomous: true,
 
 		// Legacy session aliases and near-misses are rejected: only the
-		// three canonical modes may appear in YAML safety fields.
-		"unsafe":    false,
-		"safer":     false,
-		"safe-auto": false,
-		"yolo":      false,
-		"Balanced":  false, // case-sensitive on purpose
+		// four canonical modes may appear in YAML safety fields.
+		"unsafe":     false,
+		"safer":      false,
+		"safe-auto":  false,
+		"yolo":       false,
+		"Balanced":   false, // case-sensitive on purpose
+		"Restricted": false,
 	}
 
 	for in, wantOK := range cases {
@@ -670,7 +673,7 @@ func TestSafetyModeValidate(t *testing.T) {
 			require.NoErrorf(t, err, "SafetyMode(%q).Validate()", string(in))
 		} else {
 			require.ErrorContainsf(t, err, "invalid safety mode", "SafetyMode(%q).Validate()", string(in))
-			require.ErrorContainsf(t, err, "strict, balanced, autonomous", "SafetyMode(%q).Validate()", string(in))
+			require.ErrorContainsf(t, err, "strict, balanced, restricted, autonomous", "SafetyMode(%q).Validate()", string(in))
 		}
 	}
 }
