@@ -1261,7 +1261,7 @@ var validToolNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 // entire name is invalid.
 func sanitizeToolCallName(name string) string {
 	end := strings.IndexFunc(name, func(r rune) bool {
-		return !('a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' || r == '_' || r == '-')
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
 	})
 	if end >= 0 {
 		name = name[:end]
