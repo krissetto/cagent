@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -1161,14 +1162,32 @@ func (r *LocalRuntime) recordAssistantMessage(
 		return nil
 	}
 
+	// Sanitize tool call names before persisting. A model may hallucinate
+	// attribute-style syntax into the name field (e.g. `view_file" path="..."`);
+	// strict providers like AWS Bedrock reject names outside [a-zA-Z0-9_-]{1,64}
+	// with a non-retriable ValidationException when the poisoned name is replayed
+	// in conversation history.
+	calls := res.Calls
+	for i, tc := range calls {
+		if !validToolNameRe.MatchString(tc.Function.Name) {
+			safe := sanitizeToolCallName(tc.Function.Name)
+			slog.Warn("Sanitizing malformed tool call name",
+				"agent", a.Name(),
+				"original", tc.Function.Name,
+				"sanitized", safe,
+			)
+			calls[i].Function.Name = safe
+		}
+	}
+
 	// Resolve tool definitions for the tool calls.
 	var toolDefs []tools.Tool
-	if len(res.Calls) > 0 {
+	if len(calls) > 0 {
 		toolMap := make(map[string]tools.Tool, len(agentTools))
 		for _, t := range agentTools {
 			toolMap[t.Name] = t
 		}
-		for _, call := range res.Calls {
+		for _, call := range calls {
 			if def, ok := toolMap[call.Function.Name]; ok {
 				toolDefs = append(toolDefs, def)
 			}
@@ -1203,7 +1222,7 @@ func (r *LocalRuntime) recordAssistantMessage(
 		ReasoningContent:  res.ReasoningContent,
 		ThinkingSignature: res.ThinkingSignature,
 		ThoughtSignature:  res.ThoughtSignature,
-		ToolCalls:         res.Calls,
+		ToolCalls:         calls,
 		ToolDefinitions:   toolDefs,
 		CreatedAt:         r.now().Format(time.RFC3339),
 		Usage:             res.Usage,
@@ -1226,6 +1245,34 @@ func (r *LocalRuntime) recordAssistantMessage(
 		FinishReason: res.FinishReason,
 	}
 	return msgUsage
+}
+
+// validToolNameRe matches the subset of tool names providers like AWS Bedrock
+// accept (pattern [a-zA-Z0-9_-]+, 1–64 chars). Names that fall outside this
+// set are sanitized by sanitizeToolCallName before being persisted.
+var validToolNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+// sanitizeToolCallName returns a provider-safe version of a model-emitted tool
+// call name by keeping only the leading [a-zA-Z0-9_-]+ run and capping at 64
+// chars. A model may hallucinate attribute-style syntax into the name field
+// (e.g. `view_file" path="foo.php" ...`); truncating at the first illegal
+// character recovers the intended name and prevents the poisoned string from
+// being replayed to strict providers. Falls back to "unknown_tool" when the
+// entire name is invalid.
+func sanitizeToolCallName(name string) string {
+	end := strings.IndexFunc(name, func(r rune) bool {
+		return !('a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' || r == '_' || r == '-')
+	})
+	if end >= 0 {
+		name = name[:end]
+	}
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	if name == "" {
+		return "unknown_tool"
+	}
+	return name
 }
 
 // usageHasTokens reports whether any billable tokens were recorded for a turn.
