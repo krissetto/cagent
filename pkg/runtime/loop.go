@@ -372,13 +372,11 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 	r.emitAgentWarnings(a, sink)
 	r.configureToolsetHandlers(a, sink)
 
-	agentTools, err := r.getTools(ctx, a, sessionSpan, sink, true)
+	agentTools, err := r.getTools(ctx, sess, a, sessionSpan, sink, true)
 	if err != nil {
 		sink.Emit(ErrorWithCodeForSession(sess.ID, ErrorCodeToolFailed, fmt.Sprintf("failed to get tools: %v", err)))
 		return
 	}
-	agentTools = filterExcludedTools(agentTools, sess.ExcludedTools)
-	agentTools = r.skillSubSessionTools(ctx, sess, a, agentTools, sink)
 
 	// Record the catalogue size on the session span — answers "how
 	// many tools could this turn actually use?" without having to
@@ -473,19 +471,18 @@ func (r *LocalRuntime) runStreamLoop(ctx context.Context, sess *session.Session,
 		if a.Name() != ls.prevAgentName {
 			ls.toolModelOverride = ""
 			ls.prevTurnMadeToolCalls = false
+			ls.structuredOutputReminders = 0
 			ls.prevAgentName = a.Name()
 		}
 
 		r.emitAgentWarnings(a, sink)
 		r.configureToolsetHandlers(a, sink)
 
-		agentTools, err := r.getTools(ctx, a, sessionSpan, sink, true)
+		agentTools, err := r.getTools(ctx, sess, a, sessionSpan, sink, true)
 		if err != nil {
 			sink.Emit(ErrorWithCodeForSession(sess.ID, ErrorCodeToolFailed, fmt.Sprintf("failed to get tools: %v", err)))
 			return
 		}
-		agentTools = filterExcludedTools(agentTools, sess.ExcludedTools)
-		agentTools = r.skillSubSessionTools(ctx, sess, a, agentTools, sink)
 
 		// Emit updated tool count. After a ToolListChanged MCP notification
 		// the cache is invalidated, so getTools above re-fetches from the
@@ -635,6 +632,11 @@ type loopState struct {
 	sessionStartSources    []session.InstructionSource
 	userPromptMsgs         []chat.Message
 	exitReason             string
+	// structuredOutputReminders counts the transient reminders injected
+	// after a tool-mode turn stopped without calling the internal output
+	// tool. Bounded by maxStructuredOutputReminders; reset on agent switch
+	// so it never carries across agents.
+	structuredOutputReminders int
 	// prevTurnMadeToolCalls reports whether the immediately preceding
 	// turn emitted tool calls. Used to classify an empty trailing turn:
 	// a clean stop right after tool work is benign (the model already
@@ -758,9 +760,13 @@ func (r *LocalRuntime) runTurn(
 	// against what the model already knows. Changes extend the conversation;
 	// they never rewrite the frozen instruction prefix.
 	turnStartMsgs := r.executeTurnStartHooks(ctx, sess, a, events)
-	legacyExtras := slices.Concat(ls.sessionStartLegacyMsgs, ls.userPromptMsgs, turnStartMsgs.legacyMessages())
-	messages := r.messagesWithDynamicContext(ctx, sess, a,
-		instructionSources(ls.sessionStartMsgs, ls.userPromptMsgs, turnStartMsgs, ls.sessionStartSources...), legacyExtras)
+	// Pending tool-mode structured-output reminder rides with the transient
+	// system extras: threaded per call, never persisted as a user message.
+	reminderMsgs := ls.structuredOutputReminderMessages()
+	legacyExtras := slices.Concat(ls.sessionStartLegacyMsgs, ls.userPromptMsgs, turnStartMsgs.legacyMessages(), reminderMsgs)
+	sources := instructionSources(ls.sessionStartMsgs, ls.userPromptMsgs, turnStartMsgs, ls.sessionStartSources...)
+	sources = append(sources, instructionSource("runtime/structured-output", "structured-output reminder", reminderMsgs))
+	messages := r.messagesWithDynamicContext(ctx, sess, a, sources, legacyExtras)
 	slog.DebugContext(ctx, "Retrieved messages for processing", "agent", a.Name(), "message_count", len(messages))
 
 	// before_llm_call hooks fire just before the model is invoked.
@@ -889,7 +895,13 @@ func (r *LocalRuntime) runTurn(
 	// measure how much content was added by tool results.
 	messageCountBeforeTools := len(sess.OwnMessages())
 
-	stopRun, stopMsg := r.processToolCalls(ctx, sess, res.Calls, agentTools, events)
+	// Intercept internal structured-output calls before dispatch: they bypass
+	// approval and the user's tool hooks, and an exclusive valid call
+	// finalizes the turn (res is rewritten so the stop path below runs on
+	// the validated JSON).
+	dispatchCalls, soFinalized := r.handleStructuredOutputCalls(ctx, sess, a, &res, agentTools, modelID.String(), events)
+
+	stopRun, stopMsg := r.processToolCalls(ctx, sess, dispatchCalls, agentTools, events)
 
 	// Re-probe toolsets after tool calls: an install/setup tool call may
 	// have made a previously-unavailable LSP or MCP connectable. reprobe()
@@ -973,6 +985,19 @@ func (r *LocalRuntime) runTurn(
 	}
 
 	if res.Stopped {
+		// Tool-mode structured output never accepts a plain-text stop as the
+		// final answer: remind the model (bounded) or fail with a coded error.
+		if structuredOutputEnabled(sess, a) {
+			if !soFinalized {
+				ctrl, reason := r.structuredOutputStop(ctx, sess, a, ls, events)
+				endReason = reason
+				return ctrl
+			}
+			// Accepted result: give a potential next turn (follow-up,
+			// steered continuation) a fresh reminder budget.
+			ls.structuredOutputReminders = 0
+		}
+
 		slog.DebugContext(ctx, "Conversation stopped", "agent", a.Name())
 		r.executeStopHooks(ctx, sess, a, res.Content, events)
 
@@ -1276,16 +1301,30 @@ func (r *LocalRuntime) compactIfNeeded(
 	r.compactWithReason(ctx, sess, "", compactionReasonThreshold, events)
 }
 
-// getTools executes tool retrieval with automatic OAuth handling.
+// getTools executes tool retrieval with automatic OAuth handling and applies
+// the session's tool-visibility rules: exclusion filters, the skill
+// sub-session allow-list and extra toolsets, then the internal tool-mode
+// structured-output tool. The internal tool is appended after every session
+// filter so a skill allow-list can never strip active enforcement, and it is
+// omitted entirely for sessions that disable structured output (fork-mode
+// skill children).
 // emitLifecycleEvents controls whether MCPInitStarted/Finished are emitted;
 // pass false when calling from reprobe to avoid spurious TUI spinner flicker.
-func (r *LocalRuntime) getTools(ctx context.Context, a *agent.Agent, sessionSpan trace.Span, events EventSink, emitLifecycleEvents bool) ([]tools.Tool, error) {
+func (r *LocalRuntime) getTools(ctx context.Context, sess *session.Session, a *agent.Agent, sessionSpan trace.Span, events EventSink, emitLifecycleEvents bool) ([]tools.Tool, error) {
 	if emitLifecycleEvents && len(a.ToolSets()) > 0 {
 		events.Emit(MCPInitStarted(a.Name()))
 		defer func() { events.Emit(MCPInitFinished(a.Name())) }()
 	}
 
 	agentTools, err := a.Tools(ctx)
+	if err == nil {
+		agentTools = filterExcludedTools(agentTools, sess.ExcludedTools)
+		agentTools = r.skillSubSessionTools(ctx, sess, a, agentTools, events)
+		// Tool-mode structured output rides on the same error path: a name
+		// collision with the reserved internal tool or an uncompilable schema
+		// must fail the turn loudly, not mask one of the two tools.
+		agentTools, err = appendStructuredOutputTool(agentTools, sess, a)
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to get agent tools", "agent", a.Name(), "error", err)
 		sessionSpan.RecordError(err)
@@ -1547,13 +1586,11 @@ func (r *LocalRuntime) reprobe(
 	sessionSpan trace.Span,
 	events EventSink,
 ) {
-	updated, err := r.getTools(ctx, a, sessionSpan, events, false)
+	updated, err := r.getTools(ctx, sess, a, sessionSpan, events, false)
 	if err != nil {
 		slog.WarnContext(ctx, "reprobe: getTools failed", "agent", a.Name(), "error", err)
 		return
 	}
-	updated = filterExcludedTools(updated, sess.ExcludedTools)
-	updated = r.skillSubSessionTools(ctx, sess, a, updated, events)
 
 	// Emit any pending warnings that getTools just generated.
 	r.emitAgentWarnings(a, events)

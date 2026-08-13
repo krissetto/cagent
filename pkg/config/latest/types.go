@@ -1995,6 +1995,17 @@ func (t TaskBudget) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]any{"type": t.Type, "total": t.Total})
 }
 
+// Structured-output enforcement modes. See [StructuredOutput.Mode].
+const (
+	// StructuredOutputModeNative passes the schema to the provider's
+	// native structured-output support (the default).
+	StructuredOutputModeNative = "native"
+	// StructuredOutputModeTool withholds the schema from providers and
+	// instead exposes an internal tool the model must call with the final
+	// JSON; the runtime validates the arguments against the schema.
+	StructuredOutputModeTool = "tool"
+)
+
 // StructuredOutput defines a JSON schema for structured output
 type StructuredOutput struct {
 	// Name is the name of the response format
@@ -2005,6 +2016,32 @@ type StructuredOutput struct {
 	Schema map[string]any `json:"schema"`
 	// Strict enables strict schema adherence (OpenAI only)
 	Strict bool `json:"strict,omitempty"`
+	// Mode selects how the schema is enforced: "native" (or empty, the
+	// default) uses the provider's native structured-output support;
+	// "tool" makes the runtime expose an internal tool the model calls
+	// with the final JSON, validated against Schema.
+	Mode string `json:"mode,omitempty"`
+}
+
+// ToolMode reports whether s opted into tool-based structured-output
+// enforcement. Safe on a nil receiver so callers can chain it off
+// optional config fields.
+func (s *StructuredOutput) ToolMode() bool {
+	return s != nil && s.Mode == StructuredOutputModeTool
+}
+
+// validate rejects unknown structured_output modes. nil is valid (no
+// structured output configured).
+func (s *StructuredOutput) validate() error {
+	if s == nil {
+		return nil
+	}
+	switch s.Mode {
+	case "", StructuredOutputModeNative, StructuredOutputModeTool:
+		return nil
+	default:
+		return fmt.Errorf("unsupported mode %q (must be one of: native, tool)", s.Mode)
+	}
 }
 
 // RAGToolConfig represents tool-specific configuration for a RAG source

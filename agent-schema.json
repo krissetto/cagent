@@ -798,6 +798,15 @@
               "description": "Enable strict schema adherence (OpenAI only). When true, all properties must be in required array.",
               "default": false
             },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "native",
+                "tool"
+              ],
+              "description": "How the schema is enforced. 'native' (default) passes it to the provider's native structured-output support. 'tool' exposes an internal tool the model must call with the final JSON; the runtime validates the arguments against the schema. Works with any tool-calling provider.",
+              "default": "native"
+            },
             "schema": {
               "type": "object",
               "description": "JSON Schema object defining the structure of the response. Must include type, properties, and required fields.",
