@@ -9,8 +9,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -911,12 +909,12 @@ func TestToolsExposesEnabledServerTools(t *testing.T) {
 // panicking.
 func TestHandleEnable_OAuthDCR_ChallengePRMScopeFallback(t *testing.T) {
 	// Swaps the process-wide OAuth HTTP client (so DCR/PRM/token requests
-	// can reach the httptest server's loopback address) and PATH (fake
-	// browser opener) for the duration of the test — incompatible with
+	// can reach the httptest server's loopback address) and the process-wide
+	// browser opener for the duration of the test — incompatible with
 	// t.Parallel(), like the equivalent pkg/tools/mcp/oauth_test.go fixture.
 	restoreHTTPClient := oauthflow.SetHTTPClientForTesting(oauthflow.HTTPClientForAllowPrivateIPs(true))
 	defer restoreHTTPClient()
-	captureFile := setupFakeCatalogBrowserOpener(t)
+	urlCh := fakeCatalogBrowserOpener(t)
 
 	prmScopes := []string{"catalog-scope-a", "catalog-scope-b"}
 	var capturedScope string
@@ -950,7 +948,7 @@ func TestHandleEnable_OAuthDCR_ChallengePRMScopeFallback(t *testing.T) {
 		done <- enableOutcome{res, err}
 	}()
 
-	authURL := requireCapturedCatalogAuthorizeURL(t, captureFile)
+	authURL := requireCapturedCatalogAuthorizeURL(t, urlCh)
 	deliverFakeCatalogOAuthCallback(t, authURL, "catalog-test-authorization-code")
 
 	var outcome enableOutcome
@@ -981,48 +979,33 @@ func TestHandleEnable_OAuthDCR_ChallengePRMScopeFallback(t *testing.T) {
 	require.NoError(t, ts.Stop(t.Context()))
 }
 
-// setupFakeCatalogBrowserOpener, requireCapturedCatalogAuthorizeURL and
-// deliverFakeCatalogOAuthCallback mirror the identically-purposed
-// unexported helpers in pkg/tools/mcp/oauth_test.go (setupFakeBrowserOpener
-// / requireCapturedAuthorizeURL / deliverFakeCallback). Duplicated rather
-// than imported: those are test-only helpers unexported from a different
-// package.
-func setupFakeCatalogBrowserOpener(t *testing.T) string {
+// fakeCatalogBrowserOpener swaps the process-wide browser opener for one
+// that captures the authorization URL into a buffered channel instead of
+// launching a real browser. Restores the original on cleanup.
+// Mutating the process-wide opener is incompatible with t.Parallel.
+func fakeCatalogBrowserOpener(t *testing.T) <-chan string {
 	t.Helper()
-
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture shims the open/xdg-open binaries via a PATH-relative #!/bin/sh script, " +
-			"but pkg/browser launches rundll32 on Windows, which the shim cannot intercept; " +
-			"the real launcher would run, no URL would ever be captured, and the polling read " +
-			"would time out while holding interactiveOAuthMu")
-	}
-
-	dir := t.TempDir()
-	captureFile := filepath.Join(dir, "captured-url")
-	script := []byte("#!/bin/sh\nprintf '%s' \"$1\" > " + captureFile + "\n")
-	// This PATH shim only covers the POSIX open/xdg-open launchers pkg/browser
-	// uses on macOS/Linux; Windows uses rundll32 and is skipped above.
-	for _, name := range []string{"open", "xdg-open"} {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), script, 0o755))
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return captureFile
+	urlCh := make(chan string, 1)
+	restore := oauthflow.SetBrowserOpenerForTesting(func(_ context.Context, rawURL string) error {
+		select {
+		case urlCh <- rawURL:
+		default:
+		}
+		return nil
+	})
+	t.Cleanup(restore)
+	return urlCh
 }
 
-func requireCapturedCatalogAuthorizeURL(t *testing.T, captureFile string) string {
+func requireCapturedCatalogAuthorizeURL(t *testing.T, urlCh <-chan string) string {
 	t.Helper()
-
-	var authorizeURL string
-	require.Eventually(t, func() bool {
-		data, err := os.ReadFile(captureFile)
-		if err != nil || len(data) == 0 {
-			return false
-		}
-		authorizeURL = string(data)
-		return true
-	}, 15*time.Second, 20*time.Millisecond,
-		"timed out waiting for the fake browser opener to receive the authorize URL")
-	return authorizeURL
+	select {
+	case u := <-urlCh:
+		return u
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for the fake browser opener to receive the authorize URL")
+		return ""
+	}
 }
 
 func deliverFakeCatalogOAuthCallback(t *testing.T, authURL, code string) {

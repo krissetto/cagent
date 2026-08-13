@@ -7,9 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +20,7 @@ import (
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/httpclient"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tools/mcp/oauthflow"
 )
 
 // newTestTransport returns a transport private to the test. Parallel tests
@@ -3735,50 +3733,36 @@ func TestHandleManagedOAuthFlow_DCRSuccess_ConfiguredScopesWinOverChallengeAndPR
 		"configured scopes must win over both the challenge scope and PRM scopes_supported")
 }
 
-// setupFakeBrowserOpener replaces the "open"/"xdg-open" binaries browser.Open
-// shells out to (pkg/browser) with a PATH shim that records the URL it was
-// asked to open into a file instead of launching a real browser window.
-// Returns the path the shim writes the captured URL to. Mutates PATH via
-// t.Setenv, which testing forbids combining with t.Parallel.
-func setupFakeBrowserOpener(t *testing.T) string {
+// fakeBrowserOpener swaps the process-wide browser opener for one that
+// captures the authorization URL into a buffered channel instead of launching
+// a real browser. This makes browser-fixture tests host-independent (no POSIX
+// PATH shim, no platform-specific launcher). Restores the original on cleanup.
+// Mutating the process-wide opener is incompatible with t.Parallel.
+func fakeBrowserOpener(t *testing.T) <-chan string {
 	t.Helper()
-
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture shims the open/xdg-open binaries via a PATH-relative #!/bin/sh script, " +
-			"but pkg/browser launches rundll32 on Windows, which the shim cannot intercept; " +
-			"the real launcher would run, no URL would ever be captured, and the polling read " +
-			"would time out")
-	}
-
-	dir := t.TempDir()
-	captureFile := filepath.Join(dir, "captured-url")
-	script := []byte("#!/bin/sh\nprintf '%s' \"$1\" > " + captureFile + "\n")
-	// This PATH shim only covers the POSIX open/xdg-open launchers pkg/browser
-	// uses on macOS/Linux; Windows uses rundll32 and is skipped above.
-	for _, name := range []string{"open", "xdg-open"} {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), script, 0o755))
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return captureFile
+	urlCh := make(chan string, 1)
+	restore := oauthflow.SetBrowserOpenerForTesting(func(_ context.Context, rawURL string) error {
+		select {
+		case urlCh <- rawURL:
+		default:
+		}
+		return nil
+	})
+	t.Cleanup(restore)
+	return urlCh
 }
 
-// requireCapturedAuthorizeURL polls captureFile until setupFakeBrowserOpener's
-// shim has written the authorize URL handleManagedOAuthFlow handed to the
-// (faked) system browser.
-func requireCapturedAuthorizeURL(t *testing.T, captureFile string) string {
+// requireCapturedAuthorizeURL waits for the fake browser opener to deliver
+// the authorization URL, timing out after 15 seconds.
+func requireCapturedAuthorizeURL(t *testing.T, urlCh <-chan string) string {
 	t.Helper()
-
-	var authorizeURL string
-	require.Eventually(t, func() bool {
-		data, err := os.ReadFile(captureFile)
-		if err != nil || len(data) == 0 {
-			return false
-		}
-		authorizeURL = string(data)
-		return true
-	}, 15*time.Second, 20*time.Millisecond,
-		"timed out waiting for the fake browser opener to receive the authorize URL")
-	return authorizeURL
+	select {
+	case u := <-urlCh:
+		return u
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for the fake browser opener to receive the authorize URL")
+		return ""
+	}
 }
 
 // deliverFakeCallback simulates the browser completing the authorization
@@ -3817,7 +3801,7 @@ func deliverFakeCallback(t *testing.T, authURL, code string) {
 // place that must agree on it: the DCR registration request body, the
 // /authorize URL's scope parameter, and the stored token's RequestedScopes.
 func TestHandleManagedOAuthFlow_DCRSuccess_EndToEndScopeEquality(t *testing.T) {
-	captureFile := setupFakeBrowserOpener(t)
+	urlCh := fakeBrowserOpener(t)
 
 	var registerScope string
 	var haveRegisterScope bool
@@ -3877,7 +3861,7 @@ func TestHandleManagedOAuthFlow_DCRSuccess_EndToEndScopeEquality(t *testing.T) {
 		errCh <- transport.handleManagedOAuthFlow(t.Context(), srv.URL, `Bearer scope="challenge-scope"`)
 	}()
 
-	authURL := requireCapturedAuthorizeURL(t, captureFile)
+	authURL := requireCapturedAuthorizeURL(t, urlCh)
 	deliverFakeCallback(t, authURL, "test-authorization-code")
 
 	require.NoError(t, <-errCh)
