@@ -3,6 +3,63 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.125.0] - 2026-08-17
+
+This release adds several new features including Docker token minting, structured output mode, restricted safety mode, and harness session resumption, alongside multiple bug fixes for file editing, caching, attachment handling, and OAuth flows.
+
+## What's New
+
+- Adds the ability to mint Docker tokens from the stored access token, enabling authentication without Docker Desktop running (`feat(auth): mint Docker tokens from the stored access token`)
+- Adds a tool-based structured output mode as an opt-in alternative to native structured output (`feat: add tool-based structured output mode`)
+- Adds a restricted safety mode for unattended and headless runs, allowing classifier-safe calls while denying unmatched destructive or unknown calls without prompting (`feat(safety): add restricted mode for unattended runs`)
+- Adds the ability to resume external harness sessions on later turns instead of starting a new session each time (`feat(runtime): resume external harness sessions`)
+- Includes session cost in session summaries (`feat: include cost in session summaries`)
+
+## Bug Fixes
+
+- Fixes a path containment bug in VCS ignore logic where a repository root like `/work/repo` incorrectly matched sibling paths like `/work/repo-sibling` (`fix(pkg/fsx/vcs.go)`)
+- Fixes `edit_file` silently prepending content when `oldText` is empty; empty `oldText` is now refused (`fix(acp): refuse edit_file edits with an empty oldText`)
+- Fixes a file backend cache bug where entries written by a sibling process remained invisible to `Lookup` indefinitely (`fix(pkg/cache/cache.go)`)
+- Fixes attachment content being able to close its own envelope delimiter, and labels the region as untrusted to prevent content injection (`fix(attachment): stop attachment content from closing its own envelope`)
+- Fixes a self-closing envelope delimiter bypass in attachment handling (`fix(attachment): defuse the self-closing envelope delimiter too`)
+- Fixes malformed tool call names (e.g. attribute-style syntax hallucinated by a model) being persisted to session, which caused non-retriable errors on replay (`fix(runtime): sanitize malformed tool call names before persisting to session`)
+- Fixes standalone OAuth login discovery to correctly forward remote metadata, match names/URLs exactly, and use authoritative challenge metadata (`fix(mcp): repair standalone OAuth login discovery`)
+- Fixes standalone OAuth login to honor `CallbackPort` and `CallbackRedirectURL` configuration, matching the behavior of the managed OAuth flow (`fix(mcp): honor callback configuration in standalone OAuth login`)
+- Fixes the TUI not retaining the interrupt confirmation setting across restarts and page rebuilds (`fix(tui): retain interrupt confirmation setting`)
+
+## Technical Changes
+
+- Refactors MCP protected resource metadata discovery into a shared helper to eliminate duplication between managed and unmanaged OAuth flows (`refactor(mcp): share protected resource metadata discovery`)
+- Propagates OAuth scopes through dynamic registration in MCP (`fix(mcp): propagate OAuth scopes through dynamic registration`)
+- Isolates `pkg/runtime` tests from the real user config directory to prevent local settings from affecting test outcomes (`test(runtime): isolate pkg/runtime tests from the real user config`)
+- Refreshes the embedded models.dev catalog snapshot (`chore: refresh embedded models.dev snapshot`)
+### Pull Requests
+
+- [#3923](https://github.com/docker/docker-agent/pull/3923) - fix(fsx): test repository containment on a path boundary, not a string prefix
+- [#3926](https://github.com/docker/docker-agent/pull/3926) - fix(filesystem): refuse edit_file edits with an empty oldText
+- [#3928](https://github.com/docker/docker-agent/pull/3928) - fix(cache): adopt the on-disk state read during `Store`, not just its mtime
+- [#3935](https://github.com/docker/docker-agent/pull/3935) - feat(auth): mint Docker tokens from the stored access token
+- [#3942](https://github.com/docker/docker-agent/pull/3942) - fix(attachment): stop attachment content from closing its own envelope, and label the region untrusted
+- [#3955](https://github.com/docker/docker-agent/pull/3955) - refactor(mcp): share protected resource metadata discovery
+- [#3959](https://github.com/docker/docker-agent/pull/3959) - fix(mcp): repair standalone OAuth login discovery
+- [#3964](https://github.com/docker/docker-agent/pull/3964) - docs: update CHANGELOG.md for v1.124.0
+- [#3966](https://github.com/docker/docker-agent/pull/3966) - feat: add tool-based structured output mode
+- [#3969](https://github.com/docker/docker-agent/pull/3969) - docs: auto-update for merged PRs (2026-08-13)
+- [#3970](https://github.com/docker/docker-agent/pull/3970) - feat(safety): add restricted mode for unattended runs
+- [#3972](https://github.com/docker/docker-agent/pull/3972) - docs: remove internal issue/PR references from plan tool page
+- [#3973](https://github.com/docker/docker-agent/pull/3973) - docs: add missing built-in tools to concepts overview
+- [#3974](https://github.com/docker/docker-agent/pull/3974) - fix(runtime): sanitize malformed tool call names before persisting to session
+- [#3979](https://github.com/docker/docker-agent/pull/3979) - test(mcp): make OAuth browser launch injectable across platforms
+- [#3980](https://github.com/docker/docker-agent/pull/3980) - chore(deps): update reviewed Go dependencies
+- [#3981](https://github.com/docker/docker-agent/pull/3981) - test(runtime): isolate user config in tests
+- [#3987](https://github.com/docker/docker-agent/pull/3987) - fix(mcp): honor callback configuration in standalone OAuth login
+- [#3989](https://github.com/docker/docker-agent/pull/3989) - feat(runtime): resume external harness sessions
+- [#3990](https://github.com/docker/docker-agent/pull/3990) - docs: auto-update for merged PRs (2026-08-16)
+- [#3991](https://github.com/docker/docker-agent/pull/3991) - feat: include cost in session summaries
+- [#3992](https://github.com/docker/docker-agent/pull/3992) - chore: refresh embedded models.dev snapshot
+- [#3994](https://github.com/docker/docker-agent/pull/3994) - fix(tui): retain interrupt confirmation setting
+
+
 ## [v1.124.0] - 2026-08-10
 
 This release adds LaTeX rendering and a startup banner to the TUI, introduces a configurable request size limit for the API server, and includes security fixes for session working directory path traversal.
@@ -5449,3 +5506,5 @@ This release improves the terminal user interface with better error handling and
 [v1.123.0]: https://github.com/docker/docker-agent/releases/tag/v1.123.0
 
 [v1.124.0]: https://github.com/docker/docker-agent/releases/tag/v1.124.0
+
+[v1.125.0]: https://github.com/docker/docker-agent/releases/tag/v1.125.0
