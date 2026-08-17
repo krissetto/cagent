@@ -168,6 +168,39 @@ $ docker agent eval <agent-file>|<registry-ref> [<eval-dir>|./evals]
 | `--keep-containers` | `false`                     | Keep containers after evaluation (don't remove with `--rm`)       |
 | `-e, --env`         | (none)                      | Environment variables to pass to container (`KEY` or `KEY=VALUE`) |
 | `--repeat`          | `1`                         | Number of times to repeat each evaluation (useful for computing baselines) |
+| `--baseline`        | (none)                      | Compare against a previously saved run JSON and exit non-zero on regression (see [Regression gate](#regression-gate)) |
+| `--regression-tolerance` | `0`                    | How far an aggregate quality rate may fall before `--baseline` reports a regression (0–1) |
+
+### Regression gate
+
+`--baseline` compares the run against a previous one and exits non-zero when
+quality regressed, so an eval suite can gate CI:
+
+```console
+$ docker agent eval ./agent.yaml --baseline results/2026-08-01-run.json
+```
+
+The baseline is the run JSON written by a previous invocation —
+`<output>/<run-name>.json` — so there is no separate artifact to produce.
+
+Four rules decide the verdict, and they are worth knowing before wiring this
+into CI:
+
+- **The tolerance governs aggregate rates only.** An LLM judge does not return
+  the same score twice, so without a tolerance the gate flaps. `--regression-tolerance 0.05`
+  lets an aggregate rate fall five points before it counts.
+- **An evaluation that passed and now fails always gates**, regardless of the
+  tolerance. That transition is the signal the gate exists to catch, so it is
+  never absorbed.
+- **Cost is reported but never gates.** A provider price change is not a quality
+  regression.
+- **An added *failing* evaluation gates** via the aggregate rate, even though no
+  existing evaluation regressed. A suite that got worse should say so — but it
+  means committing a known-failing eval needs a tolerance bump or a fix.
+
+A baseline that carries no evaluations, or a run that produced none (an
+`--only` pattern that matched nothing), is rejected rather than reported as
+passing: a gate that cannot fail is worse than no gate.
 
 ### Provider Credentials
 

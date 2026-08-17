@@ -510,6 +510,8 @@ $ docker agent eval <agent-file>|<registry-ref> [<eval-dir>|./evals] [flags]
 | `--keep-containers` | `false`                              | Keep containers after evaluation (don't remove with `--rm`)                |
 | `-e, --env`         | (none)                               | Environment variables to pass to container (`KEY` or `KEY=VALUE`, repeatable) |
 | `--repeat <n>`      | `1`                                  | Number of times to repeat each evaluation (useful for computing baselines) |
+| `--baseline <file>` | (none)                               | Compare against a previously saved run JSON (`<output>/<run>.json`) and exit non-zero on regression |
+| `--regression-tolerance <n>` | `0`                         | How far an aggregate quality rate may fall before `--baseline` reports a regression (0–1) |
 
 All [runtime configuration flags](#runtime-configuration-flags) are also accepted.
 
