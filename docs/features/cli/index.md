@@ -449,6 +449,48 @@ $ docker agent share pull docker.io/username/my-agent:latest --force
 
 See [Agent Distribution](../../concepts/distribution/index.md) for full registry workflow details.
 
+### `docker agent sessions diff`
+
+Compare two recorded sessions and report the first point where the agent behaved
+differently — the triage answer when a task that worked yesterday does not work
+today.
+
+```bash
+$ docker agent sessions diff <session-a> <session-b> [flags]
+```
+
+```console
+$ docker agent sessions diff -1 -2
+Comparing a1b2c3d4 (7 turns) against e5f6a7b8 (9 turns)
+
+❌ First divergence at turn 3 (after 3 matching turn(s)).
+   a1b2c3d4 called:
+     read_file({"path":"pkg/cache/cache.go"})
+   e5f6a7b8 called:
+     search_files_content({"query":"persistToDisk","path":"."})
+
+Everything after this point is downstream of the divergence and is not compared.
+```
+
+Session references accept a full ID, a unique ID prefix, or a relative form such
+as `-1` for the most recent run.
+
+| Flag                    | Default                 | Description                                    |
+| ----------------------- | ----------------------- | ------------------------------------------------ |
+| `-s, --session-db`      | `<data-dir>/session.db` | Path to the session database                   |
+| `--json`                | `false`                 | Emit the comparison as JSON                    |
+| `--fail-on-divergence`  | `false`                 | Exit non-zero when the two sessions diverge    |
+
+Comparison is over the sequence of tool calls, not the assistant's prose: model
+output is nondeterministic, so two runs of the same task almost always word
+things differently while doing the same work. Turns taken by delegated
+sub-agents are included in sequence. Reporting stops at the first divergence —
+everything after it is downstream of that difference.
+
+This locates *where* two runs diverged, not *why*. Re-running a session against
+a different model while holding the environment fixed is a separate, unbuilt
+feature.
+
 ### `docker agent eval`
 
 Run agent evaluations against a directory of recorded sessions.
