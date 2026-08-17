@@ -41,6 +41,18 @@ func TestRoutableAddr(t *testing.T) {
 	}
 }
 
+func TestRun_RejectsAutonomousYAMLSafety(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "DUMMY")
+
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	err = Run(t.Context(), "testdata/autonomous.yaml", "root", filepath.Join(t.TempDir(), "session.db"), &config.RuntimeConfig{}, ln, RunOptions{})
+	require.ErrorContains(t, err, "--safety autonomous")
+}
+
 // TestRun_StopsOnContextCancel: canceling the context must make Run stop
 // serving and return, releasing the session store's file handles (otherwise
 // t.TempDir cleanup fails on Windows with an open session.db).
@@ -58,7 +70,7 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, "testdata/basic.yaml", "root", sessionDB, &config.RuntimeConfig{}, ln)
+		done <- Run(ctx, "testdata/basic.yaml", "root", sessionDB, &config.RuntimeConfig{}, ln, RunOptions{})
 	}()
 
 	// Cancel only once the server actually serves, so the test exercises a

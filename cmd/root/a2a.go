@@ -1,11 +1,15 @@
 package root
 
 import (
+	"io"
+
 	"github.com/spf13/cobra"
 
 	"github.com/docker/docker-agent/pkg/a2a"
 	"github.com/docker/docker-agent/pkg/cli"
 	"github.com/docker/docker-agent/pkg/config"
+	"github.com/docker/docker-agent/pkg/servesafety"
+	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/telemetry"
 )
 
@@ -13,6 +17,8 @@ type a2aFlags struct {
 	agentName  string
 	listenAddr string
 	sessionDB  string
+	safety     string
+	stdout     io.Writer
 	runConfig  config.RuntimeConfig
 }
 
@@ -32,6 +38,7 @@ func newA2ACmd() *cobra.Command {
 	cmd.PersistentFlags().StringVarP(&flags.agentName, "agent", "a", "", "Name of the agent to run (defaults to the team's first agent)")
 	cmd.PersistentFlags().StringVarP(&flags.listenAddr, "listen", "l", "127.0.0.1:8082", "Address to listen on")
 	cmd.PersistentFlags().StringVarP(&flags.sessionDB, "session-db", "s", "", "Path to the session database (default: <data-dir>/session.db)")
+	cmd.PersistentFlags().StringVar(&flags.safety, "safety", "", "Tool safety policy (strict, balanced, restricted, autonomous)")
 	addRuntimeConfigFlags(cmd, &flags.runConfig)
 
 	return cmd
@@ -44,7 +51,14 @@ func (f *a2aFlags) runA2ACommand(cmd *cobra.Command, args []string) (commandErr 
 		telemetry.TrackCommandError(ctx, "serve", append([]string{"a2a"}, args...), commandErr)
 	}()
 
-	out := cli.NewPrinter(cmd.OutOrStdout())
+	if err := validateSafetyFlag(f.safety); err != nil {
+		return err
+	}
+
+	out := cli.NewPrinter(f.stdout)
+	if f.stdout == nil {
+		out = cli.NewPrinter(cmd.OutOrStdout())
+	}
 	agentFilename := args[0]
 
 	ln, cleanup, err := newListener(ctx, f.listenAddr)
@@ -54,5 +68,10 @@ func (f *a2aFlags) runA2ACommand(cmd *cobra.Command, args []string) (commandErr 
 	defer cleanup()
 
 	out.Println("Listening on", ln.Addr().String())
-	return a2a.Run(ctx, agentFilename, f.agentName, sessionDBPath(f.sessionDB), &f.runConfig, ln)
+	return a2a.Run(ctx, agentFilename, f.agentName, sessionDBPath(f.sessionDB), &f.runConfig, ln, a2a.RunOptions{
+		CLISafety: session.SafetyPolicy(f.safety),
+		OnSafetyPolicy: func(resolved servesafety.Resolved) {
+			out.Printf("Tool safety policy: %s (source: %s)\n", resolved.Policy, resolved.Source)
+		},
+	})
 }

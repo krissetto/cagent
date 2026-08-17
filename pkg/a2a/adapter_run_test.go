@@ -22,6 +22,7 @@ import (
 	"github.com/docker/docker-agent/pkg/model/provider"
 	"github.com/docker/docker-agent/pkg/model/provider/base"
 	"github.com/docker/docker-agent/pkg/modelsdev"
+	"github.com/docker/docker-agent/pkg/servesafety"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
@@ -179,9 +180,9 @@ type yieldedEvent struct {
 	err   error
 }
 
-func collectRunEvents(ctx agent.InvocationContext, tm *team.Team, a *dagent.Agent, store session.Store) []yieldedEvent {
+func collectRunEvents(ctx agent.InvocationContext, tm *team.Team, a *dagent.Agent, store session.Store, policy session.SafetyPolicy) []yieldedEvent {
 	var out []yieldedEvent
-	for ev, err := range runDockerAgent(ctx, tm, a.Name(), a, store) {
+	for ev, err := range runDockerAgent(ctx, tm, a.Name(), a, store, servesafety.Resolved{Policy: policy}) {
 		out = append(out, yieldedEvent{event: ev, err: err})
 	}
 	return out
@@ -203,7 +204,7 @@ func TestRunDockerAgent_StreamsPartialAndFinalEvents(t *testing.T) {
 	store := session.NewInMemorySessionStore()
 	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-events", "Hi there")
 
-	events := collectRunEvents(ctx, tm, root, store)
+	events := collectRunEvents(ctx, tm, root, store, session.SafetyPolicyRestricted)
 
 	require.Len(t, events, 3)
 	for _, e := range events {
@@ -241,7 +242,7 @@ func TestRunDockerAgent_ErrorEventStopsIteration(t *testing.T) {
 	store := session.NewInMemorySessionStore()
 	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-error", "Hi")
 
-	events := collectRunEvents(ctx, tm, root, store)
+	events := collectRunEvents(ctx, tm, root, store, session.SafetyPolicyRestricted)
 
 	require.Len(t, events, 1)
 	assert.Nil(t, events[0].event)
@@ -258,7 +259,7 @@ func TestRunDockerAgent_EmptyStreamEmitsNoFinalEvent(t *testing.T) {
 	store := session.NewInMemorySessionStore()
 	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-empty", "Hi")
 
-	events := collectRunEvents(ctx, tm, root, store)
+	events := collectRunEvents(ctx, tm, root, store, session.SafetyPolicyRestricted)
 
 	assert.Empty(t, events)
 }
@@ -271,7 +272,7 @@ func TestRunDockerAgent_ConsumerStopsEarly(t *testing.T) {
 	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-early-stop", "Hi")
 
 	var events []*adksession.Event
-	for ev, err := range runDockerAgent(ctx, tm, root.Name(), root, store) {
+	for ev, err := range runDockerAgent(ctx, tm, root.Name(), root, store, servesafety.Resolved{Policy: session.SafetyPolicyRestricted}) {
 		require.NoError(t, err)
 		events = append(events, ev)
 		break
@@ -290,7 +291,7 @@ func TestRunDockerAgent_EndedInvocationStopsIteration(t *testing.T) {
 	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-ended", "Hi")
 
 	var events []*adksession.Event
-	for ev, err := range runDockerAgent(ctx, tm, root.Name(), root, store) {
+	for ev, err := range runDockerAgent(ctx, tm, root.Name(), root, store, servesafety.Resolved{Policy: session.SafetyPolicyRestricted}) {
 		require.NoError(t, err)
 		events = append(events, ev)
 		// Ending the invocation after the first chunk must stop the
@@ -309,7 +310,7 @@ func TestRunDockerAgent_NewSessionUsesA2ASettings(t *testing.T) {
 	store := newRecordingStore()
 	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-new", "What is Docker?")
 
-	events := collectRunEvents(ctx, tm, root, store)
+	events := collectRunEvents(ctx, tm, root, store, session.SafetyPolicyRestricted)
 	require.Len(t, events, 2)
 
 	updated := store.updatedSessions()
@@ -318,7 +319,8 @@ func TestRunDockerAgent_NewSessionUsesA2ASettings(t *testing.T) {
 
 	assert.Equal(t, "a2a-ctx-new", sess.ID)
 	assert.Equal(t, "A2A Session a2a-ctx-new", sess.Title)
-	assert.True(t, sess.ToolsApproved)
+	assert.Equal(t, session.SafetyPolicyRestricted, sess.GetSafetyPolicy())
+	assert.False(t, sess.ToolsApproved)
 	assert.True(t, sess.NonInteractive)
 
 	// runDockerAgent stamps new sessions with the process working directory
@@ -339,6 +341,70 @@ func TestRunDockerAgent_NewSessionUsesA2ASettings(t *testing.T) {
 	assert.Equal(t, "A2A Session a2a-ctx-new", stored.Title)
 }
 
+func TestRunDockerAgent_ExplicitSafety(t *testing.T) {
+	t.Parallel()
+
+	for _, policy := range []session.SafetyPolicy{
+		session.SafetyPolicyStrict,
+		session.SafetyPolicyBalanced,
+		session.SafetyPolicyRestricted,
+		session.SafetyPolicyAutonomous,
+	} {
+		t.Run(string(policy), func(t *testing.T) {
+			t.Parallel()
+
+			tm, root := newMockTeam("answer")
+			store := newRecordingStore()
+			ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-"+string(policy), "What is Docker?")
+
+			collectRunEvents(ctx, tm, root, store, policy)
+
+			updated := store.updatedSessions()
+			require.NotEmpty(t, updated)
+			assert.Equal(t, policy, updated[0].GetSafetyPolicy())
+			assert.Equal(t, policy == session.SafetyPolicyAutonomous, updated[0].ToolsApproved)
+		})
+	}
+}
+
+func TestRunDockerAgent_ResumedSessionDoesNotExceedServerSafety(t *testing.T) {
+	t.Parallel()
+
+	tm, root := newMockTeam("answer")
+	store := newRecordingStore()
+	existing := session.New(
+		session.WithID("a2a-ctx-ceiling"),
+		session.WithSafetyPolicy(session.SafetyPolicyAutonomous),
+	)
+	require.NoError(t, store.AddSession(t.Context(), existing))
+
+	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-ceiling", "follow-up question")
+	collectRunEvents(ctx, tm, root, store, session.SafetyPolicyBalanced)
+
+	assert.Equal(t, session.SafetyPolicyBalanced, existing.GetSafetyPolicy())
+	assert.False(t, existing.ToolsApproved)
+	assert.True(t, existing.NonInteractive)
+}
+
+func TestRunDockerAgent_ResumedSaferSessionIsPreserved(t *testing.T) {
+	t.Parallel()
+
+	tm, root := newMockTeam("answer")
+	store := newRecordingStore()
+	existing := session.New(
+		session.WithID("a2a-ctx-preserve"),
+		session.WithSafetyPolicy(session.SafetyPolicyStrict),
+	)
+	require.NoError(t, store.AddSession(t.Context(), existing))
+
+	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-preserve", "follow-up question")
+	collectRunEvents(ctx, tm, root, store, session.SafetyPolicyAutonomous)
+
+	assert.Equal(t, session.SafetyPolicyStrict, existing.GetSafetyPolicy())
+	assert.False(t, existing.ToolsApproved)
+	assert.True(t, existing.NonInteractive)
+}
+
 func TestRunDockerAgent_ResumesExistingSession(t *testing.T) {
 	t.Parallel()
 
@@ -350,7 +416,7 @@ func TestRunDockerAgent_ResumesExistingSession(t *testing.T) {
 
 	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-resume", "follow-up question")
 
-	events := collectRunEvents(ctx, tm, root, store)
+	events := collectRunEvents(ctx, tm, root, store, session.SafetyPolicyRestricted)
 	require.Len(t, events, 2)
 
 	updated := store.updatedSessions()
@@ -358,7 +424,8 @@ func TestRunDockerAgent_ResumesExistingSession(t *testing.T) {
 	assert.Same(t, existing, updated[0], "the stored session should be resumed, not recreated")
 
 	assert.Equal(t, "Existing Title", existing.Title)
-	assert.True(t, existing.ToolsApproved)
+	assert.Equal(t, session.SafetyPolicyRestricted, existing.GetSafetyPolicy())
+	assert.False(t, existing.ToolsApproved)
 	assert.True(t, existing.NonInteractive)
 
 	msgs := existing.GetAllMessages()
@@ -383,7 +450,7 @@ func TestRunDockerAgent_RuntimeCreationError(t *testing.T) {
 	store := session.NewInMemorySessionStore()
 	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-no-team", "Hi")
 
-	events := collectRunEvents(ctx, emptyTeam, root, store)
+	events := collectRunEvents(ctx, emptyTeam, root, store, session.SafetyPolicyRestricted)
 
 	require.Len(t, events, 1)
 	assert.Nil(t, events[0].event)

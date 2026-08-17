@@ -21,6 +21,8 @@ import (
 
 	"github.com/docker/docker-agent/pkg/config"
 	pathx "github.com/docker/docker-agent/pkg/path"
+	"github.com/docker/docker-agent/pkg/servesafety"
+	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/session/sqlitestore"
 	"github.com/docker/docker-agent/pkg/teamloader"
 	loaderdefaults "github.com/docker/docker-agent/pkg/teamloader/defaults"
@@ -40,7 +42,12 @@ func routableAddr(addr string) string {
 	return addr
 }
 
-func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runConfig *config.RuntimeConfig, ln net.Listener) error {
+type RunOptions struct {
+	CLISafety      session.SafetyPolicy
+	OnSafetyPolicy func(servesafety.Resolved)
+}
+
+func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runConfig *config.RuntimeConfig, ln net.Listener, options RunOptions) error {
 	slog.DebugContext(ctx, "Starting A2A server", "source", agentFilename, "agent", agentName, "addr", ln.Addr().String())
 
 	agentSource, err := config.Resolve(agentFilename, nil)
@@ -58,6 +65,18 @@ func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runCon
 		}
 	}()
 
+	selectedAgent, err := t.AgentOrDefault(agentName)
+	if err != nil {
+		return fmt.Errorf("failed to get agent: %w", err)
+	}
+	resolvedSafety, err := servesafety.Resolve(options.CLISafety, string(selectedAgent.Safety()), string(t.RuntimeSafety()))
+	if err != nil {
+		return fmt.Errorf("resolve serve safety policy: %w", err)
+	}
+	if options.OnSafetyPolicy != nil {
+		options.OnSafetyPolicy(resolvedSafety)
+	}
+
 	expandedSessionDB, err := pathx.ExpandHomeDir(sessionDB)
 	if err != nil {
 		return fmt.Errorf("failed to expand session db path: %w", err)
@@ -72,7 +91,7 @@ func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runCon
 		}
 	}()
 
-	adkAgent, err := newDockerAgentAdapter(t, agentName, sessStore)
+	adkAgent, err := newDockerAgentAdapter(t, agentName, sessStore, resolvedSafety)
 	if err != nil {
 		return fmt.Errorf("failed to create ADK agent adapter: %w", err)
 	}
