@@ -33,6 +33,10 @@ type Source interface {
 
 type Sources map[string]Source
 
+// ErrSourceFetchFailed reports that a remote URL source could not be fetched.
+// It intentionally excludes URL validation and config parsing errors.
+var ErrSourceFetchFailed = errors.New("remote source fetch failed")
+
 // fileSource is used to load an agent configuration from a YAML file.
 type fileSource struct {
 	path string
@@ -349,7 +353,7 @@ func (a urlSource) Read(ctx context.Context) ([]byte, error) {
 			slog.DebugContext(ctx, "Network error fetching URL, using cached version", "url", a.url, "error", err)
 			return cachedData, nil
 		}
-		return nil, fmt.Errorf("fetching %s: %w", a.url, err)
+		return nil, fmt.Errorf("%w: fetching %s: %w", ErrSourceFetchFailed, a.url, err)
 	}
 	defer resp.Body.Close()
 
@@ -368,12 +372,12 @@ func (a urlSource) Read(ctx context.Context) ([]byte, error) {
 			slog.DebugContext(ctx, "HTTP error fetching URL, using cached version", "url", a.url, "status", resp.Status)
 			return cachedData, nil
 		}
-		return nil, fmt.Errorf("fetching %s: %s", a.url, resp.Status)
+		return nil, fmt.Errorf("%w: fetching %s: %s", ErrSourceFetchFailed, a.url, resp.Status)
 	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
+		return nil, fmt.Errorf("%w: reading response body: %w", ErrSourceFetchFailed, err)
 	}
 
 	// Cache the response
@@ -477,7 +481,16 @@ func isLocalhostHTTP(rawURL string) bool {
 	if err != nil {
 		return false
 	}
-	return u.Scheme == "http" && u.Hostname() == "localhost"
+	return u.Scheme == "http" && isLocalhostHTTPHost(u.Hostname())
+}
+
+func isLocalhostHTTPHost(host string) bool {
+	// Deliberately exact: this predicate decides whether an agent source may
+	// be fetched over plaintext HTTP with no dial-time SSRF guard (see
+	// urlSource.Read). *.localhost is an RFC 6761 convention, not guaranteed
+	// by musl, Docker's embedded DNS (127.0.0.11), or corporate resolvers.
+	// Use httpclient.isLoopbackHost for transport-level checks.
+	return strings.EqualFold(strings.TrimSuffix(host, "."), "localhost")
 }
 
 // validateAgentURL enforces that an agent URL uses HTTPS, with an exception
