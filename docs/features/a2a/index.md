@@ -49,6 +49,23 @@ $ docker agent serve a2a myorg/agent:tag
 | `--hook-session-end <cmd>`        | (none)           | Add a session-end hook (repeatable).                                                                                 |
 | `--hook-on-user-input <cmd>`      | (none)           | Add an on-user-input hook (repeatable).                                                                              |
 | `--hook-stop <cmd>`               | (none)           | Add a stop hook, fired when the model finishes responding (repeatable).                                              |
+| `--auth-token <token>`            | (none)           | Bearer token required for agent-card and invocation requests.                                                        |
+| `--cors-origin <origins>`          | (none)           | Allowed browser origins, comma-separated; empty disables CORS.                                                       |
+| `--insecure-no-auth`              | `false`          | Allow an unauthenticated non-loopback listener (unsafe).                                                             |
+
+## Authentication and network exposure
+
+Loopback listeners may run without authentication. Non-loopback listeners require
+`--auth-token` unless `--insecure-no-auth` explicitly acknowledges the exposure.
+Clients must send `Authorization: Bearer <token>` for both agent-card discovery
+and JSON-RPC invocation. Configure browser access with `--cors-origin`; it accepts
+comma-separated literal origins or `~`-prefixed regular expressions and permits
+credentials only for matching origins.
+
+```bash
+$ docker agent serve a2a ./agent.yaml --auth-token "$A2A_TOKEN" \
+    --cors-origin http://localhost:3000
+```
 
 ## Features
 

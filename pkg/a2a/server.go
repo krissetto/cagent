@@ -20,6 +20,7 @@ import (
 	adksession "google.golang.org/adk/session"
 
 	"github.com/docker/docker-agent/pkg/config"
+	"github.com/docker/docker-agent/pkg/httpsec"
 	pathx "github.com/docker/docker-agent/pkg/path"
 	"github.com/docker/docker-agent/pkg/servesafety"
 	"github.com/docker/docker-agent/pkg/session"
@@ -46,6 +47,8 @@ func routableAddr(addr string) string {
 type RunOptions struct {
 	CLISafety      session.SafetyPolicy
 	OnSafetyPolicy func(servesafety.Resolved)
+	AuthToken      string
+	CORSOrigin     string
 }
 
 func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runConfig *config.RuntimeConfig, ln net.Listener, options RunOptions) error {
@@ -95,7 +98,7 @@ func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runCon
 	baseURL := &url.URL{Scheme: "http", Host: routableAddr(ln.Addr().String())}
 	slog.DebugContext(ctx, "A2A server listening", "url", baseURL.String())
 
-	e, err := newServer(t, agentFilename, agentName, sessStore, resolvedSafety, ln.Addr().String())
+	e, err := newServer(t, agentFilename, agentName, sessStore, resolvedSafety, ln.Addr().String(), options)
 	if err != nil {
 		return fmt.Errorf("failed to create A2A server: %w", err)
 	}
@@ -115,7 +118,7 @@ func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runCon
 	return nil
 }
 
-func newServer(t *team.Team, agentFilename, agentName string, sessStore session.Store, safety servesafety.Resolved, listenAddr string) (*echo.Echo, error) {
+func newServer(t *team.Team, agentFilename, agentName string, sessStore session.Store, safety servesafety.Resolved, listenAddr string, options RunOptions) (*echo.Echo, error) {
 	adkAgent, err := newDockerAgentAdapter(t, agentName, sessStore, safety)
 	if err != nil {
 		return nil, err
@@ -155,12 +158,16 @@ func newServer(t *team.Team, agentFilename, agentName string, sessStore session.
 	e.HideBanner = true
 	e.HidePort = true
 
-	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"*"},
-		AllowMethods: []string{http.MethodPost, http.MethodOptions},
-		AllowHeaders: []string{"Content-Type", "Accept"},
-		MaxAge:       86400,
-	}))
+	if options.CORSOrigin != "" {
+		cfg, err := corsMiddlewareConfig(options.CORSOrigin)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CORS origin: %w", err)
+		}
+		e.Use(middleware.CORSWithConfig(cfg))
+	}
+	if options.AuthToken != "" {
+		e.Use(bearerAuthMiddleware(options.AuthToken))
+	}
 	e.Use(middleware.RequestLogger())
 
 	// Wrap both A2A endpoints with otelhttp so the configured W3C
@@ -185,4 +192,33 @@ func newServer(t *team.Team, agentFilename, agentName string, sessStore session.
 	e.POST(agentPath, echo.WrapHandler(jsonrpcHandler))
 
 	return e, nil
+}
+
+func corsMiddlewareConfig(spec string) (middleware.CORSConfig, error) {
+	origins, err := httpsec.ParseOrigins(spec)
+	if err != nil {
+		return middleware.CORSConfig{}, err
+	}
+	cfg := middleware.CORSConfig{
+		AllowOrigins: origins.Literals(),
+		AllowMethods: []string{http.MethodPost, http.MethodOptions},
+		AllowHeaders: []string{"Authorization", "Content-Type", "Accept"},
+		MaxAge:       86400,
+	}
+	if origins.HasPatterns() {
+		cfg.AllowOriginFunc = func(origin string) (bool, error) { return origins.MatchPattern(origin), nil }
+	}
+	return cfg, nil
+}
+
+func bearerAuthMiddleware(token string) echo.MiddlewareFunc {
+	auth := httpsec.BearerAuth(token)
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if c.Request().Method == http.MethodOptions {
+				return next(c)
+			}
+			return echo.WrapMiddleware(auth)(next)(c)
+		}
+	}
 }
