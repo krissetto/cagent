@@ -3,6 +3,41 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.126.0] - 2026-08-18
+
+This release adds evaluation regression gating, session comparison for replay, and significant hardening of served-agent safety controls across A2A, MCP HTTP, and chat surfaces.
+
+## What's New
+
+- Adds `--baseline` and `--regression-tolerance` flags to `docker agent eval`, enabling CI-style regression detection by comparing a run against a previously saved baseline and failing on quality regression
+- Adds `docker agent sessions diff` command to compare the behavior of two recorded sessions, reporting the first point of divergence between runs
+- Adds unattended tool execution restrictions for A2A, requiring explicit security configuration for network listeners
+- Adds centralized unattended safety resolution for served agents, with ordered concrete safety policies and hardened HTTP serving for MCP and chat surfaces
+- Adds session-origin isolation for A2A session resumes
+
+## Bug Fixes
+
+- Fixes the baseline gate to be grounded on the file that eval writes, and fails closed on error
+- Fixes replay comparison to handle sub-agent turns, compare arguments semantically, and sanitize output
+- Fixes A2A session resumes to be isolated by origin
+
+## Technical Changes
+
+- Refactors `sessions diff` CLI command to resolve session references
+- Refactors safety flag validation to be shared across CLI surfaces
+- Refactors HTTP auth and origin matchers into a shared `httpsec` package
+- Refactors A2A server assembly, extracting it from `Run`
+- Replaces `CAGENT_MODELS_GATEWAY` with `DOCKER_AGENT_MODELS_GATEWAY` in docs and samples
+- Documents the evaluation regression gate and its two flags, the `docker agent sessions diff` command, and served-agent safety controls
+### Pull Requests
+
+- [#3946](https://github.com/docker/docker-agent/pull/3946) - feat(eval): compare a run against a saved baseline and fail on regression
+- [#3948](https://github.com/docker/docker-agent/pull/3948) - feat(replay): compare the behaviour of two recorded sessions
+- [#3995](https://github.com/docker/docker-agent/pull/3995) - docs: update CHANGELOG.md for v1.125.0
+- [#3997](https://github.com/docker/docker-agent/pull/3997) - docs: replace CAGENT_MODELS_GATEWAY with DOCKER_AGENT_MODELS_GATEWAY in docs and samples
+- [#4000](https://github.com/docker/docker-agent/pull/4000) - feat: harden served-agent safety controls
+
+
 ## [v1.125.0] - 2026-08-17
 
 This release adds several new features including Docker token minting, structured output mode, restricted safety mode, and harness session resumption, alongside multiple bug fixes for file editing, caching, attachment handling, and OAuth flows.
@@ -5514,3 +5549,5 @@ This release improves the terminal user interface with better error handling and
 [v1.124.0]: https://github.com/docker/docker-agent/releases/tag/v1.124.0
 
 [v1.125.0]: https://github.com/docker/docker-agent/releases/tag/v1.125.0
+
+[v1.126.0]: https://github.com/docker/docker-agent/releases/tag/v1.126.0
