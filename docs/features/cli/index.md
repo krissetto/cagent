@@ -318,6 +318,9 @@ $ docker agent serve mcp <config> [flags]
 | `-a, --agent <name>`   | (all agents)       | Name of the agent to expose. If omitted, every agent in the config is exposed as a separate tool. |
 | `--tool-name <name>`   | (agent name)       | Override the MCP tool identifier clients call; only valid when exposing a single agent.           |
 | `--http`               | `false`            | Use streaming HTTP transport instead of stdio.                                                    |
+| `--safety <policy>`    | `restricted`       | HTTP MCP safety policy; no effect on stdio or `--attach`.                                         |
+| `--auth-token <token>` | (none)             | Required Bearer token for HTTP MCP requests.                                                       |
+| `--insecure-no-auth`   | `false`            | Permit unauthenticated non-loopback HTTP MCP binding.                                              |
 | `-l, --listen <addr>`  | `127.0.0.1:8081`   | Address to listen on (only used with `--http`).                                                   |
 | `--mcp-keepalive <dur>`| `0` (disabled)     | Interval between MCP keep-alive pings (e.g. `30s`).                                               |
 | `--attach [target]`    | (none)             | Attach to a running TUI run by pid, address, or session id; given without a value, selects the most recent run.   |
@@ -394,7 +397,9 @@ $ docker agent serve chat <config> [flags]
 | `-l, --listen <addr>`         | `127.0.0.1:8083`   | Address to listen on.                                                                                             |
 | `--cors-origin <origin>`      | (none)             | Allowed CORS origin (e.g. `https://example.com`). Empty disables CORS.                                            |
 | `--api-key <token>`           | (none)             | Required Bearer token clients must present (`Authorization: Bearer <token>`). Empty disables auth.                |
-| `--api-key-env <name>`        | (none)             | Read the API key from this environment variable instead of the command line.                                      |
+| `--api-key-env <name>`        | (none)             | Read the required API key from this non-empty environment variable.                                      |
+| `--insecure-no-auth`           | `false`            | Permit unauthenticated non-loopback binding.                                                                  |
+| `--safety <policy>`            | `restricted`       | Tool safety policy; CLI value overrides agent/runtime configuration.                                           |
 | `--max-request-size <bytes>`  | `1048576` (1 MiB)  | Maximum request body size. Requests exceeding this limit are rejected with HTTP 413 — see [Troubleshooting: HTTP 413](../../community/troubleshooting/index.md#http-413-request-body-too-large).                                                                                        |
 | `--request-timeout <dur>`     | `5m`               | Per-request timeout (covers model + tool calls + streaming).                                                      |
 | `--conversations-max <n>`     | `0`                | Cache up to N conversations server-side, keyed by `X-Conversation-Id`. `0` disables — clients must resend history. |

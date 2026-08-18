@@ -52,6 +52,7 @@ $ docker agent serve a2a myorg/agent:tag
 | `--auth-token <token>`            | (none)           | Bearer token required for agent-card and invocation requests.                                                        |
 | `--cors-origin <origins>`          | (none)           | Allowed browser origins, comma-separated; empty disables CORS.                                                       |
 | `--insecure-no-auth`              | `false`          | Allow an unauthenticated non-loopback listener (unsafe).                                                             |
+| `--safety <policy>`               | `restricted`     | Tool safety policy; `autonomous` is permitted only through this explicit CLI flag.                                   |
 
 ## Authentication and network exposure
 
@@ -66,6 +67,24 @@ credentials only for matching origins.
 $ docker agent serve a2a ./agent.yaml --auth-token "$A2A_TOKEN" \
     --cors-origin http://localhost:3000
 ```
+
+## Tool safety and migration
+
+A2A sessions default to the `restricted` tool safety policy. Precedence is the
+`--safety` flag, then agent YAML, then runtime YAML. YAML may select `strict`,
+`balanced`, or `restricted`; `safety: autonomous` stops startup and directs the
+operator to `--safety autonomous`. That CLI flag is the only deliberate opt-in
+to autonomous tool execution.
+
+Existing deployments should choose an explicit policy before upgrading. Migration
+027 labels pre-existing sessions as `run`, so they cannot be resumed through
+`/invoke`; clients must start new A2A contexts. An A2A context ID that collides
+with another session is rejected without changing that session.
+
+Downgrading to a binary that predates migration 027 fails because the session
+database has a newer schema (`ErrNewerDatabase`). Restore an older database, or
+use a binary that includes the migration. Revert changes without removing the
+migration catalogue entry.
 
 ## Features
 

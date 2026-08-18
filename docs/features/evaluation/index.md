@@ -139,6 +139,10 @@ Docker Agent evaluates agents across three dimensions:
 | **Relevance**       | An LLM judge (configurable via `--judge-model`) evaluates whether each relevance statement is satisfied by the response.  |
 | **Size**            | Whether the response length matches the expected size category (S/M/L/XL).                                                |
 
+## Serve-safety verification and rollback
+
+When changing an agent served over MCP HTTP, chat, or A2A, add an evaluation that attempts an approval-requiring tool call and verifies the resolved safety policy and authentication behavior. Run the evaluation with the same explicit `--safety` setting used in deployment. If a rollout must be reversed, stop the affected listener, restore the prior agent configuration and explicit safety flag, then restart only after confirming non-loopback listeners still require authentication. Do not restore an unauthenticated network listener as a rollback shortcut.
+
 ## Creating Eval Sessions
 
 The easiest way to create eval sessions is from real conversations:
