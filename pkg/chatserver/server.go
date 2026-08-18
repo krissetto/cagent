@@ -40,6 +40,7 @@ import (
 	"github.com/docker/docker-agent/pkg/echolog"
 	"github.com/docker/docker-agent/pkg/httpsec"
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/servesafety"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/teamloader"
@@ -55,6 +56,10 @@ type Options struct {
 	AgentName string
 	// RunConfig is the runtime configuration used to load the team.
 	RunConfig *config.RuntimeConfig
+	// CLISafety selects the server safety policy before agent and runtime YAML.
+	CLISafety session.SafetyPolicy
+	// OnSafetyPolicy receives the resolved policy after the team loads.
+	OnSafetyPolicy func(servesafety.Resolved)
 	// CORSOrigin is the allowed value for the Access-Control-Allow-Origin
 	// header. When empty, the CORS middleware is not registered at all
 	// (the server never emits any Access-Control-* response header).
@@ -126,6 +131,17 @@ func Run(ctx context.Context, agentFilename string, opts Options, ln net.Listene
 	if err != nil {
 		return err
 	}
+	selectedAgent, err := t.AgentOrDefault(opts.AgentName)
+	if err != nil {
+		return fmt.Errorf("failed to get agent: %w", err)
+	}
+	resolvedSafety, err := servesafety.Resolve(opts.CLISafety, string(selectedAgent.Safety()), string(t.RuntimeSafety()))
+	if err != nil {
+		return fmt.Errorf("resolve serve safety policy: %w", err)
+	}
+	if opts.OnSafetyPolicy != nil {
+		opts.OnSafetyPolicy(resolvedSafety)
+	}
 
 	// Wrap with otelhttp so incoming /v1/chat/completions requests
 	// (including SSE streams) extract the caller's trace context.
@@ -136,6 +152,7 @@ func Run(ctx context.Context, agentFilename string, opts Options, ln net.Listene
 		newRouter(&server{
 			team:              t,
 			policy:            policy,
+			safety:            resolvedSafety.Policy,
 			conversations:     newConversationStore(opts.ConversationsMaxSessions, conversationTTL(opts)),
 			conversationLocks: newConversationLockSet(),
 			runtimes:          newRuntimePool(ctx, t, opts.MaxIdleRuntimes),
@@ -196,6 +213,7 @@ func serve(ctx context.Context, httpServer *http.Server, ln net.Listener) error 
 type server struct {
 	team              *team.Team
 	policy            agentPolicy
+	safety            session.SafetyPolicy
 	conversations     *conversationStore
 	conversationLocks *conversationLockSet
 	runtimes          *runtimePool
@@ -391,6 +409,7 @@ func (s *server) resolveSession(id string, msgs []ChatCompletionMessage) (*sessi
 			if !appendLatestUser(working, msgs) {
 				return nil, errors.New("no user message provided")
 			}
+			working.SetSafetyPolicy(servesafety.ResumeCeiling(working.GetSafetyPolicy(), s.safety))
 			return working, nil
 		}
 	}
@@ -398,6 +417,7 @@ func (s *server) resolveSession(id string, msgs []ChatCompletionMessage) (*sessi
 	if sess == nil {
 		return nil, errors.New("no user message provided")
 	}
+	sess.SetSafetyPolicy(s.safety)
 	return sess, nil
 }
 
