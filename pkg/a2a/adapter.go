@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -68,31 +69,46 @@ func runDockerAgent(ctx agent.InvocationContext, t *team.Team, agentName string,
 		userContent := ctx.UserContent()
 		message := contentToMessage(userContent)
 
-		// Use the A2A contextID (exposed as the ADK session ID) as the
-		// docker-agent session ID so subsequent `run --session <id>`
-		// invocations can resume the same conversation.
+		// Use the A2A context ID as the docker-agent session ID so only future
+		// A2A invocations with that ID can resume the conversation.
 		sessionID := ctx.Session().ID()
 
 		var sess *session.Session
-		if existing, err := sessStore.GetSession(ctx, sessionID); err == nil && existing != nil {
+		existing, err := sessStore.GetSessionByOrigin(ctx, sessionID, "a2a")
+		switch {
+		case err == nil:
 			sess = existing
 			sess.AddMessage(session.UserMessage(message))
 			sess.SetSafetyPolicy(servesafety.ResumeCeiling(sess.GetSafetyPolicy(), safety.Policy))
 			sess.NonInteractive = true
-		} else {
-			workingDir, _ := os.Getwd()
-			sess = session.New(
-				session.WithID(sessionID),
-				session.WithUserMessage(message),
-				session.WithMaxIterations(a.MaxIterations()),
-				session.WithMaxConsecutiveToolCalls(a.MaxConsecutiveToolCalls()),
-				session.WithMaxOldToolCallTokens(a.MaxOldToolCallTokens()),
-				session.WithMaxToolResultTokens(a.MaxToolResultTokens()),
-				session.WithSafetyPolicy(safety.Policy),
-				session.WithNonInteractive(true),
-				session.WithWorkingDir(workingDir),
-			)
-			sess.SetTitle("A2A Session " + sessionID)
+		case !errors.Is(err, session.ErrNotFound):
+			yield(nil, fmt.Errorf("look up A2A session: %w", err))
+			return
+		default:
+			_, err := sessStore.GetSession(ctx, sessionID)
+			switch {
+			case err == nil:
+				yield(nil, errors.New("context ID is not available"))
+				return
+			case !errors.Is(err, session.ErrNotFound):
+				yield(nil, fmt.Errorf("check A2A context ID: %w", err))
+				return
+			default:
+				workingDir, _ := os.Getwd()
+				sess = session.New(
+					session.WithID(sessionID),
+					session.WithOrigin("a2a"),
+					session.WithUserMessage(message),
+					session.WithMaxIterations(a.MaxIterations()),
+					session.WithMaxConsecutiveToolCalls(a.MaxConsecutiveToolCalls()),
+					session.WithMaxOldToolCallTokens(a.MaxOldToolCallTokens()),
+					session.WithMaxToolResultTokens(a.MaxToolResultTokens()),
+					session.WithSafetyPolicy(safety.Policy),
+					session.WithNonInteractive(true),
+					session.WithWorkingDir(workingDir),
+				)
+				sess.SetTitle("A2A Session " + sessionID)
+			}
 		}
 
 		// Create runtime

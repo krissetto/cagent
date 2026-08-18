@@ -318,6 +318,7 @@ func TestRunDockerAgent_NewSessionUsesA2ASettings(t *testing.T) {
 	sess := updated[0]
 
 	assert.Equal(t, "a2a-ctx-new", sess.ID)
+	assert.Equal(t, "a2a", sess.Origin)
 	assert.Equal(t, "A2A Session a2a-ctx-new", sess.Title)
 	assert.Equal(t, session.SafetyPolicyRestricted, sess.GetSafetyPolicy())
 	assert.False(t, sess.ToolsApproved)
@@ -338,7 +339,40 @@ func TestRunDockerAgent_NewSessionUsesA2ASettings(t *testing.T) {
 	stored, err := store.GetSession(t.Context(), "a2a-ctx-new")
 	require.NoError(t, err)
 	assert.Equal(t, "a2a-ctx-new", stored.ID)
+	assert.Equal(t, "a2a", stored.Origin)
 	assert.Equal(t, "A2A Session a2a-ctx-new", stored.Title)
+}
+
+func TestRunDockerAgent_RejectsNonA2ASessionCollision(t *testing.T) {
+	t.Parallel()
+
+	for _, origin := range []string{"run", "", "acp"} {
+		t.Run(origin, func(t *testing.T) {
+			tm, root := newMockTeam("answer")
+			store := newRecordingStore()
+			existing := session.New(
+				session.WithID("a2a-ctx-collision"),
+				session.WithOrigin(origin),
+				session.WithTitle("Private Session"),
+				session.WithUserMessage("private history"),
+			)
+			require.NoError(t, store.AddSession(t.Context(), existing))
+
+			ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-collision", "A2A request")
+			for range 2 {
+				events := collectRunEvents(ctx, tm, root, store, session.SafetyPolicyRestricted)
+				require.Len(t, events, 1)
+				require.ErrorContains(t, events[0].err, "context ID is not available")
+			}
+
+			stored, err := store.GetSession(t.Context(), "a2a-ctx-collision")
+			require.NoError(t, err)
+			assert.Equal(t, origin, stored.Origin)
+			assert.Equal(t, "Private Session", stored.Title)
+			assert.Len(t, stored.GetAllMessages(), 1)
+			assert.Empty(t, store.updatedSessions())
+		})
+	}
 }
 
 func TestRunDockerAgent_ExplicitSafety(t *testing.T) {
@@ -374,6 +408,7 @@ func TestRunDockerAgent_ResumedSessionDoesNotExceedServerSafety(t *testing.T) {
 	store := newRecordingStore()
 	existing := session.New(
 		session.WithID("a2a-ctx-ceiling"),
+		session.WithOrigin("a2a"),
 		session.WithSafetyPolicy(session.SafetyPolicyAutonomous),
 	)
 	require.NoError(t, store.AddSession(t.Context(), existing))
@@ -393,6 +428,7 @@ func TestRunDockerAgent_ResumedSaferSessionIsPreserved(t *testing.T) {
 	store := newRecordingStore()
 	existing := session.New(
 		session.WithID("a2a-ctx-preserve"),
+		session.WithOrigin("a2a"),
 		session.WithSafetyPolicy(session.SafetyPolicyStrict),
 	)
 	require.NoError(t, store.AddSession(t.Context(), existing))
@@ -411,7 +447,11 @@ func TestRunDockerAgent_ResumesExistingSession(t *testing.T) {
 	tm, root := newMockTeam("resumed answer")
 	store := newRecordingStore()
 
-	existing := session.New(session.WithID("a2a-ctx-resume"), session.WithTitle("Existing Title"))
+	existing := session.New(
+		session.WithID("a2a-ctx-resume"),
+		session.WithOrigin("a2a"),
+		session.WithTitle("Existing Title"),
+	)
 	require.NoError(t, store.AddSession(t.Context(), existing))
 
 	ctx := newFakeInvocationContext(t.Context(), "a2a-ctx-resume", "follow-up question")

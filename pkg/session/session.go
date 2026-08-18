@@ -268,6 +268,9 @@ type Session struct {
 	// ID is the unique identifier for the session
 	ID string `json:"id"`
 
+	// Origin identifies the protocol surface that created this session.
+	Origin string `json:"origin,omitempty"`
+
 	// InputID is an optional caller-supplied correlation ID read from the eval
 	// input file's "input_id" field. It is carried through to the output as-is
 	// and never used internally. The session's own "id" is always a fresh UUID.
@@ -1435,6 +1438,12 @@ func WithMaxToolResultTokens(n int) Opt {
 	}
 }
 
+func WithOrigin(origin string) Opt {
+	return func(s *Session) {
+		s.Origin = origin
+	}
+}
+
 func WithWorkingDir(workingDir string) Opt {
 	return func(s *Session) {
 		s.WorkingDir = workingDir
@@ -1849,6 +1858,7 @@ func (s *Session) newID() string {
 // New creates a new agent session
 func New(opts ...Opt) *Session {
 	s := &Session{
+		Origin:          "run",
 		SendUserMessage: true,
 	}
 
