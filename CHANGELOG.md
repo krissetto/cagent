@@ -421,6 +421,12 @@ This release adds sandbox authentication improvements, compaction-model context 
 
 ## [Unreleased]
 
+- Harden served-agent safety and network controls:
+  - A2A, MCP HTTP, and chat now default to restricted tool safety; autonomous execution requires `--safety autonomous`, and `safety: autonomous` in YAML fails startup with guidance to use that flag.
+  - Non-loopback listeners require authentication or `--insecure-no-auth`; Unix sockets remain exempt. A2A and MCP HTTP use `--auth-token`, while chat continues to use `--api-key`; A2A and chat can explicitly allow browser origins with `--cors-origin`.
+  - A2A context IDs cannot access sessions created by another serve surface. The session-schema migration records session origins; older binaries reject upgraded databases with a newer-database error.
+  - `mcp.CreateToolHandler` now requires an explicit safety policy.
+
 ## What's New
 
 - Splits the sidebar's Token Usage click target in two: clicking the token/context part (glyph, token count, context `%`, the "compacting…" marker, or the `⚠ capped` marker) opens the `/context` dialog, while clicking the cost part (`$` figure, sub-session count) keeps opening `/cost`; the "Token Usage" section title is no longer clickable
