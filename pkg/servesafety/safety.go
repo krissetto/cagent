@@ -24,7 +24,11 @@ type Resolved struct {
 // Resolve selects a serve safety policy without consulting local user settings.
 func Resolve(cli session.SafetyPolicy, agentYAML, runtimeYAML string) (Resolved, error) {
 	if cli != "" {
-		return Resolved{Policy: cli.Normalize(), Source: SourceCLI}, nil
+		policy := cli.Normalize()
+		if policy != session.SafetyPolicyAutonomous && policy != session.SafetyPolicyStrict && policy != session.SafetyPolicyBalanced && policy != session.SafetyPolicyRestricted {
+			return Resolved{}, fmt.Errorf("invalid safety value %q (valid: strict, balanced, restricted, autonomous)", cli)
+		}
+		return Resolved{Policy: policy, Source: SourceCLI}, nil
 	}
 	if agentYAML != "" {
 		policy, err := yamlPolicy(agentYAML)
