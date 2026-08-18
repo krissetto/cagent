@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"golang.org/x/net/http/httpproxy"
+
 	desktoptransport "github.com/docker/docker-agent/pkg/desktop/transport"
 )
 
