@@ -49,9 +49,17 @@ func NewAllowPrivateIPsClient(timeout time.Duration) *http.Client {
 // NewSafeClient returns the HTTP client used by built-in tools that issue
 // outbound calls to URLs the operator (or a fetched OpenAPI spec) supplies.
 //
-// The default refuses connections to non-public IPs at dial time
-// — defeating DNS rebinding to loopback / RFC1918 / link-local incl. cloud
-// metadata at 169.254.169.254 — and bounds the redirect chain at 10 hops.
+// On its direct path — Docker Desktop unavailable, disabled via
+// DOCKER_AGENT_DISABLE_DESKTOP_PROXY, or the target host is outside the
+// Docker-owned allowlist (docker.com and docker.io families) — the client
+// refuses non-public IPs at dial time, defeating DNS rebinding to loopback /
+// RFC1918 / link-local incl. cloud metadata at 169.254.169.254.
+//
+// When Docker Desktop is running, only Docker-owned hostnames (docker.com,
+// docker.io and their subdomains) go through its PAC proxy. There the only
+// local control is a pre-request DNS preflight (see proxySafe): Desktop
+// selects and resolves the destination itself, so dial-time enforcement does
+// not apply. Either way the redirect chain is bounded at 10 hops.
 //
 // When unsafe is true the client uses [http.DefaultTransport]. This branch
 // exists ONLY for tests, which use [httptest.NewServer] (binds to 127.0.0.1)

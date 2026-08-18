@@ -495,10 +495,11 @@ func isLocalhostHTTPHost(host string) bool {
 
 // validateAgentURL enforces that an agent URL uses HTTPS, with an exception
 // for http://localhost which is allowed for local development. SSRF protection
-// (rejecting connections to loopback / private / link-local addresses) is
-// done at dial time by [httpclient.NewSSRFSafeTransport] so that DNS
-// rebinding cannot be used to bypass it. The SSRF transport is intentionally
-// skipped for http://localhost since loopback is the whole point.
+// is applied by [httpclient.NewDesktopAwareSSRFSafeTransport]: on the direct
+// path (non-Docker host or Desktop unavailable) it refuses non-public IPs at
+// dial time after DNS resolution; Docker-owned hosts may go through Desktop's
+// PAC proxy where dial-time enforcement does not apply. The SSRF transport is
+// intentionally skipped for http://localhost since loopback is the whole point.
 func validateAgentURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
