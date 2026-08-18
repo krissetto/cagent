@@ -25,8 +25,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,6 +38,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/echolog"
+	"github.com/docker/docker-agent/pkg/httpsec"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/team"
@@ -268,71 +267,23 @@ func requestTimeoutMiddleware(d time.Duration) echo.MiddlewareFunc {
 // Returns an error when no entry parses successfully, in which case the
 // caller leaves the middleware unregistered.
 func corsMiddlewareConfig(spec string) (middleware.CORSConfig, error) {
-	var literals []string
-	var patterns []*regexp.Regexp
-	for raw := range strings.SplitSeq(spec, ",") {
-		entry := strings.TrimSpace(raw)
-		if entry == "" {
-			continue
-		}
-		if rest, ok := strings.CutPrefix(entry, "~"); ok {
-			re, err := regexp.Compile(rest)
-			if err != nil {
-				return middleware.CORSConfig{}, fmt.Errorf("invalid CORS regex %q: %w", rest, err)
-			}
-			patterns = append(patterns, re)
-			continue
-		}
-		if err := validateCORSOrigin(entry); err != nil {
-			return middleware.CORSConfig{}, err
-		}
-		literals = append(literals, entry)
-	}
-	if len(literals) == 0 && len(patterns) == 0 {
-		return middleware.CORSConfig{}, errors.New("no usable CORS origins")
+	origins, err := httpsec.ParseOrigins(spec)
+	if err != nil {
+		return middleware.CORSConfig{}, err
 	}
 
 	cfg := middleware.CORSConfig{
-		AllowOrigins: literals,
+		AllowOrigins: origins.Literals(),
 		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
 		AllowHeaders: []string{"Authorization", "Content-Type", "Accept"},
 		MaxAge:       86400,
 	}
-	if len(patterns) > 0 {
+	if origins.HasPatterns() {
 		cfg.AllowOriginFunc = func(origin string) (bool, error) {
-			for _, re := range patterns {
-				if re.MatchString(origin) {
-					return true, nil
-				}
-			}
-			return false, nil
+			return origins.MatchPattern(origin), nil
 		}
 	}
 	return cfg, nil
-}
-
-// validateCORSOrigin sanity-checks a literal origin entry. The aim is to
-// reject obvious typos early ("http//foo.com", "https://foo.com/bar")
-// rather than to be a full URL parser — the echo middleware will still
-// do its own matching at request time.
-func validateCORSOrigin(o string) error {
-	if o == "*" {
-		return nil
-	}
-	u, err := url.Parse(o)
-	if err != nil {
-		return fmt.Errorf("invalid CORS origin %q: %w", o, err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("invalid CORS origin %q: scheme must be http or https", o)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("invalid CORS origin %q: missing host", o)
-	}
-	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("invalid CORS origin %q: must not include path, query, or fragment", o)
-	}
-	return nil
 }
 
 // bearerAuthMiddleware enforces the static `Authorization: Bearer <token>`

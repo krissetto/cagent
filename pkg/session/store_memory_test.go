@@ -136,7 +136,7 @@ func TestSessionOriginRoundTripAndLookup(t *testing.T) {
 	ctx := t.Context()
 
 	for name, newStore := range map[string]func() Store{
-		"in memory": func() Store { return NewInMemorySessionStore() },
+		"in memory": NewInMemorySessionStore,
 		"sqlite":    func() Store { return openMemoryStore(t) },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -151,9 +151,9 @@ func TestSessionOriginRoundTripAndLookup(t *testing.T) {
 			assert.Equal(t, "a2a", got.Origin)
 
 			_, err = store.GetSessionByOrigin(ctx, runSession.ID, "a2a")
-			assert.ErrorIs(t, err, ErrNotFound)
+			require.ErrorIs(t, err, ErrNotFound)
 			_, err = store.GetSessionByOrigin(ctx, "", "a2a")
-			assert.ErrorIs(t, err, ErrEmptyID)
+			require.ErrorIs(t, err, ErrEmptyID)
 
 			a2aSession.SetTitle("updated")
 			require.NoError(t, store.UpdateSession(ctx, a2aSession))
