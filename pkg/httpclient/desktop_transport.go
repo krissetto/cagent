@@ -11,7 +11,7 @@ import (
 	desktoptransport "github.com/docker/docker-agent/pkg/desktop/transport"
 )
 
-const disableDesktopProxyEnv = "CAGENT_DISABLE_DESKTOP_PROXY"
+const disableDesktopProxyEnv = "DOCKER_AGENT_DISABLE_DESKTOP_PROXY"
 
 type desktopAwareTransport struct {
 	direct              *http.Transport
