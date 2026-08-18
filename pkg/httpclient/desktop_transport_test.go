@@ -62,12 +62,12 @@ func TestDesktopAwareTransportProxySafe(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "unresolvable host delegates to proxy",
+			name: "NXDOMAIN fails closed (Option A: broken resolver, not PAC-only network)",
 			host: "proxy-only.example",
 			resolver: func(context.Context, string) ([]net.IP, error) {
 				return nil, &net.DNSError{IsNotFound: true}
 			},
-			want: true,
+			want: false,
 		},
 	}
 
@@ -121,6 +121,8 @@ func TestDesktopAwareTransportDisabledOrGuardedUsesDirect(t *testing.T) {
 		{name: "kill switch", host: "example.com", disabled: true},
 		{name: "guarded loopback", guarded: true, host: "127.0.0.1"},
 		{name: "unguarded loopback", host: "127.0.0.1"},
+		{name: "guarded non-Docker goes direct (allowlist)", guarded: true, host: "example.com"},
+		{name: "guarded non-Docker arbitrary subdomain goes direct", guarded: true, host: "evil.docker.com.attacker.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.disabled {
@@ -194,7 +196,13 @@ func TestDesktopAwareTransportConsultsDesktopDetectionPerRequest(t *testing.T) {
 }
 
 func TestDesktopAwareTransportDisableCompressionBeforeDesktopTransport(t *testing.T) {
+	desktoptransport.SetDesktopRunningForTest(t, func(context.Context) (bool, error) { return true, nil })
+
 	transport := newDesktopAwareTransport(false).(*desktopAwareTransport)
+	transport.direct = &http.Transport{}
+	transport.direct.RegisterProtocol("https", roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+	}))
 	transport.DisableCompression()
 	proxy := &compressionTransport{}
 	transport.newDesktopTransport = func(context.Context, http.RoundTripper) http.RoundTripper { return proxy }
@@ -283,6 +291,141 @@ func (t *compressionTransport) DisableCompression() {
 
 func (t *compressionTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+}
+
+func TestIsDockerHost(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		host     string
+		expected bool
+	}{
+		{"docker.com", true},
+		{"docker.io", true},
+		{"DOCKER.COM", true},
+		{"hub.docker.com", true},
+		{"registry-1.docker.io", true},
+		{"auth.docker.io", true},
+		{"index.docker.io", true},
+		{"cdn.registry.docker.io", true},
+		{"desktop.docker.com", true},
+		{"api.docker.com", true},
+		{"docker.com.", true},
+		{"hub.docker.com.", true},
+		{"example.com", false},
+		{"jenkins.internal", false},
+		{"evil.localhost", false},
+		{"notdocker.com", false},
+		{"docker.com.attacker.com", false},
+		{"evil.docker.com.attacker.com", false},
+		{"fakedocker.com", false},
+		{"xdocker.com", false},
+		{"docker.org", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, isDockerHost(tt.host))
+		})
+	}
+}
+
+func TestDesktopAwareTransportUnguardedUsesDesktopForNonDockerHost(t *testing.T) {
+	desktopHit := false
+	transport := newDesktopAwareTransport(false).(*desktopAwareTransport)
+	transport.resolver = func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("1.1.1.1")}, nil
+	}
+	transport.newDesktopTransport = func(_ context.Context, _ http.RoundTripper) http.RoundTripper {
+		return roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			desktopHit = true
+			return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+		})
+	}
+	t.Cleanup(desktoptransport.SetDesktopRunningForTest(func(context.Context) (bool, error) { return true, nil }))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com", http.NoBody)
+	require.NoError(t, err)
+	resp, err := transport.RoundTrip(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.True(t, desktopHit, "unguarded transport should route non-Docker host through Desktop")
+}
+
+func TestDesktopAwareTransportGuardedDockerHostUsesDesktop(t *testing.T) {
+	desktopHit := false
+	transport := newDesktopAwareTransport(true).(*desktopAwareTransport)
+	transport.resolver = func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("52.0.0.1")}, nil
+	}
+	transport.newDesktopTransport = func(_ context.Context, _ http.RoundTripper) http.RoundTripper {
+		return roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			desktopHit = true
+			return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+		})
+	}
+	t.Cleanup(desktoptransport.SetDesktopRunningForTest(func(context.Context) (bool, error) { return true, nil }))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://hub.docker.com/v2/", http.NoBody)
+	require.NoError(t, err)
+	resp, err := transport.RoundTrip(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.True(t, desktopHit, "guarded transport should route Docker host through Desktop when it resolves to a public IP")
+}
+
+func TestDesktopAwareTransportGuardedDockerHostNXDOMAINStaysDirect(t *testing.T) {
+	desktopRoundTrips := 0
+	directRoundTrips := 0
+	transport := newDesktopAwareTransport(true).(*desktopAwareTransport)
+	transport.resolver = func(context.Context, string) ([]net.IP, error) {
+		return nil, &net.DNSError{IsNotFound: true}
+	}
+	transport.newDesktopTransport = func(_ context.Context, _ http.RoundTripper) http.RoundTripper {
+		return roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			desktopRoundTrips++
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		})
+	}
+	transport.direct = &http.Transport{}
+	transport.direct.RegisterProtocol("https", roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		directRoundTrips++
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+	}))
+	t.Cleanup(desktoptransport.SetDesktopRunningForTest(func(context.Context) (bool, error) { return true, nil }))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://hub.docker.com/v2/", http.NoBody)
+	require.NoError(t, err)
+	resp, err := transport.RoundTrip(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Zero(t, desktopRoundTrips, "Desktop RoundTrip must not be called when proxySafe returns false (NXDOMAIN)")
+	assert.Equal(t, 1, directRoundTrips, "direct transport must handle the request when proxySafe returns false")
+}
+
+func TestDesktopAwareTransportGuardedDockerHostPrivateIPStaysDirect(t *testing.T) {
+	desktopRoundTrips := 0
+	directRoundTrips := 0
+	transport := newDesktopAwareTransport(true).(*desktopAwareTransport)
+	transport.resolver = func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.1")}, nil
+	}
+	transport.newDesktopTransport = func(_ context.Context, _ http.RoundTripper) http.RoundTripper {
+		return roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			desktopRoundTrips++
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		})
+	}
+	transport.direct = &http.Transport{}
+	transport.direct.RegisterProtocol("https", roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		directRoundTrips++
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+	}))
+	t.Cleanup(desktoptransport.SetDesktopRunningForTest(func(context.Context) (bool, error) { return true, nil }))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://hub.docker.com/v2/", http.NoBody)
+	require.NoError(t, err)
+	resp, err := transport.RoundTrip(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Zero(t, desktopRoundTrips, "Desktop RoundTrip must not be called when proxySafe returns false (private IP)")
+	assert.Equal(t, 1, directRoundTrips, "direct transport must handle the request when proxySafe returns false")
 }
 
 func TestDesktopProxyDisabled(t *testing.T) {

@@ -13,7 +13,43 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/desktop"
+	"github.com/docker/docker-agent/pkg/memoize"
 )
+
+func TestDesktopRunningOverrideBypassesMemoizedDetection(t *testing.T) {
+	detectionMu.Lock()
+	previousMemoizer := memoizer
+	previousDesktopRunning := desktopRunning
+	previousOverride := desktopRunningOverride
+	memoizer = memoize.New[bool](time.Minute)
+	desktopRunning = func(context.Context) (bool, error) { return false, nil }
+	desktopRunningOverride = nil
+	detectionMu.Unlock()
+	t.Cleanup(func() {
+		detectionMu.Lock()
+		defer detectionMu.Unlock()
+		memoizer = previousMemoizer
+		desktopRunning = previousDesktopRunning
+		desktopRunningOverride = previousOverride
+	})
+
+	running, err := DesktopRunning(t.Context())
+	require.NoError(t, err)
+	assert.False(t, running)
+
+	calls := 0
+	SetDesktopRunningForTest(t, func(context.Context) (bool, error) {
+		calls++
+		return true, nil
+	})
+
+	for range 2 {
+		running, err = DesktopRunning(t.Context())
+		require.NoError(t, err)
+		assert.True(t, running)
+	}
+	assert.Equal(t, 2, calls)
+}
 
 func TestNew_UsesDesktopProxyWhenAvailable(t *testing.T) {
 	t.Parallel()
@@ -164,12 +200,16 @@ func TestFallbackTransport_DisableCompression(t *testing.T) {
 	assert.False(t, proxy.DisableCompression)
 	assert.False(t, direct.DisableCompression)
 
-	// Disable compression
+	// Disable compression. Only the proxy transport should be mutated here;
+	// direct is owned by desktopAwareTransport and already configured before
+	// this method is reached (see desktopAwareTransport.DisableCompression).
 	ft.DisableCompression()
 
-	// Verify compression is now disabled on both transports
+	// Verify compression is now disabled on the proxy transport.
 	assert.True(t, proxy.DisableCompression)
-	assert.True(t, direct.DisableCompression)
+	// direct must NOT be mutated here — mutating it would race with
+	// in-flight requests on concurrent goroutines.
+	assert.False(t, direct.DisableCompression)
 }
 
 // testError is a simple error type for testing
