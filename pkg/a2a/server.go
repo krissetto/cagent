@@ -24,6 +24,7 @@ import (
 	"github.com/docker/docker-agent/pkg/servesafety"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/session/sqlitestore"
+	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/teamloader"
 	loaderdefaults "github.com/docker/docker-agent/pkg/teamloader/defaults"
 	"github.com/docker/docker-agent/pkg/version"
@@ -91,15 +92,36 @@ func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runCon
 		}
 	}()
 
-	adkAgent, err := newDockerAgentAdapter(t, agentName, sessStore, resolvedSafety)
-	if err != nil {
-		return fmt.Errorf("failed to create ADK agent adapter: %w", err)
-	}
-
 	baseURL := &url.URL{Scheme: "http", Host: routableAddr(ln.Addr().String())}
-
 	slog.DebugContext(ctx, "A2A server listening", "url", baseURL.String())
 
+	e, err := newServer(t, agentFilename, agentName, sessStore, resolvedSafety, ln.Addr().String())
+	if err != nil {
+		return fmt.Errorf("failed to create A2A server: %w", err)
+	}
+
+	// Stop serving when ctx is canceled so Run returns and the deferred
+	// cleanups (session store, tool sets) release their resources.
+	stop := context.AfterFunc(ctx, func() {
+		_ = e.Server.Close()
+	})
+	defer stop()
+
+	if err := e.Server.Serve(ln); err != nil && ctx.Err() == nil {
+		slog.ErrorContext(ctx, "Failed to start server", "error", err)
+		return err
+	}
+
+	return nil
+}
+
+func newServer(t *team.Team, agentFilename, agentName string, sessStore session.Store, safety servesafety.Resolved, listenAddr string) (*echo.Echo, error) {
+	adkAgent, err := newDockerAgentAdapter(t, agentName, sessStore, safety)
+	if err != nil {
+		return nil, err
+	}
+
+	baseURL := &url.URL{Scheme: "http", Host: routableAddr(listenAddr)}
 	name := strings.TrimSuffix(filepath.Base(agentFilename), filepath.Ext(agentFilename))
 
 	agentPath := "/invoke"
@@ -162,17 +184,5 @@ func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runCon
 	e.GET(a2asrv.WellKnownAgentCardPath, echo.WrapHandler(cardHandler))
 	e.POST(agentPath, echo.WrapHandler(jsonrpcHandler))
 
-	// Stop serving when ctx is canceled so Run returns and the deferred
-	// cleanups (session store, tool sets) release their resources.
-	stop := context.AfterFunc(ctx, func() {
-		_ = e.Server.Close()
-	})
-	defer stop()
-
-	if err := e.Server.Serve(ln); err != nil && ctx.Err() == nil {
-		slog.ErrorContext(ctx, "Failed to start server", "error", err)
-		return err
-	}
-
-	return nil
+	return e, nil
 }
