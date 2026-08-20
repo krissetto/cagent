@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -548,6 +550,42 @@ func TestStartableToolSet_TryStartRunsStartLogic(t *testing.T) {
 	assert.Check(t, is.Equal(f.startups, 1))
 }
 
+// TestStartableToolSet_TryStartWithTimeoutAbandonsWedgedStart pins the shared
+// bounded-start helper used by the agent turn path and the runtime startup
+// probe: a wedged Start (one that ignores cancellation) is abandoned exactly
+// at the bound with the bound's context error, an attempt already in flight
+// is skipped rather than joined, and the abandoned attempt keeps running in
+// the background under the single-flight lock so a later call picks up its
+// outcome.
+func TestStartableToolSet_TryStartWithTimeoutAbandonsWedgedStart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		inner := &blockingToolSet{entered: make(chan struct{}), release: make(chan struct{})}
+		s := tools.NewStartable(inner)
+
+		begin := time.Now()
+		started, err := s.TryStartWithTimeout(t.Context(), time.Second)
+		assert.Check(t, errors.Is(err, context.DeadlineExceeded), "a wedged attempt must be abandoned with the bound's error: %v", err)
+		assert.Check(t, !started)
+		assert.Check(t, is.Equal(time.Since(begin), time.Second), "the attempt must be abandoned exactly at the bound (fake time)")
+
+		// While the abandoned attempt holds the single-flight lock, a second
+		// bounded call skips it immediately instead of joining it.
+		started, err = s.TryStartWithTimeout(t.Context(), time.Second)
+		assert.NilError(t, err, "an in-flight start must not surface as a failure")
+		assert.Check(t, !started, "a bounded call must not join an in-flight start")
+		assert.Check(t, is.Equal(inner.calls.Load(), int32(1)), "the skip must not run a second underlying Start")
+
+		// The abandoned attempt settles in the background; a later call
+		// reports the latched start without another underlying Start.
+		close(inner.release)
+		synctest.Wait()
+		started, err = s.TryStartWithTimeout(t.Context(), time.Second)
+		assert.NilError(t, err)
+		assert.Check(t, started)
+		assert.Check(t, is.Equal(inner.calls.Load(), int32(1)))
+	})
+}
+
 // TestStartableToolSet_StopIfStartedLeavesNeverStartedUntouched pins the
 // shutdown intent carried over from Agent.StopToolSets: a toolset that was
 // never started must not have its underlying Stop called.
@@ -572,6 +610,26 @@ func TestStartableToolSet_StopIfStartedStopsStarted(t *testing.T) {
 
 	assert.NilError(t, s.Start(t.Context()))
 	assert.NilError(t, s.StopIfStarted(t.Context()))
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)))
+	assert.Check(t, is.Equal(s.IsStarted(), false))
+}
+
+// TestStartableToolSet_StopIfStartedExpiredContextStopsResponsiveToolset pins
+// the deliberate fast path in lifecycleMutex.LockContext: an uncontended lock
+// is acquired even when ctx is already done, so a shutdown arriving with an
+// expired deadline still stops a responsive started toolset instead of
+// leaking it.
+func TestStartableToolSet_StopIfStartedExpiredContextStopsResponsiveToolset(t *testing.T) {
+	t.Parallel()
+
+	inner := &blockingToolSet{entered: make(chan struct{}), release: make(chan struct{})}
+	close(inner.release) // Start completes immediately, Stop never blocks
+	s := tools.NewStartable(inner)
+	assert.NilError(t, s.Start(t.Context()))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	assert.NilError(t, s.StopIfStarted(ctx), "an already-canceled ctx must still stop an uncontended started toolset")
 	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)))
 	assert.Check(t, is.Equal(s.IsStarted(), false))
 }
@@ -764,6 +822,30 @@ func TestStartableToolSet_TryStartReportsReapedStart(t *testing.T) {
 	assert.NilError(t, res.err)
 	assert.Check(t, !res.started, "TryStart must not report started after the pending request reaped the toolset")
 	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)))
+	assert.Check(t, is.Equal(s.IsStarted(), false))
+}
+
+// TestStartableToolSet_TryIsStartedReportsReapedStart is the TryIsStarted
+// analogue of the TryStart test above: when a pending shutdown request is
+// consumed as TryIsStarted releases the lock, the toolset it just observed
+// started is stopped again, and TryIsStarted must report false rather than
+// a started toolset that no longer is. The pending request is planted
+// directly because the window it models — a StopIfStarted that published its
+// request but lost the lifecycle-lock race to TryIsStarted before giving up
+// on its already-done context — cannot be sequenced deterministically through
+// the public API.
+func TestStartableToolSet_TryIsStartedReportsReapedStart(t *testing.T) {
+	t.Parallel()
+
+	inner := &blockingToolSet{entered: make(chan struct{}), release: make(chan struct{})}
+	close(inner.release) // Start completes immediately
+	s := tools.NewStartable(inner)
+	assert.NilError(t, s.Start(t.Context()))
+
+	s.ExportedPublishStopRequest(t.Context())
+
+	assert.Check(t, is.Equal(s.TryIsStarted(), false), "TryIsStarted must not report started after its own release reaped the toolset")
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)), "the pending request must stop the toolset on release")
 	assert.Check(t, is.Equal(s.IsStarted(), false))
 }
 

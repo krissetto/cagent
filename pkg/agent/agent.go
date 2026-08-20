@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -561,47 +562,33 @@ func (a *Agent) ToolSets() []tools.ToolSet {
 	return toolSets
 }
 
-// toolsetStartTimeout bounds a toolset start initiated on the turn path
-// when the turn context carries no deadline of its own. It mirrors the
-// runtime's startup-probe timeout (defaultToolStartTimeout) so both paths
-// give up on a wedged toolset after the same grace period; the abandoned
-// attempt keeps running in the background under the toolset's single-flight
-// lock and its outcome is picked up on a later turn.
-const toolsetStartTimeout = 30 * time.Second
-
 // tryStartToolSet starts one toolset without ever letting it stall the turn
-// (#4001):
+// (#4001). It runs the toolset's bounded, non-blocking TryStartWithTimeout
+// with the shared tools.DefaultStartTimeout budget — the same grace period
+// as the runtime's startup probe — and translates the outcome:
 //
 //   - A Start already in flight (e.g. a startup probe that timed out upstream
 //     but kept going) is skipped silently — TryStart never joins an in-flight
 //     attempt — so the turn proceeds with the toolsets that are ready.
-//   - A start initiated here runs in its own goroutine raced against the
-//     context/timeout, because a wedged toolset can ignore cancellation (the
-//     MCP connector detaches the context it is handed). On timeout the attempt
-//     is abandoned to finish in the background and the toolset is skipped for
-//     this turn — silently, since the failure reporters share the toolset's
-//     single-flight lock and consulting them would block on the very start we
-//     just abandoned.
+//   - A start initiated here that outlives the budget (a wedged toolset can
+//     ignore cancellation) is abandoned to finish in the background and the
+//     toolset is skipped for this turn — silently, since the failure
+//     reporters share the toolset's single-flight lock and consulting them
+//     would block on the very start we just abandoned. Its outcome is picked
+//     up on a later turn.
 func (a *Agent) tryStartToolSet(ctx context.Context, toolSet *tools.StartableToolSet) error {
-	startCtx, cancel := context.WithTimeout(ctx, toolsetStartTimeout)
-	defer cancel()
-
-	done := make(chan error, 1) // buffered so a late send never blocks
-	go func() {
-		started, err := toolSet.TryStart(startCtx)
-		if !started && err == nil {
-			slog.DebugContext(ctx, "Toolset start already in flight; skipping for this turn", "agent", a.Name(), "toolset", tools.DescribeToolSet(toolSet))
+	started, err := toolSet.TryStartWithTimeout(ctx, tools.DefaultStartTimeout)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			slog.DebugContext(ctx, "Toolset start still running; skipping for this turn", "agent", a.Name(), "toolset", tools.DescribeToolSet(toolSet), "cause", err)
+			return nil
 		}
-		done <- err
-	}()
-
-	select {
-	case <-startCtx.Done():
-		slog.DebugContext(ctx, "Toolset start still running; skipping for this turn", "agent", a.Name(), "toolset", tools.DescribeToolSet(toolSet), "cause", context.Cause(startCtx))
-		return nil
-	case err := <-done:
 		return err
 	}
+	if !started {
+		slog.DebugContext(ctx, "Toolset start already in flight; skipping for this turn", "agent", a.Name(), "toolset", tools.DescribeToolSet(toolSet))
+	}
+	return nil
 }
 
 // ensureToolSetsAreStarted starts every toolset, surfacing the first
@@ -690,16 +677,20 @@ func (a *Agent) DrainWarnings() []string {
 }
 
 func (a *Agent) StopToolSets(ctx context.Context) error {
+	var errs []error
 	for _, toolSet := range a.toolsets {
 		// StopIfStarted checks-and-stops atomically under the toolset's
 		// lifecycle lock, so a toolset that was never started is left
 		// untouched, an in-flight Start that settles in time is stopped
 		// rather than leaked, and a Start wedged past ctx's deadline
 		// surfaces ctx.Err() instead of blocking shutdown forever (#4001).
+		// One failed stop must not abandon the rest: later toolsets are
+		// still stopped (an expired ctx still stops responsive ones) and
+		// the failures surface together.
 		if err := toolSet.StopIfStarted(ctx); err != nil {
-			return fmt.Errorf("failed to stop toolset: %w", err)
+			errs = append(errs, fmt.Errorf("failed to stop toolset %s: %w", tools.DescribeToolSet(toolSet), err))
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }

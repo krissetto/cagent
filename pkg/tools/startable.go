@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -187,7 +188,9 @@ func NewStartable(ts ToolSet) *StartableToolSet {
 // For toolsets that don't implement Startable, this always returns true.
 // It waits for any in-flight lifecycle operation (Start/Stop) to settle,
 // so callers deciding whether a Stop is needed observe the final state;
-// use TryIsStarted on paths that must never block.
+// use TryIsStarted on paths that must never block. Releasing the lifecycle
+// lock on return can settle a pending StopIfStarted request, so a call may
+// invoke — and block on — the underlying Stop.
 func (s *StartableToolSet) IsStarted() bool {
 	s.mu.Lock()
 	defer s.unlock()
@@ -205,8 +208,14 @@ func (s *StartableToolSet) TryIsStarted() bool {
 	if !s.mu.TryLock() {
 		return false
 	}
-	defer s.unlock()
-	return s.started
+	started := s.started
+	// The release handshake may consume a pending StopIfStarted request and
+	// stop the toolset this probe just observed started: report a reaped
+	// start as not-ready rather than as started.
+	if s.unlock() {
+		return false
+	}
+	return started
 }
 
 // Start starts the toolset with single-flight semantics.
@@ -245,6 +254,52 @@ func (s *StartableToolSet) TryStart(ctx context.Context) (started bool, err erro
 		return false, err
 	}
 	return s.started, nil
+}
+
+// DefaultStartTimeout bounds a toolset start when the caller supplies no
+// budget of its own. It is shared by the agent's turn path and the runtime's
+// startup probe so both give up on a wedged toolset after the same grace
+// period; it is deliberately generous because a cold start can legitimately
+// include an image pull.
+const DefaultStartTimeout = 30 * time.Second
+
+// TryStartWithTimeout runs TryStart bounded by timeout (DefaultStartTimeout
+// when non-positive). The attempt runs in its own goroutine raced against
+// the bound — not only under the derived context — because a wedged toolset
+// can ignore cancellation (the MCP connector detaches the context it is
+// handed). Outcomes:
+//
+//   - (true, nil): the toolset is started (freshly, latched or recovered).
+//   - (false, nil): skipped — another lifecycle operation holds the
+//     single-flight lock, or a pending shutdown reaped the fresh start.
+//   - (false, ctx.Err() of the bound): the attempt outlived the budget and
+//     was abandoned. It keeps running in the background holding the
+//     single-flight lock, so later Start/Stop calls wait for it rather than
+//     race it; if it eventually completes, a later call picks the toolset up.
+//   - (false, err): the attempt ran and failed with err.
+func (s *StartableToolSet) TryStartWithTimeout(ctx context.Context, timeout time.Duration) (bool, error) {
+	if timeout <= 0 {
+		timeout = DefaultStartTimeout
+	}
+	startCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	type startResult struct {
+		started bool
+		err     error
+	}
+	done := make(chan startResult, 1) // buffered so a late send never blocks
+	go func() {
+		started, err := s.TryStart(startCtx)
+		done <- startResult{started: started, err: err}
+	}()
+
+	select {
+	case <-startCtx.Done():
+		return false, startCtx.Err()
+	case res := <-done:
+		return res.started, res.err
+	}
 }
 
 // startLocked implements the start sequence shared by Start and TryStart.
@@ -324,7 +379,9 @@ func (s *StartableToolSet) startLocked(ctx context.Context) (err error) {
 // Tools lists the underlying toolset's tools and tracks listing-failure
 // streaks so callers can de-duplicate warnings via ShouldReportListFailure().
 // A successful listing clears the streak so a future failure is reported as
-// fresh.
+// fresh. Releasing the lifecycle lock on return can settle a pending
+// StopIfStarted request, so a call may invoke — and block on — the
+// underlying Stop.
 func (s *StartableToolSet) Tools(ctx context.Context) ([]Tool, error) {
 	ta, err := s.ToolSet.Tools(ctx)
 
@@ -405,15 +462,19 @@ func (s *StartableToolSet) stopLocked(ctx context.Context) error {
 // Tools, a reporter or Stop: while still holding mu it consumes the request
 // and, when the toolset is started, stops it. The requester may have timed
 // out and returned long ago, so the stop runs under context.WithoutCancel
-// of the request ctx and a failure can only be logged.
+// of the request ctx and a failure can only be logged. It reports whether
+// any request was settled, so non-blocking probes (TryIsStarted) can avoid
+// reporting a started toolset this very release just reaped.
 //
 // Each round settles one request; the lock is released by the round that
 // finds none. Re-checking after a stop keeps stopRequestMu holds brief
 // (never across stopLocked) while still consuming a request published
 // during that stop, whose publisher may have timed out behind it.
-func (s *StartableToolSet) unlock() {
+func (s *StartableToolSet) unlock() (settled bool) {
 	for !s.settleStopRequestAndRelease() {
+		settled = true
 	}
+	return settled
 }
 
 // settleStopRequestAndRelease performs one round of the unlock handshake:

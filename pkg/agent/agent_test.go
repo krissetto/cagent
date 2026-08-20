@@ -861,7 +861,7 @@ func TestAgentToolsSkipsStartAlreadyInFlight(t *testing.T) {
 
 // TestAgentToolsBoundsTurnInitiatedStart verifies the other half of #4001:
 // when the turn itself initiates a Start and the toolset wedges (ignoring
-// cancellation), the turn is bounded by toolsetStartTimeout instead of
+// cancellation), the turn is bounded by tools.DefaultStartTimeout instead of
 // hanging. The abandoned attempt stays silent and finishes in the
 // background, so the next turn sees the toolset started.
 func TestAgentToolsBoundsTurnInitiatedStart(t *testing.T) {
@@ -878,7 +878,7 @@ func TestAgentToolsBoundsTurnInitiatedStart(t *testing.T) {
 		begin := time.Now()
 		got, err := a.Tools(t.Context())
 		require.NoError(t, err)
-		assert.Equal(t, toolsetStartTimeout, time.Since(begin), "the turn must give up exactly at the bound (fake time)")
+		assert.Equal(t, tools.DefaultStartTimeout, time.Since(begin), "the turn must give up exactly at the bound (fake time)")
 		assert.Equal(t, []string{"static_tool"}, toolNames(got))
 		assert.Empty(t, a.DrainWarnings(), "a start abandoned on timeout must be skipped silently")
 
@@ -970,5 +970,87 @@ func TestAgentStopToolSetsHonorsContextWhileStartInFlight(t *testing.T) {
 		releaseHung()
 		require.NoError(t, <-startDone)
 		assert.EqualValues(t, 1, hung.stops.Load(), "a start that settles after the abandoned shutdown must still be stopped")
+	})
+}
+
+// stopRecordingToolSet starts immediately and records Stop calls; stopErr,
+// when set, is returned from every Stop.
+type stopRecordingToolSet struct {
+	stubToolSet
+
+	stopErr error
+	stops   atomic.Int32
+}
+
+func (s *stopRecordingToolSet) Stop(context.Context) error {
+	s.stops.Add(1)
+	return s.stopErr
+}
+
+// TestAgentStopToolSetsContinuesPastStopFailure pins the aggregation
+// contract of StopToolSets: a toolset whose Stop fails must not abandon
+// stopping the later toolsets, and every failure surfaces in the joined
+// error.
+func TestAgentStopToolSetsContinuesPastStopFailure(t *testing.T) {
+	t.Parallel()
+
+	errFirst := errors.New("first boom")
+	errSecond := errors.New("second boom")
+	failingFirst := &stopRecordingToolSet{stopErr: errFirst}
+	failingSecond := &stopRecordingToolSet{stopErr: errSecond}
+	healthy := &stopRecordingToolSet{}
+	a := New("root", "test", WithToolSets(failingFirst, failingSecond, healthy))
+	for _, ts := range a.toolsets {
+		require.NoError(t, ts.Start(t.Context()))
+	}
+
+	err := a.StopToolSets(t.Context())
+	require.ErrorIs(t, err, errFirst)
+	require.ErrorIs(t, err, errSecond)
+	assert.EqualValues(t, 1, failingFirst.stops.Load())
+	assert.EqualValues(t, 1, failingSecond.stops.Load(), "an earlier failed stop must not abandon the next toolset")
+	assert.EqualValues(t, 1, healthy.stops.Load(), "a failed stop must not abandon the later toolsets")
+}
+
+// TestAgentStopToolSetsStopsLaterToolsetsPastDeadline pins the other half of
+// the aggregation contract: a toolset wedged past the shutdown deadline
+// surfaces ctx.Err() but must not abandon the later toolsets — a responsive
+// started toolset is still stopped even though the deadline has already
+// expired by the time its StopIfStarted runs, via the uncontended fast path
+// in the lifecycle lock's LockContext.
+func TestAgentStopToolSetsStopsLaterToolsetsPastDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		wedged := &hungStartToolSet{
+			entered: make(chan struct{}),
+			release: make(chan struct{}),
+		}
+		responsive := &hungStartToolSet{
+			entered: make(chan struct{}),
+			release: make(chan struct{}),
+		}
+		close(responsive.release) // starts and stops without blocking
+		a := New("root", "test", WithToolSets(wedged, responsive))
+
+		// Always unblock the wedged Start so no goroutine outlives the test.
+		releaseWedged := sync.OnceFunc(func() { close(wedged.release) })
+		t.Cleanup(releaseWedged)
+
+		startDone := make(chan error, 1)
+		go func() { startDone <- a.toolsets[0].Start(t.Context()) }()
+		<-wedged.entered
+		require.NoError(t, a.toolsets[1].Start(t.Context()))
+
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		err := a.StopToolSets(ctx)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.EqualValues(t, 0, wedged.stops.Load(), "the underlying Stop must not run while Start is wedged")
+		assert.EqualValues(t, 1, responsive.stops.Load(), "a wedged earlier toolset must not abandon stopping the later ones")
+
+		// The wedged Start settles; the stop request abandoned at the
+		// deadline still reaps it.
+		releaseWedged()
+		require.NoError(t, <-startDone)
+		assert.EqualValues(t, 1, wedged.stops.Load(), "a start that settles after the abandoned shutdown must still be stopped")
 	})
 }
