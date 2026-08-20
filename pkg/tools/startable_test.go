@@ -3,6 +3,8 @@ package tools_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -456,4 +458,343 @@ func TestStartableToolSet_ShouldReportRecoveryFailure_ResetsOnStop(t *testing.T)
 
 	assert.Check(t, s.Start(t.Context()) != nil)
 	assert.Check(t, is.Equal(s.ShouldReportRecoveryFailure(), true), "fresh recovery after Stop must report again")
+}
+
+// blockingToolSet blocks in Start until release is closed. entered is closed
+// on the first Start call so tests can line up with the in-flight attempt.
+type blockingToolSet struct {
+	entered  chan struct{}
+	release  chan struct{}
+	startErr error
+	calls    atomic.Int32
+	stops    atomic.Int32
+}
+
+func (b *blockingToolSet) Tools(context.Context) ([]tools.Tool, error) { return nil, nil }
+
+func (b *blockingToolSet) Start(context.Context) error {
+	if b.calls.Add(1) == 1 {
+		close(b.entered)
+	}
+	<-b.release
+	return b.startErr
+}
+
+func (b *blockingToolSet) Stop(context.Context) error {
+	b.stops.Add(1)
+	return nil
+}
+
+// TestStartableToolSet_TryStartSkipsInFlightStart pins the TryStart contract
+// for #4001: while another Start holds the single-flight lock, TryStart
+// returns (false, nil) immediately — no second underlying Start, no failure
+// streak — and TryIsStarted reports not-ready without blocking.
+func TestStartableToolSet_TryStartSkipsInFlightStart(t *testing.T) {
+	t.Parallel()
+
+	inner := &blockingToolSet{entered: make(chan struct{}), release: make(chan struct{})}
+	s := tools.NewStartable(inner)
+
+	assert.Check(t, is.Equal(s.TryIsStarted(), false), "TryIsStarted is false while unstarted")
+
+	// Always unblock the wedged Start so no goroutine outlives the test.
+	release := sync.OnceFunc(func() { close(inner.release) })
+	t.Cleanup(release)
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.Start(t.Context()) }()
+	<-inner.entered
+
+	started, err := s.TryStart(t.Context())
+	assert.NilError(t, err, "an in-flight start must not surface as a failure")
+	assert.Check(t, !started, "TryStart must not join an in-flight start")
+	assert.Check(t, is.Equal(inner.calls.Load(), int32(1)), "TryStart must not run a second underlying Start")
+	assert.Check(t, is.Equal(s.TryIsStarted(), false), "TryIsStarted is false while a lifecycle operation is in flight")
+
+	release()
+	assert.NilError(t, <-startDone)
+
+	// The skipped TryStart must not have begun a failure streak.
+	assert.Check(t, is.Equal(s.ShouldReportFailure(), false), "skipped TryStart must not record a failure")
+	assert.Check(t, is.Equal(s.IsStarted(), true))
+	assert.Check(t, is.Equal(s.TryIsStarted(), true), "TryIsStarted reads the settled state once the lock is free")
+
+	// Latched: a later TryStart reports started without another underlying call.
+	started, err = s.TryStart(t.Context())
+	assert.NilError(t, err)
+	assert.Check(t, started)
+	assert.Check(t, is.Equal(inner.calls.Load(), int32(1)))
+}
+
+// TestStartableToolSet_TryStartRunsStartLogic verifies that when the lock is
+// free, TryStart behaves exactly like Start: a failure records the
+// once-per-streak warning and a subsequent success latches the started state.
+func TestStartableToolSet_TryStartRunsStartLogic(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	f := &flappyToolSet{errs: []error{errBoom, nil}}
+	s := tools.NewStartable(f)
+
+	started, err := s.TryStart(t.Context())
+	assert.Check(t, errors.Is(err, errBoom), "TryStart must surface the underlying start error")
+	assert.Check(t, !started)
+	assert.Check(t, is.Equal(s.ShouldReportFailure(), true), "a failed TryStart attempt reports like Start")
+
+	started, err = s.TryStart(t.Context())
+	assert.NilError(t, err)
+	assert.Check(t, started)
+	assert.Check(t, is.Equal(s.IsStarted(), true))
+	assert.Check(t, is.Equal(f.startups, 1))
+}
+
+// TestStartableToolSet_StopIfStartedLeavesNeverStartedUntouched pins the
+// shutdown intent carried over from Agent.StopToolSets: a toolset that was
+// never started must not have its underlying Stop called.
+func TestStartableToolSet_StopIfStartedLeavesNeverStartedUntouched(t *testing.T) {
+	t.Parallel()
+
+	inner := &blockingToolSet{entered: make(chan struct{}), release: make(chan struct{})}
+	s := tools.NewStartable(inner)
+
+	assert.NilError(t, s.StopIfStarted(t.Context()))
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(0)), "a toolset that was never started must not be stopped")
+}
+
+// TestStartableToolSet_StopIfStartedStopsStarted verifies the settled fast
+// path: a started toolset is stopped and unlatched.
+func TestStartableToolSet_StopIfStartedStopsStarted(t *testing.T) {
+	t.Parallel()
+
+	inner := &blockingToolSet{entered: make(chan struct{}), release: make(chan struct{})}
+	close(inner.release) // Start completes immediately
+	s := tools.NewStartable(inner)
+
+	assert.NilError(t, s.Start(t.Context()))
+	assert.NilError(t, s.StopIfStarted(t.Context()))
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)))
+	assert.Check(t, is.Equal(s.IsStarted(), false))
+}
+
+// TestStartableToolSet_StopIfStartedHonorsContext pins the deadline half of
+// the shutdown contract: while a wedged Start holds the single-flight lock,
+// StopIfStarted gives up with ctx.Err() instead of blocking, leaves the
+// underlying Stop unrun, and leaves the request pending for the wedged
+// attempt — whose lock release reaps the toolset when the attempt settles
+// successfully. A consumed request must not affect a later deliberate start.
+func TestStartableToolSet_StopIfStartedHonorsContext(t *testing.T) {
+	t.Parallel()
+
+	inner := &blockingToolSet{entered: make(chan struct{}), release: make(chan struct{})}
+	s := tools.NewStartable(inner)
+
+	// Always unblock the wedged Start so no goroutine outlives the test.
+	release := sync.OnceFunc(func() { close(inner.release) })
+	t.Cleanup(release)
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.Start(t.Context()) }()
+	<-inner.entered
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := s.StopIfStarted(ctx)
+	assert.Check(t, errors.Is(err, context.Canceled), "StopIfStarted must give up when ctx ends while Start is wedged: %v", err)
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(0)), "the underlying Stop must not run while Start is wedged")
+
+	// The wedged Start settles: the abandoned request reaps the toolset.
+	release()
+	assert.NilError(t, <-startDone)
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)), "a start that settles after the abandoned request must be stopped")
+	assert.Check(t, is.Equal(s.IsStarted(), false))
+
+	// The request was consumed by the reap: a later deliberate start must
+	// stay up.
+	assert.NilError(t, s.Start(t.Context()))
+	assert.Check(t, is.Equal(s.IsStarted(), true))
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)), "a later deliberate start must not be reaped")
+}
+
+// TestStartableToolSet_StopIfStartedRequestDiscardedOnFailedStart verifies
+// that when the wedged Start fails after the stop request was abandoned,
+// there is nothing to reap: the request is consumed on lock release without
+// stopping anything, rather than left to stop an instance a later caller
+// deliberately starts.
+func TestStartableToolSet_StopIfStartedRequestDiscardedOnFailedStart(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	inner := &blockingToolSet{entered: make(chan struct{}), release: make(chan struct{}), startErr: errBoom}
+	s := tools.NewStartable(inner)
+
+	// Always unblock the wedged Start so no goroutine outlives the test.
+	release := sync.OnceFunc(func() { close(inner.release) })
+	t.Cleanup(release)
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.Start(t.Context()) }()
+	<-inner.entered
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	assert.Check(t, errors.Is(s.StopIfStarted(ctx), context.Canceled))
+
+	// The wedged Start fails: nothing started, nothing to stop.
+	release()
+	assert.Check(t, errors.Is(<-startDone, errBoom))
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(0)))
+
+	inner.startErr = nil
+	assert.NilError(t, s.Start(t.Context()))
+	assert.Check(t, is.Equal(s.IsStarted(), true))
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(0)), "the discarded request must not reap the fresh start")
+}
+
+// barrierReporterToolSet is a startable toolset whose IsStarted reporter can
+// be armed to block once. startLocked probes the reporter (while holding the
+// lifecycle lock) when the wrapper is already latched started, so the barrier
+// keeps a non-starting lock holder busy through public behavior alone — long
+// enough for a StopIfStarted deadline to expire behind it.
+type barrierReporterToolSet struct {
+	entered chan struct{} // closed when the armed probe begins blocking
+	release chan struct{} // closed by the test to let the probe return
+	armed   atomic.Bool
+	started atomic.Bool
+	stops   atomic.Int32
+}
+
+func newBarrierReporterToolSet() *barrierReporterToolSet {
+	return &barrierReporterToolSet{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (b *barrierReporterToolSet) Tools(context.Context) ([]tools.Tool, error) { return nil, nil }
+
+func (b *barrierReporterToolSet) Start(context.Context) error {
+	b.started.Store(true)
+	return nil
+}
+
+func (b *barrierReporterToolSet) Stop(context.Context) error {
+	b.stops.Add(1)
+	b.started.Store(false)
+	return nil
+}
+
+func (b *barrierReporterToolSet) IsStarted() bool {
+	if b.armed.CompareAndSwap(true, false) {
+		close(b.entered)
+		<-b.release
+	}
+	return b.started.Load()
+}
+
+// TestStartableToolSet_StopIfStartedRequestOutlivesLatchedStart pins the
+// removal of the stale-request compromise: a stop request that times out
+// while the lifecycle lock is held by a short, non-starting holder — here a
+// latched Start blocked in its reporter probe — must stop the still-started
+// toolset as soon as that holder releases the lock, and must not linger to
+// reap a later deliberate start.
+func TestStartableToolSet_StopIfStartedRequestOutlivesLatchedStart(t *testing.T) {
+	t.Parallel()
+
+	inner := newBarrierReporterToolSet()
+	s := tools.NewStartable(inner)
+	assert.NilError(t, s.Start(t.Context()))
+
+	// Wedge a latched Start inside the reporter probe: the lifecycle lock is
+	// held but nothing is being started.
+	inner.armed.Store(true)
+	releaseProbe := sync.OnceFunc(func() { close(inner.release) })
+	t.Cleanup(releaseProbe)
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.Start(t.Context()) }()
+	<-inner.entered
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	assert.Check(t, errors.Is(s.StopIfStarted(ctx), context.Canceled))
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(0)), "the underlying Stop must not run while the probe holds the lock")
+
+	// The probe returns: the holder consumes the abandoned request on lock
+	// release and stops the still-started toolset before Start returns.
+	releaseProbe()
+	assert.NilError(t, <-startDone)
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)), "the abandoned request must stop the toolset when the lock holder releases")
+	assert.Check(t, is.Equal(s.IsStarted(), false))
+
+	// The request was consumed: a later deliberate start stays up.
+	assert.NilError(t, s.Start(t.Context()))
+	assert.Check(t, is.Equal(s.IsStarted(), true))
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)), "a later deliberate start must not be reaped")
+}
+
+// TestStartableToolSet_TryStartReportsReapedStart pins TryStart's return
+// value against the release handshake: when a shutdown request abandoned
+// during the attempt is consumed as TryStart releases the lock, the toolset
+// it just confirmed started is stopped again, and TryStart must report
+// (false, nil) rather than a started toolset that no longer is.
+func TestStartableToolSet_TryStartReportsReapedStart(t *testing.T) {
+	t.Parallel()
+
+	inner := newBarrierReporterToolSet()
+	s := tools.NewStartable(inner)
+	assert.NilError(t, s.Start(t.Context()))
+
+	inner.armed.Store(true)
+	releaseProbe := sync.OnceFunc(func() { close(inner.release) })
+	t.Cleanup(releaseProbe)
+
+	type result struct {
+		started bool
+		err     error
+	}
+	tryDone := make(chan result, 1)
+	go func() {
+		started, err := s.TryStart(t.Context())
+		tryDone <- result{started: started, err: err}
+	}()
+	<-inner.entered
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	assert.Check(t, errors.Is(s.StopIfStarted(ctx), context.Canceled))
+
+	releaseProbe()
+	res := <-tryDone
+	assert.NilError(t, res.err)
+	assert.Check(t, !res.started, "TryStart must not report started after the pending request reaped the toolset")
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)))
+	assert.Check(t, is.Equal(s.IsStarted(), false))
+}
+
+// TestStartableToolSet_ZeroValueIsUsable pins that a StartableToolSet
+// constructed without NewStartable — zero-value lock fields — does not
+// deadlock: the lifecycle mutex initializes lazily on first use, including
+// concurrent first use.
+func TestStartableToolSet_ZeroValueIsUsable(t *testing.T) {
+	t.Parallel()
+
+	s := &tools.StartableToolSet{ToolSet: &stubToolSet{}}
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			_ = s.IsStarted()
+		})
+	}
+	wg.Wait()
+
+	assert.NilError(t, s.Start(t.Context()))
+	assert.Check(t, is.Equal(s.IsStarted(), true))
+
+	started, err := s.TryStart(t.Context())
+	assert.NilError(t, err)
+	assert.Check(t, started)
+	assert.Check(t, is.Equal(s.TryIsStarted(), true))
+
+	_, err = s.Tools(t.Context())
+	assert.NilError(t, err)
+
+	assert.NilError(t, s.StopIfStarted(t.Context()))
+	assert.Check(t, is.Equal(s.IsStarted(), false))
 }

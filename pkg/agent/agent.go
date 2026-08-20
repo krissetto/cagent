@@ -472,7 +472,10 @@ func (a *Agent) collectTools(ctx context.Context) ([]tools.Tool, error) {
 		started bool
 	}
 	results := concurrent.MapSlice(a.toolsets, func(toolSet *tools.StartableToolSet) listResult {
-		if !toolSet.IsStarted() {
+		// TryIsStarted: a toolset whose lifecycle operation is still in
+		// flight (e.g. a wedged Start abandoned by tryStartToolSet) is
+		// skipped for this turn instead of blocking the listing (#4001).
+		if !toolSet.TryIsStarted() {
 			return listResult{}
 		}
 		ts, err := toolSet.Tools(ctx)
@@ -558,6 +561,49 @@ func (a *Agent) ToolSets() []tools.ToolSet {
 	return toolSets
 }
 
+// toolsetStartTimeout bounds a toolset start initiated on the turn path
+// when the turn context carries no deadline of its own. It mirrors the
+// runtime's startup-probe timeout (defaultToolStartTimeout) so both paths
+// give up on a wedged toolset after the same grace period; the abandoned
+// attempt keeps running in the background under the toolset's single-flight
+// lock and its outcome is picked up on a later turn.
+const toolsetStartTimeout = 30 * time.Second
+
+// tryStartToolSet starts one toolset without ever letting it stall the turn
+// (#4001):
+//
+//   - A Start already in flight (e.g. a startup probe that timed out upstream
+//     but kept going) is skipped silently — TryStart never joins an in-flight
+//     attempt — so the turn proceeds with the toolsets that are ready.
+//   - A start initiated here runs in its own goroutine raced against the
+//     context/timeout, because a wedged toolset can ignore cancellation (the
+//     MCP connector detaches the context it is handed). On timeout the attempt
+//     is abandoned to finish in the background and the toolset is skipped for
+//     this turn — silently, since the failure reporters share the toolset's
+//     single-flight lock and consulting them would block on the very start we
+//     just abandoned.
+func (a *Agent) tryStartToolSet(ctx context.Context, toolSet *tools.StartableToolSet) error {
+	startCtx, cancel := context.WithTimeout(ctx, toolsetStartTimeout)
+	defer cancel()
+
+	done := make(chan error, 1) // buffered so a late send never blocks
+	go func() {
+		started, err := toolSet.TryStart(startCtx)
+		if !started && err == nil {
+			slog.DebugContext(ctx, "Toolset start already in flight; skipping for this turn", "agent", a.Name(), "toolset", tools.DescribeToolSet(toolSet))
+		}
+		done <- err
+	}()
+
+	select {
+	case <-startCtx.Done():
+		slog.DebugContext(ctx, "Toolset start still running; skipping for this turn", "agent", a.Name(), "toolset", tools.DescribeToolSet(toolSet), "cause", context.Cause(startCtx))
+		return nil
+	case err := <-done:
+		return err
+	}
+}
+
 // ensureToolSetsAreStarted starts every toolset, surfacing the first
 // failure of each streak as a user-visible warning and silently retrying
 // on every subsequent turn. A successful Start() automatically resets the
@@ -568,11 +614,13 @@ func (a *Agent) ToolSets() []tools.ToolSet {
 // obvious; a follow-up notification just reads as a spurious warning).
 //
 // Starts run concurrently so one slow toolset (e.g. an MCP server
-// handshake) doesn't delay the others; Start() is single-flight per
-// toolset and warnings are recorded in configuration order afterwards.
-// Peer-dependent toolsets (e.g. the deferred aggregator, whose Start
-// lists its source toolsets' tools) start in a second wave, after the
-// toolsets they depend on have settled.
+// handshake) doesn't delay the others; each start is non-blocking and
+// bounded via tryStartToolSet, so neither a start already in flight nor a
+// wedged start initiated here can stall the turn, and warnings are
+// recorded in configuration order afterwards. Peer-dependent toolsets
+// (e.g. the deferred aggregator, whose Start lists its source toolsets'
+// tools) start in a second wave, after the toolsets they depend on have
+// settled.
 func (a *Agent) ensureToolSetsAreStarted(ctx context.Context) {
 	var independent, dependent []int
 	for i, toolSet := range a.toolsets {
@@ -586,7 +634,7 @@ func (a *Agent) ensureToolSetsAreStarted(ctx context.Context) {
 	errs := make([]error, len(a.toolsets))
 	for _, wave := range [][]int{independent, dependent} {
 		concurrent.ForEach(wave, func(i int) {
-			errs[i] = a.toolsets[i].Start(ctx)
+			errs[i] = a.tryStartToolSet(ctx, a.toolsets[i])
 		})
 	}
 
@@ -643,12 +691,12 @@ func (a *Agent) DrainWarnings() []string {
 
 func (a *Agent) StopToolSets(ctx context.Context) error {
 	for _, toolSet := range a.toolsets {
-		// Only stop toolsets that were successfully started
-		if !toolSet.IsStarted() {
-			continue
-		}
-
-		if err := toolSet.Stop(ctx); err != nil {
+		// StopIfStarted checks-and-stops atomically under the toolset's
+		// lifecycle lock, so a toolset that was never started is left
+		// untouched, an in-flight Start that settles in time is stopped
+		// rather than leaked, and a Start wedged past ctx's deadline
+		// surfaces ctx.Err() instead of blocking shutdown forever (#4001).
+		if err := toolSet.StopIfStarted(ctx); err != nil {
 			return fmt.Errorf("failed to stop toolset: %w", err)
 		}
 	}
