@@ -19,6 +19,7 @@ import (
 	"github.com/docker/docker-agent/pkg/model/provider/base"
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tools/codemode"
 )
 
 // Safety returns the author-declared default set via WithSafety, empty
@@ -764,4 +765,194 @@ func TestAgentToolsRecoversWhenUnderlyingToolsetDies(t *testing.T) {
 	assert.Empty(t, a.DrainWarnings(), "silent recovery must not emit a warning")
 	assert.Equal(t, 1, stub.startCalls)
 	assert.Equal(t, 1, stub.restartCalls)
+}
+
+// countingToolSet is a Startable ToolSet with a stable description, a
+// mutable start error and start/stop counters, used to simulate healthy and
+// failing MCP-like toolsets aggregated inside a code-mode wrapper.
+type countingToolSet struct {
+	desc     string
+	startErr error
+	start    int
+	stop     int
+	stubs    []tools.Tool
+}
+
+var (
+	_ tools.ToolSet   = (*countingToolSet)(nil)
+	_ tools.Startable = (*countingToolSet)(nil)
+	_ tools.Describer = (*countingToolSet)(nil)
+)
+
+func (c *countingToolSet) Describe() string { return c.desc }
+
+func (c *countingToolSet) Start(context.Context) error {
+	c.start++
+	return c.startErr
+}
+
+func (c *countingToolSet) Stop(context.Context) error {
+	c.stop++
+	return nil
+}
+
+func (c *countingToolSet) Tools(context.Context) ([]tools.Tool, error) { return c.stubs, nil }
+
+// TestAgentToolsCodeModePartialStartKeepsCodeModeAvailable is the regression
+// test for #3978: with code_mode_tools enabled every toolset is aggregated
+// into a single codemode wrapper, and one failing MCP server used to take
+// down the whole wrapper — run_tools_with_javascript disappeared and the
+// healthy toolsets were rolled back. A failing inner toolset must instead
+// degrade the wrapper: healthy declarations stay available, the failure is
+// warned about once per streak, and the failed toolset is retried on
+// subsequent turns.
+func TestAgentToolsCodeModePartialStartKeepsCodeModeAvailable(t *testing.T) {
+	t.Parallel()
+
+	healthy := &countingToolSet{
+		desc:  "fetch built-in",
+		stubs: []tools.Tool{{Name: "fetch_url", Parameters: map[string]any{}}},
+	}
+	failing := &countingToolSet{
+		desc:     "mcp(ref=broken)",
+		startErr: errors.New("connection refused"),
+		stubs:    []tools.Tool{{Name: "broken_tool", Parameters: map[string]any{}}},
+	}
+	a := New("root", "test", WithToolSets(codemode.Wrap(healthy, failing)))
+
+	// Turn 1: code mode stays available with the healthy toolset only.
+	got, err := a.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 1, "turn 1: run_tools_with_javascript must survive a failing inner toolset")
+	assert.Equal(t, "run_tools_with_javascript", got[0].Name)
+	assert.Contains(t, got[0].Description, "FetchUrl", "healthy toolset must stay declared")
+	assert.NotContains(t, got[0].Description, "BrokenTool", "failed toolset must be omitted")
+	assert.Equal(t, 0, healthy.stop, "healthy toolset must not be rolled back on a peer's failure")
+
+	warnings := a.DrainWarnings()
+	require.Len(t, warnings, 1, "turn 1: the inner failure must still be surfaced")
+	assert.Contains(t, warnings[0], "start failed")
+	assert.Contains(t, warnings[0], "mcp(ref=broken)")
+	assert.Contains(t, warnings[0], "connection refused")
+
+	// Turn 2: the failed toolset is retried, without duplicate warnings and
+	// without restarting its healthy peer.
+	got, err = a.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 1, "turn 2: code mode must stay available while the failure persists")
+	assert.Equal(t, 2, failing.start, "turn 2: failed toolset must be retried")
+	assert.Equal(t, 1, healthy.start, "turn 2: healthy toolset must not be restarted")
+	assert.Empty(t, a.DrainWarnings(), "turn 2: no duplicate warning on repeated failure")
+
+	// Turn 3: recovery — the toolset's declarations reappear, silently.
+	failing.startErr = nil
+	got, err = a.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Description, "BrokenTool", "recovered toolset must be declared again")
+	assert.Empty(t, a.DrainWarnings(), "recovery must be silent")
+}
+
+// dyingToolSet extends countingToolSet with live lifecycle reporting
+// (tools.StartReporter) and in-place recovery (tools.Restartable),
+// mimicking a supervisor-backed MCP toolset whose session can die in the
+// background after a successful start.
+type dyingToolSet struct {
+	countingToolSet
+
+	started    bool
+	restarts   int
+	restartErr error
+}
+
+var (
+	_ tools.StartReporter = (*dyingToolSet)(nil)
+	_ tools.Restartable   = (*dyingToolSet)(nil)
+)
+
+func (d *dyingToolSet) Start(ctx context.Context) error {
+	if err := d.countingToolSet.Start(ctx); err != nil {
+		return err
+	}
+	d.started = true
+	return nil
+}
+
+func (d *dyingToolSet) Restart(context.Context) error {
+	d.restarts++
+	if d.restartErr != nil {
+		return d.restartErr
+	}
+	d.started = true
+	return nil
+}
+
+func (d *dyingToolSet) IsStarted() bool { return d.started }
+
+// TestAgentToolsCodeModeInnerDiesAfterStart covers the full agent-level arc
+// of an MCP-like inner toolset inside the codemode wrapper that starts
+// successfully and later dies (e.g. background session loss): the composite
+// must detect the death through the inner's StartReporter, degrade — the
+// healthy peer and run_tools_with_javascript stay available — warn once,
+// recover the dead inner via Restart (not a blind Start), and restore its
+// declarations silently once the recovery succeeds.
+func TestAgentToolsCodeModeInnerDiesAfterStart(t *testing.T) {
+	t.Parallel()
+
+	healthy := &countingToolSet{
+		desc:  "fetch built-in",
+		stubs: []tools.Tool{{Name: "fetch_url", Parameters: map[string]any{}}},
+	}
+	dying := &dyingToolSet{countingToolSet: countingToolSet{
+		desc:  "mcp(ref=github)",
+		stubs: []tools.Tool{{Name: "list_issues", Parameters: map[string]any{}}},
+	}}
+	a := New("root", "test", WithToolSets(codemode.Wrap(healthy, dying)))
+
+	// Turn 1: initial success — both toolsets declared, no warnings.
+	got, err := a.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Description, "FetchUrl")
+	assert.Contains(t, got[0].Description, "ListIssues")
+	assert.Empty(t, a.DrainWarnings())
+	assert.Equal(t, 1, dying.start)
+
+	// Background death: the inner reports dead and can't come back yet.
+	dying.started = false
+	dying.restartErr = errors.New("session lost")
+
+	// Turn 2: degraded — recovery goes through Restart, the failure is
+	// warned once, the healthy peer and the wrapper stay available.
+	got, err = a.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 1, "turn 2: run_tools_with_javascript must survive an inner death")
+	assert.Contains(t, got[0].Description, "FetchUrl", "healthy toolset must stay declared")
+	assert.NotContains(t, got[0].Description, "ListIssues", "dead toolset must be omitted")
+	assert.Equal(t, 1, dying.restarts, "turn 2: dead inner must be recovered via Restart")
+	assert.Equal(t, 1, dying.start, "turn 2: dead inner must not be blindly re-Started")
+	assert.Equal(t, 1, healthy.start, "turn 2: healthy peer must not be restarted")
+
+	warnings := a.DrainWarnings()
+	require.Len(t, warnings, 1, "turn 2: the death must be surfaced once")
+	assert.Contains(t, warnings[0], "mcp(ref=github)")
+	assert.Contains(t, warnings[0], "session lost")
+
+	// Turn 3: still dead — retried via Restart, no duplicate warning.
+	got, err = a.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, 2, dying.restarts, "turn 3: recovery retries must keep using Restart")
+	assert.Equal(t, 1, dying.start)
+	assert.Empty(t, a.DrainWarnings(), "turn 3: no duplicate warning on repeated failure")
+
+	// Turn 4: Restart succeeds — declarations reappear, silently.
+	dying.restartErr = nil
+	got, err = a.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Description, "ListIssues", "recovered toolset must be declared again")
+	assert.Equal(t, 3, dying.restarts)
+	assert.Equal(t, 1, dying.start, "recovery must never fall back to a blind Start")
+	assert.Empty(t, a.DrainWarnings(), "recovery must be silent")
 }

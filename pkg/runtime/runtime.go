@@ -1812,7 +1812,8 @@ func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agen
 				// failure-reported flag here would suppress the *real*
 				// failure (e.g. server 4xx on the eventual interactive
 				// retry) that the user actually needs to see.
-				if tools.IsAuthorizationRequired(err) {
+				switch {
+				case tools.IsAuthorizationRequired(err):
 					// Two cases:
 					// 1. Initial startup deferral (toolset never ran): the
 					//    OAuth dialog will appear naturally on the first user
@@ -1828,8 +1829,6 @@ func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agen
 					} else {
 						slog.DebugContext(ctx, "Toolset deferred until first message", "agent", a.Name(), "toolset", desc, "reason", err)
 					}
-					continue
-				}
 				// Route real failures through the agent's warning
 				// channel so the TUI surfaces a persistent,
 				// user-visible notice that includes the actual
@@ -1838,13 +1837,19 @@ func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agen
 				// once-per-streak guard as ensureToolSetsAreStarted
 				// so a failing toolset doesn't flood the UI with a
 				// new warning every time the agent is restarted.
-				if !startable.ShouldReportFailure() {
+				case startable.ShouldReportFailure():
+					slog.WarnContext(ctx, "Toolset start failed; skipping", "agent", a.Name(), "toolset", desc, "error", err)
+					a.AddToolWarning(fmt.Sprintf("%s start failed: %v", desc, err))
+				default:
 					slog.DebugContext(ctx, "Toolset still unavailable; skipping", "agent", a.Name(), "toolset", desc, "error", err)
+				}
+				// A partial start leaves the composite latched and usable:
+				// fall through so its healthy subset (and the composite's
+				// own wrapper tool) is still listed and counted. Fully
+				// failed toolsets have nothing to list — skip them.
+				if !tools.IsPartialStart(err) {
 					continue
 				}
-				slog.WarnContext(ctx, "Toolset start failed; skipping", "agent", a.Name(), "toolset", desc, "error", err)
-				a.AddToolWarning(fmt.Sprintf("%s start failed: %v", desc, err))
-				continue
 			}
 		}
 

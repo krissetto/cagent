@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -45,12 +46,6 @@ type failureStreak struct {
 	pending bool // true if the current streak's first failure is unreported
 }
 
-// startReporter is implemented by toolsets whose live lifecycle state can be
-// queried independently of the StartableToolSet wrapper's latched state.
-type startReporter interface {
-	IsStarted() bool
-}
-
 func (f *failureStreak) fail() {
 	if !f.active {
 		f.active = true
@@ -69,6 +64,65 @@ func (f *failureStreak) shouldReport() bool {
 	}
 	f.pending = false
 	return true
+}
+
+// PartialStartError is returned from Start by composite toolsets (toolsets
+// aggregating several inner toolsets, e.g. Code Mode) when only part of
+// their inner toolsets came up. StartableToolSet treats it specially: the
+// wrapper is latched as started so the healthy subset stays listed and
+// usable, while the error still propagates so callers can warn about the
+// failed subset. The composite must also implement StartReporter, returning
+// false while degraded, so the next Start call takes the recovery path and
+// retries the failed inner toolsets.
+//
+// Use NewPartialStartError so AuthOnly is classified from the causes.
+type PartialStartError struct {
+	// Err aggregates the individual inner-toolset failures (usually an
+	// errors.Join of one error per failed toolset).
+	Err error
+	// AuthOnly is true when every individual cause is an
+	// authorization-required deferral (see IsAuthorizationRequired). A mixed
+	// batch (auth + real failure) must stay false so the non-auth cause is
+	// surfaced as a failure instead of being hidden behind the silent
+	// auth-deferral handling.
+	AuthOnly bool
+}
+
+// NewPartialStartError joins the given per-toolset start failures and
+// classifies the batch as auth-only when every (non-nil) cause reports
+// IsAuthorizationRequired.
+func NewPartialStartError(causes ...error) *PartialStartError {
+	authOnly := false
+	for _, cause := range causes {
+		if cause == nil {
+			continue
+		}
+		if !IsAuthorizationRequired(cause) {
+			authOnly = false
+			break
+		}
+		authOnly = true
+	}
+	return &PartialStartError{Err: errors.Join(causes...), AuthOnly: authOnly}
+}
+
+func (e *PartialStartError) Error() string {
+	if e == nil || e.Err == nil {
+		return "partial toolset start failure"
+	}
+	return e.Err.Error()
+}
+
+// Unwrap exposes the underlying error(s) to errors.Is/errors.As, e.g. so
+// IsAuthorizationRequired can detect a deferred-OAuth inner toolset.
+func (e *PartialStartError) Unwrap() error { return e.Err }
+
+// IsPartialStart reports whether err (or any error wrapped by it) signals
+// that a composite toolset started with only part of its inner toolsets
+// available.
+func IsPartialStart(err error) bool {
+	var target *PartialStartError
+	return errors.As(err, &target)
 }
 
 // StartableToolSet wraps a ToolSet with lazy, single-flight start semantics.
@@ -120,7 +174,7 @@ func (s *StartableToolSet) Start(ctx context.Context) (err error) {
 
 	recovering := false
 	if s.started {
-		if reporter, ok := As[startReporter](s.ToolSet); !ok || reporter.IsStarted() {
+		if reporter, ok := As[StartReporter](s.ToolSet); !ok || reporter.IsStarted() {
 			return nil
 		}
 		s.started = false
@@ -177,6 +231,21 @@ func (s *StartableToolSet) Start(ctx context.Context) (err error) {
 		}()
 		if err := startable.Start(ctx); err != nil {
 			s.startStreak.fail()
+			// A failed recovery marks the recovery streak here too, not
+			// only in the Restartable branch above: composites recover
+			// through plain Start (they dispatch Restart per inner toolset
+			// themselves), and the targeted re-auth notice must fire for
+			// them as well.
+			if recovering {
+				s.recoveryStreak.fail()
+			}
+			// A partial start still latches started: the composite's
+			// healthy inner toolsets must stay listed and usable, and
+			// its StartReporter keeps returning false while degraded,
+			// so the failed subset is retried on the next Start.
+			if IsPartialStart(err) {
+				s.started = true
+			}
 			return err
 		}
 	}

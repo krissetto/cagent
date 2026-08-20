@@ -59,7 +59,17 @@ func (e *AuthorizationRequiredError) Error() string {
 // signals that the toolset failed to start because OAuth is needed and the
 // caller chose to defer the prompt. Callers can use this to render a softer,
 // "needs auth" notice instead of a red error.
+//
+// A PartialStartError batches several inner-toolset failures and only counts
+// as authorization-required when all of its causes are (see
+// PartialStartError.AuthOnly): matching a mixed batch through plain
+// errors.As would hide the non-auth causes behind the silent auth-deferral
+// handling.
 func IsAuthorizationRequired(err error) bool {
+	var partial *PartialStartError
+	if errors.As(err, &partial) {
+		return partial.AuthOnly
+	}
 	var target *AuthorizationRequiredError
 	return errors.As(err, &target)
 }
