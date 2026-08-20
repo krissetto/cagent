@@ -579,6 +579,50 @@ func TestStartableToolSet_RecoveryFailureViaStartMarksRecoveryStreak(t *testing.
 	assert.Check(t, is.Equal(s.ShouldReportRecoveryFailure(), false), "second call in same streak must be false")
 }
 
+// TestStartableToolSet_PartialStartInitialFailureNeverMarksRecoveryStreak
+// pins that the started latch of a partial start does not turn retried
+// initial failures into recovery failures: a composite reporting a partial
+// failure without post-start loss (LostAfterStart=false, e.g. an inner
+// deferring OAuth on every turn) must stay silent on the recovery channel
+// even though every Start after the latch takes the recovery path.
+func TestStartableToolSet_PartialStartInitialFailureNeverMarksRecoveryStreak(t *testing.T) {
+	t.Parallel()
+
+	partialErr := &tools.PartialStartError{Err: errors.New("mcp(a): authorization deferred"), AuthOnly: true}
+	inner := &partialFlappyToolSet{errs: []error{partialErr, partialErr, partialErr}}
+	s := tools.NewStartable(inner)
+
+	for turn := 1; turn <= 3; turn++ {
+		assert.Check(t, s.Start(t.Context()) != nil, "turn %d: expected partial failure", turn)
+		assert.Check(t, is.Equal(s.ShouldReportRecoveryFailure(), false),
+			"turn %d: a retried initial failure must not mark the recovery streak", turn)
+	}
+	assert.Check(t, is.Equal(s.IsStarted(), true), "partial start must still latch the wrapper")
+}
+
+// TestStartableToolSet_PartialStartLostAfterStartMarksRecoveryStreak pins
+// the counterpart: a partial failure that includes an inner lost after a
+// successful start (LostAfterStart=true) marks the recovery streak so the
+// targeted re-auth notice fires, once per streak.
+func TestStartableToolSet_PartialStartLostAfterStartMarksRecoveryStreak(t *testing.T) {
+	t.Parallel()
+
+	lostErr := &tools.PartialStartError{Err: errors.New("mcp(a): session lost"), LostAfterStart: true}
+	inner := &partialFlappyToolSet{errs: []error{nil, lostErr}}
+	s := tools.NewStartable(inner)
+
+	assert.NilError(t, s.Start(t.Context()))
+
+	// Background death: the next Start is a recovery run and reports an
+	// inner that was started and lost.
+	inner.healthy = false
+
+	assert.Check(t, s.Start(t.Context()) != nil, "expected partial failure on recovery")
+	assert.Check(t, is.Equal(s.ShouldReportRecoveryFailure(), true),
+		"post-start loss inside a partial failure must mark the recovery streak")
+	assert.Check(t, is.Equal(s.ShouldReportRecoveryFailure(), false), "second call in same streak must be false")
+}
+
 // TestPartialStartError_NilSafety pins that Error() never panics on a
 // zero-value or nil PartialStartError (e.g. one constructed directly
 // without NewPartialStartError).
@@ -588,6 +632,16 @@ func TestPartialStartError_NilSafety(t *testing.T) {
 	assert.Check(t, is.Equal((&tools.PartialStartError{}).Error(), "partial toolset start failure"))
 	var nilErr *tools.PartialStartError
 	assert.Check(t, is.Equal(nilErr.Error(), "partial toolset start failure"))
+}
+
+// TestTotalStartError_NilSafety mirrors TestPartialStartError_NilSafety for
+// the total-failure counterpart.
+func TestTotalStartError_NilSafety(t *testing.T) {
+	t.Parallel()
+
+	assert.Check(t, is.Equal((&tools.TotalStartError{}).Error(), "total toolset start failure"))
+	var nilErr *tools.TotalStartError
+	assert.Check(t, is.Equal(nilErr.Error(), "total toolset start failure"))
 }
 
 // TestIsAuthorizationRequired_PartialStartClassification pins how partial
@@ -623,4 +677,38 @@ func TestIsAuthorizationRequired_PartialStartClassification(t *testing.T) {
 
 	// Plain (non-partial) auth errors keep matching as before.
 	assert.Check(t, is.Equal(tools.IsAuthorizationRequired(fmt.Errorf("x: %w", authErr)), true))
+}
+
+// TestIsAuthorizationRequired_TotalStartClassification mirrors the partial
+// classification for TotalStartError, the total-failure aggregate: the
+// batch is only authorization-required when ALL of its causes are, so a
+// mixed total failure cannot suppress its real causes behind the silent
+// auth-deferral handling, while remaining non-partial so StartableToolSet
+// never latches it.
+func TestIsAuthorizationRequired_TotalStartClassification(t *testing.T) {
+	t.Parallel()
+
+	authErr := &tools.AuthorizationRequiredError{URL: "https://example.test/mcp"}
+	connErr := errors.New("mcp(b): connection refused")
+
+	authOnly := tools.NewTotalStartError(fmt.Errorf("mcp(a): %w", authErr))
+	assert.Check(t, is.Equal(tools.IsPartialStart(authOnly), false),
+		"a total failure must never classify as partial")
+	assert.Check(t, is.Equal(tools.IsAuthorizationRequired(authOnly), true),
+		"all-auth total failure must keep the silent deferral handling")
+
+	mixed := tools.NewTotalStartError(fmt.Errorf("mcp(a): %w", authErr), connErr)
+	assert.Check(t, is.Equal(tools.IsPartialStart(mixed), false))
+	assert.Check(t, is.Equal(tools.IsAuthorizationRequired(mixed), false),
+		"mixed total failure must not be classified auth-only")
+	assert.Check(t, is.Equal(tools.IsAuthorizationRequired(fmt.Errorf("starting: %w", mixed)), false),
+		"classification must hold through further wrapping")
+
+	// errors.Is/As stay intact: both causes remain reachable.
+	assert.Check(t, errors.Is(mixed, connErr), "non-auth cause must stay reachable via errors.Is")
+	var target *tools.AuthorizationRequiredError
+	assert.Check(t, errors.As(mixed, &target), "auth cause must stay reachable via errors.As")
+
+	nonAuth := tools.NewTotalStartError(connErr)
+	assert.Check(t, is.Equal(tools.IsAuthorizationRequired(nonAuth), false))
 }

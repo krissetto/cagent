@@ -60,15 +60,19 @@ func (e *AuthorizationRequiredError) Error() string {
 // caller chose to defer the prompt. Callers can use this to render a softer,
 // "needs auth" notice instead of a red error.
 //
-// A PartialStartError batches several inner-toolset failures and only counts
-// as authorization-required when all of its causes are (see
-// PartialStartError.AuthOnly): matching a mixed batch through plain
-// errors.As would hide the non-auth causes behind the silent auth-deferral
-// handling.
+// PartialStartError and TotalStartError batch several inner-toolset
+// failures and only count as authorization-required when all of their
+// causes are (see the AuthOnly fields): matching a mixed batch through
+// plain errors.As would hide the non-auth causes behind the silent
+// auth-deferral handling.
 func IsAuthorizationRequired(err error) bool {
 	var partial *PartialStartError
 	if errors.As(err, &partial) {
 		return partial.AuthOnly
+	}
+	var total *TotalStartError
+	if errors.As(err, &total) {
+		return total.AuthOnly
 	}
 	var target *AuthorizationRequiredError
 	return errors.As(err, &target)

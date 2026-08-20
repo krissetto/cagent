@@ -75,6 +75,10 @@ func (f *failureStreak) shouldReport() bool {
 // false while degraded, so the next Start call takes the recovery path and
 // retries the failed inner toolsets.
 //
+// PartialStartError is only for genuinely partial outcomes: a composite
+// whose inner toolsets all failed should return a TotalStartError instead,
+// so the wrapper stays unlatched and the next Start is a cold retry.
+//
 // Use NewPartialStartError so AuthOnly is classified from the causes.
 type PartialStartError struct {
 	// Err aggregates the individual inner-toolset failures (usually an
@@ -86,24 +90,42 @@ type PartialStartError struct {
 	// surfaced as a failure instead of being hidden behind the silent
 	// auth-deferral handling.
 	AuthOnly bool
+	// LostAfterStart is true when at least one failed inner toolset had
+	// previously started successfully and was lost since (died in the
+	// background or failed to recover). The composite sets it so
+	// StartableToolSet can tell a real recovery failure — worth the targeted
+	// re-auth notice — from a retried initial failure (e.g. an OAuth
+	// deferral), which must stay silent across turns even though the
+	// wrapper latched started on an earlier partial start.
+	LostAfterStart bool
 }
 
-// NewPartialStartError joins the given per-toolset start failures and
-// classifies the batch as auth-only when every (non-nil) cause reports
-// IsAuthorizationRequired.
-func NewPartialStartError(causes ...error) *PartialStartError {
+// allCausesAuthorizationRequired reports whether there is at least one
+// non-nil cause and every one of them classifies as authorization-required.
+// Aggregate start errors must be classified with these all-causes semantics:
+// matching the batch through plain errors.As (ANY semantics) would let a
+// single OAuth deferral hide the real failures joined next to it behind the
+// silent auth-deferral handling.
+func allCausesAuthorizationRequired(causes []error) bool {
 	authOnly := false
 	for _, cause := range causes {
 		if cause == nil {
 			continue
 		}
 		if !IsAuthorizationRequired(cause) {
-			authOnly = false
-			break
+			return false
 		}
 		authOnly = true
 	}
-	return &PartialStartError{Err: errors.Join(causes...), AuthOnly: authOnly}
+	return authOnly
+}
+
+// NewPartialStartError joins the given per-toolset start failures and
+// classifies the batch as auth-only when every (non-nil) cause reports
+// IsAuthorizationRequired. LostAfterStart is left false: the composite must
+// set it afterwards when a failed inner had already started successfully.
+func NewPartialStartError(causes ...error) *PartialStartError {
+	return &PartialStartError{Err: errors.Join(causes...), AuthOnly: allCausesAuthorizationRequired(causes)}
 }
 
 func (e *PartialStartError) Error() string {
@@ -124,6 +146,47 @@ func IsPartialStart(err error) bool {
 	var target *PartialStartError
 	return errors.As(err, &target)
 }
+
+// TotalStartError is the total-failure counterpart of PartialStartError,
+// returned from Start by composite toolsets when every inner toolset
+// failed. It is deliberately not a PartialStartError: with no healthy
+// subset to preserve, StartableToolSet must not latch the wrapper as
+// started, so the composite's own tool is not listed and the next Start
+// retries from cold.
+//
+// The dedicated type exists so IsAuthorizationRequired applies the same
+// all-causes classification as for partial failures: a bare errors.Join
+// would match a single OAuth deferral via errors.As (ANY semantics) and
+// silently suppress the real failures joined next to it.
+//
+// Use NewTotalStartError so AuthOnly is classified from the causes.
+type TotalStartError struct {
+	// Err aggregates the individual inner-toolset failures (usually an
+	// errors.Join of one error per failed toolset).
+	Err error
+	// AuthOnly is true when every individual cause is an
+	// authorization-required deferral — same contract as
+	// PartialStartError.AuthOnly.
+	AuthOnly bool
+}
+
+// NewTotalStartError joins the given per-toolset start failures and
+// classifies the batch as auth-only when every (non-nil) cause reports
+// IsAuthorizationRequired.
+func NewTotalStartError(causes ...error) *TotalStartError {
+	return &TotalStartError{Err: errors.Join(causes...), AuthOnly: allCausesAuthorizationRequired(causes)}
+}
+
+func (e *TotalStartError) Error() string {
+	if e == nil || e.Err == nil {
+		return "total toolset start failure"
+	}
+	return e.Err.Error()
+}
+
+// Unwrap exposes the underlying error(s) to errors.Is/errors.As so the
+// individual causes stay reachable.
+func (e *TotalStartError) Unwrap() error { return e.Err }
 
 // StartableToolSet wraps a ToolSet with lazy, single-flight start semantics.
 // This is the canonical way to manage toolset lifecycle.
@@ -231,20 +294,29 @@ func (s *StartableToolSet) Start(ctx context.Context) (err error) {
 		}()
 		if err := startable.Start(ctx); err != nil {
 			s.startStreak.fail()
-			// A failed recovery marks the recovery streak here too, not
-			// only in the Restartable branch above: composites recover
-			// through plain Start (they dispatch Restart per inner toolset
-			// themselves), and the targeted re-auth notice must fire for
-			// them as well.
-			if recovering {
-				s.recoveryStreak.fail()
-			}
-			// A partial start still latches started: the composite's
-			// healthy inner toolsets must stay listed and usable, and
-			// its StartReporter keeps returning false while degraded,
-			// so the failed subset is retried on the next Start.
-			if IsPartialStart(err) {
+			var partial *PartialStartError
+			if errors.As(err, &partial) {
+				// A partial start still latches started: the composite's
+				// healthy inner toolsets must stay listed and usable, and
+				// its StartReporter keeps returning false while degraded,
+				// so the failed subset is retried on the next Start.
 				s.started = true
+				// The latch makes every later Start a recovery run, so
+				// recovering alone cannot tell an inner that was started
+				// and lost from one that never came up (e.g. an initial
+				// OAuth deferral retried each turn, which must stay
+				// silent). Only actual post-start loss, as classified by
+				// the composite, marks the recovery streak.
+				if partial.LostAfterStart {
+					s.recoveryStreak.fail()
+				}
+			} else if recovering {
+				// A failed recovery marks the recovery streak here too, not
+				// only in the Restartable branch above: toolsets recovering
+				// through plain Start (a StartReporter without Restartable,
+				// or a composite whose inner toolsets all went down) need
+				// the targeted re-auth notice as well.
+				s.recoveryStreak.fail()
 			}
 			return err
 		}

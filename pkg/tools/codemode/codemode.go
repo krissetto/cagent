@@ -214,12 +214,19 @@ func (c *codeModeTool) Tools(ctx context.Context) ([]tools.Tool, error) {
 // tools.PartialStartError so the StartableToolSet wrapper keeps
 // run_tools_with_javascript available, still surfaces the warning, and —
 // because IsStarted() reports false while any inner toolset is down —
-// retries the failed subset on the next turn.
+// retries the failed subset on the next turn. When every inner toolset
+// fails there is no healthy subset worth exposing: Start returns a
+// tools.TotalStartError instead, so the wrapper stays unlatched —
+// run_tools_with_javascript is not listed with an empty function list —
+// and the next turn retries from cold.
 func (c *codeModeTool) Start(ctx context.Context) error {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
 
-	var errs []error
+	var (
+		errs []error
+		lost bool
+	)
 	for i, t := range c.toolsets {
 		// The attempt runs without c.mu held so a wedged inner cannot
 		// stall Tools/IsStarted; its outcome is committed under c.mu.
@@ -227,12 +234,28 @@ func (c *codeModeTool) Start(ctx context.Context) error {
 		c.setState(i, next)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", tools.DescribeToolSet(t), err))
+			if next == innerLost {
+				lost = true
+			}
 		}
 	}
-	if len(errs) > 0 {
-		return tools.NewPartialStartError(errs...)
+	switch {
+	case len(errs) == 0:
+		return nil
+	case len(errs) == len(c.toolsets):
+		// Total failure: nothing is available, so degraded mode has no
+		// healthy subset to preserve. The dedicated non-partial type keeps
+		// the all-causes auth classification (a bare errors.Join would let
+		// one OAuth deferral hide a real failure). See the doc comment above.
+		return tools.NewTotalStartError(errs...)
+	default:
+		err := tools.NewPartialStartError(errs...)
+		// Only post-start loss (an inner that was running and died) may
+		// trigger the wrapper's recovery notice; retried initial failures
+		// must stay silent.
+		err.LostAfterStart = lost
+		return err
 	}
-	return nil
 }
 
 // startInner runs one inner toolset's start/recovery attempt and returns

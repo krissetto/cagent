@@ -516,22 +516,125 @@ func TestCodeModeTool_ToolsNotBlockedByWedgedInnerStart(t *testing.T) {
 // failed inner deferred on OAuth is auth-only (silently deferrable), while a
 // mixed batch (auth + real failure) must NOT satisfy IsAuthorizationRequired
 // — otherwise the real failure would be hidden behind the silent deferral.
+// A healthy peer keeps each batch genuinely partial; total failures are
+// tools.TotalStartError (see TestCodeModeTool_TotalStartFailureIsNotPartial).
 func TestCodeModeTool_PartialStartAuthClassification(t *testing.T) {
 	t.Parallel()
 	authErr := &tools.AuthorizationRequiredError{URL: "https://example.test/mcp"}
 
-	authOnly := Wrap(&testToolSet{startErr: authErr}).(tools.Startable)
+	authOnly := Wrap(&testToolSet{}, &testToolSet{startErr: authErr}).(tools.Startable)
 	err := authOnly.Start(t.Context())
 	require.True(t, tools.IsPartialStart(err))
 	assert.True(t, tools.IsAuthorizationRequired(err),
 		"an auth-only partial start must keep the silent OAuth-deferral handling")
 
-	mixed := Wrap(&testToolSet{startErr: authErr}, &testToolSet{startErr: assert.AnError}).(tools.Startable)
+	mixed := Wrap(&testToolSet{}, &testToolSet{startErr: authErr}, &testToolSet{startErr: assert.AnError}).(tools.Startable)
 	err = mixed.Start(t.Context())
 	require.True(t, tools.IsPartialStart(err))
 	assert.False(t, tools.IsAuthorizationRequired(err),
 		"a mixed batch must not be classified auth-only: the non-auth failure needs surfacing")
 	require.ErrorIs(t, err, assert.AnError, "the non-auth cause must stay reachable via errors.Is")
+}
+
+// TestCodeModeTool_PartialStartLostAfterStartClassification pins how the
+// composite classifies partial failures for the wrapper's recovery notice:
+// an inner that never came up (initial failure) leaves LostAfterStart
+// false, while an inner that started successfully and was lost since sets
+// it, so only real post-start losses can mark the wrapper's recovery streak.
+func TestCodeModeTool_PartialStartLostAfterStartClassification(t *testing.T) {
+	t.Parallel()
+	healthy := &testToolSet{}
+	flaky := &reportingToolSet{testToolSet: testToolSet{startErr: assert.AnError}}
+
+	startable := Wrap(healthy, flaky).(tools.Startable)
+
+	// Initial failure: the inner never started, so nothing was lost.
+	var partial *tools.PartialStartError
+	require.ErrorAs(t, startable.Start(t.Context()), &partial)
+	assert.False(t, partial.LostAfterStart, "an initial inner failure is not a post-start loss")
+
+	// The inner recovers, then dies in the background and fails to restart.
+	flaky.startErr = nil
+	require.NoError(t, startable.Start(t.Context()))
+	flaky.started = false
+	flaky.restartErr = assert.AnError
+
+	require.ErrorAs(t, startable.Start(t.Context()), &partial)
+	assert.True(t, partial.LostAfterStart, "a started-then-lost inner must be classified as post-start loss")
+}
+
+// TestCodeModeTool_TotalStartFailureIsNotPartial pins the total-failure
+// contract: when every inner toolset fails and none is available, Start
+// returns a tools.TotalStartError instead of a tools.PartialStartError. A
+// PartialStartError would latch the StartableToolSet wrapper as started and
+// expose run_tools_with_javascript with an empty function list; the
+// non-partial error keeps the wrapper unlatched so the next Start is a cold
+// retry.
+func TestCodeModeTool_TotalStartFailureIsNotPartial(t *testing.T) {
+	t.Parallel()
+	failingA := &testToolSet{startErr: assert.AnError, tools: []tools.Tool{{Name: "tool_a"}}}
+	failingB := &testToolSet{startErr: assert.AnError, tools: []tools.Tool{{Name: "tool_b"}}}
+
+	tool := Wrap(failingA, failingB)
+	wrapper := tools.NewStartable(tool)
+
+	err := wrapper.Start(t.Context())
+	require.ErrorIs(t, err, assert.AnError)
+	assert.False(t, tools.IsPartialStart(err), "total failure must not be reported as partial")
+	assert.False(t, wrapper.IsStarted(), "total failure must not latch the wrapper")
+
+	// Cold retry: every inner is started again, and a successful retry
+	// exposes all declarations.
+	failingA.startErr = nil
+	failingB.startErr = nil
+	require.NoError(t, wrapper.Start(t.Context()))
+	assert.True(t, wrapper.IsStarted())
+	assert.Equal(t, 2, failingA.start)
+	assert.Equal(t, 2, failingB.start)
+
+	allTools, err := tool.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, allTools, 1)
+	assert.Contains(t, allTools[0].Description, "ToolA")
+	assert.Contains(t, allTools[0].Description, "ToolB")
+}
+
+// TestCodeModeTool_TotalMixedFailureIsNotAuthRequired pins the auth
+// classification of a mixed total failure (one inner deferred on OAuth, one
+// failed for real): it must be non-partial — so the wrapper does not latch
+// — and must NOT satisfy IsAuthorizationRequired, otherwise the real
+// failure would be suppressed behind the silent auth-deferral handling.
+// Both causes stay reachable via errors.Is/errors.As.
+func TestCodeModeTool_TotalMixedFailureIsNotAuthRequired(t *testing.T) {
+	t.Parallel()
+	authErr := &tools.AuthorizationRequiredError{URL: "https://example.test/mcp"}
+
+	tool := Wrap(&testToolSet{startErr: authErr}, &testToolSet{startErr: assert.AnError}).(tools.Startable)
+	err := tool.Start(t.Context())
+	require.Error(t, err)
+	assert.False(t, tools.IsPartialStart(err), "total failure must not be reported as partial")
+	assert.False(t, tools.IsAuthorizationRequired(err),
+		"a mixed total failure must not be classified auth-only: the real failure needs surfacing")
+	require.ErrorIs(t, err, assert.AnError, "the non-auth cause must stay reachable via errors.Is")
+	var target *tools.AuthorizationRequiredError
+	require.ErrorAs(t, err, &target, "the auth cause must stay reachable via errors.As")
+}
+
+// TestCodeModeTool_TotalAuthDeferralKeepsAuthClassification pins that a
+// total failure where every inner deferred on OAuth is still classified
+// authorization-required even though it is no longer a PartialStartError,
+// so the initial deferral stays silent and the dialog appears naturally on
+// the first interactive turn.
+func TestCodeModeTool_TotalAuthDeferralKeepsAuthClassification(t *testing.T) {
+	t.Parallel()
+	authErr := &tools.AuthorizationRequiredError{URL: "https://example.test/mcp"}
+
+	tool := Wrap(&testToolSet{startErr: authErr}).(tools.Startable)
+	err := tool.Start(t.Context())
+	require.Error(t, err)
+	assert.False(t, tools.IsPartialStart(err), "total failure must not be reported as partial")
+	assert.True(t, tools.IsAuthorizationRequired(err),
+		"an all-auth total failure must keep the silent OAuth-deferral handling")
 }
 
 // TestCodeModeTool_StartStopWrappedToolSet verifies that Start/Stop find

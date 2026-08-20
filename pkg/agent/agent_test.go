@@ -956,3 +956,132 @@ func TestAgentToolsCodeModeInnerDiesAfterStart(t *testing.T) {
 	assert.Equal(t, 1, dying.start, "recovery must never fall back to a blind Start")
 	assert.Empty(t, a.DrainWarnings(), "recovery must be silent")
 }
+
+// TestAgentToolsCodeModeInitialAuthDeferralStaysSilent is the regression
+// test for the initial-OAuth-deferral arc inside the codemode wrapper: an
+// inner toolset that defers on authorization at startup (it never worked
+// before) must stay silent across turns, even though the composite latches
+// started on the first partial start and every later Start takes the
+// recovery path. Before the LostAfterStart classification, turn 2 misread
+// the retried deferral as a formerly-healthy toolset dying and emitted the
+// "needs re-authentication" notice.
+func TestAgentToolsCodeModeInitialAuthDeferralStaysSilent(t *testing.T) {
+	t.Parallel()
+
+	healthy := &countingToolSet{
+		desc:  "fetch built-in",
+		stubs: []tools.Tool{{Name: "fetch_url", Parameters: map[string]any{}}},
+	}
+	unauthorized := &countingToolSet{
+		desc:     "mcp(ref=notion)",
+		startErr: &tools.AuthorizationRequiredError{URL: "https://example.test/mcp"},
+		stubs:    []tools.Tool{{Name: "search_pages", Parameters: map[string]any{}}},
+	}
+	a := New("root", "test", WithToolSets(codemode.Wrap(healthy, unauthorized)))
+
+	// Turns 1-3: the deferral is retried every turn and must never warn —
+	// the OAuth dialog appears naturally on the first interactive turn.
+	for turn := 1; turn <= 3; turn++ {
+		got, err := a.Tools(t.Context())
+		require.NoError(t, err)
+		require.Len(t, got, 1, "turn %d: code mode must stay available", turn)
+		assert.Contains(t, got[0].Description, "FetchUrl", "turn %d: healthy toolset must stay declared", turn)
+		assert.NotContains(t, got[0].Description, "SearchPages", "turn %d: deferred toolset must be omitted", turn)
+		assert.Empty(t, a.DrainWarnings(), "turn %d: initial OAuth deferral must stay silent", turn)
+		assert.Equal(t, turn, unauthorized.start, "turn %d: deferred toolset must be retried", turn)
+		assert.Equal(t, 1, healthy.start, "turn %d: healthy peer must not be restarted", turn)
+	}
+
+	// Authorization completes: declarations appear, still silently.
+	unauthorized.startErr = nil
+	got, err := a.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Description, "SearchPages", "authorized toolset must be declared")
+	assert.Empty(t, a.DrainWarnings(), "successful authorization must be silent")
+}
+
+// TestAgentToolsCodeModeTotalStartFailureNotExposed verifies that when
+// every inner toolset fails and none is available, the codemode wrapper
+// fails like a regular toolset: it is not latched, so
+// run_tools_with_javascript is not exposed with an empty function list,
+// the failure is warned once per streak, and a cold-start retry runs every
+// turn until recovery.
+func TestAgentToolsCodeModeTotalStartFailureNotExposed(t *testing.T) {
+	t.Parallel()
+
+	failingA := &countingToolSet{
+		desc:     "mcp(ref=broken-a)",
+		startErr: errors.New("connection refused"),
+		stubs:    []tools.Tool{{Name: "tool_a", Parameters: map[string]any{}}},
+	}
+	failingB := &countingToolSet{
+		desc:     "mcp(ref=broken-b)",
+		startErr: errors.New("no such host"),
+		stubs:    []tools.Tool{{Name: "tool_b", Parameters: map[string]any{}}},
+	}
+	a := New("root", "test", WithToolSets(codemode.Wrap(failingA, failingB)))
+
+	// Turn 1: nothing usable — code mode must not be listed at all.
+	got, err := a.Tools(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, got, "turn 1: code mode must not be exposed with an empty function list")
+
+	warnings := a.DrainWarnings()
+	require.Len(t, warnings, 1, "turn 1: the total failure must be surfaced once")
+	assert.Contains(t, warnings[0], "start failed")
+	assert.Contains(t, warnings[0], "mcp(ref=broken-a)")
+	assert.Contains(t, warnings[0], "mcp(ref=broken-b)")
+
+	// Turn 2: cold retry, no duplicate warning.
+	got, err = a.Tools(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, got, "turn 2: code mode must stay unlisted while the total failure persists")
+	assert.Equal(t, 2, failingA.start, "turn 2: total failure must keep the cold-start retry")
+	assert.Equal(t, 2, failingB.start, "turn 2: total failure must keep the cold-start retry")
+	assert.Empty(t, a.DrainWarnings(), "turn 2: no duplicate warning on repeated failure")
+
+	// Turn 3: recovery — code mode appears with both declarations, silently.
+	failingA.startErr = nil
+	failingB.startErr = nil
+	got, err = a.Tools(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Description, "ToolA", "recovered toolset must be declared")
+	assert.Contains(t, got[0].Description, "ToolB", "recovered toolset must be declared")
+	assert.Empty(t, a.DrainWarnings(), "recovery must be silent")
+}
+
+// TestAgentToolsCodeModeTotalMixedFailureWarnsRealCause pins the mixed
+// total failure (one inner deferred on OAuth, one failed for real): the
+// real failure must be warned about like any other start failure — the
+// deferral next to it must not reclassify the whole batch as a silent
+// auth-required wait — and code mode stays unlisted since nothing is
+// usable.
+func TestAgentToolsCodeModeTotalMixedFailureWarnsRealCause(t *testing.T) {
+	t.Parallel()
+
+	unauthorized := &countingToolSet{
+		desc:     "mcp(ref=notion)",
+		startErr: &tools.AuthorizationRequiredError{URL: "https://example.test/mcp"},
+		stubs:    []tools.Tool{{Name: "search_pages", Parameters: map[string]any{}}},
+	}
+	failing := &countingToolSet{
+		desc:     "mcp(ref=broken)",
+		startErr: errors.New("connection refused"),
+		stubs:    []tools.Tool{{Name: "broken_tool", Parameters: map[string]any{}}},
+	}
+	a := New("root", "test", WithToolSets(codemode.Wrap(unauthorized, failing)))
+
+	got, err := a.Tools(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, got, "code mode must not be exposed while every inner toolset is down")
+
+	warnings := a.DrainWarnings()
+	require.Len(t, warnings, 1, "the real failure must be surfaced despite the OAuth deferral next to it")
+	assert.Contains(t, warnings[0], "start failed")
+	assert.Contains(t, warnings[0], "mcp(ref=broken)")
+	assert.Contains(t, warnings[0], "connection refused")
+	assert.NotContains(t, warnings[0], "re-authentication",
+		"an initial mixed failure must not read as a re-auth notice")
+}
