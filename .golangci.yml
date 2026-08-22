@@ -172,6 +172,11 @@ linters:
         linters:
           - staticcheck
         text: "SA1019:.*FunctionCall.*deprecated"
+      # adka2a/v2 migration requires a full a2a-go v2 upgrade (separate PR)
+      - path: pkg/a2a/
+        linters:
+          - staticcheck
+        text: "SA1019:.*adka2a.*deprecated"
       # Vendored verbatim from moby/moby; keep its //nolint:gosec directives
       # even though our config excludes gosec G404 globally.
       - path: pkg/worktree/namesgenerator/
