@@ -44,11 +44,13 @@
 package mcpcatalog
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -491,7 +493,7 @@ func (t *Toolset) Tools(ctx context.Context) ([]tools.Tool, error) {
 	// Tools() invocations, but for a given snapshot we want a deterministic
 	// merged list so model-side prompt caches and TUI rendering don't
 	// flicker on each turn.
-	sort.Slice(enabled, func(i, j int) bool { return enabled[i].id < enabled[j].id })
+	slices.SortFunc(enabled, func(a, b enabledServer) int { return cmp.Compare(a.id, b.id) })
 
 	for _, e := range enabled {
 		if err := ctx.Err(); err != nil {
@@ -645,7 +647,7 @@ func (t *Toolset) handleSearch(_ context.Context, args SearchArgs) (*tools.ToolC
 		return tools.ResultError(fmt.Sprintf("no remote MCP servers match %q (catalog has %d entries)", args.Query, t.catalog.Count)), nil
 	}
 
-	sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
+	slices.SortFunc(matches, func(a, b SearchResult) int { return cmp.Compare(a.ID, b.ID) })
 
 	out, err := json.Marshal(matches)
 	if err != nil {
@@ -933,7 +935,7 @@ func (t *Toolset) handleList(_ context.Context, _ ListArgs) (*tools.ToolCallResu
 			Started: ts.IsStarted(),
 		})
 	}
-	sort.Slice(enabled, func(i, j int) bool { return enabled[i].ID < enabled[j].ID })
+	slices.SortFunc(enabled, func(a, b EnabledServer) int { return cmp.Compare(a.ID, b.ID) })
 
 	out, err := json.Marshal(enabled)
 	if err != nil {
