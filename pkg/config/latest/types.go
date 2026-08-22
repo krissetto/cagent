@@ -829,7 +829,7 @@ type InlineSkill struct {
 //
 // The special source "local" loads skills from the filesystem (standard locations).
 // HTTP/HTTPS URLs load skills from remote servers per the well-known skills discovery spec.
-type SkillsConfig struct { //nolint:recvcheck // MarshalYAML/MarshalJSON must use value receiver, UnmarshalYAML/UnmarshalJSON must use pointer
+type SkillsConfig struct {
 	// Sources lists where to load skills from: "local" and/or HTTP/HTTPS URLs.
 	Sources []string
 	// Include optionally filters loaded skills by name. When non-empty, only
@@ -1709,7 +1709,7 @@ type RemoteOAuthConfig struct {
 // DeferConfig represents the deferred loading configuration for a toolset.
 // It can be either a boolean (true to defer all tools) or a slice of strings
 // (list of tool names to defer).
-type DeferConfig struct { //nolint:recvcheck // MarshalYAML must use value receiver for YAML slice encoding, UnmarshalYAML must use pointer
+type DeferConfig struct {
 	// DeferAll is true when all tools should be deferred
 	DeferAll bool `json:"-"`
 	// Tools is the list of specific tool names to defer (empty if DeferAll is true)
@@ -2079,7 +2079,7 @@ func (c *RAGConfig) GetRespectVCS() bool {
 
 // RAGStrategyConfig represents a single retrieval strategy configuration
 // Strategy-specific fields are stored in Params (validated by strategy implementation)
-type RAGStrategyConfig struct { //nolint:recvcheck // Marshal methods must use value receiver for YAML/JSON slice encoding, Unmarshal must use pointer
+type RAGStrategyConfig struct {
 	Type     string            `json:"type"`            // Strategy type: "chunked-embeddings", "bm25", etc.
 	Docs     []string          `json:"docs,omitempty"`  // Strategy-specific documents (augments shared docs)
 	Database RAGDatabaseConfig `json:"database"`        // Database configuration

@@ -1766,9 +1766,10 @@ type recoveryAuthToolSet struct {
 
 func (r *recoveryAuthToolSet) Tools(context.Context) ([]tools.Tool, error) { return nil, nil }
 func (r *recoveryAuthToolSet) Start(context.Context) error                 { r.started = true; return nil }
-func (r *recoveryAuthToolSet) Stop(context.Context) error                  { r.started = false; return nil }
-func (r *recoveryAuthToolSet) IsStarted() bool                             { return r.started }
-func (r *recoveryAuthToolSet) Restart(context.Context) error               { return r.restartErr }
+
+func (r *recoveryAuthToolSet) Stop(context.Context) error    { r.started = false; return nil }
+func (r *recoveryAuthToolSet) IsStarted() bool               { return r.started }
+func (r *recoveryAuthToolSet) Restart(context.Context) error { return r.restartErr }
 
 // TestEmitStartupInfo_RecoveryAuthNoticeEmittedOnce is the regression test for
 // blocking issue 3: when a toolset was previously started and working but the
