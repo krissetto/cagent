@@ -3,7 +3,7 @@ module github.com/docker/docker-agent
 go 1.26.5
 
 require (
-	charm.land/bubbles/v2 v2.1.1
+	charm.land/bubbles/v2 v2.2.0
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.6
