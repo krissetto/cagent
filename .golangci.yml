@@ -187,15 +187,12 @@ linters:
         linters:
           - staticcheck
         text: "SA1019:.*adka2a.*deprecated"
-      # MCP sampling is deprecated by spec 2026-07-28 (SEP-2577) but stays
-      # functional during the >=12-month deprecation window; migrating our
-      # sampling support is a separate effort. Scoped to the sampling
-      # implementation and its tests so new code cannot silently rely on
-      # the deprecated SDK surface.
-      - path: ^(pkg/runtime/|pkg/tools/mcp/|pkg/tools/sampling\.go|pkg/tools/codemode/codemode_test\.go|e2e/sampling_test\.go)
+      # MCP sampling (SEP-2577) is deprecated upstream but functional during
+      # the deprecation window; migrating off it is a separate effort
+      - path: ^(e2e/sampling_test|pkg/runtime/sampling(_test)?|pkg/tools/sampling|pkg/tools/codemode/codemode_test|pkg/tools/mcp/(mcp|session_client)(_test)?)\.go$
         linters:
           - staticcheck
-        text: "SA1019:.*the sampling feature is deprecated"
+        text: "SA1019:.*sampling feature is deprecated"
       # Vendored verbatim from moby/moby; keep its //nolint:gosec directives
       # even though our config excludes gosec G404 globally.
       - path: pkg/worktree/namesgenerator/

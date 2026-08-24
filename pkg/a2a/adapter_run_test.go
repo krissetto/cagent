@@ -13,8 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/adk/agent"
-	adksession "google.golang.org/adk/session"
+	"google.golang.org/adk/v2/agent"
+	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	dagent "github.com/docker/docker-agent/pkg/agent"
@@ -127,16 +127,18 @@ func newFakeInvocationContext(ctx context.Context, sessionID, userMessage string
 	}
 }
 
-func (c *fakeInvocationContext) Agent() agent.Agent          { return nil }
-func (c *fakeInvocationContext) Artifacts() agent.Artifacts  { return nil }
-func (c *fakeInvocationContext) Memory() agent.Memory        { return nil }
-func (c *fakeInvocationContext) Session() adksession.Session { return c.sess }
-func (c *fakeInvocationContext) InvocationID() string        { return "test-invocation" }
-func (c *fakeInvocationContext) Branch() string              { return "" }
-func (c *fakeInvocationContext) UserContent() *genai.Content { return c.userContent }
-func (c *fakeInvocationContext) RunConfig() *agent.RunConfig { return nil }
-func (c *fakeInvocationContext) EndInvocation()              { c.ended.Store(true) }
-func (c *fakeInvocationContext) Ended() bool                 { return c.ended.Load() }
+func (c *fakeInvocationContext) Agent() agent.Agent              { return nil }
+func (c *fakeInvocationContext) Artifacts() agent.Artifacts      { return nil }
+func (c *fakeInvocationContext) Memory() agent.Memory            { return nil }
+func (c *fakeInvocationContext) Session() adksession.Session     { return c.sess }
+func (c *fakeInvocationContext) InvocationID() string            { return "test-invocation" }
+func (c *fakeInvocationContext) Branch() string                  { return "" }
+func (c *fakeInvocationContext) IsolationScope() string          { return "" }
+func (c *fakeInvocationContext) UserContent() *genai.Content     { return c.userContent }
+func (c *fakeInvocationContext) RunConfig() *agent.RunConfig     { return nil }
+func (c *fakeInvocationContext) EndInvocation()                  { c.ended.Store(true) }
+func (c *fakeInvocationContext) Ended() bool                     { return c.ended.Load() }
+func (c *fakeInvocationContext) ResumedInput(string) (any, bool) { return nil, false }
 
 func (c *fakeInvocationContext) WithContext(ctx context.Context) agent.InvocationContext {
 	return &fakeInvocationContext{
@@ -145,6 +147,10 @@ func (c *fakeInvocationContext) WithContext(ctx context.Context) agent.Invocatio
 		userContent: c.userContent,
 		ended:       c.ended,
 	}
+}
+
+func (c *fakeInvocationContext) WithICDelta(*agent.InvocationContextDelta) agent.InvocationContext {
+	return c
 }
 
 // recordingStore captures the live *session.Session pointers the runtime
