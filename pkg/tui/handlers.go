@@ -244,7 +244,8 @@ func (m *appModel) handleCompactSession(msg messages.CompactSessionMsg) (tea.Mod
 	}
 	return m, notification.InfoCmd(fmt.Sprintf(
 		"Compaction requested for %s; it runs at the session's next safe point.",
-		compactTargetLabel(msg)))
+		compactTargetLabel(msg),
+	))
 }
 
 // compactTargetsCurrentSession reports whether msg addresses the current

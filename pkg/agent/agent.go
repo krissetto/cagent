@@ -456,7 +456,8 @@ func (a *Agent) collectTools(ctx context.Context) ([]tools.Tool, error) {
 			if firstOrigin, exists := origins[tool.Name]; exists {
 				collisions[collisionKey(tool.Name, firstOrigin, origin)] = fmt.Sprintf(
 					"duplicate tool %q: kept from %s, ignored from %s (first toolset in config wins) — set a unique 'name:' on the MCP toolset or use its 'tools:' filter to disambiguate",
-					tool.Name, firstOrigin, origin)
+					tool.Name, firstOrigin, origin,
+				)
 				continue
 			}
 			origins[tool.Name] = origin
