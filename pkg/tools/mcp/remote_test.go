@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -120,14 +121,28 @@ func TestRemoteClientHeadersWithStreamable(t *testing.T) {
 	var capturedRequest *http.Request
 	requestCaptured := make(chan bool, 1)
 
-	// Create a test server for streamable transport
+	// Create a test server for streamable transport. The go-sdk client
+	// sends several JSON-RPC calls (server/discover, then initialize), so
+	// echo each request's id — a response with a non-matching id would
+	// leave the call awaiting forever. The mock deliberately answers every
+	// non-notification request with the same minimal initialize-shaped body;
+	// its bogus protocol version makes Initialize fail fast, which the test
+	// ignores: only headers matter.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedRequest = r
 
-		// Send a minimal response
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.ID == nil {
+			// Notification: no response expected.
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"jsonrpc":"2.0","result":{"protocolVersion":"1.0.0","capabilities":{},"serverInfo":{"name":"test","version":"1.0.0"}},"id":1}`)
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","result":{"protocolVersion":"1.0.0","capabilities":{},"serverInfo":{"name":"test","version":"1.0.0"}},"id":%s}`, req.ID)
 
 		select {
 		case requestCaptured <- true:

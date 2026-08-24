@@ -15,9 +15,12 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"google.golang.org/adk/runner"
-	"google.golang.org/adk/server/adka2a"
-	adksession "google.golang.org/adk/session"
+	// go.mod pins adk/v2 to pseudo-version v2.2.1-0.20260818092052-16e33673bc9e:
+	// OTel Logs 0.21 support (google/adk-go#1335) is merged upstream but not yet
+	// tagged. Replace with the first v2 tag that contains that commit.
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/server/adka2a"
+	adksession "google.golang.org/adk/v2/session"
 
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/httpsec"
