@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/upstream"
 )
 
@@ -604,6 +605,113 @@ func TestRemoteClientCallToolAbortsOnContextDeadline(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("server-side tool handler never observed context cancellation; the client's POST was not aborted at the deadline")
 	}
+}
+
+// TestRemoteClientCallToolMRTRElicitation covers MCP 2026-07-28
+// multi-round-trip elicitation (SEP-2322) through the real remote client
+// wiring. The server runs in stateless mode — the transport mode our own
+// HTTP server ships with — where mid-call server-initiated JSON-RPC requests
+// are impossible, so the tool handler returns CallToolResult.InputRequests
+// plus an opaque RequestState instead. The go-sdk client middleware must
+// fulfill that request through the repository-level tools.ElicitationHandler
+// wired via SetElicitationHandler, retry the call with the elicitation
+// response and the echoed RequestState, and surface only the completed
+// result to the caller.
+func TestRemoteClientCallToolMRTRElicitation(t *testing.T) {
+	t.Parallel()
+
+	const (
+		elicitMessage = "Deploy to production?"
+		requestState  = "deploy-state-42"
+	)
+
+	// The tool handler runs on HTTP server goroutines, so no require/t.Fatal
+	// here: observations travel over a buffered channel and atomics to the
+	// test goroutine, which asserts after CallTool returns.
+	type retryCall struct {
+		requestState string
+		response     gomcp.InputResponse
+	}
+	var toolCalls atomic.Int32
+	retryCh := make(chan retryCall, 1)
+
+	server := gomcp.NewServer(&gomcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	gomcp.AddTool(server, &gomcp.Tool{Name: "deploy", Description: "asks for confirmation"},
+		func(_ context.Context, req *gomcp.CallToolRequest, _ struct{}) (*gomcp.CallToolResult, any, error) {
+			toolCalls.Add(1)
+			if len(req.Params.InputResponses) == 0 {
+				return &gomcp.CallToolResult{
+					InputRequests: gomcp.InputRequestMap{"confirm": &gomcp.ElicitParams{Message: elicitMessage}},
+					RequestState:  requestState,
+				}, nil, nil
+			}
+			select {
+			case retryCh <- retryCall{
+				requestState: req.Params.RequestState,
+				response:     req.Params.InputResponses["confirm"],
+			}:
+			default:
+			}
+			return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: "deployed"}}}, nil, nil
+		})
+
+	httpServer := httptest.NewServer(gomcp.NewStreamableHTTPHandler(
+		func(*http.Request) *gomcp.Server { return server },
+		&gomcp.StreamableHTTPOptions{Stateless: true},
+	))
+	defer httpServer.Close()
+
+	client := newRemoteClient(httpServer.URL, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+
+	var elicitCalls atomic.Int32
+	elicitMessages := make(chan string, 1)
+	client.SetElicitationHandler(func(_ context.Context, req *gomcp.ElicitParams) (tools.ElicitationResult, error) {
+		elicitCalls.Add(1)
+		select {
+		case elicitMessages <- req.Message:
+		default:
+		}
+		return tools.ElicitationResult{
+			Action:  tools.ElicitationActionAccept,
+			Content: map[string]any{"confirmed": true},
+		}, nil
+	})
+
+	_, err := client.Initialize(t.Context(), nil)
+	require.NoError(t, err)
+	defer func() { _ = client.Close(context.WithoutCancel(t.Context())) }()
+
+	result, err := client.CallTool(t.Context(), &gomcp.CallToolParams{Name: "deploy"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Equal(t, int32(1), elicitCalls.Load(), "elicitation handler must run exactly once")
+	select {
+	case msg := <-elicitMessages:
+		assert.Equal(t, elicitMessage, msg, "handler must receive the server's elicitation message")
+	default:
+		t.Fatal("elicitation handler never recorded the message it received")
+	}
+
+	require.Equal(t, int32(2), toolCalls.Load(), "tool handler must run exactly twice: initial call + middleware retry")
+	var retry retryCall
+	select {
+	case retry = <-retryCh:
+	default:
+		t.Fatal("server never observed the retry carrying the input responses")
+	}
+	assert.Equal(t, requestState, retry.requestState, "retry must echo the exact RequestState of the input-required result")
+	elicitResult, ok := retry.response.(*gomcp.ElicitResult)
+	require.True(t, ok, "retry must carry the keyed *gomcp.ElicitResult, got %T", retry.response)
+	assert.Equal(t, string(tools.ElicitationActionAccept), elicitResult.Action)
+	assert.Equal(t, map[string]any{"confirmed": true}, elicitResult.Content)
+
+	assert.False(t, result.NeedsInput(), "final result must be complete, not input-required")
+	assert.False(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	text, ok := result.Content[0].(*gomcp.TextContent)
+	require.True(t, ok, "expected text content, got %T", result.Content[0])
+	assert.Equal(t, "deployed", text.Text)
 }
 
 // mutableEnvProvider is a context-aware, mutable environment.Provider for
