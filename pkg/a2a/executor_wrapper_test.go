@@ -10,7 +10,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	adka2a "google.golang.org/adk/server/adka2a/v2"
+	adka2a "google.golang.org/adk/v2/server/adka2a/v2"
 )
 
 func sourceOf(events ...a2a.Event) iter.Seq2[a2a.Event, error] {
