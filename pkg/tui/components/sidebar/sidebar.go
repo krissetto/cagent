@@ -1962,15 +1962,18 @@ func (m *model) oneBudgetLine(s runtime.BudgetStatus, nameWidth int) string {
 	var parts []string
 	if s.MaxCost > 0 {
 		parts = append(parts, budgetPartStyle(s.Cost, s.MaxCost).Render(
-			toolcommon.FormatCostPrecise(s.Cost)+"/"+toolcommon.FormatCostPrecise(s.MaxCost)))
+			toolcommon.FormatCostPrecise(s.Cost)+"/"+toolcommon.FormatCostPrecise(s.MaxCost),
+		))
 	}
 	if s.MaxTokens > 0 {
 		parts = append(parts, budgetPartStyle(float64(s.Tokens), float64(s.MaxTokens)).Render(
-			toolcommon.FormatTokenCount(s.Tokens)+"/"+toolcommon.FormatTokenCount(s.MaxTokens)))
+			toolcommon.FormatTokenCount(s.Tokens)+"/"+toolcommon.FormatTokenCount(s.MaxTokens),
+		))
 	}
 	if s.MaxTimeSeconds > 0 {
 		parts = append(parts, budgetPartStyle(s.ElapsedSeconds, s.MaxTimeSeconds).Render(
-			formatBudgetDuration(s.ElapsedSeconds)+"/"+formatBudgetDuration(s.MaxTimeSeconds)))
+			formatBudgetDuration(s.ElapsedSeconds)+"/"+formatBudgetDuration(s.MaxTimeSeconds),
+		))
 	}
 	if len(parts) == 0 {
 		return ""
