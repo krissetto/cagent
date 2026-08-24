@@ -6,7 +6,7 @@ import (
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2asrv"
 	"github.com/a2aproject/a2a-go/a2asrv/eventqueue"
-	"google.golang.org/adk/server/adka2a"
+	"google.golang.org/adk/v2/server/adka2a"
 )
 
 // executorWrapper wraps an ADK executor and fixes artifact update events
