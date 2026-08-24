@@ -1603,12 +1603,16 @@ type Toolset struct {
 	// For the `fetch`, `api`, `openapi`, `a2a` and remote `mcp` toolsets — opt in
 	// to dialling non-public IP addresses.
 	//
-	// By default, protected HTTP clients refuse connections (after DNS
-	// resolution, so DNS rebinding is also blocked) to loopback (127/8,
-	// ::1), RFC1918 private ranges, link-local — including the cloud
-	// metadata endpoint at 169.254.169.254 — multicast and the unspecified
-	// address. Set this to true to permit those addresses, which is required
-	// when an agent legitimately needs to call internal services.
+	// By default, on the direct path (Docker Desktop unavailable, disabled, or
+	// target host is not in the Docker-owned allowlist), protected HTTP clients
+	// refuse connections — after DNS resolution, defeating DNS rebinding — to
+	// loopback (127/8, ::1), RFC1918 private ranges, link-local — including the
+	// cloud metadata endpoint at 169.254.169.254 — multicast and the unspecified
+	// address. When Docker Desktop is running, only Docker-owned hostnames
+	// (docker.com, docker.io families) go through its PAC proxy; dial-time
+	// enforcement does not apply on that path. Set this to true to permit
+	// non-public addresses, which is required when an agent legitimately needs to
+	// call internal services.
 	//
 	// For `fetch`, `allowed_domains` and `blocked_domains` are evaluated
 	// independently of this flag: even with `allow_private_ips: true`, an

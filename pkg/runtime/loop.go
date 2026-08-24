@@ -214,7 +214,13 @@ func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.S
 	// cleanup hooks run even when the stream was interrupted (e.g. Ctrl+C).
 	r.executeSessionEndHooks(context.WithoutCancel(ctx), sess, a)
 
-	r.executeOnUserInputHooks(ctx, sess.ID, "stream stopped")
+	// on_user_input means "the agent is now waiting for the user". Only a
+	// root interactive stream hands control back to a user when it ends;
+	// sub-session and non-interactive teardowns (background agents, MCP
+	// serve, A2A, evals) have nobody to wait for and must not fire it (#4004).
+	if !sess.IsSubSession() && !sess.NonInteractive {
+		r.executeOnUserInputHooks(ctx, a, sess.ID, "stream stopped")
+	}
 
 	r.telemetry.RecordSessionEnd(ctx)
 

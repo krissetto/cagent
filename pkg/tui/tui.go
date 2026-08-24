@@ -301,6 +301,10 @@ type appModel struct {
 	// via /settings.
 	interruptMode messages.InterruptMode
 
+	// showBanner displays the ASCII-art startup banner on an empty
+	// conversation. Shared by every tab and managed via /settings.
+	showBanner bool
+
 	// buildCommandCategories is a function that returns the list of command categories.
 	buildCommandCategories func(context.Context, tea.Model) []commands.Category
 
@@ -535,6 +539,7 @@ func New(ctx context.Context, spawner SessionSpawner, initialApp *app.App, initi
 		layoutSettings:                layoutSettingsFromConfig(userSettings.GetLayout()),
 		sendMode:                      messages.ParseSendMode(userSettings.GetBusySendMode()),
 		interruptMode:                 messages.ParseInterruptMode(userSettings.GetInterruptConfirmation()),
+		showBanner:                    userSettings.GetShowBanner(),
 		keyboardEnhancementsSupported: termfeatures.SupportsModifiedEnter(os.Getenv),
 		dockerDesktop:                 os.Getenv("TERM_PROGRAM") == "docker_desktop",
 		appName:                       "docker agent",
@@ -665,6 +670,7 @@ func (m *appModel) chatPageOpts() []chat.PageOption {
 		chat.WithLayoutSettings(m.layoutSettings),
 		chat.WithSendMode(m.sendMode),
 		chat.WithInterruptMode(m.interruptMode),
+		chat.WithShowBanner(m.showBanner),
 	}
 
 	if m.leanMode {
