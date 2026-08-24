@@ -1623,6 +1623,12 @@ func TestToolsAuthRequiredIsDeferred(t *testing.T) {
 // Server-Sent Events. We only need to respond to two methods (initialize
 // and tools/list) for a successful handshake, then immediately close the
 // stream so the client moves on.
+//
+// The fake is intentionally a *legacy* stateful fixture: it answers the
+// SDK v1.7 client's server/discover probe with an empty result (the
+// default branch below), which makes the client fall back to the legacy
+// initialize handshake, and it assigns an Mcp-Session-Id so the
+// pre-2026-07-28 stateful behavior keeps being exercised.
 
 func newFakeMCPServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -1673,7 +1679,9 @@ func mcpHandler(t *testing.T, _ bool) http.HandlerFunc {
 		switch body.Method {
 		case "initialize":
 			writeJSONRPC(t, w, body.ID, map[string]any{
-				"protocolVersion": "2025-03-26",
+				// The latest revision that still supports initialize
+				// (2026-07-28 removed it in favor of server/discover).
+				"protocolVersion": "2025-11-25",
 				"capabilities":    map[string]any{},
 				"serverInfo": map[string]any{
 					"name":    "fake",

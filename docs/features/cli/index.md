@@ -322,7 +322,7 @@ $ docker agent serve mcp <config> [flags]
 | `--auth-token <token>` | (none)             | Required Bearer token for HTTP MCP requests.                                                       |
 | `--insecure-no-auth`   | `false`            | Permit unauthenticated non-loopback HTTP MCP binding.                                              |
 | `-l, --listen <addr>`  | `127.0.0.1:8081`   | Address to listen on (only used with `--http`).                                                   |
-| `--mcp-keepalive <dur>`| `0` (disabled)     | Interval between MCP keep-alive pings (e.g. `30s`).                                               |
+| `--mcp-keepalive <dur>` | `0` (disabled)    | Interval between MCP keep-alive pings (e.g. `30s`). Only when serving an agent over stdio — rejected with `--http` (the stateless HTTP transport, MCP `2026-07-28`, has no server-initiated ping) and with `--attach`. |
 | `--attach [target]`    | (none)             | Attach to a running TUI run by pid, address, or session id; given without a value, selects the most recent run.   |
 
 All [runtime configuration flags](#runtime-configuration-flags) are also accepted.

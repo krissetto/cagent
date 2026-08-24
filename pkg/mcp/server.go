@@ -63,6 +63,13 @@ func StartMCPServer(ctx context.Context, agentFilename, agentName string, runCon
 
 // StartHTTPServer starts a streaming HTTP MCP server on the given listener
 func StartHTTPServer(ctx context.Context, agentFilename, agentName string, runConfig *config.RuntimeConfig, ln net.Listener, options HTTPOptions) error {
+	// Fail fast, before any config or team loading: the stateless HTTP
+	// transport (MCP 2026-07-28) rejects server-initiated requests such as
+	// ping, so keep-alive can never work here.
+	if runConfig.MCPKeepAlive != 0 {
+		return errors.New("MCP keep-alive is not supported over stateless HTTP; use the stdio transport instead")
+	}
+
 	slog.DebugContext(ctx, "Starting HTTP MCP server", "agent", agentFilename, "addr", ln.Addr())
 
 	agentSource, err := config.Resolve(agentFilename, nil)
@@ -98,9 +105,7 @@ func StartHTTPServer(ctx context.Context, agentFilename, agentName string, runCo
 
 	fmt.Printf("MCP HTTP server listening on http://%s\n", ln.Addr())
 
-	handler := http.Handler(mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
-		return server
-	}, nil))
+	handler := newStreamableHTTPHandler(server)
 	if options.AuthToken != "" {
 		handler = httpsec.BearerAuth(options.AuthToken)(handler)
 	}
@@ -135,6 +140,16 @@ func StartHTTPServer(ctx context.Context, agentFilename, agentName string, runCo
 	}
 }
 
+// newStreamableHTTPHandler builds the streamable HTTP handler used in
+// production. Stateless mode implements the sessionless MCP 2026-07-28
+// transport: no Mcp-Session-Id header, GET/DELETE rejected with 405, and
+// request-local state synthesized for legacy initialize-based clients.
+func newStreamableHTTPHandler(server *mcp.Server) http.Handler {
+	return mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
+		return server
+	}, &mcp.StreamableHTTPOptions{Stateless: true})
+}
+
 func createMCPServer(ctx context.Context, agentFilename, agentName string, runConfig *config.RuntimeConfig) (*mcp.Server, func(), error) {
 	agentSource, err := config.Resolve(agentFilename, nil)
 	if err != nil {
@@ -161,7 +176,10 @@ func createMCPServer(ctx context.Context, agentFilename, agentName string, runCo
 }
 
 func createMCPServerForTeam(ctx context.Context, t *team.Team, agentFilename, agentName string, runConfig *config.RuntimeConfig, safety session.SafetyPolicy) (*mcp.Server, error) {
-	// The SDK only starts keep-alive when KeepAlive > 0.
+	// The SDK only starts keep-alive when KeepAlive > 0. StartHTTPServer (and
+	// the CLI, for early UX) rejects a nonzero keep-alive, so this only ever
+	// takes effect for stdio: the stateless HTTP transport (MCP 2026-07-28)
+	// rejects server-initiated requests such as ping.
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "docker agent",
 		Version: version.Version,

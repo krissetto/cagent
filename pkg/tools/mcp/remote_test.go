@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -124,10 +125,21 @@ func TestRemoteClientHeadersWithStreamable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedRequest = r
 
+		// Echo the request id: the v1.7 SDK client probes server/discover
+		// before falling back to initialize, so a hardcoded id would leave
+		// the fallback request unanswered and hang the client.
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.ID) == 0 {
+			req.ID = json.RawMessage("null")
+		}
+
 		// Send a minimal response
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"jsonrpc":"2.0","result":{"protocolVersion":"1.0.0","capabilities":{},"serverInfo":{"name":"test","version":"1.0.0"}},"id":1}`)
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","result":{"protocolVersion":"1.0.0","capabilities":{},"serverInfo":{"name":"test","version":"1.0.0"}},"id":%s}`, req.ID)
 
 		select {
 		case requestCaptured <- true:
