@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -12,6 +14,7 @@ import (
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tui/animation"
 	"github.com/docker/docker-agent/pkg/tui/commands"
+	"github.com/docker/docker-agent/pkg/tui/components/notification"
 	"github.com/docker/docker-agent/pkg/tui/components/spinner"
 	"github.com/docker/docker-agent/pkg/tui/components/statusbar"
 	"github.com/docker/docker-agent/pkg/tui/components/tabbar"
@@ -113,4 +116,99 @@ func TestNewSessionMsg_UsesConfiguredDefaultDir(t *testing.T) {
 		"/new must spawn in the configured default directory")
 	assert.Equal(t, 2, m.supervisor.Count(),
 		"the new session must be added instead of opening the picker")
+}
+
+// /new <dir> must win over the configured default (#4046). Before the fix
+// the /new command dropped its argument, so the default always won.
+func TestNewSessionMsg_ExplicitDirOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	spy := &spySpawner{}
+	m := newSpawnTestModel(t, spy, WithDefaultWorkingDir("/default/dir"))
+	dir := t.TempDir()
+
+	_, _ = m.Update(messages.NewSessionMsg{WorkingDir: dir})
+
+	assert.Equal(t, []string{dir}, spy.dirs,
+		"an explicit /new directory must win over the configured default")
+	assert.Equal(t, 2, m.supervisor.Count(),
+		"the new session must be added instead of opening the picker")
+}
+
+// A relative /new argument resolves against the active session's working
+// directory, not the process CWD.
+func TestNewSessionMsg_RelativeDirResolvesFromActiveSession(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	sub := filepath.Join(base, "sub")
+	require.NoError(t, os.Mkdir(sub, 0o755))
+
+	spy := &spySpawner{}
+	m := newSpawnTestModel(t, spy)
+	// Point the active session at base; the helper registers it under
+	// "/initial", which does not exist on disk.
+	m.supervisor.GetRunner(m.supervisor.ActiveID()).WorkingDir = base
+
+	_, _ = m.Update(messages.NewSessionMsg{WorkingDir: "sub"})
+
+	assert.Equal(t, []string{sub}, spy.dirs,
+		"a relative directory must resolve from the active session's working dir")
+}
+
+// ~ and environment variables in an explicit /new directory are expanded via
+// path.ExpandPath. HOME is overridden (ExpandHomeDir prefers it over the OS
+// account lookup) so the test stays hermetic; t.Setenv forbids t.Parallel.
+func TestNewSessionMsg_ExpandsTildeAndEnv(t *testing.T) {
+	base := t.TempDir()
+	sub := filepath.Join(base, "sub")
+	require.NoError(t, os.Mkdir(sub, 0o755))
+	t.Setenv("HOME", base)
+	t.Setenv("CAGENT_TEST_NEW_DIR", base)
+
+	spy := &spySpawner{}
+	m := newSpawnTestModel(t, spy)
+
+	_, _ = m.Update(messages.NewSessionMsg{WorkingDir: "~/sub"})
+	_, _ = m.Update(messages.NewSessionMsg{WorkingDir: "$CAGENT_TEST_NEW_DIR/sub"})
+
+	assert.Equal(t, []string{sub, sub}, spy.dirs,
+		"~ and environment variables must be expanded")
+}
+
+// A /new directory that does not exist must not reach the spawner; the user
+// gets an error notification instead.
+func TestNewSessionMsg_MissingDirErrorsWithoutSpawning(t *testing.T) {
+	t.Parallel()
+
+	spy := &spySpawner{}
+	m := newSpawnTestModel(t, spy, WithDefaultWorkingDir("/default/dir"))
+	missing := filepath.Join(t.TempDir(), "missing")
+
+	_, cmd := m.Update(messages.NewSessionMsg{WorkingDir: missing})
+
+	assert.Empty(t, spy.dirs, "the spawner must not run for a missing directory")
+	assert.Equal(t, 1, m.supervisor.Count(), "no session must be added")
+	note, ok := firstOfType[notification.ShowMsg](collectMsgs(cmd))
+	require.True(t, ok, "an error notification must be shown")
+	assert.Equal(t, notification.TypeError, note.Type)
+	assert.Contains(t, note.Text, missing)
+}
+
+// A /new argument pointing at a file must not reach the spawner either.
+func TestNewSessionMsg_FileArgErrorsWithoutSpawning(t *testing.T) {
+	t.Parallel()
+
+	spy := &spySpawner{}
+	m := newSpawnTestModel(t, spy)
+	file := filepath.Join(t.TempDir(), "file.txt")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
+
+	_, cmd := m.Update(messages.NewSessionMsg{WorkingDir: file})
+
+	assert.Empty(t, spy.dirs, "the spawner must not run for a non-directory path")
+	note, ok := firstOfType[notification.ShowMsg](collectMsgs(cmd))
+	require.True(t, ok, "an error notification must be shown")
+	assert.Equal(t, notification.TypeError, note.Type)
+	assert.Contains(t, note.Text, "is not a directory")
 }

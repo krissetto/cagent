@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/audio/transcribe"
 	"github.com/docker/docker-agent/pkg/history"
+	"github.com/docker/docker-agent/pkg/path"
 	"github.com/docker/docker-agent/pkg/plans"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
@@ -1202,7 +1204,7 @@ func (m *appModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.NewSessionMsg:
 		// /new spawns a new tab when a session spawner is configured.
-		return m.handleSpawnSession("")
+		return m.handleNewSession(msg)
 
 	case messages.ClearSessionMsg:
 		// /clear resets the current tab with a fresh session in the same working dir.
@@ -1817,6 +1819,54 @@ func (m *appModel) handleClearSession() (tea.Model, tea.Cmd) {
 		m.resizeAll(),
 		m.editor.Focus(),
 	)
+}
+
+// handleNewSession handles /new. Without a directory argument it keeps the
+// generic behavior (configured default or picker); with one it resolves and
+// validates the requested directory before spawning there, so an explicit
+// argument wins over the configured default.
+func (m *appModel) handleNewSession(msg messages.NewSessionMsg) (tea.Model, tea.Cmd) {
+	requested := strings.TrimSpace(msg.WorkingDir)
+	if requested == "" {
+		return m.handleSpawnSession("")
+	}
+	workingDir, err := m.resolveNewSessionDir(requested)
+	if err != nil {
+		return m, notification.ErrorCmd("Cannot start a new session: " + err.Error())
+	}
+	return m.handleSpawnSession(workingDir)
+}
+
+// resolveNewSessionDir turns a user-supplied /new argument into an absolute,
+// existing directory. ~ and environment variables are expanded; a relative
+// path resolves against the active session's working directory rather than
+// the process CWD.
+func (m *appModel) resolveNewSessionDir(requested string) (string, error) {
+	dir := path.ExpandPath(requested)
+	if dir == "" {
+		return "", fmt.Errorf("%q expands to an empty path", requested)
+	}
+	if !filepath.IsAbs(dir) {
+		var base string
+		if runner := m.supervisor.GetRunner(m.supervisor.ActiveID()); runner != nil {
+			base = runner.WorkingDir
+		}
+		dir = filepath.Join(base, dir)
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(abs)
+	switch {
+	case os.IsNotExist(err):
+		return "", fmt.Errorf("%s does not exist", abs)
+	case err != nil:
+		return "", err
+	case !info.IsDir():
+		return "", fmt.Errorf("%s is not a directory", abs)
+	}
+	return abs, nil
 }
 
 // handleSpawnSession spawns a new session.
