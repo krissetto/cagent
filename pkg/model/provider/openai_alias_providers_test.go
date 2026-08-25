@@ -53,7 +53,7 @@ var openAIAliasProviders = []openAIAliasProvider{
 		provider: "deepseek",
 		envVar:   "DEEPSEEK_API_KEY",
 		testKey:  "sk-test-deepseek-key",
-		model:    "deepseek-chat",
+		model:    "deepseek-v4-pro",
 		greeting: "Hello from DeepSeek",
 	},
 	{

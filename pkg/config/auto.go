@@ -161,7 +161,7 @@ var DefaultModels = map[string]string{
 	"ovhcloud":       "Qwen3.5-397B-A17B",
 	"groq":           "llama-3.3-70b-versatile",
 	"fireworks":      "accounts/fireworks/models/kimi-k2-instruct",
-	"deepseek":       "deepseek-chat",
+	"deepseek":       "deepseek-v4-pro",
 	"cerebras":       "gpt-oss-120b",
 	"together":       "meta-llama/Llama-3.3-70B-Instruct-Turbo",
 	"huggingface":    "meta-llama/Llama-3.3-70B-Instruct",
