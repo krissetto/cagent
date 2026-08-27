@@ -72,7 +72,9 @@ func TestTraceExportEmitsResourceSchemaURL(t *testing.T) {
 	tp, err := newTracerProvider(t.Context(), res, srv.URL)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// t.Context() is already canceled in cleanup; WithoutCancel
+		// detaches it so shutdown still gets a bounded 5s window.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
 		defer cancel()
 		_ = tp.Shutdown(ctx)
 	})
