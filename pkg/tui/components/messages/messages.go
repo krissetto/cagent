@@ -283,6 +283,10 @@ func (m *model) Init() tea.Cmd {
 // Update handles messages and updates the component state
 func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	animatedBeforeTick := false
+	if _, ok := msg.(animation.TickMsg); ok {
+		animatedBeforeTick = m.hasAnimatedContent()
+	}
 
 	switch msg := msg.(type) {
 	case messages.StreamCancelledMsg:
@@ -390,7 +394,7 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		// Tick dirtiness is program-wide. Do not rebuild the entire transcript
 		// merely because the root/sidebar spinner advanced; only message-owned
 		// animated content can change this component's lines.
-		if tick.Dirty() && m.hasAnimatedContent() {
+		if tick.Dirty() && (animatedBeforeTick || m.hasAnimatedContent()) {
 			m.renderDirty = true
 		}
 	}
