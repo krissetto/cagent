@@ -863,6 +863,10 @@ func (s *RemoteSessionStore) AddSubSession(context.Context, string, *session.Ses
 	return fmt.Errorf("add sub session: %w", ErrUnsupported)
 }
 
+func (s *RemoteSessionStore) PersistCompaction(context.Context, *session.Session, int64, int64, session.Item) error {
+	return fmt.Errorf("persist compaction: %w", ErrUnsupported)
+}
+
 func (s *RemoteSessionStore) AddSummary(context.Context, string, session.Item) error {
 	return fmt.Errorf("add summary: %w", ErrUnsupported)
 }
