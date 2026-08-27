@@ -80,6 +80,7 @@ require (
 	go.opentelemetry.io/otel/sdk/log v0.21.0
 	go.opentelemetry.io/otel/sdk/metric v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
+	go.opentelemetry.io/proto/otlp v1.11.0
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 	golang.org/x/image v0.45.0
 	golang.org/x/net v0.58.0
@@ -89,6 +90,7 @@ require (
 	golang.org/x/term v0.45.0
 	google.golang.org/adk/v2 v2.2.1-0.20260818092052-16e33673bc9e
 	google.golang.org/genai v1.69.0
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/dnaeon/go-vcr.v4 v4.0.7
 	gotest.tools/v3 v3.5.2
 	modernc.org/sqlite v1.57.0
@@ -213,7 +215,6 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.40.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.40.0 // indirect
-	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/mod v0.38.0 // indirect
@@ -224,7 +225,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/grpc v1.83.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.74.4 // indirect
