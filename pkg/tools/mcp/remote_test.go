@@ -1106,9 +1106,9 @@ func TestRemoteToolset_SurvivesSubscriptionsListenRejection(t *testing.T) {
 	}
 	assert.LessOrEqual(t, srv.handshakes(), int64(1),
 		"handshake must run at most once (discover=%d initialize=%d)", srv.discovers.Load(), srv.initializes.Load())
-	// 0 under the pinned v1.6.1 SDK; 1 stays valid once a fixed SDK reinstates
-	// the probe and tolerates the rejection (go-sdk#1193).
-	assert.LessOrEqual(t, srv.listens.Load(), int64(1),
-		"subscriptions/listen must not be retried in a loop")
+	// The pinned go-sdk (with go-sdk#1193) sends exactly one
+	// subscriptions/listen probe and tolerates its rejection.
+	assert.Equal(t, int64(1), srv.listens.Load(),
+		"subscriptions/listen probe must run exactly once, not be retried in a loop")
 	assert.Equal(t, lifecycle.StateReady, ts.State().State, "toolset must stay Ready through the observation window")
 }
