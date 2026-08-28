@@ -69,7 +69,7 @@ Type `/` during a session to see available commands, or press <kbd>Ctrl</kbd>+<k
 
 | Command            | Description                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------ |
-| `/new`             | Start a new conversation                                                             |
+| `/new`             | Start a new conversation (usage: `/new [dir]`). With a directory — `~` and environment variables expand, relative paths resolve from the current session's working dir — the new session starts there; without one it reuses an explicit `--working-dir` default or opens the directory picker |
 | `/clear`           | Clear the current conversation (keep session, drop messages)                         |
 | `/compact`         | Summarize and compact the conversation history                                       |
 | `/fork`            | Fork the current session into a new branch                                           |

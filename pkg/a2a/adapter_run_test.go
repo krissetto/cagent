@@ -109,13 +109,18 @@ func (s fakeADKSession) LastUpdateTime() time.Time { return time.Time{} }
 
 // fakeInvocationContext implements agent.InvocationContext with the minimal
 // behavior runDockerAgent relies on: the embedded context, Session().ID(),
-// UserContent(), and Ended().
+// UserContent(), and Ended(). WithContext and WithICDelta return a shallow
+// copy with the requested fields applied, so context changes are not
+// silently dropped.
 type fakeInvocationContext struct {
 	context.Context //nolint:containedctx // agent.InvocationContext embeds context.Context
 
-	sess        adksession.Session
-	userContent *genai.Content
-	ended       *atomic.Bool
+	sess           adksession.Session
+	userContent    *genai.Content
+	agent          agent.Agent
+	branch         string
+	isolationScope string
+	ended          *atomic.Bool
 }
 
 func newFakeInvocationContext(ctx context.Context, sessionID, userMessage string) *fakeInvocationContext {
@@ -127,13 +132,13 @@ func newFakeInvocationContext(ctx context.Context, sessionID, userMessage string
 	}
 }
 
-func (c *fakeInvocationContext) Agent() agent.Agent              { return nil }
+func (c *fakeInvocationContext) Agent() agent.Agent              { return c.agent }
 func (c *fakeInvocationContext) Artifacts() agent.Artifacts      { return nil }
 func (c *fakeInvocationContext) Memory() agent.Memory            { return nil }
 func (c *fakeInvocationContext) Session() adksession.Session     { return c.sess }
 func (c *fakeInvocationContext) InvocationID() string            { return "test-invocation" }
-func (c *fakeInvocationContext) Branch() string                  { return "" }
-func (c *fakeInvocationContext) IsolationScope() string          { return "" }
+func (c *fakeInvocationContext) Branch() string                  { return c.branch }
+func (c *fakeInvocationContext) IsolationScope() string          { return c.isolationScope }
 func (c *fakeInvocationContext) UserContent() *genai.Content     { return c.userContent }
 func (c *fakeInvocationContext) RunConfig() *agent.RunConfig     { return nil }
 func (c *fakeInvocationContext) EndInvocation()                  { c.ended.Store(true) }
@@ -141,16 +146,32 @@ func (c *fakeInvocationContext) Ended() bool                     { return c.ende
 func (c *fakeInvocationContext) ResumedInput(string) (any, bool) { return nil, false }
 
 func (c *fakeInvocationContext) WithContext(ctx context.Context) agent.InvocationContext {
-	return &fakeInvocationContext{
-		Context:     ctx,
-		sess:        c.sess,
-		userContent: c.userContent,
-		ended:       c.ended,
-	}
+	res := *c
+	res.Context = ctx
+	return &res
 }
 
-func (c *fakeInvocationContext) WithICDelta(*agent.InvocationContextDelta) agent.InvocationContext {
-	return c
+func (c *fakeInvocationContext) WithICDelta(d *agent.InvocationContextDelta) agent.InvocationContext {
+	if d == nil {
+		return c
+	}
+	res := *c
+	if d.Context != nil {
+		res.Context = *d.Context
+	}
+	if d.UserContent != nil {
+		res.userContent = *d.UserContent
+	}
+	if d.Agent != nil {
+		res.agent = *d.Agent
+	}
+	if d.Branch != nil {
+		res.branch = *d.Branch
+	}
+	if d.IsolationScope != nil {
+		res.isolationScope = *d.IsolationScope
+	}
+	return &res
 }
 
 // recordingStore captures the live *session.Session pointers the runtime
@@ -201,6 +222,80 @@ func eventText(t *testing.T, ev *adksession.Event) string {
 	require.NotNil(t, ev.Content)
 	require.Len(t, ev.Content.Parts, 1)
 	return ev.Content.Parts[0].Text
+}
+
+// Guards the harness itself: a WithICDelta that returns the receiver
+// unchanged would let adapter tests pass without exercising the state
+// changes ADK's agent.Run requests through the delta. Also proves
+// WithContext swaps only the embedded context.Context.
+func TestFakeInvocationContext_WithICDelta(t *testing.T) {
+	t.Parallel()
+
+	orig := newFakeInvocationContext(t.Context(), "a2a-ctx-delta", "original question")
+	origContent := orig.UserContent()
+
+	assert.Same(t, orig, orig.WithICDelta(nil), "nil delta must return the original context")
+
+	type ctxKey struct{}
+	newCtx := context.WithValue(t.Context(), ctxKey{}, "delta-value")
+	newContent := genai.NewContentFromText("delta question", genai.RoleUser)
+	newAgent, err := agent.New(agent.Config{Name: "delta-agent"})
+	require.NoError(t, err)
+	branch := "delta-branch"
+	scope := "delta-scope"
+
+	applied := orig.WithICDelta(&agent.InvocationContextDelta{
+		Context:        &newCtx,
+		UserContent:    &newContent,
+		Agent:          &newAgent,
+		Branch:         &branch,
+		IsolationScope: &scope,
+	})
+
+	require.NotSame(t, orig, applied, "the delta must be applied to a copy")
+	assert.Equal(t, "delta-value", applied.Value(ctxKey{}))
+	assert.Same(t, newContent, applied.UserContent())
+	assert.Same(t, newAgent, applied.Agent())
+	assert.Equal(t, "delta-branch", applied.Branch())
+	assert.Equal(t, "delta-scope", applied.IsolationScope())
+	assert.Equal(t, "a2a-ctx-delta", applied.Session().ID(), "untargeted fields carry over")
+
+	// The original context is not mutated.
+	assert.Nil(t, orig.Value(ctxKey{}))
+	assert.Same(t, origContent, orig.UserContent())
+	assert.Nil(t, orig.Agent())
+	assert.Empty(t, orig.Branch())
+	assert.Empty(t, orig.IsolationScope())
+
+	// A non-nil outer pointer to a nil content explicitly clears UserContent.
+	var noContent *genai.Content
+	cleared := applied.WithICDelta(&agent.InvocationContextDelta{UserContent: &noContent})
+	assert.Nil(t, cleared.UserContent())
+	assert.Same(t, newContent, applied.UserContent(), "clearing must not touch the source context")
+
+	// Nil delta fields keep the current values, including the context.
+	otherBranch := "other-branch"
+	partial := applied.WithICDelta(&agent.InvocationContextDelta{Branch: &otherBranch})
+	assert.Equal(t, "other-branch", partial.Branch())
+	assert.Equal(t, "delta-value", partial.Value(ctxKey{}))
+	assert.Same(t, newContent, partial.UserContent())
+	assert.Same(t, newAgent, partial.Agent())
+	assert.Equal(t, "delta-scope", partial.IsolationScope())
+
+	// WithContext replaces only the context.Context; everything else is the
+	// same shallow-copied state.
+	type swapKey struct{}
+	swapCtx := context.WithValue(t.Context(), swapKey{}, "swap-value")
+	swapped := applied.WithContext(swapCtx)
+	require.NotSame(t, applied, swapped, "WithContext must return a copy")
+	assert.Equal(t, "swap-value", swapped.Value(swapKey{}))
+	assert.Nil(t, swapped.Value(ctxKey{}), "the previous context must be replaced, not wrapped")
+	assert.Same(t, newContent, swapped.UserContent())
+	assert.Same(t, newAgent, swapped.Agent())
+	assert.Equal(t, "delta-branch", swapped.Branch())
+	assert.Equal(t, "delta-scope", swapped.IsolationScope())
+	assert.Equal(t, "a2a-ctx-delta", swapped.Session().ID())
+	assert.Equal(t, "delta-value", applied.Value(ctxKey{}), "the source keeps its own context")
 }
 
 func TestRunDockerAgent_StreamsPartialAndFinalEvents(t *testing.T) {
