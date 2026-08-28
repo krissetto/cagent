@@ -12,6 +12,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin/api"
 	"github.com/docker/docker-agent/pkg/tools/builtin/backgroundjobs"
 	"github.com/docker/docker-agent/pkg/tools/builtin/fetch"
+	filetool "github.com/docker/docker-agent/pkg/tools/builtin/file"
 	"github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
 	gittool "github.com/docker/docker-agent/pkg/tools/builtin/git"
 	"github.com/docker/docker-agent/pkg/tools/builtin/lsp"
@@ -75,6 +76,9 @@ func DefaultToolsetCreators() map[string]teamloader.ToolsetCreator {
 		},
 		"filesystem": func(_ context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
 			return filesystem.CreateToolSet(toolset, runConfig)
+		},
+		"file": func(_ context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
+			return filetool.CreateToolSet(toolset, runConfig)
 		},
 		"fetch": func(_ context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
 			return fetch.CreateToolSet(toolset, runConfig)

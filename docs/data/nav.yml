@@ -57,6 +57,8 @@
   groups:
     - label: File & Shell
       items:
+        - title: File
+          url: /tools/file/
         - title: Filesystem
           url: /tools/filesystem/
         - title: Shell

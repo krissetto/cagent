@@ -17,6 +17,7 @@ Built-in tools are included with Docker Agent and require no external dependenci
 
 | Type | Description | Page |
 | --- | --- | --- |
+| `file` | Read, write, and edit individual files | [File](../../tools/file/index.md) |
 | `filesystem` | Read, write, list, search, navigate | [Filesystem](../../tools/filesystem/index.md) |
 | `git` | Read-only repository inspection (status, log, branches, show, blame) | [Git](../../tools/git/index.md) |
 | `shell` | Execute shell commands synchronously | [Shell](../../tools/shell/index.md) |
