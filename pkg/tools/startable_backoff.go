@@ -14,11 +14,29 @@ const (
 )
 
 // startBackoffRetryable reports whether err carries a retryable HTTP status
-// (429, 408, or 5xx). Requires a *modelerrors.StatusError anywhere in the
-// chain; plain network errors and the regex fallback in RetryableHTTPStatus
-// are intentionally excluded to avoid arming the gate on port numbers or
-// chunk counters that match the \b[45]\d{2}\b pattern.
+// that warrants pacing the next start attempt: 429, 408, 500, 502, 503, 504,
+// or 529 (see modelerrors.isRetryableStatusCode). This is a fixed
+// enumeration, not a full 5xx range — codes such as 501, 505, or the
+// Cloudflare 520-527 family do NOT arm the gate. Only a *modelerrors.StatusError
+// in the error chain arms the gate; plain network errors and the regex
+// fallback in RetryableHTTPStatus are intentionally excluded so port numbers,
+// PIDs, and chunk counters in plain error text cannot arm the gate.
+//
 // A StatusError wins even when context.DeadlineExceeded is also in the chain.
+//
+// Deliberately excluded from arming (these must never pace):
+//   - lifecycle.ErrServerUnavailable: missing binary / process-not-found — fast-retry.
+//   - lifecycle.ErrTransport: connection refused / no such host — fast-retry.
+//   - lifecycle.ErrAuthRequired / ErrCapabilityMissing: permanent — fail promptly.
+//   - lifecycle.ErrInitTimeout, ErrSessionMissing: transient, handled by the
+//     supervisor's own reconnect policy without per-turn pacing.
+//   - Plain error strings: excluded to avoid false positives on numeric
+//     patterns in port numbers or counters.
+//
+// Note: lifecycle.ErrServerCrashed (a server that started then crashed) is
+// NOT currently surfaced by supervisor.Start(); it flows only through the
+// supervisor's internal watcher goroutine. LSP crash-loop pacing is therefore
+// deferred until that sentinel is propagated through the start path.
 func startBackoffRetryable(err error) bool {
 	var se *modelerrors.StatusError
 	if !errors.As(err, &se) {

@@ -183,10 +183,12 @@ every agent turn.
 
 ### What triggers backoff
 
-Backoff applies only to **HTTP 429 rate-limit** responses from the embedding or
-model provider — the one signal that reliably reaches the toolset gate. Other
-errors (5xx, 408) are handled per-file within the indexing run and do not arm
-the gate. These are the current gate triggers:
+For **RAG indexing**, backoff applies only to **HTTP 429 rate-limit** responses
+from the embedding or model provider — the one signal that reliably reaches the
+toolset gate. Other errors (5xx, 408) are handled per-file within the indexing
+run and do not arm the gate (tracked as a gap in
+[#4097](https://github.com/docker/docker-agent/issues/4097)). These are the
+current gate triggers for RAG indexing specifically:
 
 | Failure kind | Behaviour |
 |---|---|
@@ -198,6 +200,11 @@ the gate. These are the current gate triggers:
 > 5xx and 408 errors from the embedding provider are retried per-file and do not
 > propagate to the toolset gate. Only 429 (rate-limit) terminates the indexing run
 > early and surfaces the gate so Docker Agent can pace the next attempt.
+>
+> This 429-only trigger set is specific to the RAG/embedding path. Other toolset
+> types have their own trigger sets against the same gate — for example, remote
+> MCP toolsets also pace on 408 and a fixed set of 5xx-family statuses (see
+> [MCP startup failure behaviour](../mcp/index.md#lifecycle-auto-restart-profiles)).
 
 ### Retry policy and parameters
 

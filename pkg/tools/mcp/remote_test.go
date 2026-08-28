@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/modelerrors"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/lifecycle"
 	"github.com/docker/docker-agent/pkg/upstream"
@@ -1111,4 +1112,341 @@ func TestRemoteToolset_SurvivesSubscriptionsListenRejection(t *testing.T) {
 	assert.Equal(t, int64(1), srv.listens.Load(),
 		"subscriptions/listen probe must run exactly once, not be retried in a loop")
 	assert.Equal(t, lifecycle.StateReady, ts.State().State, "toolset must stay Ready through the observation window")
+}
+
+// TestEnrichConnectError_RetryableStatusSurfacesAsStatusError verifies that
+// enrichConnectError wraps retryable HTTP errors (5xx/429) in a *StatusError
+// so the StartableToolSet backoff gate can arm on them.
+func TestEnrichConnectError_RetryableStatusSurfacesAsStatusError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		status        int
+		wantRetryable bool
+	}{
+		{"503 service unavailable", http.StatusServiceUnavailable, true},
+		{"429 too many requests", http.StatusTooManyRequests, true},
+		{"500 internal server error", http.StatusInternalServerError, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprintf(w, `{"error":{"message":"server error %d"}}`, tc.status)
+			}))
+			defer srv.Close()
+
+			store := NewInMemoryTokenStore()
+			require.NoError(t, store.StoreToken(srv.URL, &OAuthToken{AccessToken: "tok", TokenType: "Bearer"}))
+
+			client := newRemoteClient(srv.URL, "streamable", nil, store, nil, false, nil)
+
+			_, err := client.Initialize(t.Context(), nil)
+			require.Error(t, err)
+
+			var se *modelerrors.StatusError
+			require.ErrorAs(t, err, &se, "a %d response must surface as *StatusError", tc.status)
+			assert.Equal(t, tc.status, se.StatusCode)
+			assert.True(t, modelerrors.RetryableHTTPStatus(se),
+				"status %d must be classified retryable by the backoff gate", tc.status)
+		})
+	}
+}
+
+// TestEnrichConnectError_NonRetryableStatusDoesNotArm verifies that a 4xx
+// client-error response wraps in *StatusError but is NOT classified retryable,
+// so bad-config / auth failures fail promptly without triggering pacing.
+func TestEnrichConnectError_NonRetryableStatusDoesNotArm(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden) // 403
+		_, _ = fmt.Fprint(w, `{"error":{"message":"access denied"}}`)
+	}))
+	defer srv.Close()
+
+	store := NewInMemoryTokenStore()
+	require.NoError(t, store.StoreToken(srv.URL, &OAuthToken{AccessToken: "tok", TokenType: "Bearer"}))
+
+	client := newRemoteClient(srv.URL, "streamable", nil, store, nil, false, nil)
+
+	_, err := client.Initialize(t.Context(), nil)
+	require.Error(t, err)
+
+	var se *modelerrors.StatusError
+	require.ErrorAs(t, err, &se, "403 must still surface as *StatusError (wrapped for structured access)")
+	assert.Equal(t, http.StatusForbidden, se.StatusCode)
+	assert.False(t, modelerrors.RetryableHTTPStatus(se),
+		"403 must NOT be classified retryable — client errors fail promptly")
+}
+
+// TestEnrichConnectError_NoStatusNoStatusError verifies that when there is no
+// recorded HTTP server error (e.g. a network-level failure before any HTTP
+// response), the error does not carry a *StatusError so the gate does not arm.
+func TestEnrichConnectError_NoStatusNoStatusError(t *testing.T) {
+	t.Parallel()
+
+	// Point at a closed port so there is never an HTTP response.
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	client := newRemoteClient("http://"+addr, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+
+	_, err = client.Initialize(t.Context(), nil)
+	require.Error(t, err)
+
+	var se *modelerrors.StatusError
+	assert.NotErrorAs(t, err, &se,
+		"a plain network failure must not carry a *StatusError (would arm the gate spuriously)")
+}
+
+// TestEnrichConnectError_EmptyBodyStatusStillArms verifies that a retryable
+// HTTP status with an EMPTY response body (common for load-balancer or
+// rate-limit responses that carry no JSON payload) still surfaces as a
+// *modelerrors.StatusError. An earlier version of enrichConnectError gated
+// the wrap on the extracted message being non-empty, which silently dropped
+// the StatusError wrap — and with it, all backoff pacing — whenever the
+// server didn't bother sending a body alongside the status code.
+func TestEnrichConnectError_EmptyBodyStatusStillArms(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		status int
+	}{
+		{"503 empty body", http.StatusServiceUnavailable},
+		{"429 empty body", http.StatusTooManyRequests},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				// No Content-Type, no body — exactly what many load balancers
+				// and rate limiters send.
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+
+			store := NewInMemoryTokenStore()
+			require.NoError(t, store.StoreToken(srv.URL, &OAuthToken{AccessToken: "tok", TokenType: "Bearer"}))
+
+			client := newRemoteClient(srv.URL, "streamable", nil, store, nil, false, nil)
+
+			_, err := client.Initialize(t.Context(), nil)
+			require.Error(t, err)
+
+			var se *modelerrors.StatusError
+			require.ErrorAs(t, err, &se,
+				"an empty-body %d response must still surface as *StatusError", tc.status)
+			assert.Equal(t, tc.status, se.StatusCode)
+			assert.True(t, modelerrors.RetryableHTTPStatus(se),
+				"empty-body status %d must still be classified retryable", tc.status)
+		})
+	}
+}
+
+// TestEnrichConnectError_RetryAfterHonoured verifies that a server-supplied
+// Retry-After header on a 429 response is parsed through to the resulting
+// *modelerrors.StatusError, matching the handling in the sibling model-adapter
+// paths (see modelerrors.WrapHTTPError).
+func TestEnrichConnectError_RetryAfterHonoured(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	store := NewInMemoryTokenStore()
+	require.NoError(t, store.StoreToken(srv.URL, &OAuthToken{AccessToken: "tok", TokenType: "Bearer"}))
+
+	client := newRemoteClient(srv.URL, "streamable", nil, store, nil, false, nil)
+
+	_, err := client.Initialize(t.Context(), nil)
+	require.Error(t, err)
+
+	var se *modelerrors.StatusError
+	require.ErrorAs(t, err, &se)
+	assert.Equal(t, http.StatusTooManyRequests, se.StatusCode)
+	assert.Equal(t, 120*time.Second, se.RetryAfter,
+		"the server's Retry-After header must be parsed onto the StatusError")
+}
+
+// TestEnrichConnectError_NoRetryAfterHeaderLeavesZero verifies that when the
+// server does not send a Retry-After header, RetryAfter stays zero (the
+// gate then falls back to its own computed delay).
+func TestEnrichConnectError_NoRetryAfterHeaderLeavesZero(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	store := NewInMemoryTokenStore()
+	require.NoError(t, store.StoreToken(srv.URL, &OAuthToken{AccessToken: "tok", TokenType: "Bearer"}))
+
+	client := newRemoteClient(srv.URL, "streamable", nil, store, nil, false, nil)
+
+	_, err := client.Initialize(t.Context(), nil)
+	require.Error(t, err)
+
+	var se *modelerrors.StatusError
+	require.ErrorAs(t, err, &se)
+	assert.Zero(t, se.RetryAfter, "no Retry-After header means the gate computes its own delay")
+}
+
+// TestBackoffGate_RemoteMCPRetryableStatusPacesReconnect is an end-to-end
+// regression test: it drives a REAL *Toolset (built via NewRemoteToolset,
+// exactly as production wiring does) through tools.StartableToolSet.TryStart
+// against a mock server that always answers 503. It proves the whole chain —
+// enrichConnectError -> Toolset.Start -> supervisor.Start -> the backoff
+// gate in tryStartLocked — stays intact end to end, rather than relying on
+// enrichConnectError-only unit tests that would miss error-chain loss
+// introduced anywhere between remote.go and mcp.go's Initialize wrapping.
+func TestBackoffGate_RemoteMCPRetryableStatusPacesReconnect(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	toolset := NewRemoteToolset("test", srv.URL, "streamable", nil, nil)
+
+	now := time.Now()
+	clock := func() time.Time { return now }
+	identityJitter := func(d time.Duration) time.Duration { return d }
+
+	s := tools.NewStartable(toolset, tools.WithStartRetryClock(clock), tools.WithStartRetryJitter(identityJitter))
+
+	// Attempt 1: gate is idle, the real connect attempt runs and fails,
+	// arming the gate. The transport may issue more than one HTTP request
+	// per logical connect attempt (e.g. a standalone SSE probe), so assert
+	// relative growth rather than an exact per-call count.
+	started, err := s.TryStart(t.Context())
+	assert.False(t, started)
+	require.Error(t, err)
+	afterFirst := attempts.Load()
+	assert.Positive(t, afterFirst, "first TryStart must hit the server")
+
+	var se *modelerrors.StatusError
+	require.ErrorAs(t, err, &se, "the gate-arming error must carry the StatusError")
+	assert.Equal(t, http.StatusServiceUnavailable, se.StatusCode)
+
+	// Immediately after: gate armed, TryStart returns without a new
+	// connect attempt reaching the server.
+	started, err = s.TryStart(t.Context())
+	assert.False(t, started)
+	require.Error(t, err)
+	assert.Equal(t, afterFirst, attempts.Load(), "gate must block the retry from reaching the server")
+
+	// Advance the fake clock past the backoff window (comfortably beyond
+	// the documented 5-minute cap, without depending on the unexported
+	// base/max constants which aren't visible across package test
+	// boundaries): gate opens, a new connect attempt reaches the server.
+	now = now.Add(6 * time.Minute)
+	started, err = s.TryStart(t.Context())
+	assert.False(t, started)
+	require.Error(t, err)
+	assert.Greater(t, attempts.Load(), afterFirst, "gate must open and retry once the window elapses")
+}
+
+// TestBackoffGate_RemoteMCPNonRetryableStatusFailsPromptly is the negative
+// counterpart: a 403 (bad config / auth) must fail every turn without any
+// pacing, through the same real TryStart path.
+func TestBackoffGate_RemoteMCPNonRetryableStatusFailsPromptly(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	toolset := NewRemoteToolset("test", srv.URL, "streamable", nil, nil)
+	s := tools.NewStartable(toolset)
+
+	var prev int32
+	for range 3 {
+		started, err := s.TryStart(t.Context())
+		assert.False(t, started)
+		require.Error(t, err)
+		cur := attempts.Load()
+		assert.Greater(t, cur, prev, "403 must reach the server every turn, no pacing")
+		prev = cur
+	}
+}
+
+// TestBackoffGate_RemoteMCPRecoversAfterBackoffWindow closes the "repeated
+// failures then eventual success" recovery criterion at the MCP integration
+// layer (mirrored from the generic gate recovery tests in #4062): a remote
+// MCP server that answers 503 arms the gate, then recovers to a real,
+// working MCP handshake — the next TryStart after the window elapses must
+// actually start the toolset, not merely stop erroring.
+func TestBackoffGate_RemoteMCPRecoversAfterBackoffWindow(t *testing.T) {
+	t.Parallel()
+
+	var failing atomic.Bool
+	failing.Store(true)
+
+	mcpServer := gomcp.NewServer(&gomcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	streamableHandler := gomcp.NewStreamableHTTPHandler(func(*http.Request) *gomcp.Server { return mcpServer }, nil)
+
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		if failing.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		streamableHandler.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+
+	toolset := NewRemoteToolset("test", srv.URL, "streamable", nil, nil)
+
+	now := time.Now()
+	clock := func() time.Time { return now }
+	identityJitter := func(d time.Duration) time.Duration { return d }
+
+	s := tools.NewStartable(toolset, tools.WithStartRetryClock(clock), tools.WithStartRetryJitter(identityJitter))
+
+	// Attempt 1: server failing, connect fails, gate arms.
+	started, err := s.TryStart(t.Context())
+	assert.False(t, started)
+	require.Error(t, err)
+	afterFirst := attempts.Load()
+	assert.Positive(t, afterFirst, "first TryStart must hit the server")
+
+	// The server recovers, but the gate is still armed: an immediate retry
+	// must still be blocked (recovery alone doesn't bypass the window).
+	failing.Store(false)
+	started, err = s.TryStart(t.Context())
+	assert.False(t, started)
+	require.Error(t, err)
+	assert.Equal(t, afterFirst, attempts.Load(),
+		"gate must still block immediately after arming, even though the server has recovered")
+
+	// Advance past the backoff window: gate opens, and this time the real
+	// MCP handshake completes successfully — the toolset actually starts.
+	now = now.Add(6 * time.Minute)
+	started, err = s.TryStart(t.Context())
+	assert.True(t, started, "toolset must start once the server has recovered and the gate opens: %v", err)
+	require.NoError(t, err)
+	assert.Greater(t, attempts.Load(), afterFirst, "gate must open and retry once the window elapses")
 }

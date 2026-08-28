@@ -3,6 +3,7 @@ package tools_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/modelerrors"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tools/lifecycle"
 )
 
 // startErrToolSet is a minimal Startable whose error field controls the
@@ -754,4 +756,62 @@ func TestStartableToolSet_RetryAfterCapAtMax(t *testing.T) {
 	_, _ = s.TryStart(t.Context())
 	assert.Check(t, is.Equal(inner.starts.Load(), int32(2)),
 		"gate must open at startBackoffMax, not at the uncapped hint")
+}
+
+// TestStartBackoffRetryable_ErrServerUnavailable verifies that a missing binary
+// (ErrServerUnavailable) does NOT arm the gate — it fails promptly every turn.
+func TestStartBackoffRetryable_ErrServerUnavailable(t *testing.T) {
+	inner := &startErrToolSet{}
+	inner.setErr(fmt.Errorf("%w: no such file or directory", lifecycle.ErrServerUnavailable))
+	s := newThrottledStartable(inner)
+
+	for range 3 {
+		_, err := s.TryStart(t.Context())
+		assert.Check(t, err != nil)
+	}
+	assert.Check(t, is.Equal(inner.starts.Load(), int32(3)),
+		"missing-binary errors must not pace retries")
+}
+
+// TestStartBackoffRetryable_ErrTransport verifies that a network-level failure
+// (connection refused, no such host) does NOT arm the gate.
+func TestStartBackoffRetryable_ErrTransport(t *testing.T) {
+	inner := &startErrToolSet{}
+	inner.setErr(fmt.Errorf("%w: connection refused", lifecycle.ErrTransport))
+	s := newThrottledStartable(inner)
+
+	for range 3 {
+		_, _ = s.TryStart(t.Context())
+	}
+	assert.Check(t, is.Equal(inner.starts.Load(), int32(3)),
+		"transport errors must not pace retries")
+}
+
+// TestStartBackoffRetryable_ErrAuthRequired verifies that a permanent auth
+// failure (OAuth required / invalid token) does NOT arm the gate.
+func TestStartBackoffRetryable_ErrAuthRequired(t *testing.T) {
+	inner := &startErrToolSet{}
+	inner.setErr(fmt.Errorf("%w: token expired", lifecycle.ErrAuthRequired))
+	s := newThrottledStartable(inner)
+
+	for range 3 {
+		_, _ = s.TryStart(t.Context())
+	}
+	assert.Check(t, is.Equal(inner.starts.Load(), int32(3)),
+		"auth-required errors must not pace retries")
+}
+
+// TestStartBackoffRetryable_4xxStatusDoesNotArm verifies that a structured
+// 4xx HTTP error (client error, not a rate-limit) wraps as *StatusError but
+// does not arm the gate.
+func TestStartBackoffRetryable_4xxStatusDoesNotArm(t *testing.T) {
+	inner := &startErrToolSet{}
+	inner.setErr(&modelerrors.StatusError{StatusCode: 400, Err: errors.New("bad request")})
+	s := newThrottledStartable(inner)
+
+	for range 3 {
+		_, _ = s.TryStart(t.Context())
+	}
+	assert.Check(t, is.Equal(inner.starts.Load(), int32(3)),
+		"400 client errors must not arm the backoff gate")
 }
