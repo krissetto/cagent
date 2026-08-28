@@ -2129,6 +2129,7 @@
             "think",
             "memory",
             "filesystem",
+            "file",
             "shell",
             "background_jobs",
             "tasks",
@@ -2223,7 +2224,7 @@
         },
         "post_edit": {
           "type": "array",
-          "description": "Post-edit commands for filesystem tool",
+          "description": "Post-edit commands for filesystem and file tools",
           "items": {
             "$ref": "#/definitions/PostEditConfig"
           }
@@ -2247,7 +2248,7 @@
         },
         "allow_list": {
           "type": "array",
-          "description": "Allow-list of directories the filesystem tool is permitted to access (only valid for type 'filesystem'). Each entry may be '.' (the agent's working directory), '~' or '~/...' (the user's home directory), an absolute path, or a relative path (anchored at the working directory). Symlinks are followed before the containment check, so they cannot be used to escape the allow-list. An empty or omitted list preserves the default behaviour (any path the agent process can reach).",
+          "description": "Allow-list of directories the filesystem or file tool is permitted to access. Each entry may be '.' (the agent's working directory), '~' or '~/...' (the user's home directory), an absolute path, or a relative path (anchored at the working directory). Symlinks are followed before the containment check, so they cannot be used to escape the allow-list. An empty or omitted list preserves the default behaviour (any path the agent process can reach).",
           "items": {
             "type": "string"
           },
@@ -2267,7 +2268,7 @@
         },
         "deny_list": {
           "type": "array",
-          "description": "Deny-list of directories the filesystem tool is forbidden to access (only valid for type 'filesystem'). Uses the same expansion rules as 'allow_list'. The deny-list takes precedence over the allow-list: a path that matches both is rejected.",
+          "description": "Deny-list of directories the filesystem or file tool is forbidden to access. Uses the same expansion rules as 'allow_list'. The deny-list takes precedence over the allow-list: a path that matches both is rejected.",
           "items": {
             "type": "string"
           },
@@ -2474,6 +2475,7 @@
                 "think",
                 "memory",
                 "filesystem",
+                "file",
                 "shell",
                 "background_jobs",
                 "tasks",

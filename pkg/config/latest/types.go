@@ -1539,7 +1539,7 @@ type Toolset struct {
 	// For the `script` tool
 	Shell map[string]ScriptShellToolConfig `json:"shell,omitempty"`
 
-	// For the `filesystem` tool - post-edit commands
+	// For the `filesystem` and `file` tools - post-edit commands
 	PostEdit []PostEditConfig `json:"post_edit,omitempty"`
 
 	APIConfig APIToolConfig `json:"api_config"`
@@ -1550,7 +1550,7 @@ type Toolset struct {
 	// For the `filesystem` tool - VCS integration
 	IgnoreVCS *bool `json:"ignore_vcs,omitempty"`
 
-	// For the `filesystem` tool - allow-list of directories the tools are
+	// For the `filesystem` and `file` tools - allow-list of directories the tools are
 	// permitted to access. Each entry may be "." (the agent's working
 	// directory), "~" or "~/..." (the user's home directory), an absolute
 	// path, or a relative path (anchored at the working directory). When
@@ -1561,7 +1561,7 @@ type Toolset struct {
 	// reachable by the process is allowed).
 	AllowList []string `json:"allow_list,omitempty" yaml:"allow_list,omitempty"`
 
-	// For the `filesystem` tool - deny-list of directories the tools are
+	// For the `filesystem` and `file` tools - deny-list of directories the tools are
 	// forbidden to access. Same expansion and matching rules as `allow_list`.
 	// The deny-list takes precedence over `allow_list`: a path that matches
 	// both is rejected. An empty or omitted list disables the deny-list.

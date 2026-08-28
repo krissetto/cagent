@@ -265,17 +265,17 @@ func (t *Toolset) validate() error {
 	if t.Path != "" && t.Type != "memory" && t.Type != "tasks" {
 		return errors.New("path can only be used with type 'memory' or 'tasks'")
 	}
-	if len(t.PostEdit) > 0 && t.Type != "filesystem" {
-		return errors.New("post_edit can only be used with type 'filesystem'")
+	if len(t.PostEdit) > 0 && t.Type != "filesystem" && t.Type != "file" {
+		return errors.New("post_edit can only be used with type 'filesystem' or 'file'")
 	}
 	if t.IgnoreVCS != nil && t.Type != "filesystem" {
 		return errors.New("ignore_vcs can only be used with type 'filesystem'")
 	}
-	if len(t.AllowList) > 0 && t.Type != "filesystem" {
-		return errors.New("allow_list can only be used with type 'filesystem'")
+	if len(t.AllowList) > 0 && t.Type != "filesystem" && t.Type != "file" {
+		return errors.New("allow_list can only be used with type 'filesystem' or 'file'")
 	}
-	if len(t.DenyList) > 0 && t.Type != "filesystem" {
-		return errors.New("deny_list can only be used with type 'filesystem'")
+	if len(t.DenyList) > 0 && t.Type != "filesystem" && t.Type != "file" {
+		return errors.New("deny_list can only be used with type 'filesystem' or 'file'")
 	}
 	if err := validatePathRootEntries("allow_list", t.AllowList); err != nil {
 		return err

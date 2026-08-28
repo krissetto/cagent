@@ -14,6 +14,7 @@ var BuiltinToolsets = []BuiltinToolsetInfo{
 	builtinToolset("background_agents", "background-agents", "Dispatch work to sub-agents concurrently and collect results"),
 	builtinToolset("background_jobs", "background-jobs", "Run and manage long-running shell commands"),
 	builtinToolset("fetch", "fetch", "Read content from HTTP/HTTPS URLs"),
+	builtinToolset("file", "file", "Read, write, and edit individual files"),
 	builtinToolset("filesystem", "filesystem", "Read, write, list, search, and navigate files and directories"),
 	builtinToolset("git", "git", "Read-only git repository inspection: status, log, branches, show, blame"),
 	builtinToolset("lsp", "lsp", "Connect to Language Server Protocol servers for code intelligence"),
