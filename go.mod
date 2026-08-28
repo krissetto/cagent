@@ -238,7 +238,9 @@ replace github.com/charmbracelet/ultraviolet => github.com/dgageot/ultraviolet v
 
 replace github.com/cyphar/filepath-securejoin => github.com/cyphar/filepath-securejoin v0.4.1
 
-// TODO(docker/docker-agent#4068): pin v1.6.1 because v1.7.0 mishandles
-// GitHub's subscriptions/listen rejection. Keep require v1.7.0 for ADK/MVS;
-// remove once https://github.com/modelcontextprotocol/go-sdk/pull/1193 ships.
-replace github.com/modelcontextprotocol/go-sdk => github.com/modelcontextprotocol/go-sdk v1.6.1
+// TODO(docker/docker-agent#4068): pin the commit that merged
+// https://github.com/modelcontextprotocol/go-sdk/pull/1193 so the client
+// tolerates GitHub's subscriptions/listen rejection while keeping the MCP
+// 2026-07-28 APIs. Keep require v1.7.0 for ADK/MVS; drop the replace once a
+// tagged release containing #1193 ships.
+replace github.com/modelcontextprotocol/go-sdk => github.com/modelcontextprotocol/go-sdk v1.7.1-0.20260825122737-c68ad9a4e6e1
