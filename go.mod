@@ -237,3 +237,8 @@ require (
 replace github.com/charmbracelet/ultraviolet => github.com/dgageot/ultraviolet v0.0.0-20260313154905-9451997d56b6
 
 replace github.com/cyphar/filepath-securejoin => github.com/cyphar/filepath-securejoin v0.4.1
+
+// TODO(docker/docker-agent#4068): pin v1.6.1 because v1.7.0 mishandles
+// GitHub's subscriptions/listen rejection. Keep require v1.7.0 for ADK/MVS;
+// remove once https://github.com/modelcontextprotocol/go-sdk/pull/1193 ships.
+replace github.com/modelcontextprotocol/go-sdk => github.com/modelcontextprotocol/go-sdk v1.6.1

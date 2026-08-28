@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/tools/lifecycle"
 	"github.com/docker/docker-agent/pkg/upstream"
 )
 
@@ -874,4 +875,132 @@ func TestOAuthHTTPClientWithHeaders_ResolverKeepsEnvHeadersFreshAndHostScoped(t 
 	v, _ := thirdPartyHeader.Load().(string)
 	assert.Empty(t, v,
 		"requests to a third-party host must NOT carry the configured header even with a resolver (credential-leak guard)")
+}
+
+// githubStyleMCPServer mimics GitHub's MCP endpoint (docker/docker-agent#4068):
+// it serves both handshake generations but rejects subscriptions/listen with
+// HTTP 404 + JSON-RPC -32601.
+type githubStyleMCPServer struct {
+	*httptest.Server
+
+	discovers   atomic.Int64
+	initializes atomic.Int64
+	listens     atomic.Int64
+	toolsLists  atomic.Int64
+}
+
+// handshakes counts connection setups. Max, not sum: one setup may combine a
+// discover probe with an initialize fallback.
+func (s *githubStyleMCPServer) handshakes() int64 {
+	return max(s.discovers.Load(), s.initializes.Load())
+}
+
+func newGitHubStyleMCPServer(t *testing.T) *githubStyleMCPServer {
+	t.Helper()
+
+	srv := &githubStyleMCPServer{}
+	srv.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				ProtocolVersion string `json:"protocolVersion"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			// Notification: no response expected.
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+
+		result := func(result string) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, result)
+		}
+		methodNotFound := func() {
+			msg, err := json.Marshal(fmt.Sprintf("method not found: %q", req.Method))
+			require.NoError(t, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":%s}}`, req.ID, msg)
+		}
+
+		switch req.Method {
+		case "server/discover":
+			srv.discovers.Add(1)
+			result(`{"supportedVersions":["2026-07-28"],"capabilities":{"tools":{"listChanged":true},"prompts":{"listChanged":true}}}`)
+		case "subscriptions/listen":
+			srv.listens.Add(1)
+			methodNotFound()
+		case "initialize":
+			srv.initializes.Add(1)
+			version := req.Params.ProtocolVersion
+			if version == "" {
+				version = "2025-11-25"
+			}
+			result(fmt.Sprintf(`{"protocolVersion":%q,"capabilities":{"tools":{"listChanged":true},"prompts":{"listChanged":true}},"serverInfo":{"name":"github-mcp-stub","version":"0.0.1"}}`, version))
+		case "tools/list":
+			srv.toolsLists.Add(1)
+			result(`{"tools":[{"name":"issue_read","description":"Read a GitHub issue","inputSchema":{"type":"object"}}]}`)
+		case "prompts/list":
+			result(`{"prompts":[]}`)
+		default:
+			methodNotFound()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestRemoteToolset_SurvivesSubscriptionsListenRejection is the regression
+// test for docker/docker-agent#4068: against a server that rejects
+// subscriptions/listen the way GitHub MCP does, the toolset must serve
+// tools/list and stay Ready without reconnecting.
+func TestRemoteToolset_SurvivesSubscriptionsListenRejection(t *testing.T) {
+	t.Parallel()
+
+	srv := newGitHubStyleMCPServer(t)
+
+	client := newRemoteClient(srv.URL, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+	ts := &Toolset{
+		name:      "github",
+		mcpClient: client,
+		logID:     sanitizeRemoteAddress(srv.URL),
+	}
+	ts.supervisor = newSupervisor(ts, remotePolicy(lifecycle.Policy{
+		Backoff: lifecycle.Backoff{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond},
+	}))
+
+	require.NoError(t, ts.Start(t.Context()), "Start must succeed against a GitHub-style MCP endpoint")
+	t.Cleanup(func() { _ = ts.Stop(context.WithoutCancel(t.Context())) })
+	restarted := ts.supervisor.Restarted()
+
+	toolList, err := ts.Tools(t.Context())
+	require.NoError(t, err, "Tools must succeed after Start")
+	require.Len(t, toolList, 1)
+	assert.Equal(t, "github_issue_read", toolList[0].Name)
+	require.Positive(t, srv.toolsLists.Load(), "tools/list must actually reach the server")
+
+	select {
+	case <-restarted:
+		t.Fatal("reconnect cycle observed: the session died and the supervisor restarted it")
+	case <-time.After(500 * time.Millisecond):
+	}
+	assert.LessOrEqual(t, srv.handshakes(), int64(1),
+		"handshake must run at most once (discover=%d initialize=%d)", srv.discovers.Load(), srv.initializes.Load())
+	// 0 under the pinned v1.6.1 SDK; 1 stays valid once a fixed SDK reinstates
+	// the probe and tolerates the rejection (go-sdk#1193).
+	assert.LessOrEqual(t, srv.listens.Load(), int64(1),
+		"subscriptions/listen must not be retried in a loop")
+	assert.Equal(t, lifecycle.StateReady, ts.State().State, "toolset must stay Ready through the observation window")
 }
