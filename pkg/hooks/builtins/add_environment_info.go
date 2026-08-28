@@ -13,6 +13,7 @@ import (
 const AddEnvironmentInfo = "add_environment_info"
 
 // addEnvironmentInfo emits cwd/git/OS/arch/shell as session_start context.
+// No-op when Cwd is empty.
 func addEnvironmentInfo(_ context.Context, in *hooks.Input, _ []string) (*hooks.Output, error) {
 	if in == nil || in.Cwd == "" {
 		return nil, nil
@@ -21,14 +22,13 @@ func addEnvironmentInfo(_ context.Context, in *hooks.Input, _ []string) (*hooks.
 }
 
 // environmentInfo builds the <env> block. Long-form dialect rules live in
-// shellSyntaxHint (tool description) and shellDialectHint (reactive) so this
-// stays terse.
+// shellSyntaxHint (tool description) so this stays terse.
 func environmentInfo(workingDir string) string {
 	gitRepo := "No"
 	if isGitRepo(workingDir) {
 		gitRepo = "Yes"
 	}
-	shellPath, _ := shellpath.DetectShell()
+	shellPath, _ := shellpath.DetectShell() // second value is argsPrefix, unused here
 	return fmt.Sprintf(`Here is useful information about the environment you are running in:
 	<env>
 	Working directory: %s
