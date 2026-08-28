@@ -914,15 +914,25 @@ func (s *Session) TitleSnapshot() string {
 	return s.Title
 }
 
-// ApplyCompaction atomically resets the session's cumulative token
-// counts and appends a summary item under s.mu so concurrent readers
-// (e.g. the persistence observer's UpdateSession snapshot) cannot
-// observe the new tokens without the matching summary item.
+// ApplyCompaction atomically resets the session's cumulative token counts,
+// derives scalar cost from canonical item history including the new summary,
+// and appends that summary under s.mu.
 func (s *Session) ApplyCompaction(inputTokens, outputTokens int64, item Item) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.applyCompactionLocked(inputTokens, outputTokens, s.totalCostLocked()+item.Cost, item)
+}
+
+func (s *Session) applyCompaction(inputTokens, outputTokens int64, resultingCost float64, item Item) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.applyCompactionLocked(inputTokens, outputTokens, resultingCost, item)
+}
+
+func (s *Session) applyCompactionLocked(inputTokens, outputTokens int64, resultingCost float64, item Item) {
 	s.InputTokens = inputTokens
 	s.OutputTokens = outputTokens
+	s.Cost = resultingCost
 	s.Messages = append(s.Messages, item)
 }
 
@@ -1666,7 +1676,10 @@ func (s *Session) MessagesSnapshot() []Item {
 func (s *Session) TotalCost() float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.totalCostLocked()
+}
 
+func (s *Session) totalCostLocked() float64 {
 	var cost float64
 	for _, item := range s.Messages {
 		switch {

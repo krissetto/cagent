@@ -346,7 +346,7 @@ func TestAutoModelConfig(t *testing.T) {
 				"DEEPSEEK_API_KEY": "test-key",
 			},
 			expectedProvider:  "deepseek",
-			expectedModel:     "deepseek-chat",
+			expectedModel:     "deepseek-v4-pro",
 			expectedMaxTokens: 32000,
 		},
 		{
@@ -498,7 +498,7 @@ func TestDefaultModels(t *testing.T) {
 	assert.Equal(t, "Qwen3.5-397B-A17B", DefaultModels["ovhcloud"])
 	assert.Equal(t, "llama-3.3-70b-versatile", DefaultModels["groq"])
 	assert.Equal(t, "accounts/fireworks/models/kimi-k2-instruct", DefaultModels["fireworks"])
-	assert.Equal(t, "deepseek-chat", DefaultModels["deepseek"])
+	assert.Equal(t, "deepseek-v4-pro", DefaultModels["deepseek"])
 	assert.Equal(t, "gpt-oss-120b", DefaultModels["cerebras"])
 	assert.Equal(t, "meta-llama/Llama-3.3-70B-Instruct-Turbo", DefaultModels["together"])
 	assert.Equal(t, "meta-llama/Llama-3.3-70B-Instruct", DefaultModels["huggingface"])

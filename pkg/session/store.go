@@ -119,6 +119,12 @@ type Store interface {
 	// The sub-session is stored as a separate session row with parent_id set.
 	AddSubSession(ctx context.Context, parentSessionID string, subSession *Session) error
 
+	// PersistCompaction atomically upserts session metadata and its summary item.
+	// A missing row is created (matching UpdateSession); an existing row is only
+	// updated when its origin matches. Implementations must apply resulting cost
+	// and must not append twice when session aliases the stored live object.
+	PersistCompaction(ctx context.Context, session *Session, inputTokens, outputTokens int64, item Item) error
+
 	// AddSummary adds a summary item to a session at the next position.
 	// item.FirstKeptEntry is the index of the first message kept verbatim during
 	// compaction; item.Cost/Model/Usage attribute the summary's spend (zero
@@ -359,6 +365,60 @@ func (s *InMemorySessionStore) AddSubSession(_ context.Context, parentSessionID 
 	subSession.ParentID = parentSessionID
 	s.sessions.Store(subSession.ID, subSession)
 	parent.AddSubSession(subSession)
+	return nil
+}
+
+func compactionSessionSnapshot(session *Session, inputTokens, outputTokens int64, item Item) (*Session, float64) {
+	session.mu.RLock()
+	defer session.mu.RUnlock()
+	resultingCost := session.totalCostLocked() + item.Cost
+	return &Session{
+		ID:                  session.ID,
+		Origin:              session.Origin,
+		Title:               session.Title,
+		CreatedAt:           session.CreatedAt,
+		ToolsApproved:       session.ToolsApproved,
+		SafetyPolicy:        session.SafetyPolicy,
+		HideToolResults:     session.HideToolResults,
+		WorkingDir:          session.WorkingDir,
+		SendUserMessage:     session.SendUserMessage,
+		MaxIterations:       session.MaxIterations,
+		Starred:             session.Starred,
+		InputTokens:         inputTokens,
+		OutputTokens:        outputTokens,
+		Cost:                resultingCost,
+		Permissions:         session.Permissions.Clone(),
+		Attributes:          maps.Clone(session.Attributes),
+		AgentModelOverrides: cloneStringMap(session.AgentModelOverrides),
+		CustomModelsUsed:    cloneStringSlice(session.CustomModelsUsed),
+		InstructionContext:  cloneInstructionContext(session.InstructionContext),
+		ParentID:            session.ParentID,
+	}, resultingCost
+}
+
+// PersistCompaction atomically reflects a successful compaction in the stored
+// session and applies it to compacted. The common in-memory case stores the
+// live session pointer, so the operation must append exactly once.
+func (s *InMemorySessionStore) PersistCompaction(_ context.Context, compacted *Session, inputTokens, outputTokens int64, item Item) error {
+	if compacted.ID == "" {
+		return ErrEmptyID
+	}
+	snapshot, resultingCost := compactionSessionSnapshot(compacted, inputTokens, outputTokens, item)
+	stored, exists := s.sessions.Load(snapshot.ID)
+	if !exists {
+		compacted.applyCompaction(inputTokens, outputTokens, resultingCost, item)
+		s.sessions.Store(snapshot.ID, compacted)
+		return nil
+	}
+	if stored.Origin != snapshot.Origin {
+		return fmt.Errorf("persist compaction %q: %w", snapshot.ID, ErrOriginMismatch)
+	}
+	if stored == compacted {
+		compacted.applyCompaction(inputTokens, outputTokens, resultingCost, item)
+		return nil
+	}
+	stored.applyCompaction(inputTokens, outputTokens, resultingCost, item)
+	compacted.applyCompaction(inputTokens, outputTokens, resultingCost, item)
 	return nil
 }
 
@@ -1274,6 +1334,68 @@ func (s *SQLiteSessionStore) addItemTx(ctx context.Context, tx *sql.Tx, sessionI
 	default:
 		return nil // Empty item, skip
 	}
+}
+
+// PersistCompaction commits the compaction metadata and summary row in one
+// transaction so a reload cannot observe only half of the continuation state.
+func (s *SQLiteSessionStore) PersistCompaction(ctx context.Context, compacted *Session, inputTokens, outputTokens int64, item Item) error {
+	if compacted.ID == "" {
+		return ErrEmptyID
+	}
+	usageJSON, err := summaryUsageJSON(item.Usage)
+	if err != nil {
+		return err
+	}
+	snapshot, resultingCost := compactionSessionSnapshot(compacted, inputTokens, outputTokens, item)
+	fields, err := sessionPersistedFieldsOf(snapshot)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.ExecContext(ctx,
+		`INSERT INTO sessions (
+			id, origin, tools_approved, safety_policy, input_tokens, output_tokens, title, cost, send_user_message,
+			max_iterations, working_dir, created_at, starred, permissions, agent_model_overrides,
+			custom_models_used, thinking, parent_id, instruction_context, attributes
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			input_tokens = excluded.input_tokens,
+			output_tokens = excluded.output_tokens,
+			cost = excluded.cost
+		WHERE sessions.origin = excluded.origin`,
+		snapshot.ID, snapshot.Origin, snapshot.ToolsApproved, string(snapshot.SafetyPolicy), snapshot.InputTokens, snapshot.OutputTokens,
+		snapshot.Title, snapshot.Cost, snapshot.SendUserMessage, snapshot.MaxIterations, snapshot.WorkingDir,
+		snapshot.CreatedAt.Format(time.RFC3339), snapshot.Starred, fields.PermissionsJSON, fields.AgentModelOverridesJSON,
+		fields.CustomModelsUsedJSON, false, fields.ParentID, fields.InstructionContextJSON, fields.AttributesJSON)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("persist compaction %q: %w", snapshot.ID, ErrOriginMismatch)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO session_items (session_id, position, item_type, summary_text, first_kept_entry, cost, model, usage_json)
+		 VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_items WHERE session_id = ?), 'summary', ?, ?, ?, ?, ?)`,
+		snapshot.ID, snapshot.ID, item.Summary, item.FirstKeptEntry, item.Cost, item.Model, usageJSON)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	compacted.applyCompaction(inputTokens, outputTokens, resultingCost, item)
+	return nil
 }
 
 // AddSummary adds a summary item to a session at the next position.

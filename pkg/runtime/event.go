@@ -506,6 +506,11 @@ type SessionSummaryEvent struct {
 	Cost           float64     `json:"cost,omitempty"`
 	Model          string      `json:"model,omitempty"`
 	Usage          *chat.Usage `json:"usage,omitempty"`
+
+	// persisted is set when the compaction path wrote this summary directly.
+	// The persistence observer uses it to avoid writing the same summary again
+	// on normal observed RunStream executions. It is intentionally not serialized.
+	persisted bool
 }
 
 // SessionSummary builds the event announcing an applied compaction summary.

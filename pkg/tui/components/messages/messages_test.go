@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -12,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/chat"
+	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
@@ -749,11 +752,48 @@ func TestRenderCacheInvalidatesOnAnimationTickWithAnimatedContent(t *testing.T) 
 	require.Contains(t, m.View(), "running_tool")
 }
 
+func TestTerminalReasoningFadeTickInvalidatesTranscript(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ar := animation.NewRuntime()
+		m := NewScrollableView(ar, 80, 24, &service.SessionState{}).(*model)
+		m.SetSize(80, 24)
+
+		m.AppendReasoning("root", "Thinking...")
+		toolCall := tools.ToolCall{
+			ID:       "call-1",
+			Function: tools.FunctionCall{Name: "fading_tool", Arguments: `{}`},
+		}
+		toolDef := tools.Tool{Name: "fading_tool"}
+		m.AddOrUpdateToolCall("root", toolCall, toolDef, types.ToolStatusRunning)
+		m.AddToolResult(&runtime.ToolCallResponseEvent{
+			ToolCallID:     toolCall.ID,
+			ToolDefinition: toolDef,
+			Response:       "done",
+			Result:         &tools.ToolCallResult{Output: "done"},
+		}, types.ToolStatusCompleted)
+
+		require.Contains(t, ansi.Strip(m.View()), "fading_tool")
+		time.Sleep(2600 * time.Millisecond) //nolint:forbidigo // Advances the synctest fake clock.
+
+		cmd := ar.EnsureRunning()
+		require.NotNil(t, cmd)
+		tick, ok := cmd().(animation.TickMsg)
+		require.True(t, ok)
+		tick, ok = ar.Accept(tick)
+		require.True(t, ok)
+
+		_, _ = m.Update(tick)
+		assert.NotContains(t, ansi.Strip(m.View()), "fading_tool",
+			"the terminal fade tick must remove the tool without another event")
+	})
+}
+
 func TestRenderCacheNotInvalidatedOnAnimationTickWithoutAnimatedContent(t *testing.T) {
 	t.Parallel()
 
 	sessionState := &service.SessionState{}
-	m := NewScrollableView(animation.NewRuntime(), 80, 24, sessionState).(*model)
+	ar := animation.NewRuntime()
+	m := NewScrollableView(ar, 80, 24, sessionState).(*model)
 	m.SetSize(80, 24)
 
 	// Add a completed tool call (no spinner - not animated)
@@ -772,8 +812,17 @@ func TestRenderCacheNotInvalidatedOnAnimationTickWithoutAnimatedContent(t *testi
 	// Clear the dirty flag to simulate cached state
 	m.renderDirty = false
 
-	// Send animation tick - should NOT invalidate cache because no animated content
-	m.Update(animation.TickMsg{})
+	// An unrelated component may dirty the shared tick. Settled message content
+	// must still retain its cached transcript.
+	sub := ar.Subscribe()
+	cmd := sub.Start()
+	require.NotNil(t, cmd)
+	tick, ok := cmd().(animation.TickMsg)
+	require.True(t, ok)
+	tick, ok = ar.Accept(tick)
+	require.True(t, ok)
+	tick.MarkDirty()
+	m.Update(tick)
 
 	// Cache should still be clean (not dirty)
 	assert.False(t, m.renderDirty, "renderDirty should remain false after animation tick without animated content")
@@ -1723,8 +1772,8 @@ func TestAgentReturnIsInertInList(t *testing.T) {
 }
 
 func TestMessageCacheBoundsHistoricalRerender(t *testing.T) {
-	runtime := animation.NewRuntime()
-	m := NewScrollableView(runtime, 120, 40, &service.SessionState{}).(*model)
+	ar := animation.NewRuntime()
+	m := NewScrollableView(ar, 120, 40, &service.SessionState{}).(*model)
 	sess := &session.Session{ID: "work"}
 	body := strings.Repeat("word ", 1000)
 	for i := range 1000 {
