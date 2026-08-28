@@ -233,7 +233,7 @@ func (h *shellHandler) runNativeCommand(timeoutCtx, ctx context.Context, rt tool
 	case cmdErr = <-done:
 	}
 
-	formattedOutput := formatCommandOutput(timeoutCtx, ctx, cmdErr, output.String(), timeout)
+	formattedOutput := formatCommandOutput(timeoutCtx, ctx, cmdErr, output.String(), h.shell, timeout)
 	return tools.ResultSuccess(formattedOutput)
 }
 
@@ -342,7 +342,9 @@ func (h *shellHandler) resolveWorkDir(cwd string) string {
 }
 
 // formatCommandOutput formats command output handling timeout, cancellation, and errors.
-func formatCommandOutput(timeoutCtx, ctx context.Context, err error, rawOutput string, timeout time.Duration) string {
+// shellPath gates shellDialectHint: a raw substring match would false-positive on
+// macOS grep or docker logs from a Windows container.
+func formatCommandOutput(timeoutCtx, ctx context.Context, err error, rawOutput, shellPath string, timeout time.Duration) string {
 	var output string
 	if timeoutCtx.Err() != nil {
 		if ctx.Err() != nil {
@@ -356,7 +358,45 @@ func formatCommandOutput(timeoutCtx, ctx context.Context, err error, rawOutput s
 			output = fmt.Sprintf("Error executing command: %s\nOutput: %s", err, output)
 		}
 	}
-	return cmp.Or(strings.TrimSpace(output), "<no output>")
+	output = cmp.Or(strings.TrimSpace(output), "<no output>")
+	if hint := shellDialectHint(shellpath.ShellBaseName(shellPath), output); hint != "" {
+		output = "[shell-hint] " + hint + "\n\n" + output
+	}
+	return output
+}
+
+// shellDialectHint returns a corrective hint for known dialect errors. Gates on
+// shell because e.g. a "chain with &&" nudge is wrong when PowerShell is the
+// parent and a child cmd.exe fails.
+func shellDialectHint(shell, output string) string {
+	switch shell {
+	case "powershell":
+		switch {
+		case strings.Contains(output, "'&&' is not a valid statement separator"),
+			strings.Contains(output, "'||' is not a valid statement separator"):
+			return "You are on Windows PowerShell 5.1: chain commands with `;`, not `&&` or `||`. Retry with the corrected syntax."
+		case strings.Contains(output, `'C:\dev\null'`):
+			return "You are on Windows: redirect stderr with `2>$null` (PowerShell) or `2>nul` (cmd.exe), NOT `2>/dev/null`."
+		case strings.Contains(output, "is not recognized as the name of a cmdlet"):
+			return "You are on PowerShell: POSIX utilities are not available. Use `Select-String` (grep), `Select-Object -First N` (head), `Get-ChildItem` (ls), `Get-Content` (cat), `Test-Path` (test -f)."
+		case strings.Contains(output, "A parameter cannot be found that matches parameter name"):
+			return "You are on PowerShell: cmdlets do not accept POSIX-style short flags like `-la`. Use the cmdlet's own parameter names (e.g. `Get-ChildItem -Force -Recurse`, `Select-Object -First N`)."
+		}
+	case "pwsh":
+		switch {
+		case strings.Contains(output, `'C:\dev\null'`):
+			return "You are on Windows: redirect stderr with `2>$null` (PowerShell) or `2>nul` (cmd.exe), NOT `2>/dev/null`."
+		case strings.Contains(output, "is not recognized as a name of a cmdlet"):
+			return "You are on PowerShell: POSIX utilities are not available. Use `Select-String` (grep), `Select-Object -First N` (head), `Get-ChildItem` (ls), `Get-Content` (cat), `Test-Path` (test -f)."
+		case strings.Contains(output, "A parameter cannot be found that matches parameter name"):
+			return "You are on PowerShell: cmdlets do not accept POSIX-style short flags like `-la`. Use the cmdlet's own parameter names (e.g. `Get-ChildItem -Force -Recurse`, `Select-Object -First N`)."
+		}
+	case "cmd":
+		if strings.Contains(output, "is not recognized as an internal or external command") {
+			return "You are on cmd.exe: POSIX utilities are not available. Use `findstr` (grep), `type` (cat), `dir` (ls), and chain commands with `&` or `&&`."
+		}
+	}
+	return ""
 }
 
 func (t *ToolSet) Instructions() string {
