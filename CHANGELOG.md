@@ -3,6 +3,63 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.128.0] - 2026-08-28
+
+This release adds a new file toolset, a configurable startup banner toggle, and several bug fixes including a GitHub MCP restart loop prevention and improved Code Mode partial startup handling. It also includes rendering performance improvements for long streamed responses.
+
+## What's New
+
+- Adds a `show_banner` setting to toggle the ASCII-art startup banner on or off, accessible via the Appearance tab in `/settings`
+- Adds a `file` toolset exposing `read_file`, `write_file`, and `edit_file` with support for `allow_list`, `deny_list`, and `post_edit` configuration
+
+## Improvements
+
+- Optimizes rendering of long streamed responses by caching more aggressively and avoiding full re-renders on each new chunk
+- Allows `/new [dir]` in the TUI to accept an optional working directory, resolving relative paths and validating directories before spawning a session
+- Reuses an explicit `--working-dir` value when opening new sessions via `/new`, Ctrl+T, or new-tab buttons
+
+## Bug Fixes
+
+- Fixes Code Mode partial startup: preserves successfully started toolsets, omits failed ones, and retries failures on later turns
+- Fixes terminal tool fade cache invalidation
+- Fixes compaction state persistence to be atomic, so compacted sessions restore correctly on reload
+- Fixes GitHub remote MCP server entering an endless reconnect loop after rejecting `subscriptions/listen`
+- Replaces removed `deepseek-chat` model with `deepseek-v4-pro` as the default DeepSeek model
+
+## Technical Changes
+
+- Upgrades to Go 1.27.0 and applies Go 1.27 modernizations
+- Migrates to OpenTelemetry SDK 1.45
+- Replaces `sort.Slice` calls with `slices.SortFunc` across several packages
+- Upgrades testify to v1.12.1
+- Refreshes embedded models.dev catalog snapshot
+### Pull Requests
+
+- [#4008](https://github.com/docker/docker-agent/pull/4008) - fix(codemode): preserve tools after partial startup
+- [#4013](https://github.com/docker/docker-agent/pull/4013) - docs: update CHANGELOG.md for v1.127.0
+- [#4014](https://github.com/docker/docker-agent/pull/4014) - feat(tui): add a show/hide banner setting
+- [#4015](https://github.com/docker/docker-agent/pull/4015) - chore: bump direct Go dependencies
+- [#4034](https://github.com/docker/docker-agent/pull/4034) - chore: replace sort.Slice with slices.SortFunc
+- [#4036](https://github.com/docker/docker-agent/pull/4036) - chore: upgrade to Go 1.27.0 and apply 1.27 modernizations
+- [#4037](https://github.com/docker/docker-agent/pull/4037) - TUI - Optimize rendering of long streaming responses
+- [#4038](https://github.com/docker/docker-agent/pull/4038) - docs: auto-update for merged PRs (2026-08-23)
+- [#4040](https://github.com/docker/docker-agent/pull/4040) - chore: refresh embedded models.dev snapshot
+- [#4042](https://github.com/docker/docker-agent/pull/4042) - fix(tui): reuse explicit working directory for new sessions
+- [#4043](https://github.com/docker/docker-agent/pull/4043) - chore(test): upgrade testify to v1.12.1
+- [#4045](https://github.com/docker/docker-agent/pull/4045) - chore: migrate to OpenTelemetry SDK 1.45
+- [#4049](https://github.com/docker/docker-agent/pull/4049) - test(a2a): apply invocation context deltas in fake
+- [#4050](https://github.com/docker/docker-agent/pull/4050) - fix(tui): allow overriding new session directory
+- [#4051](https://github.com/docker/docker-agent/pull/4051) - docs(telemetry): document semconv v1.43 schema URL compatibility
+- [#4056](https://github.com/docker/docker-agent/pull/4056) - docs: auto-update for merged PRs (2026-08-25)
+- [#4057](https://github.com/docker/docker-agent/pull/4057) - chore: update docker-agent-action to v2.0.5
+- [#4058](https://github.com/docker/docker-agent/pull/4058) - fix: replace removed deepseek-chat with deepseek-v4-pro
+- [#4059](https://github.com/docker/docker-agent/pull/4059) - docs: auto-update for merged PRs (2026-08-26)
+- [#4063](https://github.com/docker/docker-agent/pull/4063) - Fix terminal tool fade cache invalidation
+- [#4064](https://github.com/docker/docker-agent/pull/4064) - Persist compaction atomically
+- [#4069](https://github.com/docker/docker-agent/pull/4069) - fix(mcp): prevent GitHub restart loop
+- [#4070](https://github.com/docker/docker-agent/pull/4070) - feat: add file toolset
+
+
 ## [v1.127.0] - 2026-08-21
 
 This release delivers Desktop PAC-aware egress with SSRF protections, several runtime and toolset fixes, and documentation updates for served-agent safety controls.
@@ -5586,3 +5643,5 @@ This release improves the terminal user interface with better error handling and
 [v1.126.0]: https://github.com/docker/docker-agent/releases/tag/v1.126.0
 
 [v1.127.0]: https://github.com/docker/docker-agent/releases/tag/v1.127.0
+
+[v1.128.0]: https://github.com/docker/docker-agent/releases/tag/v1.128.0
