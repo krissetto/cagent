@@ -199,6 +199,8 @@ MCP tools using stdio transport must complete the initialization handshake befor
 
 If a toolset keeps crashing in a tight loop, tune the [`lifecycle`](../../configuration/tools/index.md#toolset-lifecycle) block on the toolset (e.g. raise `backoff.initial`, lower `max_restarts`, or switch to the `best-effort` profile) so a flaky dependency does not amplify into a restart storm.
 
+If a **RAG knowledge base** is failing to index because the embedding provider is rate-limiting requests (HTTP 429), Docker Agent automatically backs off and retries — see [Indexing failures, retries and backoff](../../tools/rag/index.md#indexing-failures-retries-and-backoff) for the retry schedule and the `max_indexing_concurrency` / `max_embedding_concurrency` knobs that control how much concurrent load is generated.
+
 ## Configuration Errors
 
 ### YAML syntax issues
