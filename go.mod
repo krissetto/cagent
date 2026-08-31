@@ -18,7 +18,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.68.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.45.1
-	github.com/aws/aws-sdk-go-v2/config v1.32.38
+	github.com/aws/aws-sdk-go-v2/config v1.33.1
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.1
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.57.4
 	github.com/aws/aws-sdk-go-v2/service/sts v1.47.1
