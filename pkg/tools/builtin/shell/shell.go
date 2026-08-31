@@ -368,7 +368,7 @@ func (t *ToolSet) Instructions() string {
 - Use "cwd" parameter instead of cd within commands
 - Combine operations with pipes, redirections, and heredocs
 - Non-zero exit codes return error info with output; timed-out commands are terminated`,
-		shellBaseName(t.handler.shell), displayOS())
+		shellpath.ShellBaseName(t.handler.shell), displayOS())
 }
 
 func (t *ToolSet) Tools(context.Context) ([]tools.Tool, error) {
@@ -409,7 +409,7 @@ func (t *ToolSet) Stop(context.Context) error {
 // resolved shell is PowerShell or cmd.exe (e.g. "pwd && ls -la" is a
 // parse error under Windows PowerShell 5.1).
 func shellToolDescription(shellPath string) string {
-	name := shellBaseName(shellPath)
+	name := shellpath.ShellBaseName(shellPath)
 	desc := fmt.Sprintf("Executes the given shell command with %s on %s.", name, displayOS())
 	if hint := shellSyntaxHint(name); hint != "" {
 		desc += " " + hint
@@ -433,18 +433,6 @@ func shellSyntaxHint(name string) string {
 	default:
 		return ""
 	}
-}
-
-// shellBaseName reduces a resolved shell path to a lowercase name the
-// model can recognize (C:\...\powershell.exe -> powershell, /bin/zsh -> zsh).
-// Splits on both separators instead of filepath.Base so the result is
-// deterministic regardless of the host OS the path came from.
-func shellBaseName(shellPath string) string {
-	base := shellPath
-	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
-		base = base[i+1:]
-	}
-	return strings.ToLower(strings.TrimSuffix(base, filepath.Ext(base)))
 }
 
 // displayOS returns a friendlier label for the common values of
