@@ -568,7 +568,7 @@ func injectDeferredToolLoads(input []responses.ResponseInputItemUnionParam, requ
 		if item.OfFunctionCallOutput == nil {
 			continue
 		}
-		deferred := byCallID[item.OfFunctionCallOutput.CallID]
+		deferred := byCallID[item.OfFunctionCallOutput.CallID.Value]
 		if len(deferred) == 0 {
 			continue
 		}
@@ -590,7 +590,7 @@ func injectDeferredToolLoads(input []responses.ResponseInputItemUnionParam, requ
 			names = append(names, tool.Name)
 		}
 
-		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(item.OfFunctionCallOutput.CallID+":"+strings.Join(names, ","))))
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(item.OfFunctionCallOutput.CallID.Value+":"+strings.Join(names, ","))))
 		callID := "cagent_tool_load_" + digest[:16]
 		result = append(result,
 			responses.ResponseInputItemUnionParam{OfToolSearchCall: &responses.ResponseInputItemToolSearchCallParam{
@@ -1009,7 +1009,7 @@ func (c *Client) convertMessagesToResponseInput(ctx context.Context, messages []
 		case chat.MessageRoleTool:
 			// Tool response message - convert to function call output
 			item.OfFunctionCallOutput = &responses.ResponseInputItemFunctionCallOutputParam{
-				CallID: msg.ToolCallID,
+				CallID: param.NewOpt(msg.ToolCallID),
 				Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
 					OfString: param.NewOpt(msg.Content),
 				},
@@ -1086,14 +1086,14 @@ func (c *Client) convertMessagesToResponseInput(ctx context.Context, messages []
 			pendingCalls[item.OfFunctionCall.CallID] = true
 		}
 		if item.OfFunctionCallOutput != nil {
-			delete(pendingCalls, item.OfFunctionCallOutput.CallID)
+			delete(pendingCalls, item.OfFunctionCallOutput.CallID.Value)
 		}
 	}
 	for callID := range pendingCalls {
 		slog.WarnContext(ctx, "Injecting placeholder output for orphaned function call", "call_id", callID)
 		input = append(input, responses.ResponseInputItemUnionParam{
 			OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
-				CallID: callID,
+				CallID: param.NewOpt(callID),
 				Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
 					OfString: param.NewOpt("(no output — tool call was not executed)"),
 				},
