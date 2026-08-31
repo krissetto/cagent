@@ -3,6 +3,25 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.129.0] - 2026-08-31
+
+This release adds MCP protocol revision support, names the resolved shell in environment info, and migrates the A2A server to adka2a v2.
+
+## What's New
+- Adds support for MCP protocol revision `2026-07-28`, including stateless Streamable HTTP transport, updated protocol negotiation, and rejection of unsupported keep-alive combinations for HTTP and attach modes
+- Names the resolved shell in the environment info block so the model has explicit shell dialect context at the start of every session
+
+## Technical Changes
+- Migrates the A2A server from the deprecated `adka2a` compatibility shim to `adka2a/v2`, adapting artifact event normalization to the v2 iterator-based executor contract
+- Delegates `shellBaseName` resolution to `shellpath.ShellBaseName` in the shell tools layer
+### Pull Requests
+
+- [#4041](https://github.com/docker/docker-agent/pull/4041) - chore(a2a): migrate from adka2a to adka2a/v2
+- [#4044](https://github.com/docker/docker-agent/pull/4044) - feat(mcp): support protocol revision 2026-07-28
+- [#4071](https://github.com/docker/docker-agent/pull/4071) - docs: update CHANGELOG.md for v1.128.0
+- [#4072](https://github.com/docker/docker-agent/pull/4072) - hooks/builtins: name the resolved shell in the env block
+
+
 ## [v1.128.0] - 2026-08-28
 
 This release adds a new file toolset, a configurable startup banner toggle, and several bug fixes including a GitHub MCP restart loop prevention and improved Code Mode partial startup handling. It also includes rendering performance improvements for long streamed responses.
@@ -5645,3 +5664,5 @@ This release improves the terminal user interface with better error handling and
 [v1.127.0]: https://github.com/docker/docker-agent/releases/tag/v1.127.0
 
 [v1.128.0]: https://github.com/docker/docker-agent/releases/tag/v1.128.0
+
+[v1.129.0]: https://github.com/docker/docker-agent/releases/tag/v1.129.0
