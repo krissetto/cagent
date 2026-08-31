@@ -318,9 +318,12 @@ func stringSlice(value any) []string {
 // A pattern that begins with a shell metacharacter (`>`, `<`, `|`,
 // `&`, `;`) is anchored on whitespace rather than a word boundary:
 // `>` between two word characters isn't a shell redirect, so a
-// redacted placeholder like `<EMAIL>` or an inline comparison like
-// `"1 > 0"` must not match the `> <file>` truncate pattern. The
-// `\b` prefix would have fired on either.
+// placeholder like `<EMAIL>` or an inline `"a > b"` inside a quoted
+// argument must not match the `> <file>` truncate pattern. Trade-off:
+// fd-number redirects (`1> file`, `2> file`) no longer match either,
+// which drops the `2> /dev/null` false positive as a bonus. Gating
+// treats destructive and unknown identically, so this only affects
+// the label attached to the confirmation dialog.
 func patternToRegexp(pattern string) string {
 	var b strings.Builder
 	b.WriteString(`(?i)`)
