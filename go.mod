@@ -91,7 +91,7 @@ require (
 	golang.org/x/term v0.45.0
 	google.golang.org/adk/v2 v2.2.1-0.20260818092052-16e33673bc9e
 	google.golang.org/genai v1.70.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/dnaeon/go-vcr.v4 v4.0.7
 	gotest.tools/v3 v3.5.2
 	modernc.org/sqlite v1.57.0
