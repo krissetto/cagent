@@ -204,6 +204,20 @@ func carriesDenyFlag(normalized string, flags []string) bool {
 	return false
 }
 
+// isShellMetacharAnchor reports whether c can start a pattern that
+// only makes sense as a shell operator (redirect, pipe, chain,
+// separator). Anchoring such patterns on `\b` is too weak — a word
+// boundary fires between any word char and the operator, so a
+// letter-adjacent `>` (e.g. inside `<EMAIL>` or a literal `"a>b"`)
+// would spuriously match `> <file>`.
+func isShellMetacharAnchor(c byte) bool {
+	switch c {
+	case '>', '<', '|', '&', ';':
+		return true
+	}
+	return false
+}
+
 // containsShellMetacharacter returns true when the command contains a
 // character that can chain (`;`, `&`), pipe (`|`), redirect (`<`, `>`),
 // or substitute (backticks, `$(`) commands — with or without
@@ -300,9 +314,21 @@ func stringSlice(value any) []string {
 // matches anywhere in the normalised command. Destructive intent is
 // the priority — a destructive pattern hidden inside a larger
 // command (e.g. `cd /tmp && rm -rf foo`) should still match.
+//
+// A pattern that begins with a shell metacharacter (`>`, `<`, `|`,
+// `&`, `;`) is anchored on whitespace rather than a word boundary:
+// `>` between two word characters isn't a shell redirect, so a
+// redacted placeholder like `<EMAIL>` or an inline comparison like
+// `"1 > 0"` must not match the `> <file>` truncate pattern. The
+// `\b` prefix would have fired on either.
 func patternToRegexp(pattern string) string {
 	var b strings.Builder
-	b.WriteString(`(?i)(?:^|.*\b)`)
+	b.WriteString(`(?i)`)
+	if pattern != "" && isShellMetacharAnchor(pattern[0]) {
+		b.WriteString(`(?:^|.*\s)`)
+	} else {
+		b.WriteString(`(?:^|.*\b)`)
+	}
 	for i := 0; i < len(pattern); {
 		switch pattern[i] {
 		case '<':

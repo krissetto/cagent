@@ -152,6 +152,34 @@ func TestClassifyCommand_DenyFlagsAreNeverSafe(t *testing.T) {
 	assert.Equal(t, ClassSafe, ClassifyCommand("git log --oneline -5").Class)
 }
 
+// The truncate-redirect pattern `> <file>` must not fire when `>` sits
+// between two word characters — it isn't a shell redirect there, just a
+// placeholder or comparison operator. Anchoring on `\b` alone was too
+// permissive.
+func TestClassifyCommand_TruncateRedirectRequiresWhitespaceAnchor(t *testing.T) {
+	notDestructive := []string{
+		`docker exec n8n n8n user:create --email <EMAIL> --firstName Admin`,
+		`git commit -m "feat: 1>0 check"`,
+		`echo "a>b"`,
+	}
+	for _, command := range notDestructive {
+		t.Run(command, func(t *testing.T) {
+			assert.NotEqual(t, ClassDestructive, ClassifyCommand(command).Class,
+				"letter-adjacent > must not match the > <file> truncate pattern")
+		})
+	}
+
+	// Real redirects — `>` preceded by whitespace — must still match.
+	for _, command := range []string{
+		`echo hi > /etc/passwd`,
+		`cat data > /tmp/out.txt`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			assert.Equal(t, ClassDestructive, ClassifyCommand(command).Class)
+		})
+	}
+}
+
 func TestClassifyCommand_UnknownCommand(t *testing.T) {
 	label := ClassifyCommand("./deploy.sh --prod")
 	assert.Equal(t, ClassUnknown, label.Class)
