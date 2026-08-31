@@ -143,6 +143,32 @@
       { "pattern": "docker exec <ctr> rm -rf <bind-mount-path>",             "blast_radius": "HIGH",        "category": "dk-exec-host",     "notes": "filesystem op via bind mount hits host" },
       { "pattern": "docker run --rm -v $(pwd):/x <img> rm -rf /x",           "blast_radius": "HIGH",        "category": "dk-bind-mount",    "notes": "host-bind YOLO pattern" },
       { "pattern": "docker run --rm -v /:/host <img> <destructive>",         "blast_radius": "HIGH",        "category": "dk-bind-mount",    "notes": "mounts host root — almost always wrong" }
+    ],
+    "sql": [
+      { "pattern": "drop database <name>",           "blast_radius": "HIGH",        "category": "sql-drop",         "notes": "destroys entire database and all data within; matches across mysql/psql/sqlite/mariadb clients and their docker-exec invocations" },
+      { "pattern": "drop database if exists <name>", "blast_radius": "HIGH",        "category": "sql-drop",         "notes": "idempotent form still destroys the database if present" },
+      { "pattern": "drop schema <name>",             "blast_radius": "HIGH",        "category": "sql-drop",         "notes": "destroys schema and its objects" },
+      { "pattern": "drop schema if exists <name>",   "blast_radius": "HIGH",        "category": "sql-drop",         "notes": "idempotent form" },
+      { "pattern": "drop table <name>",              "blast_radius": "HIGH",        "category": "sql-drop",         "notes": "destroys table schema and rows" },
+      { "pattern": "drop table if exists <name>",    "blast_radius": "HIGH",        "category": "sql-drop",         "notes": "idempotent form" },
+      { "pattern": "truncate table <name>",          "blast_radius": "MEDIUM-HIGH", "category": "sql-truncate",     "notes": "removes all rows; typically non-transactional" },
+      { "pattern": "delete from <table>",            "blast_radius": "MEDIUM",      "category": "sql-delete",       "notes": "unqualified DELETE would remove every row; presence of WHERE cannot be checked from the command shape" }
+    ],
+    "app-cli": [
+      { "pattern": "n8n db:reset",                   "blast_radius": "HIGH",        "category": "app-reset",        "notes": "wipes the n8n instance database" },
+      { "pattern": "n8n user-management:reset",      "blast_radius": "MEDIUM",      "category": "app-reset",        "notes": "resets the n8n owner account and API keys" },
+      { "pattern": "bench new-site --force <site>",  "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Frappe/ERPNext: --force overwrites an existing site's database in place" },
+      { "pattern": "bench drop-site <site>",         "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Frappe/ERPNext: drops the site's database and archive" },
+      { "pattern": "rails db:drop",                  "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Rails: drops the database for the current env" },
+      { "pattern": "rails db:reset",                 "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Rails: drop + create + migrate + seed" },
+      { "pattern": "rails db:schema:load",           "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Rails: replaces the schema, wiping rows" },
+      { "pattern": "manage.py flush",                "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Django: removes all data from the database" },
+      { "pattern": "prisma migrate reset",           "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Prisma: drops schema and reruns migrations" },
+      { "pattern": "sequelize db:drop",              "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Sequelize CLI: drops the database" }
+    ],
+    "key-value-store": [
+      { "pattern": "redis-cli flushall",             "blast_radius": "HIGH",        "category": "kv-flush",         "notes": "removes every key from every Redis database" },
+      { "pattern": "redis-cli flushdb",              "blast_radius": "HIGH",        "category": "kv-flush",         "notes": "removes every key from the current Redis database" }
     ]
   },
   "safe": {

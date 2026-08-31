@@ -49,6 +49,19 @@ func TestClassifyCommand_DestructivePatterns(t *testing.T) {
 		{`Remove-Item .\file.txt -Force`, "medium"},
 		{`Remove-Item -Path ".\file.txt"`, "low"},
 		{`Clear-Content -Path .\log.txt`, "medium"},
+		{`docker exec mariadb-1 mariadb -uroot -proot -e "DROP DATABASE IF EXISTS azfulfillment_db;"`, "high"},
+		{`psql -c "DROP TABLE users"`, "high"},
+		{`sqlite3 /tmp/x.db "DROP SCHEMA public CASCADE"`, "high"},
+		{`mysql -e "TRUNCATE TABLE sessions"`, "high"},
+		{`docker exec pg psql -c "DELETE FROM audit_log"`, "medium"},
+		{"docker exec n8n n8n db:reset", "high"},
+		{"docker exec n8n n8n user-management:reset", "medium"},
+		{"docker exec frappe bench new-site --force site1.local", "high"},
+		{"docker exec redis redis-cli FLUSHALL", "high"},
+		{"docker exec redis redis-cli FLUSHDB", "high"},
+		{"docker exec app rails db:reset", "high"},
+		{"docker exec app python manage.py flush --noinput", "high"},
+		{"docker exec app npx prisma migrate reset --force", "high"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.command, func(t *testing.T) {
