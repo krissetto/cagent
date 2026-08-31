@@ -41,6 +41,14 @@ func TestClassifyCommand_DestructivePatterns(t *testing.T) {
 		{"git push --force origin main", "medium"},
 		{"git push --force-with-lease origin main", "medium"},
 		{"git stash clear", "high"},
+		{`Remove-Item -Path ".\config\cache\*" -Recurse -Force`, "high"},
+		{`Remove-Item -Path ".\config\cache\*" -Force -Recurse`, "high"},
+		{`Remove-Item "C:\tmp\foo" -Recurse -Force`, "high"},
+		{`Remove-Item -Recurse -Force C:\tmp\foo`, "high"},
+		{`Remove-Item -Path ".\file.txt" -Force`, "medium"},
+		{`Remove-Item .\file.txt -Force`, "medium"},
+		{`Remove-Item -Path ".\file.txt"`, "low"},
+		{`Clear-Content -Path .\log.txt`, "medium"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.command, func(t *testing.T) {

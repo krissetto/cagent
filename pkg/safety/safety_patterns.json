@@ -37,6 +37,24 @@
       { "pattern": "chmod -R 777 <path>",          "blast_radius": "LOW",         "category": "fs-permissions",   "notes": "security regression, reversible" },
       { "pattern": "sed -i",                       "blast_radius": "MEDIUM",      "category": "fs-modify",        "notes": "in-place file edit; -i.bak variants also match" }
     ],
+    "powershell": [
+      { "pattern": "Remove-Item -Path <path> -Recurse -Force", "blast_radius": "HIGH",   "category": "fs-delete",      "notes": "PowerShell recursive force delete; equivalent to `rm -rf`" },
+      { "pattern": "Remove-Item -Path <path> -Force -Recurse", "blast_radius": "HIGH",   "category": "fs-delete",      "notes": "PowerShell flag-order variant of -Recurse -Force" },
+      { "pattern": "Remove-Item <path> -Recurse -Force",       "blast_radius": "HIGH",   "category": "fs-delete",      "notes": "positional path form of recursive force delete" },
+      { "pattern": "Remove-Item <path> -Force -Recurse",       "blast_radius": "HIGH",   "category": "fs-delete",      "notes": "flag-order variant of positional recursive force delete" },
+      { "pattern": "Remove-Item -Recurse -Force <path>",       "blast_radius": "HIGH",   "category": "fs-delete",      "notes": "trailing-path form of recursive force delete" },
+      { "pattern": "Remove-Item -Force -Recurse <path>",       "blast_radius": "HIGH",   "category": "fs-delete",      "notes": "flag-order variant of trailing-path recursive force delete" },
+      { "pattern": "Remove-Item -Path <path> -Recurse",        "blast_radius": "HIGH",   "category": "fs-delete",      "notes": "PowerShell recursive delete without -Force; still irreversible on non-tty" },
+      { "pattern": "Remove-Item <path> -Recurse",              "blast_radius": "HIGH",   "category": "fs-delete",      "notes": "positional path form of recursive delete" },
+      { "pattern": "Remove-Item -Recurse <path>",              "blast_radius": "HIGH",   "category": "fs-delete",      "notes": "trailing-path form of recursive delete" },
+      { "pattern": "Remove-Item -Path <path> -Force",          "blast_radius": "MEDIUM", "category": "fs-delete",      "notes": "PowerShell force delete of a single item; suppresses confirmation" },
+      { "pattern": "Remove-Item <path> -Force",                "blast_radius": "MEDIUM", "category": "fs-delete",      "notes": "positional form of PowerShell force delete" },
+      { "pattern": "Remove-Item -Force <path>",                "blast_radius": "MEDIUM", "category": "fs-delete",      "notes": "flag-first form of PowerShell force delete" },
+      { "pattern": "Remove-Item -Path <path>",                 "blast_radius": "LOW",    "category": "fs-delete",      "notes": "PowerShell delete of a single item; prompts on tty" },
+      { "pattern": "Remove-Item <path>",                       "blast_radius": "LOW",    "category": "fs-delete",      "notes": "positional form of PowerShell delete" },
+      { "pattern": "Clear-Content <path>",                     "blast_radius": "MEDIUM", "category": "fs-overwrite",   "notes": "PowerShell truncate; empties file contents in place" },
+      { "pattern": "Clear-Content -Path <path>",               "blast_radius": "MEDIUM", "category": "fs-overwrite",   "notes": "PowerShell truncate via -Path" }
+    ],
     "git": [
       { "pattern": "git reset --hard",             "blast_radius": "HIGH",        "category": "git-discard",      "notes": "discards uncommitted work; unrecoverable" },
       { "pattern": "git checkout -- <path>",       "blast_radius": "MEDIUM-HIGH", "category": "git-discard",      "notes": "overwrites local modifications" },
