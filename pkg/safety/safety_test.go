@@ -45,6 +45,10 @@ func TestClassifyCommand_DestructivePatterns(t *testing.T) {
 		{`Remove-Item -Path ".\config\cache\*" -Force -Recurse`, "high"},
 		{`Remove-Item "C:\tmp\foo" -Recurse -Force`, "high"},
 		{`Remove-Item -Recurse -Force C:\tmp\foo`, "high"},
+		{`Remove-Item "C:\Program Files\MyApp\cache" -Recurse -Force`, "high"},
+		{`Remove-Item -Path "C:\Users\Foo\OneDrive - Corp\cache" -Recurse -Force`, "high"},
+		{`Remove-Item -Force -Recurse "C:\Program Files\MyApp"`, "high"},
+		{`Remove-Item "C:\tmp\foo" -Recurse`, "high"},
 		{`Remove-Item -Path ".\file.txt" -Force`, "medium"},
 		{`Remove-Item .\file.txt -Force`, "medium"},
 		{`Remove-Item -Path ".\file.txt"`, "low"},
@@ -59,6 +63,10 @@ func TestClassifyCommand_DestructivePatterns(t *testing.T) {
 		{"docker exec frappe bench new-site --force site1.local", "high"},
 		{"docker exec redis redis-cli FLUSHALL", "high"},
 		{"docker exec redis redis-cli FLUSHDB", "high"},
+		{"redis-cli -h prod.example.com -p 6379 FLUSHALL", "high"},
+		{"redis-cli -n 2 flushdb", "high"},
+		{"bench new-site site1.local --force", "high"},
+		{"bench new-site --force site1.local", "high"},
 		{"docker exec app rails db:reset", "high"},
 		{"docker exec app python manage.py flush --noinput", "high"},
 		{"docker exec app npx prisma migrate reset --force", "high"},
@@ -150,6 +158,27 @@ func TestClassifyCommand_DenyFlagsAreNeverSafe(t *testing.T) {
 	// Vanilla forms of the guarded commands stay safe too.
 	assert.Equal(t, ClassSafe, ClassifyCommand("rg -n foo pkg/").Class)
 	assert.Equal(t, ClassSafe, ClassifyCommand("git log --oneline -5").Class)
+}
+
+// SQL patterns are client-anchored so text searches for SQL verbs stay
+// safe; drift here silently flips ALLOW→DENY under `restricted`.
+func TestClassifyCommand_SqlPatternsDoNotShadowTextSearch(t *testing.T) {
+	for _, command := range []string{
+		`grep "drop table users" -r .`,
+		`grep -rn "delete from cart" .`,
+		`rg "DROP DATABASE"`,
+		`rg "DELETE FROM users"`,
+		`git log --grep "delete from cart"`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			assert.Equal(t, ClassSafe, ClassifyCommand(command).Class)
+		})
+	}
+
+	// Accepted trade: destructive wins when the client name itself
+	// appears in the search argument.
+	label := ClassifyCommand(`grep "mysql -e 'drop database foo'" file`)
+	assert.Equal(t, ClassDestructive, label.Class)
 }
 
 // The truncate-redirect pattern `> <file>` must not fire when `>` sits
