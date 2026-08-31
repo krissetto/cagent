@@ -37,6 +37,12 @@
       { "pattern": "chmod -R 777 <path>",          "blast_radius": "LOW",         "category": "fs-permissions",   "notes": "security regression, reversible" },
       { "pattern": "sed -i",                       "blast_radius": "MEDIUM",      "category": "fs-modify",        "notes": "in-place file edit; -i.bak variants also match" }
     ],
+    "powershell": [
+      { "pattern": "Remove-Item ...-Recurse", "blast_radius": "HIGH",   "category": "fs-delete",    "notes": "wildcard spans quoted paths with spaces (`C:\\Program Files\\…`) that `<path>` (=\\S+) could not" },
+      { "pattern": "Remove-Item ...-Force",   "blast_radius": "MEDIUM", "category": "fs-delete",    "notes": "when -Recurse is also present, the HIGH entry above wins on severity" },
+      { "pattern": "Remove-Item <path>",      "blast_radius": "LOW",    "category": "fs-delete",    "notes": "prompts on tty" },
+      { "pattern": "Clear-Content ...",       "blast_radius": "MEDIUM", "category": "fs-overwrite", "notes": "empties file contents in place, positional or -Path form" }
+    ],
     "git": [
       { "pattern": "git reset --hard",             "blast_radius": "HIGH",        "category": "git-discard",      "notes": "discards uncommitted work; unrecoverable" },
       { "pattern": "git checkout -- <path>",       "blast_radius": "MEDIUM-HIGH", "category": "git-discard",      "notes": "overwrites local modifications" },
@@ -93,8 +99,8 @@
       { "pattern": "docker system prune",                                    "blast_radius": "MEDIUM",      "category": "dk-multi-del",     "notes": "containers + images + networks, NO volumes" },
       { "pattern": "docker system prune -a",                                 "blast_radius": "MEDIUM-HIGH", "category": "dk-multi-del",     "notes": "adds all unused images" },
       { "pattern": "docker system prune --all",                              "blast_radius": "MEDIUM-HIGH", "category": "dk-multi-del",     "notes": "long form of -a" },
-      { "pattern": "docker system prune --volumes",                          "blast_radius": "HIGH",        "category": "dk-multi-del",     "notes": "adds named-volume deletion" },
-      { "pattern": "docker system prune -af --volumes",                      "blast_radius": "HIGH",        "category": "dk-multi-del",     "notes": "the YOLO combination" },
+      { "pattern": "docker system prune --volumes",                          "blast_radius": "HIGH",        "category": "dk-multi-del",     "notes": "adds named-volume deletion; --volumes trailed by other flags inherits via the compiled `\\b.*` suffix" },
+      { "pattern": "docker system prune ...--volumes",                       "blast_radius": "HIGH",        "category": "dk-multi-del",     "notes": "covers -f/-fa (or future flags) between `prune` and `--volumes`" },
       { "pattern": "docker buildx prune",                                    "blast_radius": "MEDIUM",      "category": "dk-build-cache",   "notes": "rebuild cost only" },
       { "pattern": "docker buildx prune --all",                              "blast_radius": "MEDIUM-HIGH", "category": "dk-build-cache",   "notes": "every cached layer" },
       { "pattern": "docker buildx prune -a",                                 "blast_radius": "MEDIUM-HIGH", "category": "dk-build-cache",   "notes": "short form of --all" },
@@ -105,6 +111,8 @@
       { "pattern": "docker compose down -v",                                 "blast_radius": "HIGH",        "category": "dk-compose",       "notes": "drops named volumes" },
       { "pattern": "docker compose down --volumes",                          "blast_radius": "HIGH",        "category": "dk-compose",       "notes": "long form of -v" },
       { "pattern": "docker compose down --volumes --remove-orphans",         "blast_radius": "HIGH",        "category": "dk-compose",       "notes": "aggressive cleanup" },
+      { "pattern": "docker compose down ...-v",                              "blast_radius": "HIGH",        "category": "dk-compose",       "notes": "covers --remove-orphans (or future flags) between `down` and `-v`" },
+      { "pattern": "docker compose down ...--volumes",                       "blast_radius": "HIGH",        "category": "dk-compose",       "notes": "long-flag variant" },
       { "pattern": "docker compose rm -v <svc>",                             "blast_radius": "MEDIUM-HIGH", "category": "dk-compose",       "notes": "volume removal per service" },
       { "pattern": "docker compose rm -f",                                   "blast_radius": "MEDIUM",      "category": "dk-compose",       "notes": "bypasses removal prompt" },
       { "pattern": "docker context rm <name>",                               "blast_radius": "LOW",         "category": "dk-context",       "notes": "reversible if endpoint known" },
@@ -115,6 +123,44 @@
       { "pattern": "docker exec <ctr> rm -rf <bind-mount-path>",             "blast_radius": "HIGH",        "category": "dk-exec-host",     "notes": "filesystem op via bind mount hits host" },
       { "pattern": "docker run --rm -v $(pwd):/x <img> rm -rf /x",           "blast_radius": "HIGH",        "category": "dk-bind-mount",    "notes": "host-bind YOLO pattern" },
       { "pattern": "docker run --rm -v /:/host <img> <destructive>",         "blast_radius": "HIGH",        "category": "dk-bind-mount",    "notes": "mounts host root — almost always wrong" }
+    ],
+    "sql": [
+      { "pattern": "mysql ...drop database",     "blast_radius": "HIGH",        "category": "sql-drop",     "notes": "anchored on the client so `grep 'drop database' -r .` stays safe; docker/kubectl exec wrappers still match via the leading `.*\\b` anchor" },
+      { "pattern": "mysql ...drop schema",       "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "mysql ...drop table",        "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "mysql ...truncate table",    "blast_radius": "MEDIUM-HIGH", "category": "sql-truncate" },
+      { "pattern": "mysql ...delete from",       "blast_radius": "MEDIUM",      "category": "sql-delete" },
+      { "pattern": "mariadb ...drop database",   "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "mariadb ...drop schema",     "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "mariadb ...drop table",      "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "mariadb ...truncate table",  "blast_radius": "MEDIUM-HIGH", "category": "sql-truncate" },
+      { "pattern": "mariadb ...delete from",     "blast_radius": "MEDIUM",      "category": "sql-delete" },
+      { "pattern": "psql ...drop database",      "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "psql ...drop schema",        "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "psql ...drop table",         "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "psql ...truncate table",     "blast_radius": "MEDIUM-HIGH", "category": "sql-truncate" },
+      { "pattern": "psql ...delete from",        "blast_radius": "MEDIUM",      "category": "sql-delete" },
+      { "pattern": "sqlite3 ...drop database",   "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "sqlite3 ...drop schema",     "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "sqlite3 ...drop table",      "blast_radius": "HIGH",        "category": "sql-drop" },
+      { "pattern": "sqlite3 ...truncate table",  "blast_radius": "MEDIUM-HIGH", "category": "sql-truncate" },
+      { "pattern": "sqlite3 ...delete from",     "blast_radius": "MEDIUM",      "category": "sql-delete" }
+    ],
+    "app-cli": [
+      { "pattern": "n8n db:reset",                   "blast_radius": "HIGH",        "category": "app-reset",        "notes": "wipes the n8n instance database" },
+      { "pattern": "n8n user-management:reset",      "blast_radius": "MEDIUM",      "category": "app-reset",        "notes": "resets the n8n owner account and API keys" },
+      { "pattern": "bench new-site ...--force",      "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Frappe/ERPNext: --force overwrites an existing site's database; wildcard matches either flag ordering" },
+      { "pattern": "bench drop-site",                "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Frappe/ERPNext: drops the site's database and archive" },
+      { "pattern": "rails db:drop",                  "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Rails: drops the database for the current env" },
+      { "pattern": "rails db:reset",                 "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Rails: drop + create + migrate + seed" },
+      { "pattern": "rails db:schema:load",           "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Rails: replaces the schema, wiping rows" },
+      { "pattern": "manage.py flush",                "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Django: removes all data from the database" },
+      { "pattern": "prisma migrate reset",           "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Prisma: drops schema and reruns migrations" },
+      { "pattern": "sequelize db:drop",              "blast_radius": "HIGH",        "category": "app-reset",        "notes": "Sequelize CLI: drops the database" }
+    ],
+    "key-value-store": [
+      { "pattern": "redis-cli ...flushall",          "blast_radius": "HIGH",        "category": "kv-flush",         "notes": "wildcard spans connection flags (-h/-p/-n); removes every key from every Redis database" },
+      { "pattern": "redis-cli ...flushdb",           "blast_radius": "HIGH",        "category": "kv-flush",         "notes": "as above, current database only" }
     ]
   },
   "safe": {
