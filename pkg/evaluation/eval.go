@@ -330,6 +330,7 @@ func (r *Runner) runSingleEval(ctx context.Context, evalSess *InputSession) (Res
 		Question:          strings.Join(userMessages, "\n"),
 		SizeExpected:      evals.Size,
 		RelevanceExpected: float64(len(evals.Relevance)),
+		AssertionsTotal:   len(evals.Assertions),
 	}
 
 	expectedToolCalls := extractToolCalls(evalSess.Messages)
@@ -382,6 +383,17 @@ func (r *Runner) runSingleEval(ctx context.Context, evalSess *InputSession) (Res
 		}
 		result.RelevancePassed = passed
 		result.RelevanceResults = results
+	}
+
+	// Run code-based assertions against the agent output.
+	if len(evals.Assertions) > 0 {
+		assertionResults := runAssertions(evals.Assertions, response, cost, actualToolCalls)
+		result.AssertionResults = assertionResults
+		for _, ar := range assertionResults {
+			if ar.Passed {
+				result.AssertionsPassed++
+			}
+		}
 	}
 
 	slog.DebugContext(ctx, "Evaluation complete", "title", title, "duration", time.Since(startTime))

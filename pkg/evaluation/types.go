@@ -48,6 +48,9 @@ type Result struct {
 	RelevancePassed   float64           `json:"relevance"`
 	RelevanceExpected float64           `json:"relevance_expected"`
 	RelevanceResults  []RelevanceResult `json:"relevance_results,omitempty"`
+	AssertionResults  []AssertionResult `json:"assertion_results,omitempty"`
+	AssertionsPassed  int               `json:"assertions_passed"`
+	AssertionsTotal   int               `json:"assertions_total"`
 	Error             string            `json:"error,omitempty"`
 	RawOutput         []map[string]any  `json:"raw_output,omitempty"`
 	Session           *session.Session  `json:"-"` // Full session for database storage (not in JSON)
@@ -88,6 +91,23 @@ func (r *Result) checkResults() (successes, failures []string) {
 						failures = append(failures, fmt.Sprintf("relevance: %s (reason: %s)", result.Criterion, result.Reason))
 					} else {
 						failures = append(failures, "relevance: "+result.Criterion)
+					}
+				}
+			}
+		}
+	}
+
+	// Check assertions
+	if r.AssertionsTotal > 0 {
+		if r.AssertionsPassed >= r.AssertionsTotal {
+			successes = append(successes, fmt.Sprintf("assertions %d/%d", r.AssertionsPassed, r.AssertionsTotal))
+		} else {
+			for _, ar := range r.AssertionResults {
+				if !ar.Passed {
+					if ar.Reason != "" {
+						failures = append(failures, fmt.Sprintf("assertion %s: %s", ar.Name, ar.Reason))
+					} else {
+						failures = append(failures, "assertion: "+ar.Name)
 					}
 				}
 			}
