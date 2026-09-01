@@ -258,6 +258,8 @@ toolsets:
 
 See [Toolset Lifecycle](../../configuration/tools/index.md#toolset-lifecycle) for all profiles and tuning knobs, and [`/toolset-restart`](../../features/tui/index.md) to force a reconnect from the TUI.
 
+**Startup failure behaviour:** local MCP startup failures (missing binary, connection refused, authentication error) fail fast — each turn retries immediately with no artificial delay. The rate-limit backoff gate applies only to model-provider embedding calls (see [Indexing failures, retries and backoff](../rag/index.md#indexing-failures-retries-and-backoff)); it does not apply to MCP server startup.
+
 ## Combined Example
 
 ```yaml

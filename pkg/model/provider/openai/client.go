@@ -1165,7 +1165,7 @@ func (c *Client) CreateBatchEmbedding(ctx context.Context, texts []string) (*bas
 	response, err := client.Embeddings.New(ctx, params)
 	if err != nil {
 		slog.ErrorContext(ctx, "OpenAI batch embedding request failed", "error", err)
-		return nil, fmt.Errorf("failed to create batch embeddings: %w", err)
+		return nil, fmt.Errorf("failed to create batch embeddings: %w", oaistream.WrapOpenAIError(err))
 	}
 
 	if len(response.Data) != len(texts) {
