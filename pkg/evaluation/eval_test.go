@@ -1525,3 +1525,16 @@ func TestResultCheckResults_AssertionsDoNotFireWhenZero(t *testing.T) {
 	assert.Empty(t, successes)
 	assert.Empty(t, failures)
 }
+
+func TestComputeSummary_Assertions(t *testing.T) {
+	t.Parallel()
+
+	results := []Result{
+		{Title: "a", AssertionsTotal: 3, AssertionsPassed: 2},
+		{Title: "b", AssertionsTotal: 2, AssertionsPassed: 2},
+		{Title: "c", Error: "boom", AssertionsTotal: 1},
+	}
+	s := computeSummary(results)
+	assert.Equal(t, 5, s.AssertionsTotal)
+	assert.Equal(t, 4, s.AssertionsPassed)
+}
