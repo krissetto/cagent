@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/goccy/go-yaml"
 
@@ -547,6 +548,12 @@ func validateSkills(label string, sc *latest.SkillsConfig) error {
 		inline := &sc.Inline[i]
 		if strings.TrimSpace(inline.Name) == "" {
 			return fmt.Errorf("%s has an inline skill with no name", label)
+		}
+		// The name doubles as the `/<name>` slash command, whose parser splits
+		// the input on the first space, so whitespace here would silently
+		// produce a skill that command can never reach.
+		if strings.ContainsFunc(inline.Name, unicode.IsSpace) {
+			return fmt.Errorf("%s inline skill '%s' must not have whitespace in its name: it doubles as the /%s command", label, inline.Name, inline.Name)
 		}
 		if strings.TrimSpace(inline.Description) == "" {
 			return fmt.Errorf("%s inline skill '%s' is missing a description", label, inline.Name)
