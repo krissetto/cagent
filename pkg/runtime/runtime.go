@@ -38,8 +38,10 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/lifecycle"
 )
 
-// ToolHandlerFunc is a function type for handling tool calls
-type ToolHandlerFunc func(ctx context.Context, sess *session.Session, toolCall tools.ToolCall, events EventSink) (*tools.ToolCallResult, error)
+// ToolHandlerFunc handles a runtime-managed tool call. rt is the dispatcher's
+// per-call handle, used by handlers that need to talk back to the in-flight
+// call (streaming output, asking the user to approve an action).
+type ToolHandlerFunc func(ctx context.Context, sess *session.Session, toolCall tools.ToolCall, events EventSink, rt tools.Runtime) (*tools.ToolCallResult, error)
 
 // Runtime defines the contract for runtime execution
 type Runtime interface {

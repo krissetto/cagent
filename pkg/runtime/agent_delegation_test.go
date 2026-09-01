@@ -636,7 +636,7 @@ func TestTransferTask_PropagatesPermissions(t *testing.T) {
 		},
 	}
 
-	result, err := rt.handleTaskTransfer(t.Context(), sess, toolCall, NewChannelSink(evts))
+	result, err := rt.handleTaskTransfer(t.Context(), sess, toolCall, NewChannelSink(evts), tools.NopRuntime{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.False(t, result.IsError, "transfer to valid sub-agent should succeed")
@@ -819,7 +819,7 @@ func TestTransferTask_RejectsDirectCycle(t *testing.T) {
 	sess := session.New(session.WithUserMessage("Test"))
 	evts := make(chan Event, 128)
 
-	result, err := rt.handleTaskTransfer(t.Context(), sess, transferToolCall("root"), NewChannelSink(evts))
+	result, err := rt.handleTaskTransfer(t.Context(), sess, transferToolCall("root"), NewChannelSink(evts), tools.NopRuntime{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.True(t, result.IsError)
@@ -869,7 +869,7 @@ func TestTransferTask_NestedFromPinnedBackgroundSession(t *testing.T) {
 	evts := make(chan Event, 128)
 
 	// Delegating back to an ancestor from the pinned child is an indirect cycle.
-	result, err := rt.handleTaskTransfer(t.Context(), child, transferToolCall("root"), NewChannelSink(evts))
+	result, err := rt.handleTaskTransfer(t.Context(), child, transferToolCall("root"), NewChannelSink(evts), tools.NopRuntime{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.True(t, result.IsError)
@@ -879,7 +879,7 @@ func TestTransferTask_NestedFromPinnedBackgroundSession(t *testing.T) {
 	// Acyclic delegation from the same pinned child is allowed. helper is
 	// not in root's sub-agents, so success also proves the caller resolved
 	// from the pinned session (worker), not the shared current agent (root).
-	result, err = rt.handleTaskTransfer(t.Context(), child, transferToolCall("helper"), NewChannelSink(evts))
+	result, err = rt.handleTaskTransfer(t.Context(), child, transferToolCall("helper"), NewChannelSink(evts), tools.NopRuntime{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.False(t, result.IsError, "acyclic multi-level delegation must stay supported: %s", result.Output)
@@ -994,7 +994,7 @@ func TestTransferTask_PinnedParentDoesNotMutateSharedCurrentAgent(t *testing.T) 
 	require.Equal(t, "worker", child.AgentName, "background child session must be pinned")
 
 	evts := make(chan Event, 128)
-	result, err := rt.handleTaskTransfer(t.Context(), child, transferToolCall("helper"), NewChannelSink(evts))
+	result, err := rt.handleTaskTransfer(t.Context(), child, transferToolCall("helper"), NewChannelSink(evts), tools.NopRuntime{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.False(t, result.IsError, "nested transfer must succeed: %s", result.Output)
@@ -1056,7 +1056,7 @@ func TestTransferTask_ForegroundSwitchesAndRestoresCurrentAgent(t *testing.T) {
 	sess := session.New(session.WithUserMessage("Test"), session.WithToolsApproved(true))
 	evts := make(chan Event, 128)
 
-	result, err := rt.handleTaskTransfer(t.Context(), sess, transferToolCall("librarian"), NewChannelSink(evts))
+	result, err := rt.handleTaskTransfer(t.Context(), sess, transferToolCall("librarian"), NewChannelSink(evts), tools.NopRuntime{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.False(t, result.IsError, "transfer must succeed: %s", result.Output)
@@ -1147,7 +1147,7 @@ func TestTransferTask_ConcurrentPinnedNestedTransfersStayIsolated(t *testing.T) 
 		out := make(chan transferOutcome, 1)
 		go func() {
 			evts := make(chan Event, 128)
-			result, err := rt.handleTaskTransfer(t.Context(), child, transferToolCall(target), NewChannelSink(evts))
+			result, err := rt.handleTaskTransfer(t.Context(), child, transferToolCall(target), NewChannelSink(evts), tools.NopRuntime{})
 			out <- transferOutcome{result: result, err: err, evts: evts}
 		}()
 		return out
@@ -1211,7 +1211,7 @@ func TestTransferTask_DepthBoundary(t *testing.T) {
 		)
 		evts := make(chan Event, 128)
 
-		result, err := rt.handleTaskTransfer(t.Context(), sess, transferToolCall("librarian"), NewChannelSink(evts))
+		result, err := rt.handleTaskTransfer(t.Context(), sess, transferToolCall("librarian"), NewChannelSink(evts), tools.NopRuntime{})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.False(t, result.IsError, "delegation at the maximum depth must be allowed: %s", result.Output)
@@ -1228,7 +1228,7 @@ func TestTransferTask_DepthBoundary(t *testing.T) {
 		)
 		evts := make(chan Event, 128)
 
-		result, err := rt.handleTaskTransfer(t.Context(), sess, transferToolCall("librarian"), NewChannelSink(evts))
+		result, err := rt.handleTaskTransfer(t.Context(), sess, transferToolCall("librarian"), NewChannelSink(evts), tools.NopRuntime{})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.True(t, result.IsError)
@@ -1633,7 +1633,7 @@ func TestRunStream_NestedBackgroundAgents_EndToEnd(t *testing.T) {
 	}
 	var listOut string
 	require.Eventually(t, func() bool {
-		res, err := listHandler(t.Context(), sess, listCall, NewChannelSink(make(chan Event, 4)))
+		res, err := listHandler(t.Context(), sess, listCall, NewChannelSink(make(chan Event, 4)), tools.NopRuntime{})
 		if err != nil {
 			return false
 		}

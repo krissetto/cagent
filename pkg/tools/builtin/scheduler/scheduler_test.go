@@ -14,6 +14,8 @@ import (
 )
 
 type fakeRuntime struct {
+	tools.NopRuntime
+
 	mu        sync.Mutex
 	recalls   []string
 	recall    bool
