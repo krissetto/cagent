@@ -127,47 +127,42 @@ func (s *ToolSet) FindSkill(name string) *skills.Skill {
 	return s.findSkill(name)
 }
 
-// ReadSkillContent returns the content of a skill's SKILL.md by name.
-// For local skills, it expands any !`command` patterns in the content by
-// executing the commands and replacing the patterns with their stdout output.
-// Every command is submitted to rt for approval first: a skill body is data,
-// not agent config, so a command hidden in one must never run unannounced.
-// Command expansion is disabled for remote and inline skills to prevent
-// arbitrary code execution.
+// ReadSkillContent returns the content of a skill's SKILL.md by name, or the
+// body carried in the agent config for an inline skill.
+// For local and inline skills, it expands any !`command` patterns in the
+// content by executing the commands and replacing the patterns with their
+// stdout output. Every command is submitted to rt for approval first: a skill
+// body is data, not agent config, so a command hidden in one must never run
+// unannounced. Command expansion is disabled for remote skills to prevent
+// arbitrary code execution on behalf of a third-party server.
 func (s *ToolSet) ReadSkillContent(ctx context.Context, name string, rt tools.Runtime) (string, error) {
 	skill := s.findSkill(name)
 	if skill == nil {
 		return "", fmt.Errorf("skill %q not found", name)
 	}
 
-	// Inline skills carry their body in memory; there is no file to read and
-	// no command expansion (their content comes from the trusted agent config
-	// author, but we keep behaviour identical to remote skills for safety).
-	if skill.IsInline() {
-		return skill.InlineContent, nil
-	}
-
-	content, err := readFileContent(skill.FilePath)
-	if err != nil {
-		return "", err
-	}
-
-	if skill.Local {
-		if rt == nil {
-			rt = tools.NopRuntime{}
-		}
-		content, err = skills.ExpandCommandsWithError(ctx, content, s.confirmedRunner(rt, skill.Name))
-		if err != nil {
+	// Inline skills carry their body in memory; there is no file to read.
+	content := skill.InlineContent
+	if !skill.IsInline() {
+		var err error
+		if content, err = readFileContent(skill.FilePath); err != nil {
 			return "", err
 		}
 	}
 
-	return content, nil
+	if !skill.ExpandsCommands() {
+		return content, nil
+	}
+
+	if rt == nil {
+		rt = tools.NopRuntime{}
+	}
+	return skills.ExpandCommandsWithError(ctx, content, s.confirmedRunner(rt, skill.Name))
 }
 
-// confirmedRunner returns the [skills.Runner] used to expand a local skill:
-// each embedded command is presented to the user as a shell tool call and only
-// runs once approved.
+// confirmedRunner returns the [skills.Runner] used to expand a local or inline
+// skill: each embedded command is presented to the user as a shell tool call
+// and only runs once approved.
 func (s *ToolSet) confirmedRunner(rt tools.Runtime, skillName string) skills.Runner {
 	return func(ctx context.Context, command string) (string, error) {
 		return rt.ConfirmAndRun(ctx, tools.ConfirmedRun{

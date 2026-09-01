@@ -112,7 +112,7 @@ Inline skills carry their body in the config itself, so they need no `SKILL.md` 
 > [!NOTE]
 > **Inline vs. file-based skills**
 >
-> Inline skills support the subset of the SKILL.md format that fits in YAML. They cannot bundle supporting files (no `read_skill_file`) or use `` !`command` `` expansion. For skills that need bundled resources or executable helpers, use a `SKILL.md` directory instead.
+> Inline skills support the subset of the SKILL.md format that fits in YAML. They cannot bundle supporting files (no `read_skill_file`), so for skills that need bundled resources use a `SKILL.md` directory instead. They do support [embedded commands](#embedded-commands).
 
 ## SKILL.md Format
 
@@ -153,8 +153,7 @@ When asked to create a Dockerfile:
 
 ### Embedded Commands
 
-A file-based skill can inject the output of a command into its body with the
-`` !`command` `` syntax:
+A local skill — whether loaded from a `SKILL.md` file or [defined inline](#inline-skills) in the agent config — can inject the output of a command into its body with the `` !`command` `` syntax:
 
 ```markdown
 Current branch: !`git branch --show-current`
@@ -168,10 +167,18 @@ already allows the command (an `allow` rule, autonomous mode, or a read-only
 command under the balanced mode). Refusing a command leaves an error note in its
 place; the rest of the skill is still loaded.
 
-Expansion is skipped entirely for remote and inline skills. It is also skipped
-when a skill is invoked directly with `/<name>`: input resolution has no parent
-tool call to own an approval prompt, so the commands are reported as skipped
-instead of running unannounced.
+Expansion is skipped entirely for remote skills, whose body is fetched over the
+network from a third party. It is also skipped when a skill is invoked directly
+with `/<name>`: input resolution has no parent tool call to own an approval
+prompt, so the commands are reported as skipped instead of running unannounced.
+
+> [!WARNING]
+> An inline skill's commands come from the agent config itself, so an agent YAML
+> you did not write — for example one pulled from a registry with
+> `docker-agent run myorg/agent:tag` — can carry them. That config also chooses
+> the agent's instructions, toolsets and `permissions` rules, so treat a
+> third-party agent config as you would any other untrusted code and read it
+> before running it.
 
 ## Running a Skill as a Sub-Agent
 

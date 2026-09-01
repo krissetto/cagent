@@ -434,16 +434,88 @@ func TestSkillsToolset_ReadSkillContent_Inline(t *testing.T) {
 	assert.Equal(t, "# Inline\nDo it.", content)
 }
 
-func TestSkillsToolset_ReadSkillContent_InlineSkipsExpansion(t *testing.T) {
+func TestSkillsToolset_ReadSkillContent_InlineExpandsConfirmedCommand(t *testing.T) {
 	t.Parallel()
-	// Inline content must never be shell-expanded, even when a working dir is set.
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+	// An inline body is authored in the agent config the user chose to run, so
+	// its commands expand like a local skill's — still gated by an approval.
 	st := New([]skills.Skill{
-		{Name: "inline", Description: "Inline", InlineContent: "Info: !`echo should-not-run`"},
+		{Name: "inline", Description: "Inline", InlineContent: "Info: !`echo expanded`"},
 	}, t.TempDir())
 
-	content, err := st.ReadSkillContent(t.Context(), "inline", &confirmingRuntime{})
+	rt := &confirmingRuntime{}
+	content, err := st.ReadSkillContent(t.Context(), "inline", rt)
+	require.NoError(t, err)
+	assert.Equal(t, "Info: expanded", content)
+
+	require.Len(t, rt.runs, 1)
+	assert.Equal(t, safety.ShellToolName, rt.runs[0].ToolName)
+	assert.Equal(t, "echo expanded", rt.runs[0].Args["cmd"])
+	assert.Equal(t, "inline", rt.runs[0].Metadata[metaSkill])
+}
+
+func TestSkillsToolset_ReadSkillContent_InlineRejectedCommandIsNotRun(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+	tmpDir := t.TempDir()
+	marker := filepath.Join(tmpDir, "marker")
+	st := New([]skills.Skill{
+		{Name: "inline", Description: "Inline", InlineContent: "Out: !`touch " + marker + "`"},
+	}, tmpDir)
+
+	rt := &confirmingRuntime{deny: true, reason: tools.ErrConfirmationDenied}
+	content, err := st.ReadSkillContent(t.Context(), "inline", rt)
+	require.NoError(t, err)
+	assert.Contains(t, content, "error executing")
+	assert.NoFileExists(t, marker)
+}
+
+func TestSkillsToolset_ReadSkillContent_InlineFailsClosedWithoutApprover(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+	// A host with no way to prompt (direct /<name> resolution, standalone fork)
+	// must not run an inline skill's commands. Both the nil and the explicit
+	// NopRuntime spelling have to fail closed.
+	for name, rt := range map[string]tools.Runtime{"nil": nil, "nop": tools.NopRuntime{}} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tmpDir := t.TempDir()
+			marker := filepath.Join(tmpDir, "marker")
+			st := New([]skills.Skill{
+				{Name: "inline", Description: "Inline", InlineContent: "Out: !`touch " + marker + "`"},
+			}, tmpDir)
+
+			content, err := st.ReadSkillContent(t.Context(), "inline", rt)
+			require.NoError(t, err)
+			assert.Contains(t, content, "error executing")
+			assert.NoFileExists(t, marker)
+		})
+	}
+}
+
+func TestSkillsToolset_ReadSkillContent_RemoteSkipsExpansion(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	skillFile := filepath.Join(tmpDir, "SKILL.md")
+	require.NoError(t, os.WriteFile(skillFile, []byte("Info: !`echo should-not-run`"), 0o644))
+
+	// Local is false: the body came from a third-party server, so its commands
+	// are never offered for approval in the first place.
+	st := New([]skills.Skill{
+		{Name: "remote", Description: "Remote", FilePath: skillFile, BaseDir: tmpDir},
+	}, tmpDir)
+
+	rt := &confirmingRuntime{}
+	content, err := st.ReadSkillContent(t.Context(), "remote", rt)
 	require.NoError(t, err)
 	assert.Equal(t, "Info: !`echo should-not-run`", content)
+	assert.Empty(t, rt.runs)
 }
 
 func TestSkillsToolset_ReadSkillFile_InlineRejected(t *testing.T) {
