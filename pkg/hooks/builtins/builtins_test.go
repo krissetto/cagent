@@ -132,6 +132,51 @@ func TestAddPromptFilesReadsFromCwd(t *testing.T) {
 	assert.Contains(t, source.ChangedContent, filepath.Join(dir, "PROMPT.md"))
 }
 
+// TestAddPromptFilesListsNestedFiles covers the monorepo case: the closest
+// file is loaded in full while the ones below the working dir are listed by
+// path only, as a separate instruction source.
+func TestAddPromptFilesListsNestedFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "PROMPT.md"), []byte("root rules"), 0o600))
+	nested := filepath.Join(dir, "service")
+	require.NoError(t, os.Mkdir(nested, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "PROMPT.md"), []byte("service rules"), 0o600))
+
+	fn := lookup(t, builtins.AddPromptFiles)
+
+	out, err := fn(t.Context(), &hooks.Input{SessionID: "s", Cwd: dir}, []string{"--depth=1", "PROMPT.md"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.Len(t, out.HookSpecificOutput.InstructionContext, 2)
+
+	loaded := out.HookSpecificOutput.InstructionContext[0]
+	assert.Contains(t, loaded.Content, "root rules")
+	assert.True(t, loaded.CompleteGroup)
+
+	index := out.HookSpecificOutput.InstructionContext[1]
+	assert.Equal(t, "core/prompt-file-index", index.Key)
+	assert.Contains(t, index.Content, "service/PROMPT.md")
+	assert.NotContains(t, index.Content, "service rules", "nested files are listed, not read")
+}
+
+// TestAddPromptFilesDepthArgIsNotAFilename pins that the --depth= argument is
+// consumed as an option: a stray file named after it must not be looked up.
+func TestAddPromptFilesDepthArgIsNotAFilename(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "PROMPT.md"), []byte("root rules"), 0o600))
+
+	fn := lookup(t, builtins.AddPromptFiles)
+
+	out, err := fn(t.Context(), &hooks.Input{SessionID: "s", Cwd: dir}, []string{"--depth=1", "PROMPT.md"})
+	require.NoError(t, err)
+	require.Len(t, out.HookSpecificOutput.InstructionContext, 1,
+		"only PROMPT.md resolves; --depth=1 is an option and nothing is nested")
+}
+
 // TestAddPromptFilesMissingFileIsTolerated documents that missing configured
 // files do not prevent surviving files from contributing.
 func TestAddPromptFilesMissingFileIsTolerated(t *testing.T) {
@@ -217,6 +262,21 @@ func TestApplyAgentDefaultsAlwaysInjectsLargeResultLimiter(t *testing.T) {
 	assert.Equal(t, hooks.HookTypeBuiltin, cfg.ToolResponseTransform[0].Hooks[0].Type)
 	require.Len(t, cfg.SessionEnd, 1)
 	assert.Equal(t, builtins.LimitLargeToolResults, cfg.SessionEnd[0].Command)
+}
+
+// TestApplyAgentDefaultsPromptFilesDepth pins how the nested-scan depth
+// reaches the builtin: as a leading --depth= argument, so the hook's args
+// stay a flat []string.
+func TestApplyAgentDefaultsPromptFilesDepth(t *testing.T) {
+	t.Parallel()
+
+	cfg := builtins.ApplyAgentDefaults(nil, builtins.AgentDefaults{
+		AddPromptFiles:      []string{"PROMPT.md"},
+		AddPromptFilesDepth: 2,
+	})
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.TurnStart, 1)
+	assert.Equal(t, []string{"--depth=2", "PROMPT.md"}, cfg.TurnStart[0].Args)
 }
 
 // TestApplyAgentDefaultsInjectsExpectedEvents verifies which event each

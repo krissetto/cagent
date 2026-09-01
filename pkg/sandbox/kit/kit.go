@@ -518,6 +518,10 @@ func localSkillFilter(cfg *latestcfg.Config) (map[string]bool, bool) {
 // surfaces through the live mount and the host-home one is staged
 // into the kit, exactly mirroring the runtime [promptfiles.Paths]
 // behaviour that returns up to two paths.
+//
+// The nested files listed by add_prompt_files_depth are not staged: they
+// live under workspace by construction and are read on demand through the
+// live mount.
 func stagePromptFiles(kitDir string, cfg *latestcfg.Config, hostCwd, hostHome, workspace string) ([]Entry, []Redaction, error) {
 	target := filepath.Join(kitDir, promptfiles.KitSubdir)
 	if err := os.MkdirAll(target, 0o750); err != nil {

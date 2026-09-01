@@ -5,7 +5,9 @@
 //
 //   - add_date              (turn_start)      — today's date
 //   - add_environment_info  (session_start)   — cwd, git, OS, arch
-//   - add_prompt_files      (turn_start)      — contents of prompt files
+//   - add_prompt_files      (turn_start)      — contents of prompt files,
+//     plus (with args=['--depth=<N>']) a path-only listing of the same
+//     filenames found up to N levels below the working dir
 //   - add_git_status        (turn_start)      — `git status --short --branch`
 //   - add_git_diff          (turn_start)      — `git diff --stat` (or full)
 //   - add_directory_listing (session_start)   — top-level entries of cwd
@@ -62,6 +64,7 @@ package builtins
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/docker/docker-agent/pkg/hooks"
 )
@@ -124,6 +127,10 @@ type AgentDefaults struct {
 	AddDate            bool
 	AddEnvironmentInfo bool
 	AddPromptFiles     []string
+	// AddPromptFilesDepth is forwarded to the add_prompt_files builtin as its
+	// nested-scan depth (0 = no scan). See [AddPromptFiles] in
+	// add_prompt_files.go.
+	AddPromptFilesDepth int
 	// RedactSecrets auto-injects the redact_secrets builtin under
 	// pre_tool_use, before_llm_call, and tool_response_transform — the
 	// three legs of the feature. Equivalent to writing those three
@@ -167,7 +174,11 @@ func ApplyAgentDefaults(cfg *hooks.Config, d AgentDefaults) *hooks.Config {
 		cfg.TurnStart = append(cfg.TurnStart, builtinHook(AddDate))
 	}
 	if len(d.AddPromptFiles) > 0 {
-		cfg.TurnStart = append(cfg.TurnStart, builtinHook(AddPromptFiles, d.AddPromptFiles...))
+		args := d.AddPromptFiles
+		if d.AddPromptFilesDepth > 0 {
+			args = append([]string{depthArgPrefix + strconv.Itoa(d.AddPromptFilesDepth)}, args...)
+		}
+		cfg.TurnStart = append(cfg.TurnStart, builtinHook(AddPromptFiles, args...))
 	}
 	if d.AddEnvironmentInfo {
 		cfg.SessionStart = append(cfg.SessionStart, builtinHook(AddEnvironmentInfo))

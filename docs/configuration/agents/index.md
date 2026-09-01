@@ -30,6 +30,7 @@ agents:
     add_date: boolean # Optional: add date to context
     add_environment_info: boolean # Optional: add env info to context
     add_prompt_files: [list] # Optional: include additional prompt files
+    add_prompt_files_depth: int # Optional: also list (not load) the same files found N levels below the working dir
     add_description_parameter: bool # Optional: add description to tool schema
     redact_secrets: boolean # Optional: scrub detected secrets out of tool args, outgoing chat messages, and tool output
     code_mode_tools: boolean # Optional: let the agent write JavaScript to orchestrate tool calls (see Code Mode)
@@ -95,6 +96,7 @@ agents:
 | `add_date`                  | boolean | ✗        | When `true`, injects the current date into the agent's context.                                                                                                               |
 | `add_environment_info`      | boolean | ✗        | When `true`, injects working directory, OS, CPU architecture, git info, and the resolved shell into context.                                                                  |
 | `add_prompt_files`          | array   | ✗        | List of file paths whose contents are appended to the system prompt. Useful for including coding standards, guidelines, or additional context.                                |
+| `add_prompt_files_depth`    | int     | ✗        | Also list, by path only, the `add_prompt_files` names found up to this many directory levels below the working directory (`1` = direct subdirectories). Contents are not loaded — the agent reads the ones it needs. Useful in monorepos. Default: `0` (no scan). See [Prompt Files](#prompt-files) below. |
 | `add_description_parameter` | boolean | ✗        | When `true`, adds agent descriptions as a parameter in tool schemas. Helps with tool selection in multi-agent scenarios.                                                      |
 | `redact_secrets`            | boolean | ✗        | When `true`, scrubs detected secrets (API keys, tokens, private keys, etc.) out of tool-call arguments, outgoing chat messages, and tool output before they reach a tool, the model, or downstream consumers. See [Redacting Secrets](#redacting-secrets) below.   |
 | `code_mode_tools`           | boolean | ✗        | When `true`, replaces the agent's individual tools with a single tool that runs a JavaScript script calling as many of them as needed in one turn. See [Code Mode](../../features/code-mode/index.md). |
@@ -202,6 +204,52 @@ name directly under the user's home directory — so a personal `~/AGENTS.md`
 can layer on top of a repo-local one. Missing files are skipped rather than
 erroring. Because resolution and the read happen on every turn, edits to the
 file are picked up without restarting the agent.
+
+### Nested Prompt Files (Monorepos)
+
+The lookup above only ever walks *up*, so in a monorepo the `AGENTS.md` of the
+sub-project being worked on is invisible — and loading every one of them would
+be wasteful. `add_prompt_files_depth` scans *down* instead and injects a
+listing of what it finds, paths only:
+
+```yaml
+agents:
+  root:
+    model: anthropic/claude-sonnet-4-5
+    description: A coding assistant for a monorepo
+    instruction: You are an expert software developer.
+    add_prompt_files:
+      - AGENTS.md
+    add_prompt_files_depth: 2
+```
+
+The agent then sees, alongside the fully loaded root `AGENTS.md`:
+
+```text
+Prompt files found in subdirectories of /repo. Their contents are NOT loaded:
+
+- services/api/AGENTS.md
+- services/web/AGENTS.md
+
+Read the ones covering the files you are about to work on. For anything under
+its own directory, a nested file's instructions take precedence over the
+instructions loaded above.
+```
+
+The per-turn cost is therefore proportional to the *number* of sub-projects,
+not to the size of their instructions, and the agent pulls the full text of a
+nested file only when it starts working in that directory.
+
+- Depth counts directory levels below the working directory: `1` lists
+  `<child>/AGENTS.md`, `2` also lists `<child>/<grandchild>/AGENTS.md`.
+- Hidden directories and, when the working directory is a git worktree root,
+  git-ignored paths are skipped — `node_modules/**/AGENTS.md` won't show up.
+- The listing is capped at 100 entries and a truncation notice is added.
+- Files already loaded in full are never listed twice.
+- The scan runs at the start of every turn, so files added or removed
+  mid-session are reflected. Keep the depth small on very large trees.
+
+A runnable example lives in [`examples/monorepo_prompt_files.yaml`](https://github.com/docker/docker-agent/blob/main/examples/monorepo_prompt_files.yaml).
 
 Use `--prompt-file` to add files for a single run without editing the
 config. It's merged with any `add_prompt_files` already set on the agent,
