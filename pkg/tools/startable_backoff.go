@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/docker/docker-agent/pkg/modelerrors"
+	"github.com/docker/docker-agent/pkg/tools/lifecycle"
 )
 
 const (
@@ -13,18 +14,33 @@ const (
 	startBackoffMax  = 5 * time.Minute
 )
 
-// startBackoffRetryable reports whether err carries a retryable HTTP status
-// that warrants pacing the next start attempt: 429, 408, 500, 502, 503, 504,
-// or 529 (see modelerrors.isRetryableStatusCode). This is a fixed
-// enumeration, not a full 5xx range — codes such as 501, 505, or the
-// Cloudflare 520-527 family do NOT arm the gate. Only a *modelerrors.StatusError
-// in the error chain arms the gate; plain network errors and the regex
-// fallback in RetryableHTTPStatus are intentionally excluded so port numbers,
-// PIDs, and chunk counters in plain error text cannot arm the gate.
+// startBackoffRetryable reports whether err warrants pacing the next start
+// attempt. Two independent categories arm the gate:
 //
-// A StatusError wins even when context.DeadlineExceeded is also in the chain.
+//   - lifecycle.ErrCrashLooping: the supervisor itself already judged this a
+//     sustained crash loop (see lifecycle.Supervisor's CrashLoop policy) and
+//     is reporting it through Start instead of reconnecting immediately.
+//     Checked directly via errors.Is — no StatusError involved, because the
+//     supervisor already did the one-off-vs-loop judgment; the gate only
+//     needs to pace the retry. A bare lifecycle.ErrServerCrashed that hasn't
+//     (yet) escalated to ErrCrashLooping does NOT arm: see "deliberately
+//     excluded" below.
+//   - a retryable HTTP status carried by a *modelerrors.StatusError: 429,
+//     408, 500, 502, 503, 504, or 529 (see modelerrors.isRetryableStatusCode).
+//     This is a fixed enumeration, not a full 5xx range — codes such as 501,
+//     505, or the Cloudflare 520-527 family do NOT arm the gate. Only a
+//     *modelerrors.StatusError in the error chain arms this branch; plain
+//     network errors and the regex fallback in RetryableHTTPStatus are
+//     intentionally excluded so port numbers, PIDs, and chunk counters in
+//     plain error text cannot arm the gate. A StatusError wins even when
+//     context.DeadlineExceeded is also in the chain.
 //
 // Deliberately excluded from arming (these must never pace):
+//   - A bare lifecycle.ErrServerCrashed not (yet) escalated to
+//     ErrCrashLooping: a single crash is the supervisor's own restart
+//     policy's job (fast, unpaced reconnect), not this gate's — pacing it
+//     here too would double up on the supervisor's own backoff and delay a
+//     legitimate one-off recovery.
 //   - lifecycle.ErrServerUnavailable: missing binary / process-not-found — fast-retry.
 //   - lifecycle.ErrTransport: connection refused / no such host — fast-retry.
 //   - lifecycle.ErrAuthRequired / ErrCapabilityMissing: permanent — fail promptly.
@@ -32,12 +48,10 @@ const (
 //     supervisor's own reconnect policy without per-turn pacing.
 //   - Plain error strings: excluded to avoid false positives on numeric
 //     patterns in port numbers or counters.
-//
-// Note: lifecycle.ErrServerCrashed (a server that started then crashed) is
-// NOT currently surfaced by supervisor.Start(); it flows only through the
-// supervisor's internal watcher goroutine. LSP crash-loop pacing is therefore
-// deferred until that sentinel is propagated through the start path.
 func startBackoffRetryable(err error) bool {
+	if errors.Is(err, lifecycle.ErrCrashLooping) {
+		return true
+	}
 	var se *modelerrors.StatusError
 	if !errors.As(err, &se) {
 		return false

@@ -815,3 +815,49 @@ func TestStartBackoffRetryable_4xxStatusDoesNotArm(t *testing.T) {
 	assert.Check(t, is.Equal(inner.starts.Load(), int32(3)),
 		"400 client errors must not arm the backoff gate")
 }
+
+// TestStartBackoffRetryable_ErrServerCrashed verifies that a bare
+// lifecycle.ErrServerCrashed (a single crash, not escalated to a loop) does
+// NOT arm the gate: it is the supervisor's own restart policy's job, not
+// this gate's.
+func TestStartBackoffRetryable_ErrServerCrashed(t *testing.T) {
+	inner := &startErrToolSet{}
+	inner.setErr(fmt.Errorf("%w: exit status 1", lifecycle.ErrServerCrashed))
+	s := newThrottledStartable(inner)
+
+	for range 3 {
+		_, err := s.TryStart(t.Context())
+		assert.Check(t, err != nil)
+	}
+	assert.Check(t, is.Equal(inner.starts.Load(), int32(3)),
+		"a one-off server crash must not pace retries")
+}
+
+// TestStartBackoffRetryable_ErrCrashLooping verifies that
+// lifecycle.ErrCrashLooping — the supervisor's own verdict that a crash
+// loop is underway — arms the gate exactly like a retryable HTTP status,
+// via TryStart end-to-end.
+func TestStartBackoffRetryable_ErrCrashLooping(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		inner := &startErrToolSet{}
+		inner.setErr(fmt.Errorf("%w: %w", lifecycle.ErrCrashLooping, lifecycle.ErrServerCrashed))
+		s := newThrottledStartable(inner)
+
+		// Attempt 1: underlying Start runs and fails.
+		_, err := s.TryStart(t.Context())
+		assert.Check(t, err != nil)
+		assert.Check(t, is.Equal(inner.starts.Load(), int32(1)))
+
+		// Immediate retry: gate must block it (still within the window).
+		_, err = s.TryStart(t.Context())
+		assert.Check(t, err != nil)
+		assert.Check(t, is.Equal(inner.starts.Load(), int32(1)),
+			"a crash loop must arm the gate like a retryable HTTP status")
+
+		// After the window expires the next TryStart runs the underlying attempt.
+		time.Sleep(tools.ExportedStartBackoffBase + time.Millisecond) //nolint:forbidigo // inside synctest bubble
+		_, err = s.TryStart(t.Context())
+		assert.Check(t, err != nil)
+		assert.Check(t, is.Equal(inner.starts.Load(), int32(2)))
+	})
+}
