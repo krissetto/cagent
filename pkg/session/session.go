@@ -638,9 +638,11 @@ type EvalResult struct {
 // EvalResultChecks groups the individual check results.
 // Only checks that were evaluated will be present (omitted if nil).
 type EvalResultChecks struct {
-	Size      *SizeCheck      `json:"size,omitempty"`
-	ToolCalls *ToolCallsCheck `json:"tool_calls,omitempty"`
-	Relevance *RelevanceCheck `json:"relevance,omitempty"`
+	Size       *SizeCheck       `json:"size,omitempty"`
+	ToolCalls  *ToolCallsCheck  `json:"tool_calls,omitempty"`
+	Relevance  *RelevanceCheck  `json:"relevance,omitempty"`
+	Assertions *AssertionsCheck `json:"assertions,omitempty"`
+	Verify     *VerifyCheck     `json:"verify,omitempty"`
 }
 
 // SizeCheck contains the result of the response size check.
@@ -671,13 +673,51 @@ type RelevanceCriterionResult struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+// AssertionsCheck contains the results of code-based assertion evaluations.
+type AssertionsCheck struct {
+	Passed      bool              `json:"passed"`
+	PassedCount int               `json:"passed_count"`
+	Total       int               `json:"total"`
+	Results     []AssertionResult `json:"results"`
+}
+
+// AssertionResult records the outcome of a single assertion.
+type AssertionResult struct {
+	Name   string `json:"name"`
+	Type   string `json:"type"`
+	Passed bool   `json:"passed"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// VerifyCheck contains the result of the post-agent verify script.
+type VerifyCheck struct {
+	Passed   bool   `json:"passed"`
+	ExitCode int    `json:"exit_code"`
+	Output   string `json:"output,omitempty"`
+}
+
 // EvalCriteria contains the evaluation criteria for a session.
 type EvalCriteria struct {
-	Relevance  []string `json:"relevance"`             // Statements that should be true about the response
-	WorkingDir string   `json:"working_dir,omitempty"` // Subdirectory under evals/working_dirs/
-	Size       string   `json:"size,omitempty"`        // Expected response size: S, M, L, XL
-	Setup      string   `json:"setup,omitempty"`       // Optional sh script to run in the container before docker agent run --exec
-	Image      string   `json:"image,omitempty"`       // Custom Docker image for this eval (overrides --base-image)
+	Relevance  []string    `json:"relevance"`             // Statements that should be true about the response
+	Assertions []Assertion `json:"assertions,omitempty"`  // Code-based assertions evaluated against the agent output
+	Verify     string      `json:"verify,omitempty"`      // Shell script for post-agent outcome verification
+	WorkingDir string      `json:"working_dir,omitempty"` // Subdirectory under evals/working_dirs/
+	Size       string      `json:"size,omitempty"`        // Expected response size: S, M, L, XL
+	Setup      string      `json:"setup,omitempty"`       // Optional sh script to run in the container before docker agent run --exec
+	Image      string      `json:"image,omitempty"`       // Custom Docker image for this eval (overrides --base-image)
+}
+
+// Assertion defines a single code-based grading check evaluated against agent output.
+type Assertion struct {
+	// Name identifies this assertion in logs and results.
+	Name string `json:"name"`
+	// Type selects the evaluator: "contains", "not_contains", "equals",
+	// "starts_with", "ends_with", "regex", "json_path", "cost_threshold",
+	// or "tool_called".
+	Type string `json:"type"`
+	// Value is the expected string, regex pattern, JSONPath expression, or
+	// threshold against which the agent output is checked.
+	Value string `json:"value"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for EvalCriteria that
