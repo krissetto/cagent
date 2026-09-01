@@ -5,21 +5,16 @@ agents:
     instruction: You are an expert software developer.
     toolsets:
       - type: filesystem
-    # The closest AGENTS.md found walking up from the working directory is
-    # loaded in full, as usual.
+    # Loaded in full: the closest AGENTS.md found walking up from the
+    # working directory.
     add_prompt_files:
       - AGENTS.md
-    # In a monorepo, each sub-project carries its own AGENTS.md that the
-    # upward lookup never sees. This scans up to 2 directory levels below the
-    # working directory and lists what it finds by path only — contents are
-    # not loaded, so the per-turn cost stays proportional to the number of
-    # sub-projects, not their size. The agent reads the relevant ones itself:
+    # Listed by path only, up to 2 directory levels below the working
+    # directory — the sub-project AGENTS.md files the upward lookup never
+    # sees. The agent reads the ones it needs:
     #
     #   Prompt files found in subdirectories of /repo. Their contents are NOT loaded:
     #
     #   - services/api/AGENTS.md
     #   - services/web/AGENTS.md
-    #
-    # Hidden and git-ignored directories are skipped, and the listing is
-    # capped at 100 entries.
     add_prompt_files_depth: 2

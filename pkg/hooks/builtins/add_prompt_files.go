@@ -19,22 +19,20 @@ const AddPromptFiles = "add_prompt_files"
 const promptFilesGroup = "core/prompt-files"
 
 // promptFilesIndexKey identifies the listing of nested prompt files. Fixed
-// (unlike the per-path keys) so the listing is diffed as a whole: entries
-// appearing or disappearing rewrite one context source, not N.
+// (unlike the per-path keys) so the listing is diffed as a whole.
 const promptFilesIndexKey = "core/prompt-file-index"
 
 // depthArgPrefix marks the optional add_prompt_files argument selecting how
 // many directory levels below the working dir are scanned for further prompt
 // files to list by path. A flag-shaped argument keeps the builtin's args a
-// flat []string while staying self-describing in a hand-written hook entry.
+// flat []string. Repeated, the last one wins.
 const depthArgPrefix = "--depth="
 
 // addPromptFiles reads each filename from the workdir hierarchy and home
 // directory, preserving each resolved path in independently diffable context.
-// With --depth=N it also lists (without reading) the same filenames found up
-// to N levels below the working dir — the monorepo case, where sub-projects
-// carry their own AGENTS.md.
-func addPromptFiles(_ context.Context, in *hooks.Input, args []string) (*hooks.Output, error) {
+// With --depth=N it also lists, without reading them, the same filenames
+// found up to N levels below the working dir.
+func addPromptFiles(ctx context.Context, in *hooks.Input, args []string) (*hooks.Output, error) {
 	if in == nil || in.Cwd == "" || len(args) == 0 {
 		return nil, nil
 	}
@@ -46,7 +44,7 @@ func addPromptFiles(_ context.Context, in *hooks.Input, args []string) (*hooks.O
 		for _, path := range promptfiles.PathsFromEnv(in.Cwd, home, name) {
 			content, err := os.ReadFile(path)
 			if err != nil {
-				slog.Warn("reading prompt file", "path", path, "error", err)
+				slog.WarnContext(ctx, "reading prompt file", "path", path, "error", err)
 				return instructionContextOutput(hooks.InstructionContext{
 					Group: promptFilesGroup, Unavailable: true, SetMarker: true,
 				}), nil
@@ -63,7 +61,7 @@ func addPromptFiles(_ context.Context, in *hooks.Input, args []string) (*hooks.O
 			})
 		}
 	}
-	if note := promptfiles.Index(in.Cwd, names, depth, loaded); note != "" {
+	if note := promptfiles.Index(ctx, in.Cwd, names, depth, loaded); note != "" {
 		sources = append(sources, hooks.InstructionContext{
 			Key:            promptFilesIndexKey,
 			Group:          promptFilesGroup,
@@ -84,7 +82,7 @@ func addPromptFiles(_ context.Context, in *hooks.Input, args []string) (*hooks.O
 }
 
 // parsePromptFileArgs splits the builtin's arguments into prompt-file names
-// and the optional nested-scan depth. An unparsable depth is warned about and
+// and the optional nested-scan depth. An unusable depth is warned about and
 // ignored rather than failing the turn: the file contents, which are the
 // point of the hook, still make it into the context.
 func parsePromptFileArgs(args []string) (names []string, depth int) {
@@ -95,7 +93,7 @@ func parsePromptFileArgs(args []string) (names []string, depth int) {
 			continue
 		}
 		n, err := strconv.Atoi(raw)
-		if err != nil {
+		if err != nil || n < 0 {
 			slog.Warn("ignoring invalid add_prompt_files depth", "arg", arg)
 			continue
 		}

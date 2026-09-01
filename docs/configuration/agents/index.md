@@ -236,15 +236,20 @@ its own directory, a nested file's instructions take precedence over the
 instructions loaded above.
 ```
 
-The per-turn cost is therefore proportional to the *number* of sub-projects,
-not to the size of their instructions, and the agent pulls the full text of a
-nested file only when it starts working in that directory.
+The per-turn *context* cost is therefore proportional to the number of
+sub-projects, not to the size of their instructions, and the agent pulls the
+full text of a nested file only when it starts working in that directory. The
+*scan* cost is proportional to the number of directory entries visited, which
+is why the depth is opt-in and the traversal is bounded (see below).
 
 - Depth counts directory levels below the working directory: `1` lists
   `<child>/AGENTS.md`, `2` also lists `<child>/<grandchild>/AGENTS.md`.
 - Hidden directories and, when the working directory is a git worktree root,
   git-ignored paths are skipped — `node_modules/**/AGENTS.md` won't show up.
-- The listing is capped at 100 entries and a truncation notice is added.
+- Symlinks pointing outside the working directory are never listed, so a
+  checked-out tree can't have the agent read `~/.ssh/id_rsa` as instructions.
+- The listing is capped at 100 entries and the traversal at 20,000 directory
+  entries; a truncated listing says so.
 - Files already loaded in full are never listed twice.
 - The scan runs at the start of every turn, so files added or removed
   mid-session are reflected. Keep the depth small on very large trees.

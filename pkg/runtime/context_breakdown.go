@@ -240,7 +240,7 @@ func (r *LocalRuntime) promptFilesCategory(ctx context.Context, names []string, 
 			})
 		}
 	}
-	if note := promptfiles.Index(r.workingDir, names, depth, loaded); note != "" {
+	if note := promptfiles.Index(ctx, r.workingDir, names, depth, loaded); note != "" {
 		parts = append(parts, note)
 	}
 	if len(parts) == 0 {

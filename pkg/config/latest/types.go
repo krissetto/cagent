@@ -720,10 +720,8 @@ type AgentConfig struct {
 	AddPromptFiles  []string `json:"add_prompt_files,omitempty" yaml:"add_prompt_files,omitempty"`
 	// AddPromptFilesDepth also lists, by path only, the AddPromptFiles names
 	// found up to that many directory levels below the working directory
-	// (1 = direct subdirectories). Contents are not loaded: the agent reads
-	// the ones it needs, so a monorepo's per-sub-project AGENTS.md files stay
-	// discoverable without paying for all of them on every turn. 0 (default)
-	// disables the scan.
+	// (1 = direct subdirectories). Contents are not loaded; the agent reads
+	// the ones it needs. 0 (default) disables the scan.
 	AddPromptFilesDepth int               `json:"add_prompt_files_depth,omitempty" yaml:"add_prompt_files_depth,omitempty"`
 	Commands            types.Commands    `json:"commands,omitempty"`
 	StructuredOutput    *StructuredOutput `json:"structured_output,omitempty"`

@@ -177,6 +177,26 @@ func TestAddPromptFilesDepthArgIsNotAFilename(t *testing.T) {
 		"only PROMPT.md resolves; --depth=1 is an option and nothing is nested")
 }
 
+// TestAddPromptFilesUnusableDepthIsIgnored documents that a malformed or
+// negative depth degrades to "no nested listing" instead of failing the turn.
+func TestAddPromptFilesUnusableDepthIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "PROMPT.md"), []byte("root rules"), 0o600))
+	nested := filepath.Join(dir, "service")
+	require.NoError(t, os.Mkdir(nested, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "PROMPT.md"), []byte("service rules"), 0o600))
+
+	fn := lookup(t, builtins.AddPromptFiles)
+
+	for _, arg := range []string{"--depth=-1", "--depth=deep", "--depth="} {
+		out, err := fn(t.Context(), &hooks.Input{SessionID: "s", Cwd: dir}, []string{arg, "PROMPT.md"})
+		require.NoError(t, err)
+		assert.Len(t, out.HookSpecificOutput.InstructionContext, 1, arg)
+	}
+}
+
 // TestAddPromptFilesMissingFileIsTolerated documents that missing configured
 // files do not prevent surviving files from contributing.
 func TestAddPromptFilesMissingFileIsTolerated(t *testing.T) {

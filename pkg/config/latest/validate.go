@@ -84,6 +84,9 @@ func (t *Config) Validate() error {
 		if err := validateCompactionThreshold(agent.CompactionThreshold); err != nil {
 			return fmt.Errorf("agents.%s: %w", agent.Name, err)
 		}
+		if agent.AddPromptFilesDepth < 0 {
+			return fmt.Errorf("agents.%s: add_prompt_files_depth must be >= 0, got %d", agent.Name, agent.AddPromptFilesDepth)
+		}
 		for _, name := range agent.Budgets {
 			if _, ok := t.Budgets[name]; !ok {
 				return fmt.Errorf("agents.%s: budgets: unknown budget %q; define it under the top-level 'budgets'", agent.Name, name)
