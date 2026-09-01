@@ -204,7 +204,9 @@ current gate triggers for RAG indexing specifically:
 > This 429-only trigger set is specific to the RAG/embedding path. Other toolset
 > types have their own trigger sets against the same gate — for example, remote
 > MCP toolsets also pace on 408 and a fixed set of 5xx-family statuses (see
-> [MCP startup failure behaviour](../mcp/index.md#lifecycle-auto-restart-profiles)).
+> [MCP startup failure behaviour](../mcp/index.md#lifecycle-auto-restart-profiles)),
+> and the A2A toolset paces its agent-card fetch on the same fixed set (see
+> [A2A startup failure behaviour](../a2a/index.md#startup-failure-behaviour)).
 
 ### Retry policy and parameters
 
