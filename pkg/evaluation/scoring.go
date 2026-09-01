@@ -105,6 +105,13 @@ func printSummary(out io.Writer, summary Summary, duration time.Duration) {
 	printF1Score(out, "Tool Calls", summary.ToolsF1Sum, summary.ToolsCount)
 	printMetric(out, "Relevance", int(summary.RelevancePassed), int(summary.RelevanceTotal))
 
+	if summary.RepeatMetrics != nil {
+		rm := summary.RepeatMetrics
+		fmt.Fprintf(out, "\n  Repeat metrics (k=%d, %d unique evals):\n", rm.K, rm.Total)
+		fmt.Fprintf(out, "   pass@%d: %.1f%% (passed at least once)\n", rm.K, rm.PassK*100)
+		fmt.Fprintf(out, "   pass^%d: %.1f%% (passed every time)\n", rm.K, rm.HatK*100)
+	}
+
 	fmt.Fprintf(out, "\nTotal Cost: $%.6f\n", summary.TotalCost)
 	fmt.Fprintf(out, "Total Time: %s\n", duration.Round(time.Second))
 }
@@ -133,5 +140,55 @@ func statusIcon(ratio float64) string {
 		return "⚠️"
 	default:
 		return "❌"
+	}
+}
+
+// computeRepeatMetrics derives pass@k and pass^k from repeated evaluation
+// results. Results are grouped by InputPath (the source eval file); k is
+// the configured repetition count.
+func computeRepeatMetrics(results []Result, k int) *RepeatMetrics {
+	if k <= 1 {
+		return nil
+	}
+
+	type evalStats struct {
+		passed int
+		total  int
+	}
+	byEval := map[string]*evalStats{}
+	for _, r := range results {
+		key := r.InputPath
+		s, ok := byEval[key]
+		if !ok {
+			s = &evalStats{}
+			byEval[key] = s
+		}
+		s.total++
+		_, failures := r.checkResults()
+		if len(failures) == 0 {
+			s.passed++
+		}
+	}
+
+	if len(byEval) == 0 {
+		return nil
+	}
+
+	var anyPass, allPass int
+	for _, s := range byEval {
+		if s.passed > 0 {
+			anyPass++
+		}
+		if s.passed == s.total {
+			allPass++
+		}
+	}
+
+	total := len(byEval)
+	return &RepeatMetrics{
+		K:     k,
+		PassK: float64(anyPass) / float64(total),
+		HatK:  float64(allPass) / float64(total),
+		Total: total,
 	}
 }
