@@ -298,6 +298,73 @@ func TestDispatcher_RoutesToRuntimeHandler(t *testing.T) {
 	assert.Equal(t, "transferred", em.responses[0].Output)
 }
 
+func TestDispatcher_RuntimeHandlerPropagatesNestedStop(t *testing.T) {
+	t.Parallel()
+	a := newAgent()
+	sess := session.New(session.WithSafetyPolicy(session.SafetyPolicyAutonomous))
+
+	d := &toolexec.Dispatcher{
+		AgentFor: func(*session.Session) *agent.Agent { return a },
+		Handlers: map[string]toolexec.ToolHandler{
+			"run_skill": func(ctx context.Context, _ *session.Session, _ tools.ToolCall, rt tools.Runtime) (*tools.ToolCallResult, error) {
+				_, err := rt.ConfirmAndRun(ctx, echoCommand, execDone)
+				if err != nil {
+					return nil, err
+				}
+				return tools.ResultSuccess("started"), nil
+			},
+		},
+		Hooks: &stubHookDispatcher{on: map[hooks.EventType]*hooks.Result{
+			hooks.EventPostToolUse: {Allowed: false, Message: "stop requested"},
+		}},
+	}
+	em := &captureEmitter{}
+
+	stop, message := d.Process(t.Context(), sess, []tools.ToolCall{{
+		ID:       "call_skill",
+		Function: tools.FunctionCall{Name: "run_skill", Arguments: "{}"},
+	}}, []tools.Tool{{Name: "run_skill"}}, em)
+
+	assert.True(t, stop)
+	assert.Equal(t, "stop requested", message)
+	require.Len(t, em.responses, 2)
+	assert.Contains(t, em.responses[1].Output, "post_tool_use hook stopped")
+}
+
+func TestDispatcher_ToolsetHandlerPropagatesNestedStop(t *testing.T) {
+	t.Parallel()
+	a := newAgent()
+	sess := session.New(session.WithSafetyPolicy(session.SafetyPolicyAutonomous))
+
+	d := &toolexec.Dispatcher{
+		AgentFor: func(*session.Session) *agent.Agent { return a },
+		Hooks: &stubHookDispatcher{on: map[hooks.EventType]*hooks.Result{
+			hooks.EventPostToolUse: {Allowed: false, Message: "stop requested"},
+		}},
+	}
+	em := &captureEmitter{}
+	tool := tools.Tool{
+		Name: "read_skill",
+		Handler: func(ctx context.Context, _ tools.ToolCall, rt tools.Runtime) (*tools.ToolCallResult, error) {
+			_, err := rt.ConfirmAndRun(ctx, echoCommand, execDone)
+			if err != nil {
+				return nil, err
+			}
+			return tools.ResultSuccess("loaded"), nil
+		},
+	}
+
+	stop, message := d.Process(t.Context(), sess, []tools.ToolCall{{
+		ID:       "call_skill",
+		Function: tools.FunctionCall{Name: "read_skill", Arguments: "{}"},
+	}}, []tools.Tool{tool}, em)
+
+	assert.True(t, stop)
+	assert.Equal(t, "stop requested", message)
+	require.Len(t, em.responses, 2)
+	assert.Contains(t, em.responses[1].Output, "post_tool_use hook stopped")
+}
+
 func TestDispatcher_UnknownToolEmitsErrorResponse(t *testing.T) {
 	t.Parallel()
 	a := newAgent()

@@ -1,6 +1,7 @@
 package toolexec
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -223,7 +224,8 @@ type Dispatcher struct {
 	// [tools.ErrRecallNotSupported].
 	Recall func(ctx context.Context, sess *session.Session, a *agent.Agent, message string) error
 
-	confirmationMu sync.Mutex
+	confirmationMu         *sync.Mutex
+	fallbackConfirmationMu sync.Mutex
 }
 
 var (
@@ -312,6 +314,10 @@ type call struct {
 	tc        tools.ToolCall // mutable: pre_tool_use hooks may rewrite arguments
 	tool      tools.Tool     // tool.Name is always set; other fields zero when !available
 	available bool           // false when the tool wasn't in the agent's toolset
+	outOfBand bool           // true for nested actions not recorded in the model conversation
+	started   bool           // whether an out-of-band ToolCall event was emitted
+	prompted  bool           // whether an out-of-band confirmation was emitted
+	lastError string         // latest synthesized error response
 
 	// pre_tool_use preempt-yolo lane result cache. The first
 	// consultPreToolUsePreYolo call dispatches EventPreToolUsePreYolo
@@ -397,8 +403,7 @@ func (c *call) run(ctx context.Context) CallOutcome {
 	var runTool func() CallOutcome
 	if handler, ok := c.d.Handlers[c.tc.Function.Name]; ok {
 		runTool = func() CallOutcome {
-			c.runHandler(ctx, handler)
-			return CallOutcome{}
+			return c.runHandler(ctx, handler)
 		}
 	} else {
 		runTool = func() CallOutcome {
@@ -772,6 +777,13 @@ func denyErrorMessage(d PermissionDecision, toolName string) string {
 	return fmt.Sprintf("Tool '%s' is denied by %s.", toolName, d.Source)
 }
 
+func (c *call) confirmationMutex() *sync.Mutex {
+	if c.d.confirmationMu != nil {
+		return c.d.confirmationMu
+	}
+	return &c.d.fallbackConfirmationMu
+}
+
 // askUser sends a confirmation event and waits for the user's response
 // on the resume channel or for ctx cancellation. Only called when no
 // permission rule auto-approved the tool.
@@ -808,10 +820,11 @@ func (c *call) askUser(ctx context.Context, runTool func() CallOutcome) CallOutc
 
 	// ResumeRequest has no tool-call ID, so only one confirmation can be
 	// visible and waiting on the shared channel at a time.
-	c.d.confirmationMu.Lock()
+	confirmationMu := c.confirmationMutex()
+	confirmationMu.Lock()
 
 	if ctx.Err() != nil {
-		c.d.confirmationMu.Unlock()
+		confirmationMu.Unlock()
 		slog.DebugContext(ctx, "Context cancelled before confirmation", "tool", c.tc.Function.Name, "session_id", c.sess.ID)
 		c.notifyApproval(ctx, ApprovalDecisionCanceled, ApprovalSourceContextCanceled)
 		c.errorResponse(ctx, c.cancellationMessage(ctx))
@@ -819,13 +832,14 @@ func (c *call) askUser(ctx context.Context, runTool func() CallOutcome) CallOutc
 	}
 
 	if decision, ok := c.autoApprovalAfterConfirmationWait(); ok {
-		c.d.confirmationMu.Unlock()
+		confirmationMu.Unlock()
 		c.logAllow(decision)
 		c.notifyApproval(ctx, ApprovalDecisionAllow, allowSourceForDecision(decision))
 		return runTool()
 	}
 
 	slog.DebugContext(ctx, "Tools not approved, waiting for resume", "tool", c.tc.Function.Name, "session_id", c.sess.ID)
+	c.prompted = true
 	c.em.EmitToolCallConfirmation(c.tc, c.tool, c.a.Name(), c.confirmationMetadata(hookMeta))
 
 	if c.d.Hooks != nil {
@@ -834,10 +848,10 @@ func (c *call) askUser(ctx context.Context, runTool func() CallOutcome) CallOutc
 
 	select {
 	case req := <-c.d.Resume:
-		c.d.confirmationMu.Unlock()
+		confirmationMu.Unlock()
 		return c.handleResume(ctx, req, runTool)
 	case <-ctx.Done():
-		c.d.confirmationMu.Unlock()
+		confirmationMu.Unlock()
 		slog.DebugContext(ctx, "Context cancelled while waiting for resume", "tool", c.tc.Function.Name, "session_id", c.sess.ID)
 		c.notifyApproval(ctx, ApprovalDecisionCanceled, ApprovalSourceContextCanceled)
 		c.errorResponse(ctx, c.cancellationMessage(ctx))
@@ -928,33 +942,13 @@ func (c *call) confirmationMetadata(permissionMeta map[string]string) map[string
 // (with optional session/tool-wide approval persistence) or emit a
 // rejection error response.
 func (c *call) handleResume(ctx context.Context, req ResumeRequest, runTool func() CallOutcome) CallOutcome {
-	switch NormalizeResumeType(req.Type) {
-	case ResumeTypeApprove:
-		slog.DebugContext(ctx, "Resume signal received, approving tool", "tool", c.tc.Function.Name, "session_id", c.sess.ID)
-		c.notifyApproval(ctx, ApprovalDecisionAllow, ApprovalSourceUserApproved)
+	approved, source := resumeVerdict(ctx, c.sess, req, c.tc.Function.Name)
+	switch {
+	case approved:
+		c.notifyApproval(ctx, ApprovalDecisionAllow, source)
 		return runTool()
-	case ResumeTypeApproveBalanced:
-		slog.DebugContext(ctx, "Resume signal received, opting into balanced", "tool", c.tc.Function.Name, "session_id", c.sess.ID)
-		c.sess.SetSafetyPolicy(session.SafetyPolicyBalanced)
-		c.notifyApproval(ctx, ApprovalDecisionAllow, ApprovalSourceUserApprovedBalanced)
-		return runTool()
-	case ResumeTypeApproveAutonomous:
-		slog.DebugContext(ctx, "Resume signal received, opting into autonomous", "tool", c.tc.Function.Name, "session_id", c.sess.ID)
-		c.sess.SetSafetyPolicy(session.SafetyPolicyAutonomous)
-		c.notifyApproval(ctx, ApprovalDecisionAllow, ApprovalSourceUserApprovedAutonomous)
-		return runTool()
-	case ResumeTypeApproveTool:
-		approvedTool := req.ToolName
-		if approvedTool == "" {
-			approvedTool = c.tc.Function.Name
-		}
-		c.sess.AppendPermissionAllow(approvedTool)
-		slog.DebugContext(ctx, "Resume signal received, approving tool permanently", "tool", approvedTool, "session_id", c.sess.ID)
-		c.notifyApproval(ctx, ApprovalDecisionAllow, ApprovalSourceUserApprovedTool)
-		return runTool()
-	case ResumeTypeReject:
-		slog.DebugContext(ctx, "Resume signal received, rejecting tool", "tool", c.tc.Function.Name, "session_id", c.sess.ID, "reason", req.Reason)
-		c.notifyApproval(ctx, ApprovalDecisionDeny, ApprovalSourceUserRejected)
+	case source == ApprovalSourceUserRejected:
+		c.notifyApproval(ctx, ApprovalDecisionDeny, source)
 		msg := "The user rejected the tool call."
 		if reason := strings.TrimSpace(req.Reason); reason != "" {
 			msg += " Reason: " + reason
@@ -962,6 +956,39 @@ func (c *call) handleResume(ctx context.Context, req ResumeRequest, runTool func
 		c.errorResponse(ctx, msg)
 	}
 	return CallOutcome{}
+}
+
+// resumeVerdict interprets a user's confirmation response, applying the
+// session-scoped side effects the approving variants carry (safety-mode
+// opt-in, "always allow this tool"). It returns whether the action may
+// proceed and the ApprovalSource* constant that describes the decision.
+//
+// An unknown resume type reports "not approved" with an empty source, which
+// callers treat as "no verdict": the pending action is dropped without a
+// rejection message, matching the pre-refactor switch's default branch.
+func resumeVerdict(ctx context.Context, sess *session.Session, req ResumeRequest, toolName string) (approved bool, source string) {
+	switch NormalizeResumeType(req.Type) {
+	case ResumeTypeApprove:
+		slog.DebugContext(ctx, "Resume signal received, approving tool", "tool", toolName, "session_id", sess.ID)
+		return true, ApprovalSourceUserApproved
+	case ResumeTypeApproveBalanced:
+		slog.DebugContext(ctx, "Resume signal received, opting into balanced", "tool", toolName, "session_id", sess.ID)
+		sess.SetSafetyPolicy(session.SafetyPolicyBalanced)
+		return true, ApprovalSourceUserApprovedBalanced
+	case ResumeTypeApproveAutonomous:
+		slog.DebugContext(ctx, "Resume signal received, opting into autonomous", "tool", toolName, "session_id", sess.ID)
+		sess.SetSafetyPolicy(session.SafetyPolicyAutonomous)
+		return true, ApprovalSourceUserApprovedAutonomous
+	case ResumeTypeApproveTool:
+		approvedTool := cmp.Or(req.ToolName, toolName)
+		sess.AppendPermissionAllow(approvedTool)
+		slog.DebugContext(ctx, "Resume signal received, approving tool permanently", "tool", approvedTool, "session_id", sess.ID)
+		return true, ApprovalSourceUserApprovedTool
+	case ResumeTypeReject:
+		slog.DebugContext(ctx, "Resume signal received, rejecting tool", "tool", toolName, "session_id", sess.ID, "reason", req.Reason)
+		return false, ApprovalSourceUserRejected
+	}
+	return false, ""
 }
 
 // runToolset executes a tool from an agent's toolset (MCP, filesystem, ...),
@@ -972,10 +999,13 @@ func (c *call) handleResume(ctx context.Context, req ResumeRequest, runTool func
 // c.tc. The post-tool-use hook may signal run termination via its
 // returned [CallOutcome].
 func (c *call) runToolset(ctx context.Context) CallOutcome {
-	res := c.invoke(ctx, "runtime.tool.handler", func(ctx context.Context) (*tools.ToolCallResult, time.Duration, error) {
+	res, nestedStop := c.invoke(ctx, "runtime.tool.handler", func(ctx context.Context) (*tools.ToolCallResult, time.Duration, error) {
 		res, err := c.tool.Handler(ctx, c.tc, callRuntime{c})
 		return res, 0, err
 	})
+	if nestedStop != nil {
+		return CallOutcome{StopRun: true, StopMessage: nestedStop.Message}
+	}
 
 	stop, msg := c.postHook(ctx, res)
 	return CallOutcome{StopRun: stop, StopMessage: msg}
@@ -984,12 +1014,16 @@ func (c *call) runToolset(ctx context.Context) CallOutcome {
 // runHandler executes a runtime-managed tool handler. Hooks do not fire
 // for runtime-managed handlers — they're internal plumbing, not user-
 // configurable tools.
-func (c *call) runHandler(ctx context.Context, handler ToolHandler) {
-	c.invoke(ctx, "runtime.tool.handler.runtime", func(ctx context.Context) (*tools.ToolCallResult, time.Duration, error) {
+func (c *call) runHandler(ctx context.Context, handler ToolHandler) CallOutcome {
+	_, stop := c.invoke(ctx, "runtime.tool.handler.runtime", func(ctx context.Context) (*tools.ToolCallResult, time.Duration, error) {
 		start := time.Now()
 		res, err := handler(ctx, c.sess, c.tc, callRuntime{c})
 		return res, time.Since(start), err
 	})
+	if stop != nil {
+		return CallOutcome{StopRun: true, StopMessage: stop.Message}
+	}
+	return CallOutcome{}
 }
 
 // callRuntime is the [tools.Runtime] handed to tool handlers. It carries only
@@ -1011,6 +1045,24 @@ func (r callRuntime) Recall(ctx context.Context, message string) error {
 	return r.c.d.Recall(ctx, r.c.sess, r.c.a, message)
 }
 
+// ConfirmAndRun gates an action the running tool has to perform on the user's
+// machine behind the same approval pipeline as a real tool call. See [Gate].
+func (r callRuntime) ConfirmAndRun(ctx context.Context, run tools.ConfirmedRun, exec func(context.Context, tools.ConfirmedRun) (string, error)) (string, error) {
+	return r.gate().ConfirmAndRun(ctx, run, exec)
+}
+
+func (r callRuntime) gate() *Gate {
+	return &Gate{
+		Sess:        r.c.sess,
+		Agent:       r.c.a,
+		Emitter:     r.c.em,
+		Resume:      r.c.d.Resume,
+		Hooks:       r.c.d.Hooks,
+		Permissions: r.c.d.Permissions,
+		Mu:          r.c.confirmationMutex(),
+	}
+}
+
 func (r callRuntime) Supports(capability tools.Capability) bool {
 	switch capability {
 	case tools.CapabilityOutput:
@@ -1025,7 +1077,7 @@ func (r callRuntime) Supports(capability tools.Capability) bool {
 // managed handlers: tracing, event emission, telemetry, error
 // translation, and session message persistence. It is the only place
 // where a tool actually runs.
-func (c *call) invoke(ctx context.Context, spanName string, exec func(ctx context.Context) (*tools.ToolCallResult, time.Duration, error)) *tools.ToolCallResult {
+func (c *call) invoke(ctx context.Context, spanName string, exec func(ctx context.Context) (*tools.ToolCallResult, time.Duration, error)) (*tools.ToolCallResult, *StopRunError) {
 	attrs := []attribute.KeyValue{
 		attribute.String(genai.AttrOperationName, genai.OperationExecuteTool),
 		attribute.String(genai.AttrToolName, c.tc.Function.Name),
@@ -1053,6 +1105,11 @@ func (c *call) invoke(ctx context.Context, spanName string, exec func(ctx contex
 	res, duration, err := exec(ctx)
 	telemetry.RecordToolCall(ctx, c.tc.Function.Name, c.sess.ID, c.a.Name(), duration, err)
 
+	var stop *StopRunError
+	if errors.As(err, &stop) {
+		res = tools.ResultError(stop.Error())
+		err = nil
+	}
 	if err != nil {
 		res = c.translateError(ctx, span, err)
 	} else {
@@ -1079,7 +1136,7 @@ func (c *call) invoke(ctx context.Context, spanName string, exec func(ctx contex
 
 	c.em.EmitToolCallResponse(c.tc.ID, c.tool, res, res.Output, c.a.Name())
 	c.recordToolResponse(res)
-	return res
+	return res, stop
 }
 
 // applyToolResponseTransform fires [hooks.EventToolResponseTransform]
@@ -1171,6 +1228,14 @@ func (c *call) postHook(ctx context.Context, res *tools.ToolCallResult) (stop bo
 	return true, result.Message
 }
 
+func (c *call) startOutOfBand() {
+	if c.started {
+		return
+	}
+	c.started = true
+	c.em.EmitToolCall(c.tc, c.tool, c.a.Name())
+}
+
 // errorResponse appends an error tool-response to the session and emits
 // the corresponding events. Used by validation, rejection, hook-block,
 // and cancellation paths.
@@ -1182,7 +1247,17 @@ func (c *call) postHook(ctx context.Context, res *tools.ToolCallResult) (stop bo
 // would otherwise emit and persist.
 func (c *call) errorResponse(ctx context.Context, errorMsg string) {
 	errorMsg = c.applyToolResponseTransform(ctx, errorMsg, true)
+	c.lastError = errorMsg
+	if c.outOfBand {
+		if !c.prompted {
+			return
+		}
+		c.startOutOfBand()
+	}
 	c.em.EmitToolCallResponse(c.tc.ID, c.tool, tools.ResultError(errorMsg), errorMsg, c.a.Name())
+	if c.outOfBand {
+		return
+	}
 	c.addMessage(&chat.Message{
 		Role:       chat.MessageRoleTool,
 		Content:    errorMsg,

@@ -151,6 +151,28 @@ When asked to create a Dockerfile:
 | `compatibility`  | No       | Free-text compatibility notes                                               |
 | `metadata`       | No       | Arbitrary key-value pairs (e.g. `author`, `version`)                        |
 
+### Embedded Commands
+
+A file-based skill can inject the output of a command into its body with the
+`` !`command` `` syntax:
+
+```markdown
+Current branch: !`git branch --show-current`
+```
+
+These commands run on your machine, so commands loaded by the agent through
+`read_skill` or `run_skill` are emitted as `shell` tool calls and go through the
+normal approval policy — classification, permission rules and safety mode —
+before they run. In practice that means a confirmation prompt unless the policy
+already allows the command (an `allow` rule, autonomous mode, or a read-only
+command under the balanced mode). Refusing a command leaves an error note in its
+place; the rest of the skill is still loaded.
+
+Expansion is skipped entirely for remote and inline skills. It is also skipped
+when a skill is invoked directly with `/<name>`: input resolution has no parent
+tool call to own an approval prompt, so the commands are reported as skipped
+instead of running unannounced.
+
 ## Running a Skill as a Sub-Agent
 
 By default, when an agent invokes a skill it reads the instructions inline into its own conversation. For complex, multi-step skills this can consume a large portion of the agent's context window and pollute the parent conversation with intermediate tool calls.

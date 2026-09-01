@@ -220,7 +220,9 @@ func TestApp_SlashSkill_NonFork_E2E(t *testing.T) {
 	resolved := a.ResolveInput(ctx, input)
 	require.Contains(t, resolved, `<skill name="review">`)
 	require.Contains(t, resolved, "User's request: carefully")
-	require.Contains(t, resolved, "HELLO_FROM_SKILL", "local skill placeholders must be expanded")
+	// A slash command is resolved synchronously inside the UI loop, so an
+	// embedded command cannot be approved and is reported as skipped.
+	require.Contains(t, resolved, "[error executing `echo HELLO_FROM_SKILL`")
 	require.Contains(t, resolved, "Please review the staged changes.")
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -239,7 +241,7 @@ func TestApp_SlashSkill_NonFork_E2E(t *testing.T) {
 	assert.Equal(t, chat.MessageRoleUser, last.Message.Role)
 	assert.Contains(t, last.Message.Content, `<skill name="review">`)
 	assert.Contains(t, last.Message.Content, "Please review the staged changes.")
-	assert.Contains(t, last.Message.Content, "HELLO_FROM_SKILL")
+	assert.Contains(t, last.Message.Content, "[error executing `echo HELLO_FROM_SKILL`")
 	assert.Contains(t, last.Message.Content, "User's request: carefully")
 
 	assert.Empty(t, rt.recordedCalls(), "Runtime.RunSkillFork must not be called for non-fork skills")

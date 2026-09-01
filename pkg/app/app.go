@@ -361,7 +361,12 @@ func (a *App) ResolveSkillCommand(ctx context.Context, input string) (string, er
 			return "", nil
 		}
 
-		content, err := st.ReadSkillContent(ctx, skill.Name)
+		// NopRuntime refuses the commands the body embeds instead of running
+		// them: input resolution is synchronous inside the UI loop, so there is
+		// no way to raise an approval prompt here. Each refusal is inlined in
+		// the content the agent receives, and the agent can still run the
+		// command itself through its own (gated) shell tool.
+		content, err := st.ReadSkillContent(ctx, skill.Name, tools.NopRuntime{})
 		if err != nil {
 			return "", fmt.Errorf("reading skill %q: %w", skill.Name, err)
 		}
