@@ -3,6 +3,52 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.130.0] - 2026-09-01
+
+This release expands the safety classifier coverage, improves skills handling, and adds new evaluation capabilities including assertions, verify scripts, and pass@k metrics.
+
+## What's New
+
+- Adds `assertions` schema and `verify` field to `EvalCriteria` for code-based grading checks against agent output
+- Adds a verify script runner that executes a shell script via `docker exec` on the eval container after the agent completes
+- Upgrades the relevance judge prompt with a rubric, chain-of-thought guidance, and anti-bias rules for more consistent evaluation judgments
+- Exposes `pass@k` and `pass^k` metrics when using `--repeat` runs to quantify answer consistency across repetitions
+- Adds PowerShell `Remove-Item` and `Clear-Content` patterns to the safety classifier
+- Adds destructive SQL, app-CLI, and key-value-store patterns to the safety classifier
+- Safely gates embedded skill commands, asking user permission before running commands embedded in skills
+- Expands embedded commands in inline skills so they go through the normal approval path
+
+## Bug Fixes
+
+- Fixes flag-order variants for `docker system prune --volumes` and `compose down -v` in the safety classifier
+- Fixes shell-metachar patterns to anchor on whitespace instead of word boundaries in the safety classifier
+- Fixes safety classifier to use wildcards for flag-order and quoted-path gaps, and narrows SQL patterns
+- Fixes inline skills to override discovered skills when the same name exists in both
+- Fixes inline skill names to reject whitespace, preventing unreachable slash commands
+- Stabilizes slash command description alignment in the TUI completion list
+
+## Technical Changes
+
+- Refreshes the embedded models.dev catalog snapshot
+- Updates CI to run checks on pull requests targeting any base branch, not just `main`
+### Pull Requests
+
+- [#4075](https://github.com/docker/docker-agent/pull/4075) - ci: run ci and codeql checks on pull requests to any base branch
+- [#4078](https://github.com/docker/docker-agent/pull/4078) - chore: refresh embedded models.dev snapshot
+- [#4079](https://github.com/docker/docker-agent/pull/4079) - docs: update CHANGELOG.md for v1.129.0
+- [#4080](https://github.com/docker/docker-agent/pull/4080) - chore: bump direct Go dependencies
+- [#4081](https://github.com/docker/docker-agent/pull/4081) - safety: close four classifier coverage gaps
+- [#4088](https://github.com/docker/docker-agent/pull/4088) - feat: add assertions schema to EvalCriteria for code-based grading
+- [#4089](https://github.com/docker/docker-agent/pull/4089) - feat: add verify script runner for post-agent outcome verification
+- [#4090](https://github.com/docker/docker-agent/pull/4090) - fix(tui): stabilize slash command description alignment
+- [#4091](https://github.com/docker/docker-agent/pull/4091) - feat: upgrade relevance judge prompt with rubric, CoT, and anti-bias rules
+- [#4092](https://github.com/docker/docker-agent/pull/4092) - feat: expose pass@k and pass^k metrics for --repeat runs
+- [#4093](https://github.com/docker/docker-agent/pull/4093) - feat: safely gate embedded skill commands
+- [#4094](https://github.com/docker/docker-agent/pull/4094) - fix(skills): let inline skills override discovered ones
+- [#4095](https://github.com/docker/docker-agent/pull/4095) - fix(skills): reject whitespace in inline skill names
+- [#4096](https://github.com/docker/docker-agent/pull/4096) - feat(skills): expand embedded commands in inline skills
+
+
 ## [v1.129.0] - 2026-08-31
 
 This release adds MCP protocol revision support, names the resolved shell in environment info, and migrates the A2A server to adka2a v2.
@@ -5666,3 +5712,5 @@ This release improves the terminal user interface with better error handling and
 [v1.128.0]: https://github.com/docker/docker-agent/releases/tag/v1.128.0
 
 [v1.129.0]: https://github.com/docker/docker-agent/releases/tag/v1.129.0
+
+[v1.130.0]: https://github.com/docker/docker-agent/releases/tag/v1.130.0
