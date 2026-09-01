@@ -991,7 +991,8 @@
       "properties": {
         "name": {
           "type": "string",
-          "description": "Skill identifier used by read_skill / run_skill and the /<name> slash command."
+          "pattern": "^\\S+$",
+          "description": "Skill identifier used by read_skill / run_skill and the /<name> slash command. Must not contain whitespace, which the slash command parser uses to separate the name from its argument."
         },
         "description": {
           "type": "string",

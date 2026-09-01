@@ -101,7 +101,7 @@ Inline skills carry their body in the config itself, so they need no `SKILL.md` 
 
 | Field           | Required | Description                                                                |
 | --------------- | -------- | -------------------------------------------------------------------------- |
-| `name`          | Yes      | Skill identifier used by `read_skill` / `run_skill` and the `/<name>` command |
+| `name`          | Yes      | Skill identifier used by `read_skill` / `run_skill` and the `/<name>` command. Must not contain whitespace |
 | `description`   | Yes      | Short description shown to the agent for skill matching                    |
 | `instructions`  | Yes      | The skill body (what a `SKILL.md` would contain below its frontmatter)     |
 | `context`       | No       | Set to `fork` to run the skill as an isolated sub-agent                    |
