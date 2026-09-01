@@ -88,6 +88,9 @@ func computeSummary(results []Result) Summary {
 
 		summary.RelevanceTotal += r.RelevanceExpected
 		summary.RelevancePassed += r.RelevancePassed
+
+		summary.AssertionsTotal += r.AssertionsTotal
+		summary.AssertionsPassed += r.AssertionsPassed
 	}
 
 	return summary
@@ -104,6 +107,7 @@ func printSummary(out io.Writer, summary Summary, duration time.Duration) {
 	printMetric(out, "Sizes", summary.SizesPassed, summary.SizesTotal)
 	printF1Score(out, "Tool Calls", summary.ToolsF1Sum, summary.ToolsCount)
 	printMetric(out, "Relevance", int(summary.RelevancePassed), int(summary.RelevanceTotal))
+	printMetric(out, "Assertions", summary.AssertionsPassed, summary.AssertionsTotal)
 
 	if summary.RepeatMetrics != nil {
 		rm := summary.RepeatMetrics

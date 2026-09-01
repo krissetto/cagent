@@ -119,15 +119,17 @@ func (r *Result) checkResults() (successes, failures []string) {
 
 // Summary contains aggregate statistics across all evaluations.
 type Summary struct {
-	TotalEvals      int     `json:"total_evals"`
-	FailedEvals     int     `json:"failed_evals"`
-	TotalCost       float64 `json:"total_cost"`
-	SizesPassed     int     `json:"sizes_passed"`
-	SizesTotal      int     `json:"sizes_total"`
-	ToolsF1Sum      float64 `json:"tools_f1_sum"`
-	ToolsCount      int     `json:"tools_count"`
-	RelevancePassed float64 `json:"relevance_passed"`
-	RelevanceTotal  float64 `json:"relevance_total"`
+	TotalEvals       int     `json:"total_evals"`
+	FailedEvals      int     `json:"failed_evals"`
+	TotalCost        float64 `json:"total_cost"`
+	SizesPassed      int     `json:"sizes_passed"`
+	SizesTotal       int     `json:"sizes_total"`
+	ToolsF1Sum       float64 `json:"tools_f1_sum"`
+	ToolsCount       int     `json:"tools_count"`
+	RelevancePassed  float64 `json:"relevance_passed"`
+	RelevanceTotal   float64 `json:"relevance_total"`
+	AssertionsPassed int     `json:"assertions_passed"`
+	AssertionsTotal  int     `json:"assertions_total"`
 
 	// RepeatMetrics is populated only when --repeat > 1.
 	RepeatMetrics *RepeatMetrics `json:"repeat_metrics,omitempty"`
