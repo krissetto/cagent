@@ -84,6 +84,7 @@ func Evaluate(ctx context.Context, ttyOut, out io.Writer, isTTY bool, runName st
 	duration := time.Since(startTime)
 
 	summary := computeSummary(results)
+	summary.RepeatMetrics = computeRepeatMetrics(results, cfg.Repeat)
 	printSummary(out, summary, duration)
 
 	run := &EvalRun{

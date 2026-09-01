@@ -108,6 +108,9 @@ type Summary struct {
 	ToolsCount      int     `json:"tools_count"`
 	RelevancePassed float64 `json:"relevance_passed"`
 	RelevanceTotal  float64 `json:"relevance_total"`
+
+	// RepeatMetrics is populated only when --repeat > 1.
+	RepeatMetrics *RepeatMetrics `json:"repeat_metrics,omitempty"`
 }
 
 // EvalRun contains the results and metadata for an evaluation run.
@@ -158,6 +161,20 @@ type Config struct {
 // DefaultContainerRuntime is the container runtime executable used when
 // Config.ContainerRuntime is empty, keeping the historical Docker behavior.
 const DefaultContainerRuntime = "docker"
+
+// RepeatMetrics captures pass@k and pass^k statistics when --repeat > 1.
+//
+//   - pass@k: fraction of unique evaluations that passed at least once across
+//     k repetitions ("any pass"). Measures whether the agent can produce the
+//     correct answer at all.
+//   - pass^k: fraction of unique evaluations that passed every repetition
+//     ("all pass"). Measures determinism / reliability.
+type RepeatMetrics struct {
+	K     int     `json:"k"`
+	PassK float64 `json:"pass_at_k"`  // any-pass rate
+	HatK  float64 `json:"pass_hat_k"` // all-pass rate
+	Total int     `json:"total"`      // number of unique evaluations
+}
 
 // containerRuntimeOrDefault returns the container runtime executable to
 // invoke, falling back to DefaultContainerRuntime when none is configured.
