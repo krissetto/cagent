@@ -95,7 +95,7 @@ agents:
       - type: filesystem
 ```
 
-Inline skills carry their body in the config itself, so they need no `SKILL.md` file and require no filesystem source. They are **always exposed** — the name filter only applies to file- and URL-based skills. Because inline skills travel inside the agent YAML, they also work in `--sandbox` mode without any kit staging, and they can be shared with the agent via `share push`.
+Inline skills carry their body in the config itself, so they need no `SKILL.md` file and require no filesystem source. They are **always exposed** — the name filter only applies to file- and URL-based skills. An inline skill also **takes precedence** over a discovered skill of the same name: the config is explicit, whereas local skills are picked up from whatever happens to sit in the [search paths](#search-paths). The shadowed skill is dropped and a warning is logged at startup. Because inline skills travel inside the agent YAML, they also work in `--sandbox` mode without any kit staging, and they can be shared with the agent via `share push`.
 
 ### Inline Skill Fields
 
@@ -339,6 +339,7 @@ When multiple skills share the same name:
 2. Project skills load next, from git root toward current directory
 3. Skills closer to the current directory override those further away
 4. At the same directory level, `.agents/skills/` overrides `.github/skills/`
+5. An [inline skill](#inline-skills) overrides any discovered skill of the same name
 
 ## Skills in Sandbox Mode
 
