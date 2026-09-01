@@ -498,6 +498,26 @@ func populateEvalResult(result *Result) {
 		}
 	}
 
+	// Populate assertions check if assertions were evaluated
+	if result.AssertionsTotal > 0 {
+		assertResults := make([]session.AssertionResult, 0, len(result.AssertionResults))
+		for _, ar := range result.AssertionResults {
+			assertResults = append(assertResults, session.AssertionResult{
+				Name:   ar.Name,
+				Type:   ar.Type,
+				Passed: ar.Passed,
+				Reason: ar.Reason,
+			})
+		}
+
+		evalResult.Checks.Assertions = &session.AssertionsCheck{
+			Passed:      result.AssertionsPassed >= result.AssertionsTotal,
+			PassedCount: result.AssertionsPassed,
+			Total:       result.AssertionsTotal,
+			Results:     assertResults,
+		}
+	}
+
 	result.Session.EvalResult = evalResult
 }
 

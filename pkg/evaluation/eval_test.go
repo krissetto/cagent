@@ -1485,3 +1485,43 @@ func TestPrintSummary_NoRepeatMetricsWhenNil(t *testing.T) {
 	assert.NotContains(t, output, "pass@")
 	assert.NotContains(t, output, "Repeat")
 }
+
+func TestResultCheckResults_AssertionsAllPass(t *testing.T) {
+	t.Parallel()
+	r := Result{
+		AssertionsTotal:  2,
+		AssertionsPassed: 2,
+		AssertionResults: []AssertionResult{
+			{Name: "a", Passed: true},
+			{Name: "b", Passed: true},
+		},
+	}
+	successes, failures := r.checkResults()
+	assert.Contains(t, successes, "assertions 2/2")
+	assert.Empty(t, failures)
+}
+
+func TestResultCheckResults_AssertionsPartialFail(t *testing.T) {
+	t.Parallel()
+	r := Result{
+		AssertionsTotal:  2,
+		AssertionsPassed: 1,
+		AssertionResults: []AssertionResult{
+			{Name: "has greeting", Type: "contains", Passed: true},
+			{Name: "no error", Type: "not_contains", Passed: false, Reason: `response contains "error"`},
+		},
+	}
+	successes, failures := r.checkResults()
+	assert.Empty(t, successes)
+	assert.Len(t, failures, 1)
+	assert.Contains(t, failures[0], "no error")
+	assert.Contains(t, failures[0], `response contains "error"`)
+}
+
+func TestResultCheckResults_AssertionsDoNotFireWhenZero(t *testing.T) {
+	t.Parallel()
+	r := Result{AssertionsTotal: 0}
+	successes, failures := r.checkResults()
+	assert.Empty(t, successes)
+	assert.Empty(t, failures)
+}
