@@ -405,7 +405,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			loadedSkills = filterSkillsByName(loadedSkills, agentConfig.Skills.Include)
 			// Inline skills are defined in the agent config itself; they are
 			// always exposed and never subject to the include filter.
-			loadedSkills = append(loadedSkills, inlineSkills(agentConfig.Skills.Inline)...)
+			loadedSkills = overrideWithInlineSkills(loadedSkills, inlineSkills(agentConfig.Skills.Inline))
 			if len(loadedSkills) > 0 {
 				skillSet := skillstool.New(loadedSkills, workingDir)
 				// Resolve the additional toolsets each fork skill exposes in
@@ -883,6 +883,33 @@ func inlineSkills(defs []latest.InlineSkill) []skills.Skill {
 		})
 	}
 	return out
+}
+
+// overrideWithInlineSkills folds inline skills into the discovered ones,
+// letting an inline definition win over a file- or URL-loaded skill of the
+// same name: the agent config is explicit, while local skills are picked up
+// from whatever happens to sit in the search paths. Appending blindly would
+// leave the shadowed skill advertised to the model — the same name listed
+// twice, with lookups resolving to the discovered one.
+func overrideWithInlineSkills(loaded, inline []skills.Skill) []skills.Skill {
+	if len(inline) == 0 {
+		return loaded
+	}
+
+	inlined := make(map[string]bool, len(inline))
+	for _, s := range inline {
+		inlined[s.Name] = true
+	}
+
+	merged := make([]skills.Skill, 0, len(loaded)+len(inline))
+	for _, s := range loaded {
+		if inlined[s.Name] {
+			slog.Warn("Inline skill overrides a discovered skill with the same name", "name", s.Name, "path", s.FilePath)
+			continue
+		}
+		merged = append(merged, s)
+	}
+	return append(merged, inline...)
 }
 
 // forkSkillToolSets builds, for each fork skill that declares toolsets, the
