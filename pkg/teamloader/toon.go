@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/alpkeskin/gotoon"
@@ -26,38 +27,47 @@ func (f *toonTools) Tools(ctx context.Context) ([]tools.Tool, error) {
 		return nil, err
 	}
 
-	for i, tool := range allTools {
-		for _, regex := range f.toolRegexps {
-			if !regex.MatchString(tool.Name) {
-				continue
-			}
-
-			handler := tool.Handler
-			tool.Handler = func(ctx context.Context, toolCall tools.ToolCall, rt tools.Runtime) (*tools.ToolCallResult, error) {
-				res, err := handler(ctx, toolCall, rt)
-				if err != nil {
-					return res, err
-				}
-
-				var o map[string]any
-				err = json.Unmarshal([]byte(res.Output), &o)
-				if err != nil {
-					return res, nil
-				}
-
-				tooned, err := gotoon.Encode(o)
-				if err != nil {
-					return res, err
-				}
-
-				res.Output = tooned
-				return res, nil
-			}
-			allTools[i] = tool
+	// Clone: inner toolsets (e.g. MCP) may hand out their cached slice, and
+	// mutating it would re-wrap the same handlers on every listing.
+	result := slices.Clone(allTools)
+	for i := range result {
+		if f.matches(result[i].Name) {
+			result[i].Handler = toonHandler(result[i].Handler)
 		}
 	}
 
-	return allTools, nil
+	return result, nil
+}
+
+func (f *toonTools) matches(name string) bool {
+	for _, regex := range f.toolRegexps {
+		if regex.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func toonHandler(handler tools.ToolHandler) tools.ToolHandler {
+	return func(ctx context.Context, toolCall tools.ToolCall, rt tools.Runtime) (*tools.ToolCallResult, error) {
+		res, err := handler(ctx, toolCall, rt)
+		if err != nil {
+			return res, err
+		}
+
+		var o map[string]any
+		if err := json.Unmarshal([]byte(res.Output), &o); err != nil {
+			return res, nil
+		}
+
+		tooned, err := gotoon.Encode(o)
+		if err != nil {
+			return res, err
+		}
+
+		res.Output = tooned
+		return res, nil
+	}
 }
 
 // Unwrap implements tools.Unwrapper.

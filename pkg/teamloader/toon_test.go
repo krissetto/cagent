@@ -72,3 +72,36 @@ func TestToon(t *testing.T) {
 		})
 	}
 }
+
+// The inner toolset's slice must be left untouched: MCP hands out its cached
+// slice, and mutating it would re-wrap the handlers on every listing.
+func TestToonDoesNotMutateInnerSlice(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	cached := []tools.Tool{{
+		Name: "test_tool",
+		Handler: func(context.Context, tools.ToolCall, tools.Runtime) (*tools.ToolCallResult, error) {
+			calls++
+			return tools.ResultSuccess(`{"key": "value"}`), nil
+		},
+	}}
+	inner := &mockToolSet{
+		toolsFunc: func(context.Context) ([]tools.Tool, error) { return cached, nil },
+	}
+	wrapped := WithToon(inner, "test_.*,.*_tool")
+
+	for range 3 {
+		resultTools, err := wrapped.Tools(t.Context())
+		require.NoError(t, err)
+		result, err := resultTools[0].Handler(t.Context(), tools.ToolCall{}, tools.NopRuntime{})
+		require.NoError(t, err)
+		assert.Equal(t, "key: value", result.Output)
+	}
+
+	// The original handler is still unwrapped and was invoked exactly once per call.
+	res, err := cached[0].Handler(t.Context(), tools.ToolCall{}, tools.NopRuntime{})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"key": "value"}`, res.Output)
+	assert.Equal(t, 4, calls)
+}

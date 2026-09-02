@@ -606,9 +606,8 @@ func (a *Agent) tryStartToolSet(ctx context.Context, toolSet *tools.StartableToo
 // bounded via tryStartToolSet, so neither a start already in flight nor a
 // wedged start initiated here can stall the turn, and warnings are
 // recorded in configuration order afterwards. Peer-dependent toolsets
-// (e.g. the deferred aggregator, whose Start lists its source toolsets'
-// tools) start in a second wave, after the toolsets they depend on have
-// settled.
+// start in a second wave, after the toolsets they depend on have been
+// attempted.
 func (a *Agent) ensureToolSetsAreStarted(ctx context.Context) {
 	var independent, dependent []int
 	for i, toolSet := range a.toolsets {
