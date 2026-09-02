@@ -1753,9 +1753,8 @@ func (r *LocalRuntime) emitToolsProgressively(ctx context.Context, a *agent.Agen
 	// already in flight is skipped rather than joined, a wedged start is
 	// abandoned at the timeout, and outcomes are consumed in configuration
 	// order below so an early fast toolset is listed (and counted) without
-	// waiting for a slow later one. Peer-dependent toolsets (e.g. the
-	// deferred aggregator, whose Start lists its source toolsets' tools)
-	// start in a second wave, after the others have settled.
+	// waiting for a slow later one. Peer-dependent toolsets start in a
+	// second wave, after the others have been attempted.
 	type startOutcome struct {
 		started bool
 		err     error

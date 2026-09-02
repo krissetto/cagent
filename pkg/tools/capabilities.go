@@ -24,10 +24,14 @@ type StartReporter interface {
 }
 
 // PeerDependent is implemented by toolsets whose Start reads from the
-// agent's other toolsets (e.g. the deferred aggregator lists its source
-// toolsets' tools). Callers that start an agent's toolsets concurrently
-// must start these only after every other toolset has settled, or their
-// Start would race the very toolsets it depends on.
+// agent's other toolsets. Callers that start an agent's toolsets
+// concurrently must start these only after every other toolset has
+// settled, or their Start would race the very toolsets it depends on.
+//
+// Note the guarantee is best-effort: a peer whose start is already in
+// flight elsewhere is skipped, not awaited, so a PeerDependent Start must
+// still tolerate a peer that is not ready yet. Prefer resolving peer state
+// lazily, as the deferred toolset does.
 type PeerDependent interface {
 	StartsAfterPeers()
 }
