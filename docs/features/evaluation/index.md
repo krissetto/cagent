@@ -158,13 +158,14 @@ Each assertion has a `name` (shown in results), a `type`, and a `value` checked 
 
 ## Scoring Metrics
 
-Docker Agent evaluates agents across three dimensions:
+Docker Agent evaluates agents across four dimensions:
 
 | Metric              | How It's Measured                                                                                                         |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | **Tool Calls (F1)** | F1 score between the expected tool call sequence (from the recorded session) and the actual tool calls made by the agent. |
 | **Relevance**       | An LLM judge (configurable via `--judge-model`) evaluates whether each relevance statement is satisfied by the response.  |
 | **Size**            | Whether the response length matches the expected size category (S/M/L/XL).                                                |
+| **Assertions**      | Code-based [assertions](#assertions) evaluated deterministically against the response, cost, and tool calls — no LLM judge involved. |
 
 ## Serve-safety verification and rollback
 
