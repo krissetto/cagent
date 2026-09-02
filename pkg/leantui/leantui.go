@@ -3,6 +3,7 @@ package leantui
 import (
 	"context"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/app"
 	"github.com/docker/docker-agent/pkg/gitbranch"
+	"github.com/docker/docker-agent/pkg/history"
 	"github.com/docker/docker-agent/pkg/leantui/ui"
 	"github.com/docker/docker-agent/pkg/tui/service"
 )
@@ -20,6 +22,7 @@ type Config struct {
 	App        *app.App
 	WorkingDir string
 	Cleanup    func()
+	History    *history.History
 
 	FirstMessage           *string
 	FirstMessageAttachment string
@@ -49,6 +52,13 @@ func Run(ctx context.Context, cfg Config) error {
 
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
+
+	if cfg.History == nil {
+		cfg.History, err = history.New("")
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to initialize command history", "error", err)
+		}
+	}
 
 	m := newModel(term, cfg)
 	m.commitWelcome()
@@ -203,7 +213,7 @@ func newModel(term *ui.Terminal, cfg Config) *model {
 		r:                ui.NewRenderer(term.Writer(), w, h),
 		width:            w,
 		height:           h,
-		screen:           ui.NewScreen(cfg.WorkingDir, gitbranch.Current(cfg.WorkingDir), "Type a message, / for commands"),
+		screen:           ui.NewScreen(cfg.WorkingDir, gitbranch.Current(cfg.WorkingDir), "Type a message, / for commands", cfg.History),
 		status:           ui.StatusModel{WorkingDir: cfg.WorkingDir, Branch: gitbranch.Current(cfg.WorkingDir)},
 		sessionState:     sessionState,
 		usage:            ui.NewUsageTracker(),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -219,7 +220,9 @@ func (m *model) submit(ctx context.Context, text string, opts submitOptions) {
 		return
 	}
 	if opts.fromEditor {
-		m.screen.Editor.RememberHistory(trimmed)
+		if err := m.screen.Editor.RememberHistory(trimmed); err != nil {
+			slog.WarnContext(ctx, "Failed to save command history", "error", err)
+		}
 		m.screen.Editor.Reset()
 		m.screen.Autocomplete.Dismiss()
 	}
