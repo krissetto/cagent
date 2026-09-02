@@ -267,6 +267,8 @@ func parseCSI(b []byte) (int, Key) {
 			default:
 				return consumed, Key{Typ: KeyEnter}
 			}
+		case 27:
+			return consumed, Key{Typ: KeyEsc}
 		}
 		if mod == "5" {
 			switch code {
