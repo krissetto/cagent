@@ -237,6 +237,13 @@ $ docker agent eval ./agent.yaml --baseline results/2026-08-01-run.json
 The baseline is the run JSON written by a previous invocation —
 `<output>/<run-name>.json` — so there is no separate artifact to produce.
 
+The comparison covers every aggregate quality rate that both runs have data
+for: size pass rate, tool F1 mean, relevance rate, and — since
+docker/docker-agent#4103 — assertion rate. When both runs used `--repeat`,
+`pass@k` and `pass^k` are also reported as deltas, but purely
+**informationally**: they never gate, since they derive from the same
+per-eval pass/fail that the other metrics already gate on.
+
 Four rules decide the verdict, and they are worth knowing before wiring this
 into CI:
 
