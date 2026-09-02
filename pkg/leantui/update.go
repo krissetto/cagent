@@ -33,6 +33,8 @@ func (m *model) handleKey(ctx context.Context, k ui.Key) {
 		}
 	case ui.KeyEnter:
 		m.handleEnter(ctx)
+	case ui.KeyShiftEnter:
+		m.screen.Editor.Insert([]rune{'\n'})
 	case ui.KeyAltEnter:
 		m.submitEditorMode(ctx, m.screen.Editor.Text(), busySubmitFollowUp)
 	case ui.KeyTab:
@@ -557,10 +559,10 @@ func (m *model) commitHelp() {
 			ui.StMuted().Render("  /exit      quit"),
 			"",
 			ui.StBold().Render("Shortcuts"),
-			ui.StMuted().Render("  Enter      send             Alt+Enter   insert newline"),
-			ui.StMuted().Render("  Up/Down    history           Tab         complete command"),
-			ui.StMuted().Render("  Shift+Tab  cycle thinking    Ctrl+C      cancel / quit"),
-			ui.StMuted().Render("  Ctrl+W     delete previous word"),
+			ui.StMuted().Render("  Enter      send             Shift+Enter insert newline"),
+			ui.StMuted().Render("  Alt+Enter  follow up        Up/Down     history"),
+			ui.StMuted().Render("  Tab        complete command Shift+Tab   cycle thinking"),
+			ui.StMuted().Render("  Ctrl+C     cancel / quit    Ctrl+W      delete previous word"),
 		}
 	})
 }

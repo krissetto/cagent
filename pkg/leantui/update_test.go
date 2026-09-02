@@ -236,6 +236,16 @@ func TestModelCommandOpensModelAutocomplete(t *testing.T) {
 	}
 }
 
+func TestShiftEnterInsertsNewline(t *testing.T) {
+	t.Parallel()
+	m := bareModel(24)
+	m.screen.Editor.SetText("first line")
+
+	m.handleKey(t.Context(), ui.Key{Typ: ui.KeyShiftEnter})
+
+	assert.Equal(t, "first line\n", m.screen.Editor.Text())
+}
+
 func TestAltEnterWhileBusyQueuesRuntimeFollowUp(t *testing.T) {
 	t.Parallel()
 	rt := &cycleThinkingRuntime{}
