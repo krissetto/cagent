@@ -69,6 +69,8 @@ func TestParseKittyKeyboardSequences(t *testing.T) {
 		{sequence: "\x1b[13;3u", want: KeyAltEnter},
 		{sequence: "\x1b[27u", want: KeyEsc},
 		{sequence: "\x1b[27;1u", want: KeyEsc},
+		{sequence: "\x1b[127;3u", want: KeyCtrlW},
+		{sequence: "\x1b[8;3u", want: KeyCtrlW},
 		{sequence: "\x1b[99;5u", want: KeyCtrlC},
 		{sequence: "\x1b[100;5u", want: KeyCtrlD},
 		{sequence: "\x1b[117;5u", want: KeyCtrlU},
