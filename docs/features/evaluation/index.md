@@ -123,11 +123,38 @@ Each eval file is a JSON session that captures a complete conversation. The key 
 The `evals` object inside each session controls what gets scored:
 
 | Field         | Type     | Description                                                                               |
-| ------------- | -------- | ----------------------------------------------------------------------------------------- |
+| ------------- | -------- | ------------------------------------------------------------------------------------------- |
 | `relevance`   | string[] | Statements that must be true about the agent's response. Scored by an LLM judge.          |
+| `assertions`  | object[] | Code-based checks evaluated against the agent's output. See [Assertions](#assertions).    |
 | `size`        | string   | Expected response size: `S`, `M`, `L`, or `XL`. Compared against actual output length.    |
 | `working_dir` | string   | Subdirectory under `evals/working_dirs/` to mount as the container's working directory.   |
 | `setup`       | string   | Shell script to run in the container before the agent executes (e.g., create test files). |
+
+### Assertions
+
+Each entry in `assertions` is a code-based check evaluated deterministically against the agent's output, without an LLM judge:
+
+```json
+"assertions": [
+  { "name": "mentions file count", "type": "contains", "value": "2 files" },
+  { "name": "no error message", "type": "not_contains", "value": "error" },
+  { "name": "used list_directory", "type": "tool_called", "value": "list_directory" },
+  { "name": "under budget", "type": "cost_threshold", "value": "0.05" }
+]
+```
+
+Each assertion has a `name` (shown in results), a `type`, and a `value` checked against the agent's response, cost, or tool calls:
+
+| Type             | Checks that...                                                     |
+| ---------------- | -------------------------------------------------------------------- |
+| `contains`       | the response contains `value`                                       |
+| `not_contains`   | the response does not contain `value`                                |
+| `equals`         | the (trimmed) response equals `value`                                |
+| `starts_with`    | the response starts with `value`                                     |
+| `ends_with`      | the (trimmed) response ends with `value`                             |
+| `regex`          | the response matches the regular expression `value`                  |
+| `cost_threshold` | the eval's cost is less than or equal to `value` (a dollar amount)   |
+| `tool_called`    | the agent called a tool named `value`                                |
 
 ## Scoring Metrics
 
