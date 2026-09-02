@@ -43,6 +43,17 @@ tasks:
     cmds:
       - go generate ./pkg/modelsdev/...
 
+  models-delta:
+    desc: Show the models.dev catalog delta (HEAD vs the working-tree snapshot by default)
+    silent: true
+    cmds:
+      - bash ./scripts/models-delta.sh {{.CLI_ARGS}}
+
+  test-models-delta:
+    desc: Run the golden-fixture regression test for the models-delta jq scripts
+    cmds:
+      - bash ./scripts/models-delta-test.sh
+
   check-models-fresh:
     desc: Fail if the embedded models.dev snapshot is stale (run update-models to refresh)
     cmds:
