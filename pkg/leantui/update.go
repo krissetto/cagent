@@ -224,11 +224,24 @@ func (m *model) submit(ctx context.Context, text string, opts submitOptions) {
 		m.screen.Autocomplete.Dismiss()
 	}
 
+	if command, ok := strings.CutPrefix(trimmed, "!"); ok {
+		m.runBangCommand(ctx, command)
+		return
+	}
+
 	if strings.HasPrefix(trimmed, "/") && m.handleSlash(ctx, trimmed, opts.busyMode) {
 		return
 	}
 
 	m.dispatchUserMessage(ctx, trimmed, trimmed, opts.busyMode)
+}
+
+func (m *model) runBangCommand(ctx context.Context, command string) {
+	if m.app.IsReadOnly() {
+		m.addNotice("⚠ ", "This session is read-only.", ui.StWarning())
+		return
+	}
+	m.app.RunBangCommand(ctx, command)
 }
 
 // handleSlash dispatches a slash command. It returns true when the command was
@@ -508,6 +521,11 @@ func (m *model) sendFirstMessage(ctx context.Context, msg, attachPath string) {
 	}
 
 	trimmed := strings.TrimSpace(msg)
+	if command, ok := strings.CutPrefix(trimmed, "!"); ok {
+		m.runBangCommand(ctx, command)
+		return
+	}
+
 	content := msg
 	if strings.HasPrefix(trimmed, "/") {
 		if resolved := m.app.ResolveInput(ctx, trimmed); resolved != "" {

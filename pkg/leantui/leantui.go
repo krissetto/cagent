@@ -91,6 +91,10 @@ func Run(ctx context.Context, cfg Config) error {
 		m.sendFirstMessage(loopCtx, first, cfg.FirstMessageAttachment)
 	}
 	for _, msg := range cfg.QueuedMessages {
+		if command, ok := strings.CutPrefix(strings.TrimSpace(msg), "!"); ok {
+			m.runBangCommand(loopCtx, command)
+			continue
+		}
 		m.enqueueFollowUp(msg, msg)
 	}
 
