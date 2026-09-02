@@ -30,6 +30,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tui/dialog"
 	tuiimage "github.com/docker/docker-agent/pkg/tui/image"
 	"github.com/docker/docker-agent/pkg/tui/messages"
+	"github.com/docker/docker-agent/pkg/tui/page/chat"
 	"github.com/docker/docker-agent/pkg/tui/service"
 	"github.com/docker/docker-agent/pkg/tui/styles"
 	"github.com/docker/docker-agent/pkg/userconfig"
@@ -97,14 +98,17 @@ func (m *appModel) handleBranchFromEdit(msg messages.BranchFromEditMsg) (tea.Mod
 
 	m.reapplyKeyboardEnhancements()
 
-	return m, tea.Sequence(
-		m.chatPage.Init(),
-		m.resizeAll(),
-		m.editor.Focus(),
-		core.CmdHandler(messages.SendMsg{
-			Content:     msg.Content,
-			Attachments: msg.Attachments,
-		}),
+	return m, tea.Batch(
+		tea.Sequence(
+			m.chatPage.Init(),
+			m.resizeAll(),
+			m.editor.Focus(),
+			core.CmdHandler(messages.SendMsg{
+				Content:     msg.Content,
+				Attachments: msg.Attachments,
+			}),
+		),
+		chat.WatchGitBranch(m.chatPage),
 	)
 }
 

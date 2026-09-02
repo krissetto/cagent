@@ -159,6 +159,21 @@ type Model interface {
 	WorkingDirectory() string
 }
 
+type gitBranchChangedMsg string
+
+func waitForGitBranch(watcher *gitbranch.Watcher) tea.Cmd {
+	if watcher == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		branch, ok := <-watcher.Changes()
+		if !ok {
+			return nil
+		}
+		return gitBranchChangedMsg(branch)
+	}
+}
+
 // ragIndexingState tracks per-strategy indexing progress
 type ragIndexingState struct {
 	current int
@@ -319,7 +334,8 @@ type model struct {
 	rootSessionID        string   // Main (top-level) session, shown when no stream is active
 	scrollview           *scrollview.Model
 	workingDirectory     string
-	gitBranchName        string   // current git branch, empty if not in a repo
+	gitBranchName        string // current git branch, empty if not in a repo
+	gitBranchWatcher     *gitbranch.Watcher
 	queuedMessages       []string // Truncated preview of queued messages
 	streamCancelled      bool     // true after ESC cancel until next StreamStartedEvent
 	compacting           bool     // true while a session compaction runs (started → completed)
@@ -381,7 +397,9 @@ func New(ar *animation.Runtime, ctx context.Context, sessionState *service.Sessi
 	ti.CharLimit = 50
 	ti.Prompt = "" // No prompt to maximize usable width in collapsed sidebar
 
-	wd, branch := getCurrentWorkingDirectory()
+	rawDir, _ := os.Getwd()
+	wd, branch := formatWorkingDirectory(rawDir)
+	branchWatcher, _ := gitbranch.Watch(ctx, rawDir)
 
 	m := &model{
 		ctx:               func() context.Context { return context.WithoutCancel(ctx) },
@@ -402,6 +420,7 @@ func New(ar *animation.Runtime, ctx context.Context, sessionState *service.Sessi
 		),
 		workingDirectory: wd,
 		gitBranchName:    branch,
+		gitBranchWatcher: branchWatcher,
 		preferredWidth:   DefaultWidth,
 		sectionGap:       defaultSectionGap,
 		titleInput:       ti,
@@ -413,7 +432,7 @@ func New(ar *animation.Runtime, ctx context.Context, sessionState *service.Sessi
 }
 
 func (m *model) Init() tea.Cmd {
-	return nil
+	return waitForGitBranch(m.gitBranchWatcher)
 }
 
 // needsSpinner returns true if any spinner-driving state is active.
@@ -1001,7 +1020,12 @@ func (m *model) LoadFromSession(sess *session.Session) {
 
 	// Load working directory from session
 	if sess.WorkingDir != "" {
-		m.workingDirectory, m.gitBranchName = formatWorkingDirectory(sess.WorkingDir)
+		m.workingDirectory = pathx.ShortenHome(sess.WorkingDir)
+		if m.gitBranchWatcher != nil {
+			m.gitBranchName = m.gitBranchWatcher.SetDir(sess.WorkingDir)
+		} else {
+			m.gitBranchName = gitbranch.Current(sess.WorkingDir)
+		}
 	}
 
 	// Session has content if it has messages or token usage
@@ -1135,17 +1159,6 @@ func formatWorkingDirectory(rawDir string) (display, branch string) {
 	return pathx.ShortenHome(rawDir), gitbranch.Current(rawDir)
 }
 
-// getCurrentWorkingDirectory returns the current working directory with home directory
-// replaced by ~/, along with the current git branch name.
-func getCurrentWorkingDirectory() (string, string) {
-	pwd, err := os.Getwd()
-	if err != nil {
-		return "", ""
-	}
-
-	return formatWorkingDirectory(pwd)
-}
-
 // workingDirWithBranch returns the working directory path with the git branch
 // appended in muted style, suitable for rendering in the sidebar.
 func (m *model) workingDirWithBranch() string {
@@ -1172,6 +1185,10 @@ func (m *model) workingDirLine() string {
 // Update handles messages and updates the component state.
 func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case gitBranchChangedMsg:
+		m.gitBranchName = string(msg)
+		m.invalidateCache()
+		return m, waitForGitBranch(m.gitBranchWatcher)
 	case tea.WindowSizeMsg:
 		cmd := m.SetSize(msg.Width, msg.Height)
 		return m, cmd

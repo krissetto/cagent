@@ -61,6 +61,11 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	m := newModel(term, cfg)
+	branchWatcher, err := gitbranch.Watch(loopCtx, cfg.WorkingDir)
+	if err != nil {
+		return err
+	}
+	m.status.Branch = branchWatcher.Current()
 	m.commitWelcome()
 	m.refreshCommands(loopCtx)
 
@@ -108,8 +113,9 @@ func Run(ctx context.Context, cfg Config) error {
 		m.enqueueFollowUp(msg, msg)
 	}
 
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+	animationTicker := time.NewTicker(100 * time.Millisecond)
+	defer animationTicker.Stop()
+	branchChanges := branchWatcher.Changes()
 
 	m.render()
 	for !m.quitting {
@@ -126,11 +132,18 @@ func Run(ctx context.Context, cfg Config) error {
 			m.width, m.height = sz[0], sz[1]
 			m.r.SetSize(sz[0], sz[1])
 			m.render()
-		case <-ticker.C:
+		case <-animationTicker.C:
 			if m.busy {
 				m.spinnerFrame++
 				m.render()
 			}
+		case branch, ok := <-branchChanges:
+			if !ok {
+				branchChanges = nil
+				continue
+			}
+			m.status.Branch = branch
+			m.render()
 		}
 	}
 
@@ -208,14 +221,16 @@ func newModel(term *ui.Terminal, cfg Config) *model {
 
 	renderImages := cfg.RenderImages == nil || *cfg.RenderImages
 
+	branch := gitbranch.Current(cfg.WorkingDir)
+
 	return &model{
 		app:              cfg.App,
 		term:             term,
 		r:                ui.NewRenderer(term.Writer(), w, h),
 		width:            w,
 		height:           h,
-		screen:           ui.NewScreen(cfg.WorkingDir, gitbranch.Current(cfg.WorkingDir), "Type a message, / for commands", cfg.History),
-		status:           ui.StatusModel{WorkingDir: cfg.WorkingDir, Branch: gitbranch.Current(cfg.WorkingDir)},
+		screen:           ui.NewScreen(cfg.WorkingDir, branch, "Type a message, / for commands", cfg.History),
+		status:           ui.StatusModel{WorkingDir: cfg.WorkingDir, Branch: branch},
 		sessionState:     sessionState,
 		usage:            ui.NewUsageTracker(),
 		appName:          appName,
