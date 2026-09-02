@@ -9,11 +9,14 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/effort"
 	"github.com/docker/docker-agent/pkg/leantui/ui"
 	"github.com/docker/docker-agent/pkg/modelpicker"
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/tui/messages"
+	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
 func (m *model) handleKey(ctx context.Context, k ui.Key) {
@@ -247,6 +250,9 @@ func (m *model) handleSlash(ctx context.Context, text string, mode busySubmitMod
 	case "help":
 		m.commitHelp()
 		return true
+	case "sessions":
+		m.handleSessionsCommand(ctx, rest)
+		return true
 	case "compact":
 		m.addUserEcho(text)
 		m.startCompact(ctx, rest)
@@ -276,6 +282,126 @@ func (m *model) handleSlash(ctx context.Context, text string, mode busySubmitMod
 	}
 
 	return false
+}
+
+func (m *model) handleSessionsCommand(ctx context.Context, sessionID string) {
+	if m.busy {
+		m.addNotice("", "Wait for the current response to finish before switching sessions", ui.StMuted())
+		return
+	}
+	if m.app == nil || m.app.SessionStore() == nil {
+		m.addNotice("", "No session store configured", ui.StMuted())
+		return
+	}
+
+	if sessionID != "" {
+		m.resumeSession(ctx, sessionID)
+		return
+	}
+
+	summaries, err := m.app.SessionStore().GetSessionSummaries(ctx)
+	if err != nil {
+		m.addNotice("✗ ", "Failed to load sessions: "+err.Error(), ui.StError())
+		return
+	}
+
+	currentDir := cleanDirectory(m.app.Session().WorkingDir)
+	currentID := m.app.Session().ID
+	cmds := make([]ui.Command, 0, len(summaries))
+	for _, summary := range summaries {
+		if summary.ID == currentID || cleanDirectory(summary.WorkingDir) != currentDir {
+			continue
+		}
+		title := strings.TrimSpace(summary.Title)
+		if title == "" {
+			title = "Untitled"
+		}
+		s := summary
+		cmds = append(cmds, ui.Command{
+			Name:  title,
+			Desc:  fmt.Sprintf("%s · %d messages", s.CreatedAt.Local().Format("Jan 2 15:04"), s.NumMessages),
+			Value: s.ID,
+			MatchScore: func(query string) (int, bool) {
+				query = strings.ToLower(strings.TrimSpace(query))
+				if query == "" {
+					return 0, true
+				}
+				if strings.Contains(strings.ToLower(title), query) || strings.Contains(strings.ReplaceAll(strings.ToLower(s.ID), "-", ""), strings.ReplaceAll(query, "-", "")) {
+					return 1, true
+				}
+				return 0, false
+			},
+			Kind: ui.CmdBuiltin,
+		})
+	}
+	if len(cmds) == 0 {
+		m.addNotice("", "No previous sessions found in this directory", ui.StMuted())
+		return
+	}
+
+	m.screen.Autocomplete.SetScopedCommands("sessions ", cmds)
+	m.screen.Editor.SetText("/sessions ")
+	m.screen.Autocomplete.Sync(m.screen.Editor.Text())
+}
+
+func cleanDirectory(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return filepath.Clean(dir)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	return filepath.Clean(abs)
+}
+
+func (m *model) resumeSession(ctx context.Context, sessionID string) {
+	sess, err := m.app.SessionStore().GetSession(ctx, sessionID)
+	if err != nil {
+		m.addNotice("✗ ", "Failed to load session: "+err.Error(), ui.StError())
+		return
+	}
+	if cleanDirectory(sess.WorkingDir) != cleanDirectory(m.app.Session().WorkingDir) {
+		m.addNotice("✗ ", "Session is not from the current directory", ui.StError())
+		return
+	}
+
+	m.app.ReplaceSession(ctx, sess)
+	m.resetConversation()
+	m.screen.Transcript = ui.NewTranscript()
+	m.sessionState = service.NewSessionState(sess)
+	m.loadSessionTranscript(sess)
+	m.refreshCommands(ctx)
+	title := strings.TrimSpace(sess.Title)
+	if title == "" {
+		title = sess.ID
+	}
+	m.addNotice("", "Resumed session: "+title, ui.StMuted())
+}
+
+func (m *model) loadSessionTranscript(sess *session.Session) {
+	for _, msg := range sess.OwnMessages() {
+		if msg.Implicit {
+			continue
+		}
+		content := msg.Message.Content
+		switch msg.Message.Role {
+		case chat.MessageRoleUser:
+			m.addUserEcho(content)
+		case chat.MessageRoleAssistant:
+			if msg.Message.ReasoningContent != "" {
+				reasoning := msg.Message.ReasoningContent
+				m.screen.Transcript.AddBlock(func(w int) []string { return ui.RenderReasoningLines(reasoning, w) })
+			}
+			if content != "" {
+				answer := content
+				m.screen.Transcript.AddBlock(func(w int) []string { return ui.RenderAssistantLines(answer, w) })
+			}
+		}
+	}
 }
 
 func (m *model) handleModelCommand(ctx context.Context, modelRef string) {
@@ -549,6 +675,7 @@ func (m *model) commitHelp() {
 		return []string{
 			ui.StBold().Render("Commands"),
 			ui.StMuted().Render("  /new       start a new session"),
+			ui.StMuted().Render("  /sessions  resume a session from this directory"),
 			ui.StMuted().Render("  /compact   summarize and compact the conversation"),
 			ui.StMuted().Render("  /model     change the model for the current agent"),
 			ui.StMuted().Render("  /effort    set the model's reasoning effort (e.g. /effort high)"),

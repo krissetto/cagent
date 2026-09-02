@@ -4,10 +4,13 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/app"
+	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/effort"
 	"github.com/docker/docker-agent/pkg/leantui/ui"
 	"github.com/docker/docker-agent/pkg/runtime"
@@ -16,6 +19,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	skillstool "github.com/docker/docker-agent/pkg/tools/builtin/skills"
 	mcptools "github.com/docker/docker-agent/pkg/tools/mcp"
+	"github.com/docker/docker-agent/pkg/tui/service"
 )
 
 type cycleThinkingRuntime struct {
@@ -31,6 +35,7 @@ type cycleThinkingRuntime struct {
 	models     []runtime.ModelChoice
 	modelRef   string
 	modelErr   error
+	store      session.Store
 }
 
 func (r *cycleThinkingRuntime) CurrentAgentInfo(context.Context) runtime.CurrentAgentInfo {
@@ -63,7 +68,7 @@ func (r *cycleThinkingRuntime) Resume(context.Context, runtime.ResumeRequest) {}
 func (r *cycleThinkingRuntime) ResumeElicitation(context.Context, tools.ElicitationAction, map[string]any, ...string) error {
 	return nil
 }
-func (r *cycleThinkingRuntime) SessionStore() session.Store { return nil }
+func (r *cycleThinkingRuntime) SessionStore() session.Store { return r.store }
 func (r *cycleThinkingRuntime) Summarize(context.Context, *session.Session, string, runtime.EventSink) {
 }
 func (r *cycleThinkingRuntime) PermissionsInfo() *runtime.PermissionsInfo { return nil }
@@ -141,6 +146,72 @@ func (r *cycleThinkingRuntime) OnBackgroundEvent(func(runtime.Event))    {}
 func (r *cycleThinkingRuntime) OnElicitationRequest(func(runtime.Event)) {}
 
 var _ runtime.Runtime = (*cycleThinkingRuntime)(nil)
+
+func TestSessionsCommandListsCurrentDirectoryAndResumesSelection(t *testing.T) {
+	t.Parallel()
+	store := session.NewInMemorySessionStore()
+	workingDir := t.TempDir()
+	current := session.New(session.WithWorkingDir(workingDir))
+	resumable := session.New(session.WithWorkingDir(workingDir))
+	resumable.Title = "Previous work"
+	resumable.CreatedAt = time.Date(2026, time.September, 2, 14, 30, 0, 0, time.Local)
+	resumable.AddMessage(session.UserMessage("continue this task"))
+	resumable.AddMessage(session.NewAgentMessage("coder", &chat.Message{Role: chat.MessageRoleAssistant, Content: "previous answer"}))
+	other := session.New(session.WithWorkingDir(t.TempDir()))
+	other.Title = "Other directory"
+	require.NoError(t, store.AddSession(t.Context(), resumable))
+	require.NoError(t, store.AddSession(t.Context(), other))
+
+	rt := &cycleThinkingRuntime{store: store}
+	m := bareModel(80)
+	m.app = app.New(t.Context(), rt, current)
+	m.sessionState = service.NewSessionState(current)
+
+	assert.True(t, m.handleSlash(t.Context(), "/sessions", busySubmitSteer))
+	assert.Equal(t, "/sessions ", m.screen.Editor.Text())
+	assert.True(t, m.screen.Autocomplete.Active)
+	cmd, ok := m.screen.Autocomplete.Current()
+	require.True(t, ok)
+	assert.Equal(t, "Previous work", cmd.Name)
+	assert.Equal(t, "/sessions "+resumable.ID, m.screen.Autocomplete.Completion(cmd))
+
+	assert.True(t, m.handleSlash(t.Context(), m.screen.Autocomplete.Completion(cmd), busySubmitSteer))
+	assert.Equal(t, resumable.ID, m.app.Session().ID)
+	transcript := strings.Join(m.screen.Transcript.Lines(80, 0, false, m.sessionState, nil), "\n")
+	assert.Contains(t, transcript, "continue this task")
+	assert.Contains(t, transcript, "previous answer")
+	assert.NotContains(t, transcript, "Other directory")
+}
+
+func TestSessionsCommandReportsNoSessionsInCurrentDirectory(t *testing.T) {
+	t.Parallel()
+	store := session.NewInMemorySessionStore()
+	other := session.New(session.WithWorkingDir(t.TempDir()))
+	require.NoError(t, store.AddSession(t.Context(), other))
+
+	current := session.New(session.WithWorkingDir(t.TempDir()))
+	m := bareModel(80)
+	m.app = app.New(t.Context(), &cycleThinkingRuntime{store: store}, current)
+
+	assert.True(t, m.handleSlash(t.Context(), "/sessions", busySubmitSteer))
+	transcript := strings.Join(m.screen.Transcript.Lines(80, 0, false, m.sessionState, nil), "\n")
+	assert.Contains(t, transcript, "No previous sessions found in this directory")
+	assert.False(t, m.screen.Autocomplete.Active)
+}
+
+func TestSessionsCommandDoesNotSwitchWhileBusy(t *testing.T) {
+	t.Parallel()
+	store := session.NewInMemorySessionStore()
+	current := session.New(session.WithWorkingDir(t.TempDir()))
+	m := bareModel(80)
+	m.app = app.New(t.Context(), &cycleThinkingRuntime{store: store}, current)
+	m.busy = true
+
+	assert.True(t, m.handleSlash(t.Context(), "/sessions", busySubmitSteer))
+	assert.Equal(t, current.ID, m.app.Session().ID)
+	transcript := strings.Join(m.screen.Transcript.Lines(80, 0, true, m.sessionState, nil), "\n")
+	assert.Contains(t, transcript, "Wait for the current response to finish")
+}
 
 func TestShiftTabCyclesThinkingLevel(t *testing.T) {
 	t.Parallel()
