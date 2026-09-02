@@ -6,12 +6,20 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/docker/docker-agent/pkg/tui/components/markdown"
+	"github.com/docker/docker-agent/pkg/tui/styles"
 )
 
 // RenderUserLines renders a submitted user message as committed scrollback,
 // echoing it with the same prompt marker used by the input box.
 func RenderUserLines(text string, width int) []string {
-	return RenderUserLinesWith(text, width, StAccent(), StPrimary())
+	if width < 1 {
+		width = 1
+	}
+	boxStyle := StUserBox(width)
+	innerWidth := max(width-boxStyle.GetHorizontalFrameSize(), 1)
+	textStyle := lipgloss.NewStyle().Foreground(styles.AgentBadgeFg)
+	content := strings.Join(RenderUserLinesWith(text, innerWidth, textStyle.Bold(true), textStyle), "\n")
+	return splitRenderedLines(styles.RenderComposite(boxStyle, content), width)
 }
 
 func RenderPendingUserLines(text string, width int) []string {
