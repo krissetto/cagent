@@ -123,21 +123,71 @@ Each eval file is a JSON session that captures a complete conversation. The key 
 The `evals` object inside each session controls what gets scored:
 
 | Field         | Type     | Description                                                                               |
-| ------------- | -------- | ----------------------------------------------------------------------------------------- |
+| ------------- | -------- | ------------------------------------------------------------------------------------------- |
 | `relevance`   | string[] | Statements that must be true about the agent's response. Scored by an LLM judge.          |
+| `assertions`  | object[] | Code-based checks evaluated against the agent's output. See [Assertions](#assertions).    |
 | `size`        | string   | Expected response size: `S`, `M`, `L`, or `XL`. Compared against actual output length.    |
 | `working_dir` | string   | Subdirectory under `evals/working_dirs/` to mount as the container's working directory.   |
 | `setup`       | string   | Shell script to run in the container before the agent executes (e.g., create test files). |
 
+### Assertions
+
+Each entry in `assertions` is a code-based check evaluated deterministically against the agent's output, without an LLM judge:
+
+```json
+"assertions": [
+  { "name": "mentions file count", "type": "contains", "value": "2 files" },
+  { "name": "no error message", "type": "not_contains", "value": "error" },
+  { "name": "used list_directory", "type": "tool_called", "value": "list_directory" },
+  { "name": "under budget", "type": "cost_threshold", "value": "0.05" }
+]
+```
+
+Each assertion has a `name` (shown in results), a `type`, and a `value` checked against the agent's response, cost, or tool calls:
+
+| Type             | Checks that...                                                     |
+| ---------------- | -------------------------------------------------------------------- |
+| `contains`       | the response contains `value`                                       |
+| `not_contains`   | the response does not contain `value`                                |
+| `equals`         | the (trimmed) response equals `value`                                |
+| `starts_with`    | the response starts with `value`                                     |
+| `ends_with`      | the (trimmed) response ends with `value`                             |
+| `regex`          | the response matches the regular expression `value`                  |
+| `cost_threshold` | the eval's cost is less than or equal to `value` (a dollar amount)   |
+| `tool_called`    | the agent called a tool named `value`                                |
+
 ## Scoring Metrics
 
-Docker Agent evaluates agents across three dimensions:
+Docker Agent evaluates agents across four dimensions:
 
 | Metric              | How It's Measured                                                                                                         |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | **Tool Calls (F1)** | F1 score between the expected tool call sequence (from the recorded session) and the actual tool calls made by the agent. |
 | **Relevance**       | An LLM judge (configurable via `--judge-model`) evaluates whether each relevance statement is satisfied by the response.  |
 | **Size**            | Whether the response length matches the expected size category (S/M/L/XL).                                                |
+| **Assertions**      | Code-based [assertions](#assertions) evaluated deterministically against the response, cost, and tool calls — no LLM judge involved. |
+
+### Repeat Metrics (pass@k / pass^k)
+
+Running with `--repeat <k>` (k > 1) repeats each eval `k` times and, once the
+run completes, prints two additional consistency metrics alongside the
+regular summary:
+
+- **pass@k** — the fraction of unique evals that passed on *at least one* of
+  the `k` repetitions. Measures whether the agent can produce a correct
+  answer at all.
+- **pass^k** — the fraction of unique evals that passed on *every* one of the
+  `k` repetitions. Measures determinism / reliability.
+
+```console
+  Repeat metrics (k=5, 3 unique evals):
+   pass@5: 100.0% (passed at least once)
+   pass^5: 66.7% (passed every time)
+```
+
+These metrics are also included in the JSON results (`repeat_metrics`) and,
+when comparing against a `--baseline`, are reported as informational deltas
+(see [Regression gate](#regression-gate)).
 
 ## Serve-safety verification and rollback
 
@@ -186,6 +236,13 @@ $ docker agent eval ./agent.yaml --baseline results/2026-08-01-run.json
 
 The baseline is the run JSON written by a previous invocation —
 `<output>/<run-name>.json` — so there is no separate artifact to produce.
+
+The comparison covers every aggregate quality rate that both runs have data
+for: size pass rate, tool F1 mean, relevance rate, and — since
+docker/docker-agent#4103 — assertion rate. When both runs used `--repeat`,
+`pass@k` and `pass^k` are also reported as deltas, but purely
+**informationally**: they never gate, since they derive from the same
+per-eval pass/fail that the other metrics already gate on.
 
 Four rules decide the verdict, and they are worth knowing before wiring this
 into CI:
