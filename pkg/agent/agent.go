@@ -51,6 +51,7 @@ type Agent struct {
 	maxToolResultTokens     int
 	numHistoryItems         int
 	addPromptFiles          []string
+	addPromptFilesDepth     int
 	tools                   []tools.Tool
 	commands                types.Commands
 	harness                 *latest.HarnessConfig
@@ -150,6 +151,12 @@ func (a *Agent) NumHistoryItems() int {
 
 func (a *Agent) AddPromptFiles() []string {
 	return a.addPromptFiles
+}
+
+// AddPromptFilesDepth returns how many directory levels below the working
+// directory are scanned for prompt files to list by path (0 = disabled).
+func (a *Agent) AddPromptFilesDepth() int {
+	return a.addPromptFilesDepth
 }
 
 // Description returns the agent's description
