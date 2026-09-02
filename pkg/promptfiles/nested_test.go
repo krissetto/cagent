@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -74,6 +75,9 @@ func TestIndexListsSymlinkInsideRoot(t *testing.T) {
 
 func TestIndexSkipsControlCharactersInPaths(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows rejects control characters in path names, so the fixture can't be created")
+	}
 
 	// A newline in a directory name would break out of the bullet list and
 	// inject arbitrary text into the system prompt.
