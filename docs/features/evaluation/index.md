@@ -167,6 +167,28 @@ Docker Agent evaluates agents across four dimensions:
 | **Size**            | Whether the response length matches the expected size category (S/M/L/XL).                                                |
 | **Assertions**      | Code-based [assertions](#assertions) evaluated deterministically against the response, cost, and tool calls — no LLM judge involved. |
 
+### Repeat Metrics (pass@k / pass^k)
+
+Running with `--repeat <k>` (k > 1) repeats each eval `k` times and, once the
+run completes, prints two additional consistency metrics alongside the
+regular summary:
+
+- **pass@k** — the fraction of unique evals that passed on *at least one* of
+  the `k` repetitions. Measures whether the agent can produce a correct
+  answer at all.
+- **pass^k** — the fraction of unique evals that passed on *every* one of the
+  `k` repetitions. Measures determinism / reliability.
+
+```console
+  Repeat metrics (k=5, 3 unique evals):
+   pass@5: 100.0% (passed at least once)
+   pass^5: 66.7% (passed every time)
+```
+
+These metrics are also included in the JSON results (`repeat_metrics`) and,
+when comparing against a `--baseline`, are reported as informational deltas
+(see [Regression gate](#regression-gate)).
+
 ## Serve-safety verification and rollback
 
 When changing an agent served over MCP HTTP, chat, or A2A, add an evaluation that attempts an approval-requiring tool call and verifies the resolved safety policy and authentication behavior. Run the evaluation with the same explicit `--safety` setting used in deployment. If a rollout must be reversed, stop the affected listener, restore the prior agent configuration and explicit safety flag, then restart only after confirming non-loopback listeners still require authentication. Do not restore an unauthenticated network listener as a rollback shortcut.
