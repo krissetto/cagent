@@ -14,9 +14,13 @@ func RenderUserLines(text string, width int) []string {
 	return RenderUserLinesWith(text, width, StAccent(), StPrimary())
 }
 
-func RenderPendingUserLines(text string, width int) []string {
+func RenderPendingUserLines(msg PendingUserMessage, width int) []string {
+	label := "Steering: "
+	if msg.Kind == PendingUserFollowUp {
+		label = "Follow-up: "
+	}
 	muted := StMuted()
-	return RenderUserLinesWith(text, width, muted, muted)
+	return RenderUserLinesWith(label+msg.Display, width, muted, muted)
 }
 
 func RenderUserLinesWith(text string, width int, promptStyle, textStyle lipgloss.Style) []string {

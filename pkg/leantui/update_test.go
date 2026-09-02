@@ -333,6 +333,8 @@ func TestAltEnterWhileBusyQueuesRuntimeFollowUp(t *testing.T) {
 	assert.Empty(t, rt.steered)
 	assert.Empty(t, m.queue)
 	assert.Len(t, m.pendingUsers, 1)
+	joined := strings.Join(m.screen.Transcript.Lines(80, 0, true, m.sessionState, m.pendingUsers), "\n")
+	assert.Contains(t, joined, "Follow-up: do this next")
 	assert.True(t, m.screen.Editor.IsEmpty())
 }
 
@@ -354,6 +356,7 @@ func TestEditorSubmitWhileBusySteersAndRendersAtStreamEnd(t *testing.T) {
 	assert.Len(t, m.pendingUsers, 1)
 
 	joined := strings.Join(m.screen.Transcript.Lines(80, 0, true, m.sessionState, m.pendingUsers), "\n")
+	assert.Contains(t, joined, "Steering: turn left")
 	assistantAt := strings.Index(joined, "assistant is still streaming")
 	steerAt := strings.Index(joined, "turn left")
 	assert.NotEqual(t, -1, assistantAt)
