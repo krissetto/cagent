@@ -358,6 +358,24 @@ func TestModelCommandOpensModelAutocomplete(t *testing.T) {
 	}
 }
 
+func TestCtrlCCancelMarkerFollowsBufferedResponse(t *testing.T) {
+	t.Parallel()
+	m := bareModel(24)
+	m.busy = true
+	m.runCancel = func() {}
+
+	m.handleKey(t.Context(), ui.Key{Typ: ui.KeyCtrlC})
+	m.screen.Transcript.AppendAssistant("partial response")
+	m.handleEvent(t.Context(), runtime.StreamStopped("session", "coder", "canceled"))
+
+	transcript := strings.Join(m.screen.Transcript.Lines(80, 0, false, m.sessionState, nil), "\n")
+	responseAt := strings.Index(transcript, "partial response")
+	cancelledAt := strings.Index(transcript, "Cancelled")
+	assert.NotEqual(t, -1, responseAt)
+	assert.NotEqual(t, -1, cancelledAt)
+	assert.Less(t, responseAt, cancelledAt)
+}
+
 func TestShiftEnterInsertsNewline(t *testing.T) {
 	t.Parallel()
 	m := bareModel(24)

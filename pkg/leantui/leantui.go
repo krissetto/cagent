@@ -163,12 +163,13 @@ type model struct {
 	sessionState *service.SessionState
 	usage        *ui.UsageTracker
 
-	busy         bool
-	spinnerFrame int
-	runCancel    context.CancelFunc
-	queue        []ui.PendingUserMessage
-	pendingUsers []ui.PendingUserMessage
-	ignoredUsers []string
+	busy                bool
+	spinnerFrame        int
+	runCancel           context.CancelFunc
+	cancelMarkerPending bool
+	queue               []ui.PendingUserMessage
+	pendingUsers        []ui.PendingUserMessage
+	ignoredUsers        []string
 
 	quitting         bool
 	appName          string

@@ -98,7 +98,7 @@ func (m *model) handleInterrupt() {
 		m.queue = nil
 		m.pendingUsers = nil
 		m.ignoredUsers = nil
-		m.screen.Transcript.AddBlock(func(int) []string { return []string{ui.StWarning().Render("⏹ Cancelled")} })
+		m.cancelMarkerPending = true
 	case !m.screen.Editor.IsEmpty():
 		m.screen.Editor.Reset()
 		m.screen.Autocomplete.Dismiss()
@@ -552,6 +552,7 @@ func (m *model) beginRun(ctx context.Context) (context.Context, context.CancelFu
 	runCtx, cancel := context.WithCancel(ctx)
 	m.runCancel = cancel
 	m.busy = true
+	m.cancelMarkerPending = false
 	return runCtx, cancel
 }
 
@@ -626,6 +627,7 @@ func (m *model) resetConversation() {
 	m.pendingUsers = nil
 	m.ignoredUsers = nil
 	m.busy = false
+	m.cancelMarkerPending = false
 	m.screen.Confirm = nil
 	m.usage.Reset()
 	m.status.ContextLength = 0
