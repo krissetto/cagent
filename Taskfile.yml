@@ -73,7 +73,7 @@ tasks:
       - go.mod
       - go.sum
     cmds:
-      - GOLANGCI_LINT_CACHE={{.TASKFILE_DIR}}/.cache/lint golangci-lint run
+      - GOLANGCI_LINT_CACHE={{.TASKFILE_DIR}}/.cache/lint golangci-lint run --allow-parallel-runners
       - go run ./lint .
       - go mod tidy --diff >/dev/null || (echo 'go.mod/go.sum files are not tidy' && exit 1)
 
