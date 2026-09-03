@@ -218,7 +218,8 @@ team, err := teamloader.Load(ctx, ocisource.New("myorg/agent:v1"), runConfig,
         "api":   api.Creator,
         "think": think.Creator,
     })),
-    teamloader.WithStrict(config.FeatureSkills),
+    // Deny every optional feature; pass e.g. config.FeatureSkills to allow one.
+    teamloader.WithStrict(),
 )
 ```
 

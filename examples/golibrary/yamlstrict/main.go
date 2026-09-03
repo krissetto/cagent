@@ -72,9 +72,12 @@ func run(ctx context.Context, ref string) error {
 		teamloader.WithProviderRegistry(providers),
 		teamloader.WithToolsetRegistry(toolsets),
 		// Reject anything else the YAML relies on: other provider types,
-		// other toolset types, and optional features that were not opted
-		// into here (hooks, skills, harness, external sub-agents).
-		teamloader.WithStrict(config.FeatureSkills),
+		// other toolset types, and every optional feature (hooks, skills,
+		// harness, external sub-agents, code mode, ...). Third-party YAML
+		// gets exactly the capabilities listed above, nothing more. Allow a
+		// feature explicitly, e.g. WithStrict(config.FeatureSkills), only
+		// after weighing what it lets the config reach on the host.
+		teamloader.WithStrict(),
 	)
 	if err != nil {
 		var unsupported *config.UnsupportedError
