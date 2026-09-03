@@ -181,7 +181,11 @@ func (k *Key) verifySignature(annotations map[string]string, data []byte) error 
 }
 
 func (k *Key) checkEncryptedAlgorithm(annotations map[string]string) error {
-	if alg := annotations[AnnotationEncryptedAlgorithm]; alg != k.EncryptAlgorithm() {
+	alg := annotations[AnnotationEncryptedAlgorithm]
+	if !k.CanEncrypt() {
+		return fmt.Errorf("%w: artifact carries an encrypted copy (%q) but %s cannot have produced one", ErrAlgorithmMism, alg, k.Describe())
+	}
+	if alg != k.EncryptAlgorithm() {
 		return fmt.Errorf("%w: artifact encrypted with %q but key supports %q", ErrAlgorithmMism, alg, k.EncryptAlgorithm())
 	}
 	return nil

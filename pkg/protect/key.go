@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -82,11 +83,7 @@ func LoadKey(path string) (*Key, error) {
 // (surrounding whitespace is trimmed so a trailing newline does not change
 // the key).
 func ParseKey(data []byte) (*Key, error) {
-	if bytes.Contains(data, []byte("-----BEGIN")) {
-		block, _ := pem.Decode(data)
-		if block == nil {
-			return nil, errors.New("malformed PEM key")
-		}
+	if block, _ := pem.Decode(data); block != nil {
 		return parsePEM(block, data)
 	}
 	if pub, _, _, _, err := ssh.ParseAuthorizedKey(data); err == nil {
@@ -98,6 +95,9 @@ func ParseKey(data []byte) (*Key, error) {
 	} else if looksLikeOpenSSHPublicKey(data) {
 		return nil, fmt.Errorf("parsing OpenSSH public key: %w", err)
 	}
+	if pemHeaderRe.Match(data) {
+		return nil, errors.New("malformed PEM key")
+	}
 
 	secret := bytes.Clone(bytes.TrimSpace(data))
 	if len(secret) < MinSecretLen {
@@ -106,14 +106,23 @@ func ParseKey(data []byte) (*Key, error) {
 	return &Key{secret: secret}, nil
 }
 
-var opensshKeyTypes = [][]byte{[]byte("ssh-"), []byte("ecdsa-sha2-"), []byte("sk-ssh-"), []byte("sk-ecdsa-")}
+// pemHeaderRe matches a PEM pre-encapsulation boundary at the start of a line.
+var pemHeaderRe = regexp.MustCompile(`(?m)^\s*-{5}BEGIN `)
 
-// looksLikeOpenSSHPublicKey reports whether data contains an OpenSSH key-type
-// token anywhere, since authorized_keys options may precede it.
+var opensshKeyTypes = []string{"ssh-", "ecdsa-sha2-", "sk-ssh-", "sk-ecdsa-"}
+
+// looksLikeOpenSSHPublicKey reports whether a whitespace-separated field
+// starts with an OpenSSH key-type prefix and is followed by another field
+// (the key material). Fields rather than substrings, so authorized_keys
+// options before the type are caught while a secret that merely contains
+// "ssh-" is not.
 func looksLikeOpenSSHPublicKey(data []byte) bool {
-	for _, t := range opensshKeyTypes {
-		if bytes.Contains(data, t) {
-			return true
+	fields := strings.Fields(string(data))
+	for _, field := range fields[:max(len(fields)-1, 0)] {
+		for _, t := range opensshKeyTypes {
+			if strings.HasPrefix(field, t) {
+				return true
+			}
 		}
 	}
 	return false

@@ -145,6 +145,23 @@ func TestParseKey_OpenSSHWithOptions(t *testing.T) {
 
 	_, err = ParseKey([]byte(`from="10.0.0.0/8" ssh-ed25519 AAAAbroken comment`))
 	require.ErrorContains(t, err, "OpenSSH")
+
+	// An option containing the PEM marker must not shadow a valid key line.
+	key = mustParse(t, []byte(`command="echo -----BEGIN" `+string(ssh.MarshalAuthorizedKey(sshPub))))
+	assert.Equal(t, AlgEd25519, key.SignAlgorithm())
+}
+
+func TestParseKey_SecretsMayContainKeyLookingSubstrings(t *testing.T) {
+	t.Parallel()
+
+	for _, s := range []string{
+		"correct-horse-ssh-battery-staple",
+		"ecdsa-sha2-is-just-part-of-my-passphrase",
+		"prefix-----BEGIN-is-not-a-pem-header",
+	} {
+		key := mustParse(t, []byte(s))
+		assert.True(t, key.Symmetric(), s)
+	}
 }
 
 func TestParseKey_RejectsSmallRSA(t *testing.T) {
@@ -284,6 +301,13 @@ func TestAsymmetric_EncryptMode(t *testing.T) {
 			annotations := map[string]string{}
 			if !kp.canEncrypt {
 				require.ErrorIs(t, priv.Protect(annotations, []byte(payload), ModeEncrypt), ErrCannotEncrypt)
+
+				// This key type never produces an encrypted copy, so a signed
+				// artifact carrying one is inconsistent whatever its label.
+				require.NoError(t, priv.Protect(annotations, []byte(payload), ModeSign))
+				annotations[AnnotationEncrypted] = "AAAA"
+				require.ErrorIs(t, verifyErr(pub, annotations, []byte(payload)), ErrAlgorithmMism)
+				require.ErrorIs(t, verifyErr(priv, annotations, []byte(payload)), ErrAlgorithmMism)
 				return
 			}
 
