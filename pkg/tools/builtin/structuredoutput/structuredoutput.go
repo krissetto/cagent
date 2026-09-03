@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/xeipuuv/gojsonschema"
 
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/tools"
@@ -30,7 +30,7 @@ const ToolName = "__structured_output__"
 // JSON schema so validation and the tool definition stay in sync.
 type OutputTool struct {
 	cfg    *latest.StructuredOutput
-	schema *jsonschema.Resolved
+	schema *gojsonschema.Schema
 }
 
 // New compiles cfg.Schema and returns the ready-to-expose tool. It fails
@@ -45,9 +45,9 @@ func New(cfg *latest.StructuredOutput) (*OutputTool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshaling schema: %w", err)
 	}
-	// Screen references on the marshaled form — exactly what the schema
-	// compiler will see — rather than cfg.Schema, whose nested values may
-	// use arbitrary Go types.
+	// Screen references on the marshaled form — exactly what gojsonschema
+	// will see — rather than cfg.Schema, whose nested values may use
+	// arbitrary Go types.
 	var decoded any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return nil, fmt.Errorf("decoding schema: %w", err)
@@ -55,21 +55,15 @@ func New(cfg *latest.StructuredOutput) (*OutputTool, error) {
 	if err := rejectNonLocalRefs(decoded); err != nil {
 		return nil, fmt.Errorf("invalid schema: %w", err)
 	}
-	var schema jsonschema.Schema
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		return nil, fmt.Errorf("compiling schema: %w", err)
-	}
-	// No Loader: any remote $ref that slipped past rejectNonLocalRefs fails
-	// here instead of being fetched.
-	resolved, err := schema.Resolve(nil)
+	schema, err := gojsonschema.NewSchema(gojsonschema.NewBytesLoader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("compiling schema: %w", err)
 	}
-	return &OutputTool{cfg: cfg, schema: resolved}, nil
+	return &OutputTool{cfg: cfg, schema: schema}, nil
 }
 
 // rejectNonLocalRefs walks a decoded JSON schema and rejects any $ref that
-// is not a string starting with "#". Schema compilers resolve references at
+// is not a string starting with "#". gojsonschema resolves references at
 // compile time, so an http(s)://, file:// or cross-document ref in an
 // untrusted schema would trigger network or filesystem access (SSRF,
 // local-file disclosure). Only same-document fragments are allowed. The
@@ -139,12 +133,17 @@ func (t *OutputTool) Validate(rawJSON string) (string, error) {
 	if err := json.Compact(&compacted, []byte(rawJSON)); err != nil {
 		return "", fmt.Errorf("arguments are not valid JSON: %w", err)
 	}
-	var instance any
-	if err := json.Unmarshal(compacted.Bytes(), &instance); err != nil {
-		return "", fmt.Errorf("arguments are not valid JSON: %w", err)
+	result, err := t.schema.Validate(gojsonschema.NewStringLoader(compacted.String()))
+	if err != nil {
+		return "", fmt.Errorf("validating arguments: %w", err)
 	}
-	if err := t.schema.Validate(instance); err != nil {
-		return "", fmt.Errorf("arguments do not match the %q schema: %w", t.cfg.Name, err)
+	if !result.Valid() {
+		details := make([]string, 0, len(result.Errors()))
+		for _, e := range result.Errors() {
+			details = append(details, e.String())
+		}
+		return "", fmt.Errorf("arguments do not match the %q schema: %s",
+			t.cfg.Name, strings.Join(details, "; "))
 	}
 	return compacted.String(), nil
 }
