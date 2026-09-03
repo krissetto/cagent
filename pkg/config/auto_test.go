@@ -338,7 +338,7 @@ func TestAutoModelConfig(t *testing.T) {
 				"FIREWORKS_API_KEY": "test-key",
 			},
 			expectedProvider:  "fireworks",
-			expectedModel:     "accounts/fireworks/models/kimi-k2-instruct",
+			expectedModel:     "accounts/fireworks/models/kimi-k3",
 			expectedMaxTokens: 32000,
 		},
 		{
@@ -498,7 +498,7 @@ func TestDefaultModels(t *testing.T) {
 	assert.Equal(t, "deepseek-ai/DeepSeek-V4-Pro", DefaultModels["baseten"])
 	assert.Equal(t, "Qwen3.5-397B-A17B", DefaultModels["ovhcloud"])
 	assert.Equal(t, "llama-3.3-70b-versatile", DefaultModels["groq"])
-	assert.Equal(t, "accounts/fireworks/models/kimi-k2-instruct", DefaultModels["fireworks"])
+	assert.Equal(t, "accounts/fireworks/models/kimi-k3", DefaultModels["fireworks"])
 	assert.Equal(t, "deepseek-v4-pro", DefaultModels["deepseek"])
 	assert.Equal(t, "gpt-oss-120b", DefaultModels["cerebras"])
 	assert.Equal(t, "meta-llama/Llama-3.3-70B-Instruct-Turbo", DefaultModels["together"])
@@ -1185,9 +1185,10 @@ func TestCloudProviderEnvVars(t *testing.T) {
 // TestDefaultModelsExistInModelsDev is the regression test for issue #4133:
 // DefaultModels must reference models that actually exist in the models.dev
 // catalog, since AutoModelConfig hands them straight to real users with no
-// other validation. modelsDevAbsentProviders (defined in examples_test.go) is
-// reused so providers legitimately absent, or aliased, in the catalog don't
-// produce false failures.
+// other validation. modelsDevAbsentProviders and modelsDevCatalogProviders
+// (both defined in examples_test.go) are reused so providers legitimately
+// absent, or aliased under a different id, in the catalog don't produce
+// false failures.
 func TestDefaultModelsExistInModelsDev(t *testing.T) {
 	t.Parallel()
 
@@ -1202,7 +1203,12 @@ func TestDefaultModelsExistInModelsDev(t *testing.T) {
 				t.Skipf("provider %q is not expected to exist in the models.dev catalog", provider)
 			}
 
-			_, err := modelsStore.GetModel(t.Context(), modelsdev.NewID(provider, model))
+			catalogProvider := provider
+			if id, ok := modelsDevCatalogProviders[provider]; ok {
+				catalogProvider = id
+			}
+
+			_, err := modelsStore.GetModel(t.Context(), modelsdev.NewID(catalogProvider, model))
 			require.NoError(t, err, "DefaultModels[%q] = %q must exist in the models.dev catalog", provider, model)
 		})
 	}
