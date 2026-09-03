@@ -25,7 +25,7 @@ import (
 	"github.com/docker/docker-agent/pkg/gateway"
 	"github.com/docker/docker-agent/pkg/js"
 	"github.com/docker/docker-agent/pkg/model/provider"
-	"github.com/docker/docker-agent/pkg/model/provider/dmr"
+	"github.com/docker/docker-agent/pkg/model/provider/dmr/dmrmodels"
 	"github.com/docker/docker-agent/pkg/model/provider/options"
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/permissions"
@@ -290,7 +290,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 	// returned set names selectors with no usable local model, so an
 	// initialization failure surfaces a "no model available" fallback rather
 	// than an opaque pull error.
-	dmrFallbackSelectors := config.PreferLocalDMRModels(ctx, cfg, firstAvailableSelectors, dmr.ListModels)
+	dmrFallbackSelectors := config.PreferLocalDMRModels(ctx, cfg, firstAvailableSelectors, dmrmodels.ListModels)
 
 	if modelsStore != nil {
 		config.ResolveModelAliases(ctx, cfg, modelsStore)
@@ -301,7 +301,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 	}
 
 	autoModel := sync.OnceValue(func() latest.ModelConfig {
-		return config.AutoModelConfig(ctx, runConfig.ModelsGateway, env, runConfig.DefaultModel, dmr.ListModels)
+		return config.AutoModelConfig(ctx, runConfig.ModelsGateway, env, runConfig.DefaultModel, dmrmodels.ListModels)
 	})
 
 	if loadOpts.strict {
@@ -382,12 +382,16 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		} else {
 			models, err := getModelsForAgent(ctx, cfg, &agentConfig, autoModel, dmrFallbackSelectors, runConfig, loadOpts.providerRegistry, loadOpts.modelOpts)
 			if err != nil {
-				// Return auto model fallback errors, DMR not installed errors,
-				// DMR pull failures, and DMR model-not-available errors directly
-				// without wrapping to provide cleaner, actionable messages.
-				_, isPull := errors.AsType[*dmr.PullFailedError](err)
-				_, isNotAvailable := errors.AsType[*dmr.ModelNotAvailableError](err)
-				if _, ok := errors.AsType[*config.AutoModelFallbackError](err); ok || errors.Is(err, dmr.ErrNotInstalled) || isPull || isNotAvailable {
+				// Return auto model fallback errors, DMR not installed errors and
+				// model pull/availability errors (which carry their own guidance
+				// via ModelPullErrorSummary) directly without wrapping to provide
+				// cleaner, actionable messages.
+				_, isAuto := errors.AsType[*config.AutoModelFallbackError](err)
+				_, hasSummary := errors.AsType[interface {
+					error
+					ModelPullErrorSummary() string
+				}](err)
+				if isAuto || hasSummary || errors.Is(err, dmrmodels.ErrNotInstalled) {
 					return nil, err
 				}
 				return nil, fmt.Errorf("failed to get models: %w", err)
