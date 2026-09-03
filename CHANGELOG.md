@@ -3,6 +3,85 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.131.0] - 2026-09-03
+
+This release brings significant enhancements to the Lean TUI experience, adds new evaluation and shell tooling capabilities, and improves startup reliability through expanded backoff handling.
+
+## What's New
+
+- Adds a `/sessions` command to the Lean TUI for browsing and resuming past sessions from the current directory
+- Adds support for `!` bang commands in the Lean TUI, running local shell commands directly without queuing an agent turn
+- Adds labels for pending steering and follow-up messages in the Lean TUI
+- Adds `add_prompt_files_depth` config attribute for discovering nested prompt files in monorepo subdirectories
+- Adds code-based assertion support to evaluation criteria, enabling declarative grading checks (`contains`, `not_contains`, `equals`, `regex`, `cost_threshold`, `tool_called`, and more)
+- Wires the assertion runner into the evaluation pipeline so assertions declared in eval JSON files execute after agent runs complete
+- Includes assertion pass rates and pass@k/pass^k consistency metrics in baseline regression comparison
+- Adds `get_environment_info` read-only tool for exposing environment details to the model
+- Adds PowerShell substitute names for common POSIX utilities in the shell tool description for Windows
+- Prepends a self-correction hint on known shell-syntax errors in the shell tool output
+
+## Bug Fixes
+
+- Fixes lean TUI not persisting prompt history to the shared global history used by the normal TUI
+- Fixes tool calls not being restored when resuming a saved session in the Lean TUI
+- Fixes Shift+Enter not inserting a newline in the Lean TUI (Kitty keyboard protocol support)
+- Fixes Shift+Tab thinking cycle broken by Kitty keyboard protocol changes in the Lean TUI
+- Fixes Escape not interrupting active agent runs and pending tool calls in the Lean TUI
+- Fixes Option+Backspace word deletion not working with Kitty keyboard mode enabled in the Lean TUI
+- Fixes Ctrl+A and Ctrl+E not recognized through the Kitty keyboard protocol in the Lean TUI
+- Fixes user messages not being visually highlighted in the Lean TUI
+- Fixes cancellation marker appearing before buffered partial responses in the Lean TUI
+- Fixes agent failing to start when a deferred MCP source is still initializing (`deferred start failed: toolset not started`)
+- Adds bounded jittered exponential backoff to `StartableToolSet` retry path to prevent burst retries on rate-limited or failing tool sources
+- Extends backoff gate to remote MCP HTTP errors (503/429/5xx during initialize handshake)
+- Extends backoff gate to A2A agent-card HTTP errors
+- Wires LSP crash-loop failures through the backoff gate to prevent persistently-crashing LSP servers from relaunching at full speed
+- Fixes security and robustness issues in `add_prompt_files_depth` implementation
+
+## Technical Changes
+
+- Simplifies the built-in coder agent by removing planner and librarian sub-agents, limiting it to file, shell, and fetch toolsets
+- Updates Go version declaration format in `go.mod` to use separate `go` (minimum) and `toolchain` (pinned) directives
+- Removes the Nebius example due to model availability issues
+### Pull Requests
+
+- [#4060](https://github.com/docker/docker-agent/pull/4060) - Merge pull request #4062 from docker/fix/startable-toolset-backoff
+- [#4062](https://github.com/docker/docker-agent/pull/4062) - fix(#4060): add bounded jittered backoff to StartableToolSet retry path
+- [#4074](https://github.com/docker/docker-agent/pull/4074) - fix(#4060): extend backoff gate to remote MCP HTTP errors
+- [#4088](https://github.com/docker/docker-agent/pull/4088) - feat: add assertions schema to EvalCriteria for code-based grading
+- [#4092](https://github.com/docker/docker-agent/pull/4092) - feat: expose pass@k and pass^k metrics for --repeat runs
+- [#4098](https://github.com/docker/docker-agent/pull/4098) - fix: extend backoff gate to A2A agent-card HTTP errors (#4098)
+- [#4100](https://github.com/docker/docker-agent/pull/4100) - feat: wire assertion runner into runSingleEval execution pipeline
+- [#4101](https://github.com/docker/docker-agent/pull/4101) - docs: update CHANGELOG.md for v1.130.0
+- [#4103](https://github.com/docker/docker-agent/pull/4103) - feat: include assertions and pass@k in baseline regression comparison
+- [#4104](https://github.com/docker/docker-agent/pull/4104) - fix(#4098): extend backoff gate to A2A agent-card HTTP errors
+- [#4105](https://github.com/docker/docker-agent/pull/4105) - refactor: update go version declaration format
+- [#4108](https://github.com/docker/docker-agent/pull/4108) - fix(#4060): wire LSP crash-loop pacing through backoff gate
+- [#4109](https://github.com/docker/docker-agent/pull/4109) - docs: auto-update for merged PRs (2026-09-02)
+- [#4110](https://github.com/docker/docker-agent/pull/4110) - ci(update-models): sign commits with bot identity, add semantic catalog diff
+- [#4111](https://github.com/docker/docker-agent/pull/4111) - feat: add add_prompt_files_depth for monorepo nested prompt file discovery
+- [#4113](https://github.com/docker/docker-agent/pull/4113) - Update linter config
+- [#4114](https://github.com/docker/docker-agent/pull/4114) - fix(deferred): don't fail to start when a source is still starting
+- [#4118](https://github.com/docker/docker-agent/pull/4118) - chore: simplify built-in coder agent
+- [#4119](https://github.com/docker/docker-agent/pull/4119) - feat(leantui): add sessions command
+- [#4120](https://github.com/docker/docker-agent/pull/4120) - fix(leantui): support shift-enter newlines
+- [#4121](https://github.com/docker/docker-agent/pull/4121) - chore: refresh models.dev snapshot (+79 -75 ~196)
+- [#4122](https://github.com/docker/docker-agent/pull/4122) - feat(leantui): support bang commands
+- [#4123](https://github.com/docker/docker-agent/pull/4123) - fix: highlight user messages in lean TUI
+- [#4124](https://github.com/docker/docker-agent/pull/4124) - fix(leantui): restore shift-tab thinking cycle
+- [#4125](https://github.com/docker/docker-agent/pull/4125) - feat(leantui): label steering and follow-up messages
+- [#4126](https://github.com/docker/docker-agent/pull/4126) - fix(leantui): restore interrupt and editing shortcuts
+- [#4127](https://github.com/docker/docker-agent/pull/4127) - fix: persist lean TUI prompt history
+- [#4128](https://github.com/docker/docker-agent/pull/4128) - fix(leantui): restore tool calls on session resume
+- [#4130](https://github.com/docker/docker-agent/pull/4130) - Remove the nebius example
+- [#4131](https://github.com/docker/docker-agent/pull/4131) - docs: auto-update for merged PRs (2026-09-03)
+- [#4138](https://github.com/docker/docker-agent/pull/4138) - fix(leantui): support ctrl+a and ctrl+e
+- [#4139](https://github.com/docker/docker-agent/pull/4139) - chore: bump stale model references to current-generation values
+- [#4140](https://github.com/docker/docker-agent/pull/4140) - feat(shell): name PowerShell substitutes for the POSIX utilities models reach for
+- [#4141](https://github.com/docker/docker-agent/pull/4141) - feat(shell): correct known shell-dialect errors in the tool output
+- [#4142](https://github.com/docker/docker-agent/pull/4142) - feat: add get_environment_info read-only tool
+
+
 ## [v1.130.0] - 2026-09-01
 
 This release expands the safety classifier coverage, improves skills handling, and adds new evaluation capabilities including assertions, verify scripts, and pass@k metrics.
@@ -5714,3 +5793,5 @@ This release improves the terminal user interface with better error handling and
 [v1.129.0]: https://github.com/docker/docker-agent/releases/tag/v1.129.0
 
 [v1.130.0]: https://github.com/docker/docker-agent/releases/tag/v1.130.0
+
+[v1.131.0]: https://github.com/docker/docker-agent/releases/tag/v1.131.0
