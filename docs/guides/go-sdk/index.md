@@ -193,7 +193,46 @@ delete(creators, "rag")
 registry := teamloader.NewToolsetRegistry(creators)
 ```
 
-Pass the custom registry via `teamloader.WithToolsetRegistry(registry)` when calling `teamloader.Load`. Note that `teamloader.Load()` does not return an error for unknown toolset types — the failure is recorded as a load-time warning and can be retrieved with `agent.DrainWarnings()`; it is also surfaced via logging and TUI notifications.
+Pass the custom registry via `teamloader.WithToolsetRegistry(registry)` when calling `teamloader.Load`. Note that `teamloader.Load()` does not return an error for unknown toolset types unless `teamloader.WithStrict` is set — the failure is recorded as a load-time warning and can be retrieved with `agent.DrainWarnings()`; it is also surfaced via logging and TUI notifications.
+
+## Loading YAML with Hand-Picked Registries (lean embedding)
+
+`loaderdefaults.Opts()` links every provider SDK, every built-in toolset and every agent-source type. When you embed docker-agent and load agents from YAML (a file shipped in your binary, or an OCI artifact), you can instead declare exactly what your binary supports and have docker-agent reject anything else **before** any model or toolset is built:
+
+```go
+import (
+    "github.com/docker/docker-agent/pkg/config"
+    "github.com/docker/docker-agent/pkg/config/ocisource"
+    "github.com/docker/docker-agent/pkg/model/provider"
+    "github.com/docker/docker-agent/pkg/model/provider/anthropic"
+    "github.com/docker/docker-agent/pkg/teamloader"
+    "github.com/docker/docker-agent/pkg/tools/builtin/api"
+    "github.com/docker/docker-agent/pkg/tools/builtin/think"
+)
+
+team, err := teamloader.Load(ctx, ocisource.New("myorg/agent:v1"), runConfig,
+    teamloader.WithProviderRegistry(provider.NewRegistry(map[string]provider.Factory{
+        "anthropic": provider.Adapt(anthropic.NewClient),
+    })),
+    teamloader.WithToolsetRegistry(teamloader.NewToolsetRegistry(map[string]teamloader.ToolsetCreator{
+        "api":   api.Creator,
+        "think": think.Creator,
+    })),
+    teamloader.WithStrict(config.FeatureSkills),
+)
+```
+
+- **Providers**: every provider package's `NewClient` becomes a `provider.Factory` through `provider.Adapt`. Providers are matched on the type the registry resolves them to — a custom `providers:` entry or an alias such as `mistral` counts as `openai`. `providers.DefaultFactories()` (from `pkg/model/provider/providers`) is the full table if you prefer to copy and trim it.
+- **Toolsets**: every built-in toolset package (plus `pkg/tools/mcp` and `pkg/tools/a2a`) exports a `Creator` matching `teamloader.ToolsetCreator`. `toolsets.DefaultToolsetCreators()` (from `pkg/teamloader/toolsets`) is the full table.
+- **Agent sources**: `config.NewFileSource` / `config.NewBytesSource` / `config.NewURLSource` live in `pkg/config`; the OCI source lives in `pkg/config/ocisource`; HCL support is a source decorator, `hcl.NewSource(inner)`, in `pkg/config/hcl`. `pkg/config/sources` resolves any reference (files, directories, URLs, OCI, user aliases, built-in agents) at the cost of linking all of them. Sub-agents referencing external agents (`sub_agents: [myorg/reviewer]`) need a `teamloader.WithSourceResolver` that wraps `sources.Resolve` (as `loaderdefaults.Opts()` does) — or your own resolver.
+- **Strict mode**: `teamloader.WithStrict(features...)` fails the load with a `*config.UnsupportedError` listing **every** provider type, toolset type and optional feature the config relies on that you did not enable, with the config locations that need them. Optional features are `config.FeatureHooks`, `config.FeatureHarness`, `config.FeatureSkills` and `config.FeatureExternalAgents`; none is enabled unless listed. Agents on the `auto` model are resolved eagerly so the provider they land on is checked too. Without `WithStrict`, unknown toolset types stay load-time warnings and unknown providers fail when their model is built.
+
+`config.Requires(cfg)` exposes the same audit for your own checks. `pkg/embeddedchat` accepts all of this through `Config.LoadOpts`. A complete example lives in [examples/golibrary/yamlstrict](https://github.com/docker/docker-agent/tree/main/examples/golibrary/yamlstrict).
+
+> [!WARNING]
+> **Breaking change: agent sources moved out of `pkg/config`**
+>
+> `config.Resolve`, `config.ResolveSources`, `config.ResolveAlias` and `config.BuiltinAgentNames` are now in `pkg/config/sources`; `config.NewOCISource` is `ocisource.New` in `pkg/config/ocisource`; and `config.Load` no longer auto-detects HCL — wrap the source with `hcl.NewSource` (which `sources.Resolve` does for you). `teamloader.ToolsetRegistry` gained a `Has(toolsetType string) bool` method.
 
 ## Registering Custom Built-in Themes
 
@@ -648,3 +687,4 @@ See the [examples/golibrary](https://github.com/docker/docker-agent/tree/main/ex
 - `stream/` — Streaming event handling
 - `multi/` — Multi-agent with sub-agents
 - `builtintool/` — Using built-in tools
+- `yamlstrict/` — Loading YAML (file or OCI) with hand-picked providers/toolsets and strict mode
