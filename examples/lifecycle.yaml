@@ -39,7 +39,7 @@ agents:
 models:
   openai/gpt-4o-mini:
     provider: openai
-    model: gpt-4o-mini
+    model: gpt-5.6-terra
 
 metadata:
   description: Demonstrates per-toolset lifecycle profiles (strict / resilient / best-effort)

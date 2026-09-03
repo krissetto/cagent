@@ -36,29 +36,29 @@ models:
 
   claude-4-5-sonnet-min:
     provider: anthropic
-    model: claude-sonnet-4-5-20250929
+    model: claude-sonnet-4-6
     thinking_budget: 1024 # <- explicit token budget (1024-32768) for older models
 
   claude-4-5-sonnet-high:
     provider: anthropic
-    model: claude-sonnet-4-5-20250929
+    model: claude-sonnet-4-6
     thinking_budget: 32768 # <- explicit token budget (32768 is the Anthropic suggested maximum)
     provider_opts:
       interleaved_thinking: true # <- enables interleaved thinking, aka tool calling during model reasoning
 
   claude-opus-4-6-adaptive:
     provider: anthropic
-    model: claude-opus-4-6
-    thinking_budget: adaptive # <- lets the model decide when and how much to think (recommended for 4.6)
+    model: claude-opus-4-8
+    thinking_budget: adaptive # <- lets the model decide when and how much to think (recommended for 4.6+)
 
   claude-opus-4-6-low:
     provider: anthropic
-    model: claude-opus-4-6
+    model: claude-opus-4-8
     thinking_budget: low # <- adaptive thinking with low effort: "low", "medium", "high", "xhigh", "max" (same as adaptive/<effort>)
 
   claude-opus-4-7-summarized:
     provider: anthropic
-    model: claude-opus-4-6 # <- Opus 4.7 hides thinking by default; use the same flag with any recent Claude model
+    model: claude-opus-4-8 # <- Opus 4.7 hides thinking by default; use the same flag with any recent Claude model
     thinking_budget: adaptive
     provider_opts:
       thinking_display: summarized # <- "summarized" or "omitted" on 4.6+ models; "display" is pre-4.6 only (Opus 4.7 defaults to omitted)

@@ -1,7 +1,7 @@
 models:
   gpt4_vision:
     provider: openai
-    model: gpt-4o
+    model: gpt-5.6-sol
     max_tokens: 4000
 
   claude:
