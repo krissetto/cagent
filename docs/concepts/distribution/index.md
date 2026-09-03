@@ -37,6 +37,49 @@ $ docker agent share pull docker.io/username/my-agent:latest
 $ docker agent share pull myorg/agent:tag
 ```
 
+## Signing and Encrypting Agents
+
+`share push --key <file>` protects the agent so that pullers holding the matching key can check it was published by you and has not been altered. The YAML is **always pushed in clear**; only the proof goes into the OCI manifest annotations. `share pull --key <file>` performs the check and refuses the artifact if it fails.
+
+```bash
+# Asymmetric: sign with a private key, verify with the public key
+$ docker agent share push ./agent.yaml myorg/agent:v1 --key ~/.ssh/id_ed25519
+$ docker agent share pull myorg/agent:v1 --key ~/.ssh/id_ed25519.pub
+
+# Symmetric: same secret on both sides
+$ openssl rand -hex 32 > agent.key
+$ docker agent share push ./agent.yaml myorg/agent:v1 --key agent.key
+$ docker agent share pull myorg/agent:v1 --key agent.key
+```
+
+### Key formats
+
+The key kind is detected from the file contents:
+
+| File contents                                              | Kind       | Sign | Verify | `--encrypt` |
+| ---------------------------------------------------------- | ---------- | ---- | ------ | ----------- |
+| PEM / OpenSSH **Ed25519** private key                      | asymmetric | ✓    | ✓      | ✗           |
+| PEM / OpenSSH **ECDSA** or **RSA** private key             | asymmetric | ✓    | ✓      | ✓           |
+| PEM / OpenSSH public key (`.pub`)                          | asymmetric | ✗    | ✓      | ✗           |
+| Anything else: a raw **secret** of at least 16 bytes       | symmetric  | ✓    | ✓      | ✓           |
+
+Passphrase-protected keys are not supported. Anything containing a PEM boundary (`-----BEGIN`) or an OpenSSH key-type marker (`ssh-`, `ecdsa-sha2-`, `sk-ssh-`, `sk-ecdsa-`) anywhere is treated as a key file and rejected if it does not parse — a broken public key is never silently used as a secret. Symmetric secrets can be guessed offline against the public YAML, so use random material (`openssl rand -hex 32`), not a password.
+
+### Modes
+
+- **Sign** (default): records a signature (private key) or an HMAC (secret) of the YAML. Anyone with the public key or secret can verify integrity and provenance.
+- **Encrypt** (`--encrypt`): additionally records an authenticated encrypted copy of the whole YAML. Holders of the secret or private key can recover the YAML from the annotation alone, without the layer. With an asymmetric key this requires the private key and a signature is still recorded — a copy encrypted to a public key could have been produced by anyone, so it proves nothing on its own.
+
+The pull side never needs to choose: the annotations describe what was recorded, and verification checks whatever is present. With an asymmetric key the artifact must carry a signature, which also prevents downgrading a signed artifact to an encrypted-only one.
+
+### Verifying when running
+
+Programs embedding Docker Agent can pass `config.WithVerificationKey(key)` to `config.Resolve` / `config.NewOCISource` so an OCI-sourced agent is verified on every read.
+
+### Limitations
+
+Signatures cover the YAML bytes only. Re-tagging a signed artifact, or serving an older signed version under the same tag, is not detected — pin digests (`myorg/agent@sha256:…`) when that matters.
+
 ## Running from a Registry
 
 Run agents directly from a registry without pulling first:

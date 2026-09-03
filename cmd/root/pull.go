@@ -10,12 +10,14 @@ import (
 
 	"github.com/docker/docker-agent/pkg/cli"
 	"github.com/docker/docker-agent/pkg/content"
+	"github.com/docker/docker-agent/pkg/protect"
 	"github.com/docker/docker-agent/pkg/remote"
 	"github.com/docker/docker-agent/pkg/telemetry"
 )
 
 type pullFlags struct {
-	force bool
+	force   bool
+	keyFile string
 }
 
 func newPullCmd() *cobra.Command {
@@ -24,12 +26,20 @@ func newPullCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pull <registry-ref>",
 		Short: "Pull an agent from an OCI registry",
-		Long:  "Pull an agent configuration file from an OCI registry",
-		Args:  cobra.ExactArgs(1),
-		RunE:  flags.runPullCommand,
+		Long: `Pull an agent configuration file from an OCI registry.
+
+With --key, the pulled agent YAML is verified against the protection recorded
+by 'share push --key': a signature is checked with the same secret or the
+matching public key; an encrypted copy (push --encrypt) is decrypted with the
+same secret or the matching private key and compared to the YAML. With an
+asymmetric key the artifact must carry a signature. The pull fails if the
+artifact is unprotected or the check does not pass.`,
+		Args: cobra.ExactArgs(1),
+		RunE: flags.runPullCommand,
 	}
 
 	cmd.PersistentFlags().BoolVar(&flags.force, "force", false, "Force pull even if the configuration already exists locally")
+	cmd.Flags().StringVar(&flags.keyFile, "key", "", "Path to a key file (PEM/OpenSSH) or symmetric secret used to verify the agent")
 
 	return cmd
 }
@@ -45,6 +55,14 @@ func (f *pullFlags) runPullCommand(cmd *cobra.Command, args []string) (commandEr
 	registryRef := args[0]
 	slog.DebugContext(ctx, "Starting pull", "registry_ref", registryRef)
 
+	var key *protect.Key
+	if f.keyFile != "" {
+		var err error
+		if key, err = protect.LoadKey(f.keyFile); err != nil {
+			return err
+		}
+	}
+
 	out.Println("Pulling agent", registryRef)
 
 	_, err := remote.Pull(ctx, registryRef, f.force)
@@ -59,6 +77,18 @@ func (f *pullFlags) runPullCommand(cmd *cobra.Command, args []string) (commandEr
 	yamlFile, err := store.GetArtifact(registryRef)
 	if err != nil {
 		return fmt.Errorf("failed to get agent yaml: %w", err)
+	}
+
+	if key != nil {
+		metadata, err := store.GetArtifactMetadata(registryRef)
+		if err != nil {
+			return fmt.Errorf("failed to get artifact metadata: %w", err)
+		}
+		verified, err := key.VerifyAnnotations(metadata.Annotations, []byte(yamlFile))
+		if err != nil {
+			return fmt.Errorf("verifying %s: %w", registryRef, err)
+		}
+		out.Printf("Verified %s\n", verified)
 	}
 
 	agentName := strings.ReplaceAll(registryRef, "/", "_")

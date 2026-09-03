@@ -2,6 +2,12 @@ package config
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +29,7 @@ import (
 	"github.com/docker/docker-agent/pkg/content"
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/memoize"
+	"github.com/docker/docker-agent/pkg/protect"
 	"github.com/docker/docker-agent/pkg/remote"
 )
 
@@ -251,6 +258,130 @@ func TestOCISource_Read_DoesNotCacheDegradedFallback(t *testing.T) {
 		assert.Equal(t, testData, data)
 	}
 	assert.Equal(t, int32(3), pulls.Load(), "a validated read must be cached again")
+}
+
+// storeProtectedTestArtifact is like storeTestArtifact but adds protection
+// annotations produced by key in the given mode.
+func storeProtectedTestArtifact(t *testing.T, ref string, data []byte, key *protect.Key, mode protect.Mode) {
+	t.Helper()
+
+	annotations := map[string]string{}
+	require.NoError(t, key.Protect(annotations, data, mode))
+	storeTestArtifactWithAnnotations(t, ref, data, annotations)
+}
+
+// storeTestArtifactWithAnnotations is like storeTestArtifact with extra
+// manifest annotations.
+func storeTestArtifactWithAnnotations(t *testing.T, ref string, data []byte, annotations map[string]string) {
+	t.Helper()
+
+	store, err := content.NewStore()
+	require.NoError(t, err)
+
+	annotations["io.docker.agent.version"] = "test"
+	layer := static.NewLayer(data, "application/yaml")
+	img, err := mutate.AppendLayers(empty.Image, layer)
+	require.NoError(t, err)
+	img = mutate.Annotations(img, annotations).(v1.Image)
+
+	_, err = store.StoreArtifact(img, ref)
+	require.NoError(t, err)
+}
+
+// Not parallel: stubs the package-level pullOCIArtifact and re-homes the
+// default content store via t.Setenv.
+func TestOCISource_Read_VerifiesProtection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	resetOCIMemoizer(t)
+	stubOCIPull(t, func(context.Context, string, bool) (string, error) { return "", nil })
+
+	key, err := protect.ParseKey([]byte("a shared secret long enough"))
+	require.NoError(t, err)
+	wrongKey, err := protect.ParseKey([]byte("a wrong secret long enough"))
+	require.NoError(t, err)
+
+	testData := []byte("version: v1\nname: signed-agent")
+	signedRef := "test-signed/agent:latest"
+	storeProtectedTestArtifact(t, signedRef, testData, key, protect.ModeSign)
+	encryptedRef := "test-encrypted/agent:latest"
+	storeProtectedTestArtifact(t, encryptedRef, testData, key, protect.ModeEncrypt)
+	unsignedRef := "test-unsigned/agent:latest"
+	storeTestArtifact(t, unsignedRef, testData)
+
+	// Matching key: verified read succeeds.
+	data, err := NewOCISource(signedRef, WithVerificationKey(key)).Read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, testData, data)
+
+	// Wrong key: rejected, even though a verified read was just cached under
+	// the other key.
+	_, err = NewOCISource(signedRef, WithVerificationKey(wrongKey)).Read(t.Context())
+	require.ErrorIs(t, err, protect.ErrInvalidSignature)
+
+	// No key: signature is ignored.
+	data, err = NewOCISource(signedRef).Read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, testData, data)
+
+	// Encrypted mode: verified by decrypting and comparing to the layer.
+	data, err = NewOCISource(encryptedRef, WithVerificationKey(key)).Read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, testData, data)
+	_, err = NewOCISource(encryptedRef, WithVerificationKey(wrongKey)).Read(t.Context())
+	require.ErrorIs(t, err, protect.ErrDecryption)
+
+	// Key given but artifact unprotected: rejected.
+	_, err = NewOCISource(unsignedRef, WithVerificationKey(key)).Read(t.Context())
+	require.ErrorIs(t, err, protect.ErrNotProtected)
+
+	// Resolve threads the option through to the OCI source.
+	source, err := Resolve(signedRef, nil, WithVerificationKey(wrongKey))
+	require.NoError(t, err)
+	_, err = source.Read(t.Context())
+	require.ErrorIs(t, err, protect.ErrInvalidSignature)
+}
+
+// Not parallel: stubs the package-level pullOCIArtifact and re-homes the
+// default content store via t.Setenv.
+func TestOCISource_Read_CacheDistinguishesPrivateAndPublicKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	resetOCIMemoizer(t)
+	stubOCIPull(t, func(context.Context, string, bool) (string, error) { return "", nil })
+
+	ecPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	privDER, err := x509.MarshalPKCS8PrivateKey(ecPriv)
+	require.NoError(t, err)
+	pubDER, err := x509.MarshalPKIXPublicKey(&ecPriv.PublicKey)
+	require.NoError(t, err)
+	priv, err := protect.ParseKey(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER}))
+	require.NoError(t, err)
+	pub, err := protect.ParseKey(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}))
+	require.NoError(t, err)
+
+	// A correctly signed artifact whose encrypted copy was swapped for an
+	// encryption of different content. The public key can only check the
+	// signature and accepts it; the private key decrypts and must reject it.
+	testData := []byte("version: v1\nname: swapped-copy")
+	annotations := map[string]string{}
+	require.NoError(t, priv.Protect(annotations, testData, protect.ModeEncrypt))
+	forged, err := pub.Encrypt([]byte("something else"))
+	require.NoError(t, err)
+	annotations[protect.AnnotationEncrypted] = base64.StdEncoding.EncodeToString(forged)
+	ref := "test-halves/agent:latest"
+	storeTestArtifactWithAnnotations(t, ref, testData, annotations)
+
+	data, err := NewOCISource(ref, WithVerificationKey(pub)).Read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, testData, data)
+
+	// The public-key success above must not be served to the private key.
+	_, err = NewOCISource(ref, WithVerificationKey(priv)).Read(t.Context())
+	require.ErrorIs(t, err, protect.ErrTampered)
 }
 
 func TestURLSource_Read(t *testing.T) {

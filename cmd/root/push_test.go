@@ -1,0 +1,72 @@
+package root
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/docker/docker-agent/pkg/protect"
+)
+
+func writeKey(t *testing.T, name string, data []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	return path
+}
+
+func TestPushFlags_Protection(t *testing.T) {
+	t.Parallel()
+
+	edPub, edPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	privDER, err := x509.MarshalPKCS8PrivateKey(edPriv)
+	require.NoError(t, err)
+	pubDER, err := x509.MarshalPKIXPublicKey(edPub)
+	require.NoError(t, err)
+
+	secret := writeKey(t, "secret", []byte("a symmetric secret long enough\n"))
+	short := writeKey(t, "short", []byte("short"))
+	edPrivFile := writeKey(t, "ed25519", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER}))
+	edPubFile := writeKey(t, "ed25519.pub", pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}))
+
+	tests := []struct {
+		name    string
+		flags   pushFlags
+		wantOpt bool
+		wantErr error
+		errMsg  string
+	}{
+		{name: "no key", flags: pushFlags{}},
+		{name: "encrypt without key", flags: pushFlags{encrypt: true}, errMsg: "--encrypt requires --key"},
+		{name: "missing key file", flags: pushFlags{keyFile: filepath.Join(t.TempDir(), "nope")}, errMsg: "reading key file"},
+		{name: "short secret", flags: pushFlags{keyFile: short}, wantErr: protect.ErrSecretTooShort},
+		{name: "secret sign", flags: pushFlags{keyFile: secret}, wantOpt: true},
+		{name: "secret encrypt", flags: pushFlags{keyFile: secret, encrypt: true}, wantOpt: true},
+		{name: "ed25519 sign", flags: pushFlags{keyFile: edPrivFile}, wantOpt: true},
+		{name: "ed25519 cannot encrypt", flags: pushFlags{keyFile: edPrivFile, encrypt: true}, wantErr: protect.ErrCannotEncrypt},
+		{name: "public key cannot sign", flags: pushFlags{keyFile: edPubFile}, wantErr: protect.ErrCannotSign},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opt, err := tt.flags.protection()
+			switch {
+			case tt.wantErr != nil:
+				require.ErrorIs(t, err, tt.wantErr)
+			case tt.errMsg != "":
+				require.ErrorContains(t, err, tt.errMsg)
+			default:
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantOpt, opt != nil)
+		})
+	}
+}

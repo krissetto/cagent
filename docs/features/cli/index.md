@@ -450,11 +450,19 @@ $ docker agent share pull docker.io/username/my-agent:latest
 
 # Force pull, overwriting the local copy
 $ docker agent share pull docker.io/username/my-agent:latest --force
+
+# Sign on push, verify on pull
+$ docker agent share push ./agent.yaml docker.io/username/my-agent:latest --key ~/.ssh/id_ed25519
+$ docker agent share pull docker.io/username/my-agent:latest --key ~/.ssh/id_ed25519.pub
 ```
 
-| Flag       | Applies to | Description                                                |
-| ---------- | ---------- | ---------------------------------------------------------- |
-| `--force`  | `pull`     | Force pull even if the configuration already exists locally |
+| Flag        | Applies to | Description                                                                          |
+| ----------- | ---------- | ------------------------------------------------------------------------------------ |
+| `--force`   | `pull`     | Force pull even if the configuration already exists locally                          |
+| `--key`     | both       | Key file used to sign/encrypt the agent on push, or verify it on pull                |
+| `--encrypt` | `push`     | Also embed an encrypted copy of the agent in the manifest annotations (needs `--key`) |
+
+See [Signing and encrypting agents](../../concepts/distribution/index.md#signing-and-encrypting-agents) for key formats and the security model.
 
 See [Agent Distribution](../../concepts/distribution/index.md) for full registry workflow details.
 
