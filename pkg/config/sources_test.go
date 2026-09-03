@@ -23,6 +23,7 @@ import (
 	"github.com/docker/docker-agent/pkg/content"
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/memoize"
+	"github.com/docker/docker-agent/pkg/protect"
 	"github.com/docker/docker-agent/pkg/remote"
 )
 
@@ -251,6 +252,81 @@ func TestOCISource_Read_DoesNotCacheDegradedFallback(t *testing.T) {
 		assert.Equal(t, testData, data)
 	}
 	assert.Equal(t, int32(3), pulls.Load(), "a validated read must be cached again")
+}
+
+// storeProtectedTestArtifact is like storeTestArtifact but adds protection
+// annotations produced by key in the given mode.
+func storeProtectedTestArtifact(t *testing.T, ref string, data []byte, key *protect.Key, mode protect.Mode) {
+	t.Helper()
+
+	store, err := content.NewStore()
+	require.NoError(t, err)
+
+	annotations := map[string]string{"io.docker.agent.version": "test"}
+	require.NoError(t, key.Protect(annotations, data, mode))
+
+	layer := static.NewLayer(data, "application/yaml")
+	img, err := mutate.AppendLayers(empty.Image, layer)
+	require.NoError(t, err)
+	img = mutate.Annotations(img, annotations).(v1.Image)
+
+	_, err = store.StoreArtifact(img, ref)
+	require.NoError(t, err)
+}
+
+// Not parallel: stubs the package-level pullOCIArtifact and re-homes the
+// default content store via t.Setenv.
+func TestOCISource_Read_VerifiesProtection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	resetOCIMemoizer(t)
+	stubOCIPull(t, func(context.Context, string, bool) (string, error) { return "", nil })
+
+	key, err := protect.ParseKey([]byte("shared-secret"))
+	require.NoError(t, err)
+	wrongKey, err := protect.ParseKey([]byte("wrong-secret"))
+	require.NoError(t, err)
+
+	testData := []byte("version: v1\nname: signed-agent")
+	signedRef := "test-signed/agent:latest"
+	storeProtectedTestArtifact(t, signedRef, testData, key, protect.ModeSign)
+	encryptedRef := "test-encrypted/agent:latest"
+	storeProtectedTestArtifact(t, encryptedRef, testData, key, protect.ModeEncrypt)
+	unsignedRef := "test-unsigned/agent:latest"
+	storeTestArtifact(t, unsignedRef, testData)
+
+	// Matching key: verified read succeeds.
+	data, err := NewOCISource(signedRef, WithVerificationKey(key)).Read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, testData, data)
+
+	// Wrong key: rejected, even though a verified read was just cached under
+	// the other key.
+	_, err = NewOCISource(signedRef, WithVerificationKey(wrongKey)).Read(t.Context())
+	require.ErrorIs(t, err, protect.ErrInvalidSignature)
+
+	// No key: signature is ignored.
+	data, err = NewOCISource(signedRef).Read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, testData, data)
+
+	// Encrypted mode: verified by decrypting and comparing to the layer.
+	data, err = NewOCISource(encryptedRef, WithVerificationKey(key)).Read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, testData, data)
+	_, err = NewOCISource(encryptedRef, WithVerificationKey(wrongKey)).Read(t.Context())
+	require.ErrorIs(t, err, protect.ErrDecryption)
+
+	// Key given but artifact unprotected: rejected.
+	_, err = NewOCISource(unsignedRef, WithVerificationKey(key)).Read(t.Context())
+	require.ErrorIs(t, err, protect.ErrNotProtected)
+
+	// Resolve threads the option through to the OCI source.
+	source, err := Resolve(signedRef, nil, WithVerificationKey(wrongKey))
+	require.NoError(t, err)
+	_, err = source.Read(t.Context())
+	require.ErrorIs(t, err, protect.ErrInvalidSignature)
 }
 
 func TestURLSource_Read(t *testing.T) {

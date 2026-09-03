@@ -59,13 +59,13 @@ func ResolveAlias(agentFilename string) *userconfig.Alias {
 // If envProvider is non-nil, it will be used to look up GITHUB_TOKEN for authentication
 // when fetching from GitHub URLs.
 // For OCI references, always checks remote for updates but falls back to local cache if offline.
-func ResolveSources(agentsPath string, envProvider environment.Provider) (Sources, error) {
+func ResolveSources(agentsPath string, envProvider environment.Provider, opts ...SourceOption) (Sources, error) {
 	resolvedPath, err := resolve(agentsPath)
 	if err != nil {
 		// resolve() only fails for non-OCI, non-URL, non-builtin references
 		// that can't be made absolute. Try OCI as last resort.
 		if IsOCIReference(agentsPath) {
-			return singleSource(reference.OciRefToFilename(agentsPath), NewOCISource(agentsPath)), nil
+			return singleSource(reference.OciRefToFilename(agentsPath), NewOCISource(agentsPath, opts...)), nil
 		}
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func ResolveSources(agentsPath string, envProvider environment.Provider) (Source
 	}
 
 	// For all other reference types, delegate to resolveOne.
-	key, source := resolveOne(resolvedPath, envProvider)
+	key, source := resolveOne(resolvedPath, envProvider, opts...)
 	return singleSource(key, source), nil
 }
 
@@ -84,16 +84,16 @@ func ResolveSources(agentsPath string, envProvider environment.Provider) (Source
 // If envProvider is non-nil, it will be used to look up GITHUB_TOKEN for authentication
 // when fetching from GitHub URLs.
 // For OCI references, always checks remote for updates but falls back to local cache if offline.
-func Resolve(agentFilename string, envProvider environment.Provider) (Source, error) {
+func Resolve(agentFilename string, envProvider environment.Provider, opts ...SourceOption) (Source, error) {
 	resolvedPath, err := resolve(agentFilename)
 	if err != nil {
 		if IsOCIReference(agentFilename) {
-			return NewOCISource(agentFilename), nil
+			return NewOCISource(agentFilename, opts...), nil
 		}
 		return nil, err
 	}
 
-	_, source := resolveOne(resolvedPath, envProvider)
+	_, source := resolveOne(resolvedPath, envProvider, opts...)
 	return source, nil
 }
 
@@ -101,7 +101,7 @@ func Resolve(agentFilename string, envProvider environment.Provider) (Source, er
 // in Sources maps. The path must already be resolved via resolve().
 // This is the single place that decides which source type a reference maps to.
 // To add a new source type, add a case here.
-func resolveOne(resolvedPath string, envProvider environment.Provider) (string, Source) {
+func resolveOne(resolvedPath string, envProvider environment.Provider, opts ...SourceOption) (string, Source) {
 	switch {
 	case builtinAgents[resolvedPath] != nil:
 		return resolvedPath, NewBytesSource(resolvedPath, builtinAgents[resolvedPath])
@@ -111,7 +111,7 @@ func resolveOne(resolvedPath string, envProvider environment.Provider) (string, 
 	case isLocalFile(resolvedPath):
 		return fileNameWithoutExt(resolvedPath), NewFileSource(resolvedPath)
 	default:
-		return reference.OciRefToFilename(resolvedPath), NewOCISource(resolvedPath)
+		return reference.OciRefToFilename(resolvedPath), NewOCISource(resolvedPath, opts...)
 	}
 }
 

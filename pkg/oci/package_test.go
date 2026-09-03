@@ -1,6 +1,7 @@
 package oci
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/content"
+	"github.com/docker/docker-agent/pkg/protect"
 )
 
 func TestPackageFileAsOCIToStore(t *testing.T) {
@@ -206,4 +208,74 @@ agents:
 	assert.Contains(t, string(data), "api_type:")
 	assert.Contains(t, string(data), "base_url:")
 	assert.Contains(t, string(data), "token_key:")
+}
+
+func TestPackageFileAsOCIToStore_WithProtection(t *testing.T) {
+	t.Parallel()
+
+	key, err := protect.ParseKey([]byte("shared-secret"))
+	require.NoError(t, err)
+	other, err := protect.ParseKey([]byte("other-secret"))
+	require.NoError(t, err)
+
+	for _, mode := range []protect.Mode{protect.ModeSign, protect.ModeEncrypt} {
+		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
+			agentFilename := filepath.Join(t.TempDir(), "protected.yaml")
+			testContent := `version: "2"
+agents:
+  root:
+    model: auto
+    description: A protected assistant
+`
+			require.NoError(t, os.WriteFile(agentFilename, []byte(testContent), 0o644))
+			store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
+			require.NoError(t, err)
+
+			agentSource, err := config.Resolve(agentFilename, nil)
+			require.NoError(t, err)
+
+			tag := "test-protected:" + string(mode)
+			digest, err := PackageFileAsOCIToStore(t.Context(), agentSource, tag, store, WithProtection(key, mode))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = store.DeleteArtifact(digest) })
+
+			metadata, err := store.GetArtifactMetadata(tag)
+			require.NoError(t, err)
+			assert.True(t, protect.IsProtected(metadata.Annotations))
+
+			// The protection covers the exact bytes stored in the layer.
+			yamlData, err := store.GetArtifact(tag)
+			require.NoError(t, err)
+			require.NoError(t, key.VerifyAnnotations(metadata.Annotations, []byte(yamlData)))
+			require.Error(t, other.VerifyAnnotations(metadata.Annotations, []byte(yamlData)))
+
+			if mode == protect.ModeEncrypt {
+				// The clear YAML is recoverable, byte-for-byte, from the annotations alone.
+				recovered, err := key.Recover(metadata.Annotations)
+				require.NoError(t, err)
+				assert.True(t, bytes.Equal([]byte(yamlData), recovered))
+			}
+		})
+	}
+}
+
+func TestPackageFileAsOCIToStore_WithoutProtectionHasNoAnnotations(t *testing.T) {
+	t.Parallel()
+	agentFilename := filepath.Join(t.TempDir(), "unsigned.yaml")
+	require.NoError(t, os.WriteFile(agentFilename, []byte("version: \"2\"\nagents:\n  root:\n    model: auto\n"), 0o644))
+	store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
+	require.NoError(t, err)
+
+	agentSource, err := config.Resolve(agentFilename, nil)
+	require.NoError(t, err)
+
+	tag := "test-unsigned:v1"
+	digest, err := PackageFileAsOCIToStore(t.Context(), agentSource, tag, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.DeleteArtifact(digest) })
+
+	metadata, err := store.GetArtifactMetadata(tag)
+	require.NoError(t, err)
+	assert.False(t, protect.IsProtected(metadata.Annotations))
 }

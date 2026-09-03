@@ -22,6 +22,7 @@ import (
 	"github.com/docker/docker-agent/pkg/httpclient"
 	"github.com/docker/docker-agent/pkg/memoize"
 	"github.com/docker/docker-agent/pkg/paths"
+	"github.com/docker/docker-agent/pkg/protect"
 	"github.com/docker/docker-agent/pkg/remote"
 )
 
@@ -98,14 +99,39 @@ func (a bytesSource) Read(context.Context) ([]byte, error) {
 	return a.data, nil
 }
 
+// SourceOption customizes how a Source is built. Options that do not apply
+// to a given source type are ignored.
+type SourceOption func(*sourceOptions)
+
+type sourceOptions struct {
+	verifyKey *protect.Key
+}
+
+// WithVerificationKey makes OCI sources verify the artifact protection
+// (signature or encrypted copy recorded by `share push --key`) against key on
+// every read. Unprotected or tampered artifacts fail to load.
+func WithVerificationKey(key *protect.Key) SourceOption {
+	return func(o *sourceOptions) { o.verifyKey = key }
+}
+
+func applySourceOptions(opts []SourceOption) sourceOptions {
+	var o sourceOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
 // ociSource is used to load an agent configuration from an OCI artifact.
 type ociSource struct {
 	reference string
+	verifyKey *protect.Key
 }
 
-func NewOCISource(reference string) Source {
+func NewOCISource(reference string, opts ...SourceOption) Source {
 	return ociSource{
 		reference: reference,
+		verifyKey: applySourceOptions(opts).verifyKey,
 	}
 }
 
@@ -167,6 +193,11 @@ func (a ociSource) Read(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("normalizing OCI reference %s: %w", a.reference, err)
 	}
+	// A verified read must never be served to a reader holding a different
+	// key (or none), so the key identity is part of the cache key.
+	if a.verifyKey != nil {
+		cacheKey += "#" + a.verifyKey.Fingerprint()
+	}
 
 	data, err := ociReadMemoizer.Memoize(cacheKey, func() ([]byte, error) {
 		data, degraded, err := a.read(ctx)
@@ -209,7 +240,7 @@ func (a ociSource) read(ctx context.Context) (data []byte, degraded bool, err er
 	// For digest references, the content is immutable. If we already have
 	// the artifact locally, serve it directly without any network call.
 	if remote.IsDigestReference(a.reference) {
-		if data, loadErr := loadArtifact(store, storeKey); loadErr == nil {
+		if data, loadErr := a.loadArtifact(store, storeKey); loadErr == nil {
 			slog.DebugContext(ctx, "Serving digest-pinned OCI artifact from cache", "ref", a.reference)
 			return data, false, nil
 		}
@@ -229,7 +260,7 @@ func (a ociSource) read(ctx context.Context) (data []byte, degraded bool, err er
 	}
 
 	// Try loading from store.
-	data, err = loadArtifact(store, storeKey)
+	data, err = a.loadArtifact(store, storeKey)
 	if err == nil {
 		return data, degraded, nil
 	}
@@ -244,20 +275,33 @@ func (a ociSource) read(ctx context.Context) (data []byte, degraded bool, err er
 		return nil, false, fmt.Errorf("failed to force re-pull OCI image %s: %w", a.reference, pullErr)
 	}
 
-	data, err = loadArtifact(store, storeKey)
+	data, err = a.loadArtifact(store, storeKey)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to load agent from OCI source %s: %w", a.reference, err)
 	}
 	return data, false, nil
 }
 
-// loadArtifact reads the agent YAML from the content store.
-func loadArtifact(store *content.Store, storeKey string) ([]byte, error) {
+// loadArtifact reads the agent YAML from the content store and, when a
+// verification key is set, checks it against the signature annotations.
+func (a ociSource) loadArtifact(store *content.Store, storeKey string) ([]byte, error) {
 	af, err := store.GetArtifact(storeKey)
 	if err != nil {
 		return nil, err
 	}
-	return []byte(af), nil
+	data := []byte(af)
+	if a.verifyKey == nil {
+		return data, nil
+	}
+
+	meta, err := store.GetArtifactMetadata(storeKey)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.verifyKey.VerifyAnnotations(meta.Annotations, data); err != nil {
+		return nil, fmt.Errorf("verifying %s: %w", a.reference, err)
+	}
+	return data, nil
 }
 
 // hasLocalArtifact reports whether the content store has metadata for the given key.

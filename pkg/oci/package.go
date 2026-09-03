@@ -18,11 +18,31 @@ import (
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/content"
+	"github.com/docker/docker-agent/pkg/protect"
 	"github.com/docker/docker-agent/pkg/version"
 )
 
+type packageOptions struct {
+	key  *protect.Key
+	mode protect.Mode
+}
+
+type PackageOption func(*packageOptions)
+
+// WithProtection signs (ModeSign) or embeds an encrypted copy of (ModeEncrypt)
+// the packaged YAML in the manifest annotations, so holders of the matching
+// key can verify the artifact.
+func WithProtection(key *protect.Key, mode protect.Mode) PackageOption {
+	return func(o *packageOptions) { o.key, o.mode = key, mode }
+}
+
 // PackageFileAsOCIToStore creates an OCI artifact from a file and stores it in the content store
-func PackageFileAsOCIToStore(ctx context.Context, agentSource config.Source, artifactRef string, store *content.Store) (string, error) {
+func PackageFileAsOCIToStore(ctx context.Context, agentSource config.Source, artifactRef string, store *content.Store, opts ...PackageOption) (string, error) {
+	var o packageOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	if !strings.Contains(artifactRef, ":") {
 		artifactRef += ":latest"
 	}
@@ -78,6 +98,11 @@ func PackageFileAsOCIToStore(ctx context.Context, agentSource config.Source, art
 	}
 	if len(cfg.Metadata.Tags) > 0 {
 		annotations["io.docker.agent.tags"] = strings.Join(cfg.Metadata.Tags, ",")
+	}
+	if o.key != nil {
+		if err := o.key.Protect(annotations, data, o.mode); err != nil {
+			return "", fmt.Errorf("protecting config: %w", err)
+		}
 	}
 
 	layer := static.NewLayer(data, "application/yaml")
