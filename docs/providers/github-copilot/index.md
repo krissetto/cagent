@@ -69,8 +69,8 @@ agents:
 The exact set of models you can call depends on your Copilot plan. The most
 commonly available ones today are:
 
-| Model              | Best For                            |
-| ------------------- | ------------------------------------ |
+| Model               | Best For                              |
+| -------------------- | -------------------------------------- |
 | `gpt-5.6-sol`       | Multimodal, balanced performance    |
 | `gpt-5.6-terra`     | Fast and cheap                      |
 | `claude-sonnet-5`   | Strong coding and analysis          |

@@ -60,7 +60,7 @@ Baseten hosts various open models through its Model APIs. Check the [Baseten doc
 
 | Model                          | Description                    |
 | ------------------------------ | ------------------------------ |
-| `deepseek-ai/DeepSeek-V4-Pro`    | DeepSeek V4 Pro model           |
+| `deepseek-ai/DeepSeek-V4-Pro`  | DeepSeek V4 Pro model           |
 | `moonshotai/Kimi-K2.5`         | Moonshot Kimi K2.5 model       |
 | `openai/gpt-oss-120b`          | GPT-OSS 120B model             |
 | `zai-org/GLM-5`                | GLM-5 model                    |

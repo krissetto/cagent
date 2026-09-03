@@ -93,12 +93,12 @@ models:
 
 ```yaml
 models:
-  gemini-3-pro:
+  gemini-pro:
     provider: google
     model: gemini-3.1-pro-preview
     thinking_budget: high # default for Pro: low | high
 
-  gemini-3-flash:
+  gemini-flash:
     provider: google
     model: gemini-3.8-flash
     thinking_budget: medium # default for Flash: minimal | low | medium | high
