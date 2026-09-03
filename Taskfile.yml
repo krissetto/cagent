@@ -59,6 +59,11 @@ tasks:
     cmds:
       - CHECK_MODELS_SNAPSHOT_FRESHNESS=1 go test -run TestSnapshotDateIsFresh ./pkg/modelsdev/
 
+  check-models-live:
+    desc: Validate example model references against the live models.dev API (hits the network; not part of `task test` since drift here is external and must not block PRs — see issue #4134)
+    cmds:
+      - CHECK_MODELS_DEV_LIVE=1 go test -count=1 -run TestExamplesAgainstLiveModelsDev ./pkg/config/
+
   check-plan-cross:
     desc: Cross-compile the plan storage and host plans packages for every file-lock build-tag variant (plus the plan-consuming CLI and TUI packages on windows)
     cmds:
