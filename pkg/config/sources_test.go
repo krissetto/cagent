@@ -363,32 +363,25 @@ func TestOCISource_Read_CacheDistinguishesPrivateAndPublicKey(t *testing.T) {
 	pub, err := protect.ParseKey(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}))
 	require.NoError(t, err)
 
-	// An artifact whose only protection is an encrypted copy (no signature),
-	// as an attacker holding the public key could produce.
-	testData := []byte("version: v1\nname: unsigned-encrypted")
-	ref := "test-halves/agent:latest"
-	blob, err := pub.Encrypt(testData)
+	// A correctly signed artifact whose encrypted copy was swapped for an
+	// encryption of different content. The public key can only check the
+	// signature and accepts it; the private key decrypts and must reject it.
+	testData := []byte("version: v1\nname: swapped-copy")
+	annotations := map[string]string{}
+	require.NoError(t, priv.Protect(annotations, testData, protect.ModeEncrypt))
+	forged, err := pub.Encrypt([]byte("something else"))
 	require.NoError(t, err)
-	storeTestArtifactWithAnnotations(t, ref, testData, map[string]string{
-		protect.AnnotationEncrypted:          base64.StdEncoding.EncodeToString(blob),
-		protect.AnnotationEncryptedAlgorithm: pub.EncryptAlgorithm(),
-	})
+	annotations[protect.AnnotationEncrypted] = base64.StdEncoding.EncodeToString(forged)
+	ref := "test-halves/agent:latest"
+	storeTestArtifactWithAnnotations(t, ref, testData, annotations)
 
-	// Neither half accepts it, and a read with one half must not prime the
-	// cache for the other.
+	data, err := NewOCISource(ref, WithVerificationKey(pub)).Read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, testData, data)
+
+	// The public-key success above must not be served to the private key.
 	_, err = NewOCISource(ref, WithVerificationKey(priv)).Read(t.Context())
-	require.ErrorIs(t, err, protect.ErrNotSigned)
-	_, err = NewOCISource(ref, WithVerificationKey(pub)).Read(t.Context())
-	require.ErrorIs(t, err, protect.ErrNotSigned)
-
-	// A properly published (sign+encrypt) artifact verifies with both halves.
-	signedRef := "test-halves/signed:latest"
-	storeProtectedTestArtifact(t, signedRef, testData, priv, protect.ModeEncrypt)
-	for _, key := range []*protect.Key{priv, pub, priv} {
-		data, err := NewOCISource(signedRef, WithVerificationKey(key)).Read(t.Context())
-		require.NoError(t, err)
-		assert.Equal(t, testData, data)
-	}
+	require.ErrorIs(t, err, protect.ErrTampered)
 }
 
 func TestURLSource_Read(t *testing.T) {

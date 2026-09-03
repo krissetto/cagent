@@ -74,11 +74,13 @@ func LoadKey(path string) (*Key, error) {
 	return key, nil
 }
 
-// ParseKey detects the key kind from its encoding. Input that looks like a
-// PEM block or an OpenSSH authorized_keys line is parsed as an asymmetric key
-// and any parse error is reported rather than falling back to a secret.
-// Anything else is a raw symmetric secret (surrounding whitespace is trimmed
-// so a trailing newline does not change the key).
+// ParseKey detects the key kind from its encoding. PEM blocks and OpenSSH
+// authorized_keys lines (with or without options) are parsed as asymmetric
+// keys; input that merely looks like one of those is rejected rather than
+// falling back to a secret, so a broken public key file can never become an
+// HMAC key made of public material. Anything else is a raw symmetric secret
+// (surrounding whitespace is trimmed so a trailing newline does not change
+// the key).
 func ParseKey(data []byte) (*Key, error) {
 	if bytes.Contains(data, []byte("-----BEGIN")) {
 		block, _ := pem.Decode(data)
@@ -87,16 +89,14 @@ func ParseKey(data []byte) (*Key, error) {
 		}
 		return parsePEM(block, data)
 	}
-	if looksLikeOpenSSHPublicKey(data) {
-		pub, _, _, _, err := ssh.ParseAuthorizedKey(data)
-		if err != nil {
-			return nil, fmt.Errorf("parsing OpenSSH public key: %w", err)
-		}
+	if pub, _, _, _, err := ssh.ParseAuthorizedKey(data); err == nil {
 		cpk, ok := pub.(ssh.CryptoPublicKey)
 		if !ok {
 			return nil, fmt.Errorf("unsupported ssh public key type %s", pub.Type())
 		}
 		return fromPublic(cpk.CryptoPublicKey())
+	} else if looksLikeOpenSSHPublicKey(data) {
+		return nil, fmt.Errorf("parsing OpenSSH public key: %w", err)
 	}
 
 	secret := bytes.Clone(bytes.TrimSpace(data))
@@ -106,12 +106,13 @@ func ParseKey(data []byte) (*Key, error) {
 	return &Key{secret: secret}, nil
 }
 
-var opensshKeyTypePrefixes = []string{"ssh-", "ecdsa-sha2-", "sk-ssh-", "sk-ecdsa-"}
+var opensshKeyTypes = [][]byte{[]byte("ssh-"), []byte("ecdsa-sha2-"), []byte("sk-ssh-"), []byte("sk-ecdsa-")}
 
+// looksLikeOpenSSHPublicKey reports whether data contains an OpenSSH key-type
+// token anywhere, since authorized_keys options may precede it.
 func looksLikeOpenSSHPublicKey(data []byte) bool {
-	first := string(bytes.TrimSpace(data))
-	for _, p := range opensshKeyTypePrefixes {
-		if strings.HasPrefix(first, p) {
+	for _, t := range opensshKeyTypes {
+		if bytes.Contains(data, t) {
 			return true
 		}
 	}
@@ -149,9 +150,16 @@ func parsePEM(block *pem.Block, data []byte) (*Key, error) {
 	}
 }
 
+// MinRSABits is the smallest accepted RSA modulus; smaller keys are
+// considered broken.
+const MinRSABits = 2048
+
 func fromPrivate(priv any) (*Key, error) {
 	switch p := priv.(type) {
 	case *rsa.PrivateKey:
+		if err := checkRSA(&p.PublicKey); err != nil {
+			return nil, err
+		}
 		return &Key{priv: p, pub: &p.PublicKey}, nil
 	case *ecdsa.PrivateKey:
 		return &Key{priv: p, pub: &p.PublicKey}, nil
@@ -165,12 +173,24 @@ func fromPrivate(priv any) (*Key, error) {
 }
 
 func fromPublic(pub crypto.PublicKey) (*Key, error) {
-	switch pub.(type) {
-	case *rsa.PublicKey, *ecdsa.PublicKey, ed25519.PublicKey:
+	switch p := pub.(type) {
+	case *rsa.PublicKey:
+		if err := checkRSA(p); err != nil {
+			return nil, err
+		}
+		return &Key{pub: pub}, nil
+	case *ecdsa.PublicKey, ed25519.PublicKey:
 		return &Key{pub: pub}, nil
 	default:
 		return nil, unsupportedKeyType(pub)
 	}
+}
+
+func checkRSA(pub *rsa.PublicKey) error {
+	if bits := pub.N.BitLen(); bits < MinRSABits {
+		return fmt.Errorf("RSA-%d key is too small: at least %d bits required", bits, MinRSABits)
+	}
+	return nil
 }
 
 func unsupportedKeyType(key any) error {

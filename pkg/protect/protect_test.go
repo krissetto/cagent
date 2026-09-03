@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,12 @@ func pkix(t *testing.T, pub any) []byte {
 	der, err := x509.MarshalPKIXPublicKey(pub)
 	require.NoError(t, err)
 	return pemEncode(t, "PUBLIC KEY", der)
+}
+
+// verifyErr discards the Verification report for tests that only care about the error.
+func verifyErr(k *Key, annotations map[string]string, data []byte) error {
+	_, err := k.VerifyAnnotations(annotations, data)
+	return err
 }
 
 func mustParse(t *testing.T, data []byte) *Key {
@@ -123,6 +130,59 @@ func TestParseKey_RejectsShortSecret(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestParseKey_OpenSSHWithOptions(t *testing.T) {
+	t.Parallel()
+
+	edPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	sshPub, err := ssh.NewPublicKey(edPub)
+	require.NoError(t, err)
+	line := `from="10.0.0.0/8",no-agent-forwarding ` + string(ssh.MarshalAuthorizedKey(sshPub))
+
+	key := mustParse(t, []byte(line))
+	assert.False(t, key.Symmetric(), "an authorized_keys line with options is a public key, not a secret")
+	assert.Equal(t, AlgEd25519, key.SignAlgorithm())
+
+	_, err = ParseKey([]byte(`from="10.0.0.0/8" ssh-ed25519 AAAAbroken comment`))
+	require.ErrorContains(t, err, "OpenSSH")
+}
+
+func TestParseKey_RejectsSmallRSA(t *testing.T) {
+	t.Parallel()
+
+	// Fixtures rather than rsa.GenerateKey: FIPS-only mode refuses to
+	// generate keys this small, which is exactly what we assert on.
+	const priv1024 = `-----BEGIN PRIVATE KEY-----
+MIICdwIBADANBgkqhkiG9w0BAQEFAASCAmEwggJdAgEAAoGBAMGC3Svsn0pS9Plq
+0H7O9s7HNbEBTpmdfJrLD2MVCsVH6HmAja7cVKqxgFZfPR03Mh30YvJ0oSGae/ak
+ZIsBYz3uyBDzan6UKuFwlj9xKM6rKiS0QSNIkaTE8Bbb4boGd0LkPyR7gaCSkxCm
+PjZjycXKjS7Ltulp2JAHg2gQX9HlAgMBAAECgYADgT5GRGPiMbx0JAYgtdjsh9km
+GpL031BZcWIW9lOanSHNyZFHYIA8Ezjy14jA1bYXqsx7/bbJaAXkwrd7eQv2FCKJ
+U+jBA1N/DYOMtrPNZHwWkdVyuZh7x4IIe1YJTeVzoGBIJH9blzmwuBw1GhL61ttJ
+P6o/z6AA6Tab/pZWJQJBAOdN+6654PZ3DvfRurAYlizXkd9sD7Df9GBSKdamfPrm
+sfrHA/6Fx5d5uFYGHjgsFyLZXhKrXA3C4AN8fTcinSsCQQDWK+ks8tfUX2nepkaW
+P9z80Sj0UPdUk2oWJ09JRXPW/nHkh1PdfvStLn4ZPTmJ2JQpuWZofi+SCsnZbYgH
+iWUvAkEAqXH9cFCHNsadVnpz8tDwIsWA/VViYUaO9Yj7UV4BrKQXugjVKj3Cq3rl
+yU8OEERsZoEqYy7ZbtNV2/f0mtFmpQJANvav8cQk1bDi56v+g4LCQPOgsgqxXrgy
+SpsuAtzbHLrSGdcNE9QIEQXUgL+wq4q0g3y8Jmbz6GPyZ2VvupdtKwJBAJ9TgAIz
+Fgzgv26ejpkp297lNYAXLrgJIPWaBXgpBEFm/doqZhJep/w0Rt4eKG/OwjF2F3XA
+ejTm/Yk3MH+ru0Y=
+-----END PRIVATE KEY-----
+`
+	const pub1024 = `-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDBgt0r7J9KUvT5atB+zvbOxzWx
+AU6ZnXyayw9jFQrFR+h5gI2u3FSqsYBWXz0dNzId9GLydKEhmnv2pGSLAWM97sgQ
+82p+lCrhcJY/cSjOqyoktEEjSJGkxPAW2+G6BndC5D8ke4GgkpMQpj42Y8nFyo0u
+y7bpadiQB4NoEF/R5QIDAQAB
+-----END PUBLIC KEY-----
+`
+
+	_, err := ParseKey([]byte(priv1024))
+	require.ErrorContains(t, err, "too small")
+	_, err = ParseKey([]byte(pub1024))
+	require.ErrorContains(t, err, "too small")
+}
+
 func TestParseKey_MalformedAsymmetricIsNotASecret(t *testing.T) {
 	t.Parallel()
 
@@ -132,6 +192,7 @@ func TestParseKey_MalformedAsymmetricIsNotASecret(t *testing.T) {
 		"pem no end":       "-----BEGIN PRIVATE KEY-----\nAAAA",
 		"bad ssh base64":   "ssh-ed25519 definitely-not-base64 comment",
 		"bad ecdsa ssh":    "ecdsa-sha2-nistp256 AAAA garbage",
+		"bad ssh options":  `command="x" ssh-rsa AAAA garbage`,
 		"unsupported pem":  string(pemEncode(t, "CERTIFICATE", []byte("junk"))),
 		"unsupported type": string(pemEncode(t, "DSA PARAMETERS", make([]byte, 40))),
 	} {
@@ -202,9 +263,9 @@ func TestAsymmetric_SignMode(t *testing.T) {
 			assert.Equal(t, kp.signAlg, annotations[AnnotationSignatureAlgorithm])
 			assert.NotContains(t, annotations, AnnotationEncrypted)
 
-			require.NoError(t, pub.VerifyAnnotations(annotations, []byte(payload)))
-			require.NoError(t, priv.VerifyAnnotations(annotations, []byte(payload)))
-			require.ErrorIs(t, pub.VerifyAnnotations(annotations, []byte(payload+"#\n")), ErrInvalidSignature)
+			require.NoError(t, verifyErr(pub, annotations, []byte(payload)))
+			require.NoError(t, verifyErr(priv, annotations, []byte(payload)))
+			require.ErrorIs(t, verifyErr(pub, annotations, []byte(payload+"#\n")), ErrInvalidSignature)
 
 			_, err := priv.Recover(annotations)
 			require.ErrorIs(t, err, ErrNotEncrypted)
@@ -235,10 +296,20 @@ func TestAsymmetric_EncryptMode(t *testing.T) {
 			assert.Equal(t, kp.signAlg, annotations[AnnotationSignatureAlgorithm], "encrypt mode must also sign")
 
 			// Private key: signature + decrypt-and-compare. Public key: signature only.
-			require.NoError(t, priv.VerifyAnnotations(annotations, []byte(payload)))
-			require.NoError(t, pub.VerifyAnnotations(annotations, []byte(payload)))
-			require.ErrorIs(t, priv.VerifyAnnotations(annotations, []byte("tampered")), ErrInvalidSignature)
-			require.ErrorIs(t, pub.VerifyAnnotations(annotations, []byte("tampered")), ErrInvalidSignature)
+			v, err := priv.VerifyAnnotations(annotations, []byte(payload))
+			require.NoError(t, err)
+			assert.Equal(t, Verification{SignatureAlgorithm: kp.signAlg, EncryptedAlgorithm: kp.encAlg}, v)
+			v, err = pub.VerifyAnnotations(annotations, []byte(payload))
+			require.NoError(t, err)
+			assert.Equal(t, Verification{SignatureAlgorithm: kp.signAlg}, v)
+			assert.Equal(t, "signature ("+kp.signAlg+")", v.String())
+
+			// Even a public key must notice an encrypted copy that this key could not have produced.
+			relabeled := maps.Clone(annotations)
+			relabeled[AnnotationEncryptedAlgorithm] = "something-else"
+			require.ErrorIs(t, verifyErr(pub, relabeled, []byte(payload)), ErrAlgorithmMism)
+			require.ErrorIs(t, verifyErr(priv, annotations, []byte("tampered")), ErrInvalidSignature)
+			require.ErrorIs(t, verifyErr(pub, annotations, []byte("tampered")), ErrInvalidSignature)
 
 			plain, err := priv.Recover(annotations)
 			require.NoError(t, err)
@@ -281,8 +352,8 @@ func TestAsymmetric_EncryptedCopyAloneIsNotProof(t *testing.T) {
 			annotations[AnnotationEncrypted] = base64.StdEncoding.EncodeToString(forged)
 			annotations[AnnotationEncryptedAlgorithm] = pub.EncryptAlgorithm()
 
-			require.ErrorIs(t, priv.VerifyAnnotations(annotations, malicious), ErrNotSigned)
-			require.ErrorIs(t, pub.VerifyAnnotations(annotations, malicious), ErrNotSigned)
+			require.ErrorIs(t, verifyErr(priv, annotations, malicious), ErrNotSigned)
+			require.ErrorIs(t, verifyErr(pub, annotations, malicious), ErrNotSigned)
 
 			// Recover still works (it is not a verification), but is explicit about that.
 			plain, err := priv.Recover(annotations)
@@ -309,8 +380,8 @@ func TestAsymmetric_SwappedEncryptedCopyIsDetected(t *testing.T) {
 	annotations[AnnotationEncrypted] = base64.StdEncoding.EncodeToString(forged)
 
 	// Layer swapped too: signature fails. Layer intact: copy mismatch.
-	require.ErrorIs(t, priv.VerifyAnnotations(annotations, malicious), ErrInvalidSignature)
-	require.ErrorIs(t, priv.VerifyAnnotations(annotations, []byte(payload)), ErrTampered)
+	require.ErrorIs(t, verifyErr(priv, annotations, malicious), ErrInvalidSignature)
+	require.ErrorIs(t, verifyErr(priv, annotations, []byte(payload)), ErrTampered)
 }
 
 // regenerate returns a fresh private key of the same type as kp.
@@ -335,17 +406,17 @@ func TestSymmetric_BothModes(t *testing.T) {
 	signed := map[string]string{}
 	require.NoError(t, key.Protect(signed, []byte(payload), ModeSign))
 	assert.NotContains(t, signed, AnnotationEncrypted)
-	require.NoError(t, key.VerifyAnnotations(signed, []byte(payload)))
-	require.ErrorIs(t, key.VerifyAnnotations(signed, []byte("changed")), ErrInvalidSignature)
-	require.ErrorIs(t, other.VerifyAnnotations(signed, []byte(payload)), ErrInvalidSignature)
+	require.NoError(t, verifyErr(key, signed, []byte(payload)))
+	require.ErrorIs(t, verifyErr(key, signed, []byte("changed")), ErrInvalidSignature)
+	require.ErrorIs(t, verifyErr(other, signed, []byte(payload)), ErrInvalidSignature)
 
 	// With a secret, the AEAD copy alone is proof: producing it needs the secret.
 	encrypted := map[string]string{}
 	require.NoError(t, key.Protect(encrypted, []byte(payload), ModeEncrypt))
 	assert.NotContains(t, encrypted, AnnotationSignature)
-	require.NoError(t, key.VerifyAnnotations(encrypted, []byte(payload)))
-	require.ErrorIs(t, key.VerifyAnnotations(encrypted, []byte("changed")), ErrTampered)
-	require.ErrorIs(t, other.VerifyAnnotations(encrypted, []byte(payload)), ErrDecryption)
+	require.NoError(t, verifyErr(key, encrypted, []byte(payload)))
+	require.ErrorIs(t, verifyErr(key, encrypted, []byte("changed")), ErrTampered)
+	require.ErrorIs(t, verifyErr(other, encrypted, []byte(payload)), ErrDecryption)
 
 	plain, err := key.Recover(encrypted)
 	require.NoError(t, err)
@@ -385,28 +456,28 @@ func TestVerifyAnnotations_Errors(t *testing.T) {
 
 	key := mustParse(t, []byte(secret))
 
-	require.ErrorIs(t, key.VerifyAnnotations(map[string]string{}, []byte(payload)), ErrNotProtected)
+	require.ErrorIs(t, verifyErr(key, map[string]string{}, []byte(payload)), ErrNotProtected)
 
-	err := key.VerifyAnnotations(map[string]string{
+	err := verifyErr(key, map[string]string{
 		AnnotationSignature:          "AAAA",
 		AnnotationSignatureAlgorithm: AlgEd25519,
 	}, []byte(payload))
 	require.ErrorIs(t, err, ErrAlgorithmMism)
 
-	err = key.VerifyAnnotations(map[string]string{
+	err = verifyErr(key, map[string]string{
 		AnnotationSignature:          "not base64!",
 		AnnotationSignatureAlgorithm: AlgHMACSHA256,
 	}, []byte(payload))
 	require.ErrorIs(t, err, ErrInvalidSignature)
 
-	err = key.VerifyAnnotations(map[string]string{
+	err = verifyErr(key, map[string]string{
 		AnnotationEncrypted:          "AAAA",
 		AnnotationEncryptedAlgorithm: AlgRSAOAEP,
 	}, []byte(payload))
 	require.ErrorIs(t, err, ErrAlgorithmMism)
 
 	for _, blob := range []string{"", "AAAA", "not base64!", base64.StdEncoding.EncodeToString(make([]byte, 11))} {
-		err = key.VerifyAnnotations(map[string]string{
+		err = verifyErr(key, map[string]string{
 			AnnotationEncrypted:          blob,
 			AnnotationEncryptedAlgorithm: AlgAESGCM,
 		}, []byte(payload))

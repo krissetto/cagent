@@ -84,10 +84,11 @@ func (f *pullFlags) runPullCommand(cmd *cobra.Command, args []string) (commandEr
 		if err != nil {
 			return fmt.Errorf("failed to get artifact metadata: %w", err)
 		}
-		if err := key.VerifyAnnotations(metadata.Annotations, []byte(yamlFile)); err != nil {
+		verified, err := key.VerifyAnnotations(metadata.Annotations, []byte(yamlFile))
+		if err != nil {
 			return fmt.Errorf("verifying %s: %w", registryRef, err)
 		}
-		out.Printf("Verified %s\n", protectionSummary(metadata.Annotations))
+		out.Printf("Verified %s\n", verified)
 	}
 
 	agentName := strings.ReplaceAll(registryRef, "/", "_")
@@ -100,15 +101,4 @@ func (f *pullFlags) runPullCommand(cmd *cobra.Command, args []string) (commandEr
 	out.Printf("Agent saved to %s\n", fileName)
 
 	return nil
-}
-
-func protectionSummary(annotations map[string]string) string {
-	var parts []string
-	if alg := annotations[protect.AnnotationSignatureAlgorithm]; alg != "" {
-		parts = append(parts, "signature ("+alg+")")
-	}
-	if alg := annotations[protect.AnnotationEncryptedAlgorithm]; alg != "" {
-		parts = append(parts, "encrypted copy ("+alg+")")
-	}
-	return strings.Join(parts, " and ")
 }

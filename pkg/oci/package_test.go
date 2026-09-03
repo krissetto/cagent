@@ -247,8 +247,10 @@ agents:
 			// The protection covers the exact bytes stored in the layer.
 			yamlData, err := store.GetArtifact(tag)
 			require.NoError(t, err)
-			require.NoError(t, key.VerifyAnnotations(metadata.Annotations, []byte(yamlData)))
-			require.Error(t, other.VerifyAnnotations(metadata.Annotations, []byte(yamlData)))
+			_, err = key.VerifyAnnotations(metadata.Annotations, []byte(yamlData))
+			require.NoError(t, err)
+			_, err = other.VerifyAnnotations(metadata.Annotations, []byte(yamlData))
+			require.Error(t, err)
 
 			if mode == protect.ModeEncrypt {
 				// The clear YAML is recoverable, byte-for-byte, from the annotations alone.

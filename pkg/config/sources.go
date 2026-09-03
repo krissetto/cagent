@@ -299,7 +299,7 @@ func (a ociSource) loadArtifact(store *content.Store, storeKey string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	if err := a.verifyKey.VerifyAnnotations(meta.Annotations, data); err != nil {
+	if _, err := a.verifyKey.VerifyAnnotations(meta.Annotations, data); err != nil {
 		return nil, fmt.Errorf("verifying %s: %w", a.reference, err)
 	}
 	return data, nil

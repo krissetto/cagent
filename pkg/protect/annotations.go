@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 const (
@@ -99,44 +100,70 @@ func IsProtected(annotations map[string]string) bool {
 	return annotations[AnnotationSignature] != "" || annotations[AnnotationEncrypted] != ""
 }
 
+// Verification reports which protections VerifyAnnotations actually checked.
+type Verification struct {
+	// SignatureAlgorithm is set when a signature was verified.
+	SignatureAlgorithm string
+	// EncryptedAlgorithm is set when the encrypted copy was decrypted and
+	// matched the content. It stays empty for a public key, which can only
+	// check the copy's algorithm label.
+	EncryptedAlgorithm string
+}
+
+func (v Verification) String() string {
+	var parts []string
+	if v.SignatureAlgorithm != "" {
+		parts = append(parts, "signature ("+v.SignatureAlgorithm+")")
+	}
+	if v.EncryptedAlgorithm != "" {
+		parts = append(parts, "encrypted copy ("+v.EncryptedAlgorithm+")")
+	}
+	return strings.Join(parts, " and ")
+}
+
 // VerifyAnnotations checks that data is what a holder of this key published,
-// using the protection annotations carry.
+// using the protection annotations carry, and reports what was checked.
 //
 // A signature, when present, is always verified. An encrypted copy is
-// decrypted and compared to data when the key can decrypt; when it cannot,
-// the signature must have been verified instead. With an asymmetric key a
-// signature is mandatory, since anyone holding the public key could have
-// produced the encrypted copy. ErrNotProtected is returned when the artifact
-// carries no protection at all.
-func (k *Key) VerifyAnnotations(annotations map[string]string, data []byte) error {
+// decrypted and compared to data when the key can decrypt; a public key only
+// checks its algorithm label and relies on the signature. With an asymmetric
+// key a signature is mandatory, since anyone holding the public key could
+// have produced the encrypted copy. ErrNotProtected is returned when the
+// artifact carries no protection at all.
+func (k *Key) VerifyAnnotations(annotations map[string]string, data []byte) (Verification, error) {
+	var v Verification
 	signed := annotations[AnnotationSignature] != ""
 	encrypted := annotations[AnnotationEncrypted] != ""
 	if !signed && !encrypted {
-		return ErrNotProtected
+		return v, ErrNotProtected
 	}
 	if !signed && !k.Symmetric() {
-		return ErrNotSigned
+		return v, ErrNotSigned
 	}
 
 	if signed {
 		if err := k.verifySignature(annotations, data); err != nil {
-			return err
+			return v, err
 		}
+		v.SignatureAlgorithm = k.SignAlgorithm()
 	}
 	if encrypted {
+		if err := k.checkEncryptedAlgorithm(annotations); err != nil {
+			return Verification{}, err
+		}
 		if !k.CanDecrypt() {
-			// Signature verified above; the copy is for holders of the private key.
-			return nil
+			return v, nil
 		}
 		plain, err := k.Recover(annotations)
 		if err != nil {
-			return err
+			return Verification{}, err
 		}
 		if subtle.ConstantTimeCompare(plain, data) != 1 {
-			return ErrTampered
+			return Verification{}, ErrTampered
 		}
+		v.EncryptedAlgorithm = k.EncryptAlgorithm()
 	}
-	return nil
+	return v, nil
 }
 
 func (k *Key) verifySignature(annotations map[string]string, data []byte) error {
@@ -153,6 +180,13 @@ func (k *Key) verifySignature(annotations map[string]string, data []byte) error 
 	return k.Verify(data, sig)
 }
 
+func (k *Key) checkEncryptedAlgorithm(annotations map[string]string) error {
+	if alg := annotations[AnnotationEncryptedAlgorithm]; alg != k.EncryptAlgorithm() {
+		return fmt.Errorf("%w: artifact encrypted with %q but key supports %q", ErrAlgorithmMism, alg, k.EncryptAlgorithm())
+	}
+	return nil
+}
+
 // Recover decrypts the encrypted copy carried in annotations, returning the
 // clear YAML. It works from the annotations alone, without the layer. Note
 // that it does not check the signature; use VerifyAnnotations for that.
@@ -164,8 +198,8 @@ func (k *Key) Recover(annotations map[string]string) ([]byte, error) {
 	if !k.CanDecrypt() {
 		return nil, fmt.Errorf("%w (%s)", ErrCannotDecrypt, k.Describe())
 	}
-	if alg := annotations[AnnotationEncryptedAlgorithm]; alg != k.EncryptAlgorithm() {
-		return nil, fmt.Errorf("%w: artifact encrypted with %q but key supports %q", ErrAlgorithmMism, alg, k.EncryptAlgorithm())
+	if err := k.checkEncryptedAlgorithm(annotations); err != nil {
+		return nil, err
 	}
 	blob, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
