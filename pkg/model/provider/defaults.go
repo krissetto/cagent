@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/docker/docker-agent/pkg/config/latest"
@@ -38,6 +39,33 @@ func resolveProviderType(cfg *latest.ModelConfig) string {
 		return alias.APIType
 	}
 	return cfg.Provider
+}
+
+// ResolveType returns the registry key a model config is served by once
+// custom providers (providers: section), built-in aliases and an explicit
+// api_type are applied — i.e. the factory [Registry.New] will look up for
+// it. A routing model resolves to its fallback provider/model. The config is
+// not mutated.
+func ResolveType(cfg *latest.ModelConfig, customProviders map[string]latest.ProviderConfig) string {
+	return resolveProviderType(applyProviderDefaults(cfg, customProviders))
+}
+
+// Has reports whether a factory is registered for providerType, a key as
+// returned by [ResolveType].
+func (r *Registry) Has(providerType string) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.factories[providerType]
+	return ok
+}
+
+// Types returns the registered provider types, sorted.
+func (r *Registry) Types() []string {
+	if r == nil {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(r.factories))
 }
 
 // resolveEffectiveProvider returns the effective provider type for a ProviderConfig.

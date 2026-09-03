@@ -18,6 +18,8 @@ type ToolsetCreator func(ctx context.Context, toolset latest.Toolset, parentDir 
 // ToolsetRegistry manages the registration of toolset creators by type.
 type ToolsetRegistry interface {
 	CreateTool(ctx context.Context, toolset latest.Toolset, parentDir string, runConfig *config.RuntimeConfig, agentName string) (tools.ToolSet, error)
+	// Has reports whether a creator is registered for toolsetType.
+	Has(toolsetType string) bool
 }
 
 func NewToolsetRegistry(creators map[string]ToolsetCreator) ToolsetRegistry {
@@ -38,6 +40,11 @@ func NewDefaultToolsetRegistry() ToolsetRegistry {
 // toolsetRegistry manages the registration of toolset creators by type.
 type toolsetRegistry struct {
 	creators map[string]ToolsetCreator
+}
+
+func (r *toolsetRegistry) Has(toolsetType string) bool {
+	_, ok := r.creators[toolsetType]
+	return ok
 }
 
 // CreateTool creates a toolset using the registered creator for the given type.
