@@ -418,14 +418,17 @@ func TestStartableToolSet_PlainTextStatusShapeDoesNotArmGate(t *testing.T) {
 	}
 }
 
-// TestStartableToolSet_PartialStartClearsBackoffGate pins that a
-// PartialStartError (composite partially healthy) clears any active backoff
-// window — the toolset is (partially) up, so the cold-start gate must not
-// suppress the composite's next recovery attempt for the failed subset.
+// TestStartableToolSet_NonRetryablePartialStartClearsBackoffGate pins that a
+// PartialStartError whose aggregated cause is NOT retryable (composite
+// partially healthy) clears any active backoff window — the toolset is
+// (partially) up, and its failed subset isn't a pacing candidate, so the
+// cold-start gate must not suppress the composite's next recovery attempt.
 //
-// Scenario: window expires → partial start latches and clears gate →
-// immediate next TryStart must invoke the underlying without delay.
-func TestStartableToolSet_PartialStartClearsBackoffGate(t *testing.T) {
+// Scenario: window expires → partial start (plain error cause) latches and
+// clears gate → immediate next TryStart must invoke the underlying without
+// delay. A partial start whose cause IS retryable instead arms the gate —
+// see TestStartableToolSet_RetryablePartialStartArmsBackoffGate.
+func TestStartableToolSet_NonRetryablePartialStartClearsBackoffGate(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		inner := &partialGateClearToolSet{}
 
@@ -455,10 +458,68 @@ func TestStartableToolSet_PartialStartClearsBackoffGate(t *testing.T) {
 	})
 }
 
-// partialGateClearToolSet is a minimal Startable + StartReporter for
-// TestStartableToolSet_PartialStartClearsBackoffGate: IsStarted is true
-// only when the last Start returned nil, matching the composite-toolset
-// contract that drives the recovery path.
+// TestStartableToolSet_RetryablePartialStartArmsBackoffGate is the fix for
+// #4067: a PartialStartError whose aggregated cause IS retryable must arm
+// the gate exactly like a total failure would, even though the wrapper
+// stays latched as started (s.started=true) so the healthy subset keeps
+// listing. Without this, a degraded code-mode composite retries its failed
+// inner subset (e.g. a RAG toolset hitting 429s) unpaced on every turn.
+func TestStartableToolSet_RetryablePartialStartArmsBackoffGate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		inner := &partialGateClearToolSet{}
+		inner.setErr(tools.NewPartialStartError(rateLimitErr()))
+		s := newThrottledStartable(inner)
+
+		// Attempt 1: underlying Start runs, partial failure latches started.
+		_, err := s.TryStart(t.Context())
+		assert.Check(t, tools.IsPartialStart(err), "expected partial start, got: %v", err)
+		assert.Check(t, is.Equal(inner.starts.Load(), int32(1)))
+		assert.Check(t, is.Equal(s.IsStarted(), true), "partial start must latch the wrapper")
+
+		// Immediate retry via TryStart: gate must block it (still within window).
+		_, err = s.TryStart(t.Context())
+		assert.Check(t, tools.IsPartialStart(err), "gate must still report the retained partial error")
+		assert.Check(t, is.Equal(inner.starts.Load(), int32(1)), "gate must not invoke underlying Start within window")
+		assert.Check(t, is.Equal(s.IsStarted(), true), "healthy subset must stay listed while gated")
+
+		// Advance the fake clock past the base window; the next TryStart must
+		// reach the underlying again.
+		time.Sleep(tools.ExportedStartBackoffBase + time.Millisecond) //nolint:forbidigo // inside synctest bubble
+		_, err = s.TryStart(t.Context())
+		assert.Check(t, tools.IsPartialStart(err), "still degraded — expected partial start after window")
+		assert.Check(t, is.Equal(inner.starts.Load(), int32(2)), "underlying Start must be called again after window")
+	})
+}
+
+// TestStartableToolSet_MixedAuthPartialStartArmsBackoffGate pins the
+// ANY-cause semantics of the #4067 fix: a PartialStartError joining one
+// authorization-required cause with one retryable cause must still arm the
+// gate (errors.As walks the whole errors.Join tree, so one retryable cause
+// is enough), even though the batch stays classified as NOT auth-only —
+// mirroring the ALL-causes semantics IsAuthorizationRequired already uses
+// for AuthOnly.
+func TestStartableToolSet_MixedAuthPartialStartArmsBackoffGate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		authErr := &tools.AuthorizationRequiredError{URL: "https://example.test/mcp"}
+		inner := &partialGateClearToolSet{}
+		inner.setErr(tools.NewPartialStartError(authErr, rateLimitErr()))
+		s := newThrottledStartable(inner)
+
+		_, err := s.TryStart(t.Context())
+		assert.Check(t, tools.IsPartialStart(err))
+		assert.Check(t, !tools.IsAuthorizationRequired(err), "mixed batch must not be classified auth-only")
+		assert.Check(t, is.Equal(inner.starts.Load(), int32(1)))
+
+		_, err = s.TryStart(t.Context())
+		assert.Check(t, err != nil)
+		assert.Check(t, is.Equal(inner.starts.Load(), int32(1)), "the retryable cause in the mix must still arm the gate")
+	})
+}
+
+// partialGateClearToolSet is a minimal Startable + StartReporter for the
+// partial-start backoff-gate tests above: IsStarted is true only when the
+// last Start returned nil, matching the composite-toolset contract that
+// drives the recovery path.
 type partialGateClearToolSet struct {
 	err    atomic.Pointer[error]
 	starts atomic.Int32

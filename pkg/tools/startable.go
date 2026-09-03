@@ -581,10 +581,13 @@ func (s *StartableToolSet) startLocked(ctx context.Context) (err error) {
 				// its StartReporter keeps returning false while degraded,
 				// so the failed subset is retried on the next Start.
 				s.started = true
-				// Known limitation: the failed subset's per-turn retry is
-				// not paced by the gate (code-mode composites are the main
-				// affected path). See issue #4067 for the follow-up fix.
-				s.resetStartBackoff()
+				// setStartBackoff arms the gate when the aggregated cause is
+				// retryable (errors.As walks the errors.Join tree, so any one
+				// retryable inner cause is enough) and otherwise resets it,
+				// so a degraded subset (e.g. a RAG toolset hitting 429s) is
+				// paced like any other retryable failure (#4067) without
+				// slowing down a non-retryable one.
+				s.setStartBackoff(err)
 				// The latch makes every later Start a recovery run, so
 				// recovering alone cannot tell an inner that was started
 				// and lost from one that never came up (e.g. an initial
