@@ -39,7 +39,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -77,26 +76,25 @@ func LoadKey(path string) (*Key, error) {
 
 // ParseKey detects the key kind from its encoding. PEM blocks and OpenSSH
 // authorized_keys lines (with or without options) are parsed as asymmetric
-// keys; input that merely looks like one of those is rejected rather than
-// falling back to a secret, so a broken public key file can never become an
-// HMAC key made of public material. Anything else is a raw symmetric secret
-// (surrounding whitespace is trimmed so a trailing newline does not change
-// the key).
+// keys. Anything else is a raw symmetric secret (surrounding whitespace is
+// trimmed so a trailing newline does not change the key) — unless it
+// contains a PEM boundary or an OpenSSH key-type token, in which case it is
+// treated as a broken key file and rejected. Failing closed here matters: a
+// truncated or BOM-prefixed public key must never silently become an HMAC
+// key made of public material. Random secrets never contain those markers.
 func ParseKey(data []byte) (*Key, error) {
 	if block, _ := pem.Decode(data); block != nil {
 		return parsePEM(block, data)
 	}
-	if pub, _, _, _, err := ssh.ParseAuthorizedKey(data); err == nil {
-		cpk, ok := pub.(ssh.CryptoPublicKey)
-		if !ok {
-			return nil, fmt.Errorf("unsupported ssh public key type %s", pub.Type())
-		}
-		return fromPublic(cpk.CryptoPublicKey())
-	} else if looksLikeOpenSSHPublicKey(data) {
-		return nil, fmt.Errorf("parsing OpenSSH public key: %w", err)
+	pub, sshErr := parseAuthorizedKey(data)
+	if sshErr == nil {
+		return fromPublic(pub)
 	}
-	if pemHeaderRe.Match(data) {
-		return nil, errors.New("malformed PEM key")
+	if bytes.Contains(data, []byte(pemMarker)) {
+		return nil, fmt.Errorf("malformed PEM key (a raw secret must not contain %q)", pemMarker)
+	}
+	if hasOpenSSHKeyType(data) {
+		return nil, fmt.Errorf("malformed OpenSSH public key: %w (a raw secret must not contain an OpenSSH key type)", sshErr)
 	}
 
 	secret := bytes.Clone(bytes.TrimSpace(data))
@@ -106,19 +104,27 @@ func ParseKey(data []byte) (*Key, error) {
 	return &Key{secret: secret}, nil
 }
 
-// pemHeaderRe matches a PEM pre-encapsulation boundary at the start of a line.
-var pemHeaderRe = regexp.MustCompile(`(?m)^\s*-{5}BEGIN `)
+const pemMarker = "-----BEGIN"
+
+func parseAuthorizedKey(data []byte) (crypto.PublicKey, error) {
+	pub, _, _, _, err := ssh.ParseAuthorizedKey(data) //nolint:dogsled // comment, options and rest are irrelevant
+	if err != nil {
+		return nil, err
+	}
+	cpk, ok := pub.(ssh.CryptoPublicKey)
+	if !ok {
+		return nil, fmt.Errorf("unsupported ssh public key type %s", pub.Type())
+	}
+	return cpk.CryptoPublicKey(), nil
+}
 
 var opensshKeyTypes = []string{"ssh-", "ecdsa-sha2-", "sk-ssh-", "sk-ecdsa-"}
 
-// looksLikeOpenSSHPublicKey reports whether a whitespace-separated field
-// starts with an OpenSSH key-type prefix and is followed by another field
-// (the key material). Fields rather than substrings, so authorized_keys
-// options before the type are caught while a secret that merely contains
-// "ssh-" is not.
-func looksLikeOpenSSHPublicKey(data []byte) bool {
-	fields := strings.Fields(string(data))
-	for _, field := range fields[:max(len(fields)-1, 0)] {
+// hasOpenSSHKeyType reports whether any whitespace-separated field starts
+// with an OpenSSH key-type prefix, wherever it appears (authorized_keys
+// options may precede it).
+func hasOpenSSHKeyType(data []byte) bool {
+	for field := range strings.FieldsSeq(string(data)) {
 		for _, t := range opensshKeyTypes {
 			if strings.HasPrefix(field, t) {
 				return true

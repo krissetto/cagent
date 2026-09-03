@@ -33,7 +33,8 @@ With --key, the agent YAML is protected and the proof is stored as manifest
 annotations; the YAML itself is always pushed in clear. The key kind is
 detected from the file: PEM or OpenSSH keys (Ed25519, ECDSA, RSA) are
 asymmetric, anything else is a raw symmetric secret of at least 16 bytes
-(e.g. 'openssl rand -hex 32 > agent.key').
+(e.g. 'openssl rand -hex 32 > agent.key') that must not contain PEM or
+OpenSSH key markers.
 
   Default (sign):  a signature (private key) or MAC (secret) is recorded.
                    Holders of the public key or secret can check integrity

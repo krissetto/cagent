@@ -151,16 +151,28 @@ func TestParseKey_OpenSSHWithOptions(t *testing.T) {
 	assert.Equal(t, AlgEd25519, key.SignAlgorithm())
 }
 
-func TestParseKey_SecretsMayContainKeyLookingSubstrings(t *testing.T) {
+// A secret is never allowed to look like a key file: such input is far more
+// likely a broken public key than a deliberate passphrase, and accepting it
+// would protect artifacts with public material.
+func TestParseKey_SecretsMustNotLookLikeKeys(t *testing.T) {
 	t.Parallel()
 
 	for _, s := range []string{
-		"correct-horse-ssh-battery-staple",
 		"ecdsa-sha2-is-just-part-of-my-passphrase",
+		"my passphrase ssh-rsa is long enough",
 		"prefix-----BEGIN-is-not-a-pem-header",
 	} {
-		key := mustParse(t, []byte(s))
-		assert.True(t, key.Symmetric(), s)
+		_, err := ParseKey([]byte(s))
+		require.ErrorContains(t, err, "a raw secret must not contain", s)
+	}
+
+	// While ordinary and random secrets are fine, even with "ssh-" mid-word.
+	for _, s := range []string{
+		"correct horse battery staple",
+		"correct-horse-ssh-battery-staple",
+		"3f9c2a1b4e8d7c6f5a0b9e8d7c6f5a4b3c2d1e0f",
+	} {
+		assert.True(t, mustParse(t, []byte(s)).Symmetric(), s)
 	}
 }
 
@@ -210,6 +222,10 @@ func TestParseKey_MalformedAsymmetricIsNotASecret(t *testing.T) {
 		"bad ssh base64":   "ssh-ed25519 definitely-not-base64 comment",
 		"bad ecdsa ssh":    "ecdsa-sha2-nistp256 AAAA garbage",
 		"bad ssh options":  `command="x" ssh-rsa AAAA garbage`,
+		"truncated ssh":    "ecdsa-sha2-nistp256",
+		"truncated ssh 2":  "command=x ecdsa-sha2-nistp256\n",
+		"bom pem":          "\xef\xbb\xbf-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----\n",
+		"garbage pem":      "garbage-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----\n",
 		"unsupported pem":  string(pemEncode(t, "CERTIFICATE", []byte("junk"))),
 		"unsupported type": string(pemEncode(t, "DSA PARAMETERS", make([]byte, 40))),
 	} {
