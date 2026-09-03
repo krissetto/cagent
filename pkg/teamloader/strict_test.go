@@ -1,6 +1,7 @@
 package teamloader
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -163,7 +164,9 @@ agents:
     sub_agents: [myorg/helper]
 `
 	resolver := func(ref string, _ environment.Provider) (config.Source, error) {
-		require.Equal(t, "myorg/helper", ref)
+		if ref != "myorg/helper" {
+			return nil, fmt.Errorf("unexpected external reference %q", ref)
+		}
 		return config.NewBytesSource("helper.yaml", []byte(helperYAML)), nil
 	}
 	runConfig := &config.RuntimeConfig{
