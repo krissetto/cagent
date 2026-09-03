@@ -272,14 +272,6 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		)
 	}
 
-	// Toolsets referencing an MCP catalog server (ref: docker:...) need the
-	// catalog to be built. Kick the fetch off now so its network round-trip
-	// overlaps model and environment resolution instead of stalling toolset
-	// creation later in this load.
-	if configUsesCatalogRefs(cfg) {
-		gateway.Prefetch(ctx)
-	}
-
 	// Merge user-level provider definitions (seeded into the runtime config
 	// from the user config file) so custom providers registered via
 	// `docker agent setup` resolve in every run, including inline
@@ -297,6 +289,25 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 	// Apply model overrides from CLI flags before checking required env vars
 	if err := config.ApplyModelOverrides(cfg, loadOpts.modelOverrides); err != nil {
 		return nil, err
+	}
+
+	// Strict mode audits the config before anything reaches the network or
+	// the environment, so an unsupported provider is reported as such rather
+	// than as a missing credential. Models whose provider depends on the
+	// environment (first_available, auto) are checked once resolved below.
+	if loadOpts.strict {
+		reqs := config.Requires(cfg)
+		if err := reqs.Check(loadOpts.providerRegistry.Has, loadOpts.toolsetRegistry.Has, loadOpts.features); err != nil {
+			return nil, err
+		}
+	}
+
+	// Toolsets referencing an MCP catalog server (ref: docker:...) need the
+	// catalog to be built. Kick the fetch off now so its network round-trip
+	// overlaps model and environment resolution instead of stalling toolset
+	// creation later in this load.
+	if configUsesCatalogRefs(cfg) {
+		gateway.Prefetch(ctx)
 	}
 
 	// Early check for required env vars before loading models and tools.
@@ -339,7 +350,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 	})
 
 	if loadOpts.strict {
-		if err := checkRequirements(cfg, &loadOpts, autoModel); err != nil {
+		if err := checkResolvedModels(cfg, firstAvailableSelectors, &loadOpts, autoModel); err != nil {
 			return nil, err
 		}
 	}

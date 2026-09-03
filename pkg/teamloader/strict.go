@@ -9,12 +9,27 @@ import (
 	"github.com/docker/docker-agent/pkg/model/provider"
 )
 
-// checkRequirements enforces WithStrict: every provider, toolset type and
-// feature the config relies on must be enabled by the registries and feature
-// list the caller supplied. Agents on the `auto` model are resolved eagerly so
-// the provider they land on is checked too.
-func checkRequirements(cfg *latest.Config, opts *loadOptions, autoModel func() latest.ModelConfig) error {
-	reqs := config.Requires(cfg)
+// checkResolvedModels is the second half of WithStrict: config.Requires
+// skips models whose provider is only known once the environment is
+// consulted, so after first_available selectors are resolved this checks
+// them, and resolves each agent's `auto` model eagerly to check the provider
+// it lands on.
+func checkResolvedModels(cfg *latest.Config, firstAvailableSelectors map[string]bool, opts *loadOptions, autoModel func() latest.ModelConfig) error {
+	reqs := config.Requirements{
+		Providers: map[string][]string{},
+		Toolsets:  map[string][]string{},
+		Features:  map[config.Feature][]string{},
+	}
+
+	for name := range firstAvailableSelectors {
+		m := cfg.Models[name]
+		if m.Provider == "" {
+			continue
+		}
+		resolved := provider.ResolveType(&m, cfg.Providers)
+		loc := fmt.Sprintf("models.%s (first_available → %s/%s)", name, m.Provider, m.Model)
+		reqs.Providers[resolved] = append(reqs.Providers[resolved], loc)
+	}
 
 	for _, a := range cfg.Agents {
 		if a.Harness != nil {

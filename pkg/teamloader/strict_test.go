@@ -192,3 +192,55 @@ agents:
 		assert.Equal(t, "helper in eu", helper.Instruction(), "JS expander must be inherited")
 	})
 }
+
+func TestLoadStrict_UnsupportedProviderWinsOverMissingCredentials(t *testing.T) {
+	t.Parallel()
+
+	yaml := `
+models:
+  main:
+    provider: openai
+    model: gpt-4o
+agents:
+  root:
+    model: main
+    instruction: hi
+`
+	// No OPENAI_API_KEY: without strict this fails on credentials; strict
+	// must report the unsupported provider first.
+	runConfig := &config.RuntimeConfig{EnvProviderForTests: environment.NewEnvListProvider(nil)}
+	_, err := Load(t.Context(), config.NewBytesSource("agent.yaml", []byte(yaml)), runConfig, strictTestOpts(WithStrict())...)
+	var unsupported *config.UnsupportedError
+	require.ErrorAs(t, err, &unsupported)
+	assert.Contains(t, err.Error(), `provider "openai" at models.main`)
+}
+
+func TestLoadStrict_ChecksResolvedFirstAvailable(t *testing.T) {
+	t.Parallel()
+
+	yaml := `
+models:
+  pick:
+    first_available:
+      - openai/gpt-4o
+      - anthropic/claude-sonnet-4-5
+agents:
+  root:
+    model: pick
+    instruction: hi
+`
+	t.Run("selector landing on a registered provider passes", func(t *testing.T) {
+		t.Parallel()
+		runConfig := &config.RuntimeConfig{EnvProviderForTests: environment.NewEnvListProvider([]string{"ANTHROPIC_API_KEY=dummy"})}
+		_, err := Load(t.Context(), config.NewBytesSource("agent.yaml", []byte(yaml)), runConfig, strictTestOpts(WithStrict())...)
+		require.NoError(t, err)
+	})
+
+	t.Run("selector landing on an unregistered provider is rejected", func(t *testing.T) {
+		t.Parallel()
+		runConfig := &config.RuntimeConfig{EnvProviderForTests: environment.NewEnvListProvider([]string{"OPENAI_API_KEY=dummy", "ANTHROPIC_API_KEY=dummy"})}
+		_, err := Load(t.Context(), config.NewBytesSource("agent.yaml", []byte(yaml)), runConfig, strictTestOpts(WithStrict())...)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `provider "openai" at models.pick (first_available → openai/gpt-4o)`)
+	})
+}
