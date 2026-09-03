@@ -47,8 +47,11 @@ func TestDependencies(t *testing.T) {
 			"github.com/expr-lang/expr",
 			"github.com/openai/openai-go",
 			"github.com/go-git/go-git",
+			"github.com/rumpl/harness",
+			"github.com/xeipuuv/gojsonschema",
 			"modernc.org/sqlite",
 			"github.com/docker/docker-agent/pkg/js",
+			"github.com/docker/docker-agent/pkg/codingharness",
 			"github.com/docker/docker-agent/pkg/tools/mcp",
 			"github.com/docker/docker-agent/pkg/toolinstall",
 		}
@@ -81,8 +84,11 @@ func TestDependencies(t *testing.T) {
 	// must not link every toolset, provider and agent source. The default
 	// registries live in pkg/teamloader/defaults, pkg/teamloader/toolsets and
 	// pkg/model/provider/providers; the OCI/HCL source stacks live in
-	// pkg/config/ocisource, pkg/config/hcl and pkg/config/sources. None of
-	// them may be reachable from the loader itself.
+	// pkg/config/ocisource, pkg/config/hcl and pkg/config/sources; optional
+	// loader features (JS expansion, code mode, TOON, deferred tools, LSP
+	// merging, DMR probing) are opt-in options. None of them may be reachable
+	// from the loader itself: pkg/teamloader must add no module over
+	// pkg/runtime.
 	t.Run("YAML-loading surface with custom registries stays lean", func(t *testing.T) {
 		t.Parallel()
 
@@ -90,11 +96,26 @@ func TestDependencies(t *testing.T) {
 			"./pkg/config",
 			"./pkg/teamloader",
 			"./pkg/embeddedchat",
-			"./pkg/tools/builtin/api",
+			"./pkg/tools/builtin/think",
 			"./pkg/model/provider/anthropic",
 		)
 
 		forbiddenPrefixes := []string{
+			// Opt-in loader features.
+			"github.com/dop251/goja",
+			"github.com/docker/docker-agent/pkg/js",
+			"github.com/docker/docker-agent/pkg/tools/codemode",
+			"github.com/docker/docker-agent/pkg/tools/toon",
+			"github.com/alpkeskin/gotoon",
+			"github.com/docker/docker-agent/pkg/tools/builtin/deferred",
+			"github.com/junegunn/fzf",
+			"github.com/docker/docker-agent/pkg/tools/builtin/lsp",
+			"github.com/docker/docker-agent/pkg/toolinstall",
+			"github.com/expr-lang/expr",
+			"github.com/docker/docker-agent/pkg/model/provider/dmr",
+			"github.com/openai/openai-go",
+			"github.com/docker/docker-agent/pkg/codingharness",
+			"github.com/rumpl/harness",
 			// Other providers and their SDKs.
 			"github.com/docker/docker-agent/pkg/model/provider/providers",
 			"github.com/docker/docker-agent/pkg/model/provider/bedrock",
@@ -121,9 +142,10 @@ func TestDependencies(t *testing.T) {
 			"github.com/google/go-containerregistry",
 		}
 		// Reference classification (config.IsOCIReference) only needs the
-		// registry-free name parser.
+		// registry-free name parser; DMR model discovery is a stdlib-only leaf.
 		allowed := map[string]bool{
-			"github.com/google/go-containerregistry/pkg/name": true,
+			"github.com/google/go-containerregistry/pkg/name":                 true,
+			"github.com/docker/docker-agent/pkg/model/provider/dmr/dmrmodels": true,
 		}
 
 		for dep := range deps {

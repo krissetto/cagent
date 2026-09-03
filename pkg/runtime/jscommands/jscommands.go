@@ -3,7 +3,7 @@
 //
 //	jscommands.Register()
 //
-// It is a separate package (called by teamloader, the docker-agent CLI and
+// It is a separate package (called by loaderdefaults.Opts, the docker-agent CLI and
 // embeddedchat/defaults) so embedders that build teams in code and don't use
 // JS command expressions never link the JS engine into their binary.
 package jscommands
