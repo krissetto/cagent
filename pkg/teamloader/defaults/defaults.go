@@ -5,11 +5,13 @@
 package defaults
 
 import (
+	"github.com/docker/docker-agent/pkg/codingharness"
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/sources"
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/js"
 	"github.com/docker/docker-agent/pkg/model/provider/providers"
+	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/runtime/jscommands"
 	"github.com/docker/docker-agent/pkg/teamloader"
 	"github.com/docker/docker-agent/pkg/teamloader/toolsets"
@@ -19,9 +21,11 @@ import (
 )
 
 func Opts() []teamloader.Opt {
-	// ${...} JavaScript expressions in slash-command instructions are
-	// evaluated by the runtime; enable them alongside the loader's expander.
+	// ${...} JavaScript expressions in slash-command instructions and
+	// `harness:` agents are runtime features; enable them alongside the
+	// loader's own.
 	jscommands.Register()
+	runtime.RegisterHarness(codingharness.Factory)
 	return []teamloader.Opt{
 		teamloader.WithToolsetRegistry(toolsets.NewDefaultToolsetRegistry()),
 		teamloader.WithProviderRegistry(providers.NewDefaultRegistry()),
