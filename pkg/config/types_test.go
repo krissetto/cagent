@@ -489,3 +489,21 @@ func toFloat64(v any) float64 {
 		return 0
 	}
 }
+
+func TestAgents_InstructionListHintsAtNewerVersion(t *testing.T) {
+	t.Parallel()
+
+	// Frozen schemas keep rejecting the list form; the error must point at
+	// the version bump rather than at a bare YAML type mismatch.
+	input := `version: "14"
+agents:
+  root:
+    model: openai/gpt-4o
+    instruction:
+      - Be helpful.
+      - Be concise.
+`
+	_, err := Load(t.Context(), NewBytesSource("config.yaml", []byte(input)))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "config version 15")
+}

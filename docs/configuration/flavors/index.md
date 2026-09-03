@@ -193,6 +193,7 @@ flavors "with-shell" {
 
 - Flavors require config schema version 13 or later; older versions reject
   the `flavors` key with a hint to bump the top-level `version` field.
+  Appending to a string with `+` (e.g. `instruction+`) requires version 15.
 - Patches apply before validation, so a flavored config is validated exactly
   like a hand-written one.
 - `docker agent push` publishes the raw document, `flavors` section included,
