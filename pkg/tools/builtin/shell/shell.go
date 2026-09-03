@@ -419,17 +419,23 @@ func shellToolDescription(shellPath string) string {
 
 // shellSyntaxHint returns a dialect warning for shells that models
 // commonly mistake for a POSIX shell. Empty for shells where the name
-// alone is enough of a cue.
+// alone is enough of a cue. The substitution list names the utilities
+// that actually show up in observed failure traces, not a hypothetical
+// full mapping — 'grep'/'head'/'tail'/'wc'/'cat'/'gunzip' plus 'ls -la'
+// and '&&' cover the dominant error signatures.
 func shellSyntaxHint(name string) string {
 	switch name {
 	case "powershell":
-		// Windows PowerShell 5.1: '&&' / '||' are parse errors and
-		// POSIX flags don't exist ('ls -la' fails on the alias).
-		return `Use Windows PowerShell 5.1 syntax: chain commands with ";" (not "&&"), and avoid POSIX commands/flags like "ls -la".`
+		// Windows PowerShell: '&&' / '||' are parse errors before v7,
+		// and POSIX utilities are not available. Version is not
+		// asserted here — the binary name alone can't tell us which.
+		return `Windows PowerShell dialect. Chain commands with ";" (not "&&"; "&&" is a parse error on 5.1). POSIX utilities are not available — use Select-String (not grep), Select-Object -First N (not head), -Last N (not tail), Measure-Object -Line (not wc -l), Get-Content (not cat), Expand-Archive (not gunzip/tar). "ls -la" fails — use "ls" or "Get-ChildItem".`
 	case "pwsh":
-		return `Use PowerShell syntax; POSIX commands/flags like "ls -la" are not available.`
+		// PowerShell 7+: '&&' / '||' work, but POSIX utilities still
+		// don't exist as cmdlets.
+		return `PowerShell 7+ dialect. POSIX utilities are not available as cmdlets — use Select-String (not grep), Select-Object -First N (not head), -Last N (not tail), Measure-Object -Line (not wc -l), Get-Content (not cat), Expand-Archive (not gunzip/tar). "ls -la" fails — use "ls" or "Get-ChildItem".`
 	case "cmd":
-		return `Use cmd.exe syntax, not POSIX shell syntax.`
+		return `cmd.exe syntax, not POSIX. No POSIX utilities (grep, head, tail, wc, cat), no POSIX flags on built-ins, and variable expansion uses %VAR% (not $VAR).`
 	default:
 		return ""
 	}
