@@ -25,13 +25,13 @@ agents:
 models:
   claude:
     provider: anthropic
-    model: claude-sonnet-4-5
+    model: claude-sonnet-5
 
 flavors:
   cheap:
     models:
       claude:
-        model: claude-3-5-haiku-latest
+        model: claude-haiku-4-5
 ```
 
 Enable flavors with the repeatable `--flavor` flag:

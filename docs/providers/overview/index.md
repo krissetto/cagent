@@ -84,11 +84,11 @@ Different agents can use different providers in the same configuration:
 models:
   claude:
     provider: anthropic
-    model: claude-sonnet-4-5
+    model: claude-sonnet-5
     max_tokens: 64000
   gpt:
     provider: openai
-    model: gpt-5
+    model: gpt-5.6-sol
   local:
     provider: dmr
     model: ai/qwen3
