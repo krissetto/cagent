@@ -21,6 +21,7 @@ import (
 	"github.com/docker/docker-agent/pkg/agent"
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/latest"
+	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/gateway"
 	"github.com/docker/docker-agent/pkg/js"
 	"github.com/docker/docker-agent/pkg/model/provider"
@@ -28,7 +29,6 @@ import (
 	"github.com/docker/docker-agent/pkg/model/provider/options"
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/permissions"
-	"github.com/docker/docker-agent/pkg/remote"
 	"github.com/docker/docker-agent/pkg/runtime/jscommands"
 	"github.com/docker/docker-agent/pkg/skills"
 	"github.com/docker/docker-agent/pkg/team"
@@ -49,6 +49,7 @@ type loadOptions struct {
 	promptFiles      []string
 	toolsetRegistry  ToolsetRegistry
 	providerRegistry *provider.Registry
+	sourceResolver   SourceResolver
 	modelOpts        []options.Opt
 	strict           bool
 	features         []config.Feature
@@ -115,6 +116,22 @@ func WithProviderRegistry(registry *provider.Registry) Opt {
 func WithModelOptions(opts ...options.Opt) Opt {
 	return func(o *loadOptions) error {
 		o.modelOpts = append(o.modelOpts, opts...)
+		return nil
+	}
+}
+
+// SourceResolver turns an external agent reference (OCI reference or URL)
+// into a source. pkg/config/sources.Resolve is the full-featured
+// implementation.
+type SourceResolver func(ref string, env environment.Provider) (config.Source, error)
+
+// WithSourceResolver enables sub_agents, handoffs and force_handoff entries
+// that reference agents outside the config (OCI references, URLs). Without
+// it such references fail to load: teamloader deliberately has no default so
+// embedders only link the source types they use.
+func WithSourceResolver(resolver SourceResolver) Opt {
+	return func(opts *loadOptions) error {
+		opts.sourceResolver = resolver
 		return nil
 	}
 }
@@ -1137,11 +1154,14 @@ func loadExternalAgent(ctx context.Context, ref string, runConfig *config.Runtim
 	// the registry every time the config is loaded, adding a digest lookup to
 	// startup even when the agent is never invoked. Digest-pinned references are
 	// served from the local cache with no network call, so nudge users to pin.
-	if config.IsOCIReference(ref) && !remote.IsDigestReference(ref) {
+	if config.IsOCIReference(ref) && !config.IsDigestReference(ref) {
 		slog.WarnContext(ctx, "External agent reference uses a tag, not a digest; it is re-resolved against the registry on every run. Pin it to a digest (ref@sha256:...) to avoid the per-run registry lookup.", "ref", ref)
 	}
 
-	source, err := config.Resolve(ref, runConfig.EnvProvider())
+	if loadOpts.sourceResolver == nil {
+		return nil, errors.New("external agent references need a source resolver: pass teamloader.WithSourceResolver (e.g. sources.Resolve from pkg/config/sources)")
+	}
+	source, err := loadOpts.sourceResolver(ref, runConfig.EnvProvider())
 	if err != nil {
 		return nil, err
 	}
@@ -1154,6 +1174,8 @@ func loadExternalAgent(ctx context.Context, ref string, runConfig *config.Runtim
 	if loadOpts.providerRegistry != nil {
 		opts = append(opts, WithProviderRegistry(loadOpts.providerRegistry))
 	}
+
+	opts = append(opts, WithSourceResolver(loadOpts.sourceResolver))
 
 	if len(loadOpts.modelOpts) > 0 {
 		opts = append(opts, WithModelOptions(loadOpts.modelOpts...))

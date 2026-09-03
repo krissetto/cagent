@@ -21,6 +21,7 @@ import (
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/latest"
+	"github.com/docker/docker-agent/pkg/config/sources"
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/js"
 	"github.com/docker/docker-agent/pkg/model/provider/dmr"
@@ -146,7 +147,7 @@ func gatherExampleEnvVars(t *testing.T, examples []string) map[string]bool {
 	ctx := catalogContext(t)
 	envs := make(map[string]bool)
 	for _, agentFilename := range examples {
-		agentSource, err := config.Resolve(agentFilename, nil)
+		agentSource, err := sources.Resolve(agentFilename, nil)
 		require.NoError(t, err)
 
 		cfg, err := config.Load(ctx, agentSource)
@@ -168,7 +169,7 @@ func TestLoadDefaultAgent(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	agentSource, err := config.Resolve("default", nil)
+	agentSource, err := sources.Resolve("default", nil)
 	require.NoError(t, err)
 
 	runConfig := &config.RuntimeConfig{
@@ -209,7 +210,7 @@ func TestOverrideModel(t *testing.T) {
 		t.Run(test.expected, func(t *testing.T) {
 			t.Parallel()
 
-			agentSource, err := config.Resolve("testdata/basic.yaml", nil)
+			agentSource, err := sources.Resolve("testdata/basic.yaml", nil)
 			require.NoError(t, err)
 
 			team, err := Load(t.Context(), agentSource, &config.RuntimeConfig{}, withTestProviderRegistry(WithModelOverrides(test.overrides))...)
@@ -695,7 +696,7 @@ func TestLoadHarnessAgentWithoutModel(t *testing.T) {
 func TestToolsetInstructions(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "dummy")
 
-	agentSource, err := config.Resolve("testdata/tool-instruction.yaml", nil)
+	agentSource, err := sources.Resolve("testdata/tool-instruction.yaml", nil)
 	require.NoError(t, err)
 
 	team, err := Load(t.Context(), agentSource, &config.RuntimeConfig{}, withTestProviderRegistry()...)
@@ -719,7 +720,7 @@ func TestInstructionExpansion(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "dummy")
 	t.Setenv("USER", "alice")
 
-	agentSource, err := config.Resolve("testdata/instruction-expansion.yaml", nil)
+	agentSource, err := sources.Resolve("testdata/instruction-expansion.yaml", nil)
 	require.NoError(t, err)
 
 	team, err := Load(t.Context(), agentSource, &config.RuntimeConfig{}, withTestProviderRegistry()...)
@@ -752,7 +753,7 @@ func TestAutoModelFallbackError(t *testing.T) {
 	t.Setenv("PATH", tempDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("MODEL_RUNNER_HOST", "")
 
-	agentSource, err := config.Resolve("testdata/auto-model.yaml", nil)
+	agentSource, err := sources.Resolve("testdata/auto-model.yaml", nil)
 	require.NoError(t, err)
 
 	// Use noEnvProvider to ensure no API keys are available,
@@ -823,7 +824,7 @@ func TestWithPromptFiles(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			agentSource, err := config.Resolve("testdata/basic.yaml", nil)
+			agentSource, err := sources.Resolve("testdata/basic.yaml", nil)
 			require.NoError(t, err)
 
 			var opts []Opt
@@ -858,7 +859,7 @@ agents:
 `
 	require.NoError(t, os.WriteFile(agentFile, []byte(agentYAML), 0o644))
 
-	agentSource, err := config.Resolve(agentFile, nil)
+	agentSource, err := sources.Resolve(agentFile, nil)
 	require.NoError(t, err)
 
 	// Load with CLI prompt files - should merge with config
@@ -891,7 +892,7 @@ agents:
 `
 	require.NoError(t, os.WriteFile(agentFile, []byte(agentYAML), 0o644))
 
-	agentSource, err := config.Resolve(agentFile, nil)
+	agentSource, err := sources.Resolve(agentFile, nil)
 	require.NoError(t, err)
 
 	// CLI specifies a file that's already in config - should deduplicate

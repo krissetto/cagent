@@ -15,6 +15,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
 
 	"github.com/docker/docker-agent/pkg/config"
+	"github.com/docker/docker-agent/pkg/config/hcl"
 	"github.com/docker/docker-agent/pkg/content"
 	"github.com/docker/docker-agent/pkg/protect"
 	"github.com/docker/docker-agent/pkg/version"
@@ -58,7 +59,7 @@ func PackageFileAsOCIToStore(ctx context.Context, agentSource config.Source, art
 	if err != nil {
 		return "", fmt.Errorf("reading file: %w", err)
 	}
-	isHCL := config.IsHCLSource(agentSource.Name(), data)
+	isHCL := hcl.IsHCLSource(agentSource.Name(), data)
 	if !isHCL {
 		if err := yaml.Unmarshal(data, &raw); err != nil {
 			return "", fmt.Errorf("looking for version in config file\n%s", yaml.FormatError(err, true, true))

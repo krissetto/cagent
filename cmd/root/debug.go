@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/cli"
 	"github.com/docker/docker-agent/pkg/config"
+	"github.com/docker/docker-agent/pkg/config/sources"
 	"github.com/docker/docker-agent/pkg/sessiontitle"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/teamloader"
@@ -71,7 +72,7 @@ func newDebugCmd() *cobra.Command {
 // loadTeam loads an agent team from the given agent file.
 // Callers should defer stopToolSets(ctx, t) to clean up.
 func (f *debugFlags) loadTeam(ctx context.Context, agentFilename string, opts ...teamloader.Opt) (*team.Team, error) {
-	agentSource, err := config.Resolve(agentFilename, f.runConfig.EnvProvider())
+	agentSource, err := sources.Resolve(agentFilename, f.runConfig.EnvProvider())
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +92,7 @@ func (f *debugFlags) runDebugConfigCommand(cmd *cobra.Command, args []string) (c
 		telemetry.TrackCommandError(cmd.Context(), "debug", append([]string{"config"}, args...), commandErr)
 	}()
 
-	agentSource, err := config.Resolve(args[0], f.runConfig.EnvProvider())
+	agentSource, err := sources.Resolve(args[0], f.runConfig.EnvProvider())
 	if err != nil {
 		return err
 	}

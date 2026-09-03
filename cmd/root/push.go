@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/docker/docker-agent/pkg/cli"
-	"github.com/docker/docker-agent/pkg/config"
+	"github.com/docker/docker-agent/pkg/config/sources"
 	"github.com/docker/docker-agent/pkg/content"
 	"github.com/docker/docker-agent/pkg/oci"
 	"github.com/docker/docker-agent/pkg/protect"
@@ -101,7 +101,7 @@ func (f *pushFlags) runPushCommand(cmd *cobra.Command, args []string) (commandEr
 		return err
 	}
 
-	agentSource, err := config.Resolve(agentFilename, nil)
+	agentSource, err := sources.Resolve(agentFilename, nil)
 	if err != nil {
 		return fmt.Errorf("resolving agent file: %w", err)
 	}

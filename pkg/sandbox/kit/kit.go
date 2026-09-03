@@ -48,6 +48,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/config"
 	latestcfg "github.com/docker/docker-agent/pkg/config/latest"
+	"github.com/docker/docker-agent/pkg/config/sources"
 	"github.com/docker/docker-agent/pkg/environment"
 	pathx "github.com/docker/docker-agent/pkg/path"
 	"github.com/docker/docker-agent/pkg/paths"
@@ -78,7 +79,7 @@ type Options struct {
 	// and skills to ship.
 	AgentRef string
 
-	// EnvProvider is forwarded to [config.Resolve] so URL-sourced
+	// EnvProvider is forwarded to [sources.Resolve] so URL-sourced
 	// agents can pick up GITHUB_TOKEN. May be nil.
 	EnvProvider environment.Provider
 
@@ -416,7 +417,7 @@ func promote(stagingDir, finalDir string) error {
 }
 
 func loadConfig(ctx context.Context, opts Options) (*latestcfg.Config, error) {
-	source, err := config.Resolve(opts.AgentRef, opts.EnvProvider)
+	source, err := sources.Resolve(opts.AgentRef, opts.EnvProvider)
 	if err != nil {
 		return nil, err
 	}

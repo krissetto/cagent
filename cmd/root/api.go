@@ -13,6 +13,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/cli"
 	"github.com/docker/docker-agent/pkg/config"
+	"github.com/docker/docker-agent/pkg/config/sources"
 	pathx "github.com/docker/docker-agent/pkg/path"
 	"github.com/docker/docker-agent/pkg/profiling"
 	"github.com/docker/docker-agent/pkg/server"
@@ -135,7 +136,7 @@ func (f *apiFlags) runAPICommand(cmd *cobra.Command, args []string) (commandErr 
 		}
 	}()
 
-	sources, err := config.ResolveSources(agentsPath, f.runConfig.EnvProvider())
+	sources, err := sources.ResolveSources(agentsPath, f.runConfig.EnvProvider())
 	if err != nil {
 		return fmt.Errorf("resolving agent sources: %w", err)
 	}
