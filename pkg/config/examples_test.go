@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -53,11 +55,45 @@ func collectExamples(t *testing.T) []string {
 	return files
 }
 
+// catalogModelRefs returns the models.dev IDs that TestParseExamples and
+// TestExamplesAgainstLiveModelsDev must resolve for cfg, applying the same
+// skip rules to both: first_available selectors are resolved at runtime
+// from the environment's credentials, routed models span multiple
+// providers, custom providers are self-contained (already validated via
+// cfg.Providers), and modelsDevAbsentProviders lists providers models.dev
+// deliberately does not catalog.
+func catalogModelRefs(cfg *latest.Config) []modelsdev.ID {
+	var ids []modelsdev.ID
+	for _, model := range cfg.Models {
+		if model.IsFirstAvailable() {
+			continue
+		}
+		if model.Provider == "" || model.Model == "" {
+			continue
+		}
+		if modelsDevAbsentProviders[model.Provider] {
+			continue
+		}
+		if len(model.Routing) > 0 {
+			continue
+		}
+		if _, isCustomProvider := cfg.Providers[model.Provider]; isCustomProvider {
+			continue
+		}
+		ids = append(ids, modelsdev.NewID(model.Provider, model.Model))
+	}
+	return ids
+}
+
 func TestParseExamples(t *testing.T) {
 	t.Parallel()
 
-	modelsStore, err := modelsdev.NewStore()
-	require.NoError(t, err)
+	// Resolved against the embedded/committed snapshot.json only — never the
+	// network — so this is safe as a required, PR-blocking check: it can only
+	// fail when the PR's own diff (an example or the committed snapshot)
+	// introduces an inconsistency, never because the live models.dev catalog
+	// moved on since the snapshot was last refreshed. See issue #4134.
+	modelsStore := modelsdev.NewDatabaseStore(modelsdev.EmbeddedSnapshot())
 
 	for _, file := range collectExamples(t) {
 		t.Run(file, func(t *testing.T) {
@@ -85,25 +121,59 @@ func TestParseExamples(t *testing.T) {
 				}
 				require.NotEmpty(t, model.Provider)
 				require.NotEmpty(t, model.Model)
-				// Skip providers that don't have entries in models.dev.
-				if modelsDevAbsentProviders[model.Provider] {
-					continue
-				}
-				// Skip models with routing rules - they use multiple providers
-				if len(model.Routing) > 0 {
-					continue
-				}
-				// Skip models that use custom providers (defined in cfg.Providers)
-				if _, isCustomProvider := cfg.Providers[model.Provider]; isCustomProvider {
-					continue
-				}
+			}
 
-				model, err := modelsStore.GetModel(t.Context(), modelsdev.NewID(model.Provider, model.Model))
+			for _, id := range catalogModelRefs(cfg) {
+				model, err := modelsStore.GetModel(t.Context(), id)
 				require.NoError(t, err)
 				require.NotNil(t, model)
 			}
 		})
 	}
+}
+
+// TestExamplesAgainstLiveModelsDev validates the same example model
+// references as TestParseExamples, but against the live models.dev API
+// instead of the committed snapshot. It is opt-in (gated on
+// CHECK_MODELS_DEV_LIVE, mirroring TestSnapshotDateIsFresh) and skipped by
+// default: a failure here means the *external* catalog has drifted since
+// the snapshot was last refreshed, which is unrelated to any PR's diff and
+// must never gate a merge (issue #4134). It is intended to run on a
+// schedule; see .github/workflows/models-live-check.yml.
+func TestExamplesAgainstLiveModelsDev(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("CHECK_MODELS_DEV_LIVE") == "" {
+		t.Skip("set CHECK_MODELS_DEV_LIVE=1 to validate examples against the live models.dev catalog")
+	}
+
+	db, err := modelsdev.Fetch(t.Context())
+	require.NoError(t, err, "failed to fetch the live models.dev catalog")
+	modelsStore := modelsdev.NewDatabaseStore(db)
+
+	var drifted []string
+	for _, file := range collectExamples(t) {
+		cfg, err := Load(t.Context(), NewFileSource(file))
+		require.NoError(t, err)
+
+		for _, id := range catalogModelRefs(cfg) {
+			if _, err := modelsStore.GetModel(t.Context(), id); err != nil {
+				drifted = append(drifted, fmt.Sprintf("%s: %s (%v)", file, id.String(), err))
+			}
+		}
+	}
+
+	if len(drifted) == 0 {
+		return
+	}
+	sort.Strings(drifted)
+	t.Fatalf("live models.dev catalog drift detected (NOT caused by this PR's diff — the\n"+
+		"committed snapshot and TestParseExamples are unaffected): the following example model\n"+
+		"references resolve against the committed snapshot (dated %s) but not against the\n"+
+		"live models.dev API:\n  %s\n\n"+
+		"Fix by refreshing the snapshot (`task update-models`) and/or updating the affected\n"+
+		"example(s) to reference a model the live catalog still carries.",
+		modelsdev.SnapshotDate().Format("2006-01-02"), strings.Join(drifted, "\n  "))
 }
 
 func TestParseExamplesAfterMarshalling(t *testing.T) {
