@@ -66,7 +66,7 @@ func Requires(cfg *latest.Config) Requirements {
 		r.model(cfg, cfg.Models[name], "models."+name)
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.Toolsets)) {
-		r.toolset(cfg.Toolsets[name], "toolsets."+name)
+		r.toolset(cfg, cfg.Toolsets[name], "toolsets."+name)
 	}
 
 	for i := range cfg.Agents {
@@ -80,7 +80,12 @@ func Requires(cfg *latest.Config) Requirements {
 			r.modelRef(cfg, ref, loc+".compaction_model")
 		}
 		for i, ts := range a.Toolsets {
-			r.toolset(ts, fmt.Sprintf("%s.toolsets[%d]", loc, i))
+			r.toolset(cfg, ts, fmt.Sprintf("%s.toolsets[%d]", loc, i))
+		}
+		for i, skill := range a.Skills.Inline {
+			if skill.Model != "" {
+				r.modelRef(cfg, skill.Model, fmt.Sprintf("%s.skills.inline[%d].model", loc, i))
+			}
 		}
 
 		if a.CodeModeTools {
@@ -150,11 +155,16 @@ func (r *Requirements) provider(cfg *latest.Config, m latest.ModelConfig, loc st
 	r.Providers[resolved] = append(r.Providers[resolved], loc)
 }
 
-func (r *Requirements) toolset(ts latest.Toolset, loc string) {
+// toolset records a toolset's type, the model it routes tool results to, if
+// any, and the optional features its declaration enables.
+func (r *Requirements) toolset(cfg *latest.Config, ts latest.Toolset, loc string) {
 	if ts.Type == "" {
 		return
 	}
 	r.Toolsets[ts.Type] = append(r.Toolsets[ts.Type], loc)
+	if ts.Model != "" {
+		r.modelRef(cfg, ts.Model, loc+".model")
+	}
 	if ts.Toon != "" {
 		r.feature(FeatureToon, loc+".toon")
 	}

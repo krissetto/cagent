@@ -37,6 +37,7 @@ agents:
     toolsets:
       - type: shell
         toon: ".*"
+        model: google/gemini-2.5-pro
       - type: mcp
         command: foo
         defer: true
@@ -51,7 +52,12 @@ agents:
           hooks:
             - type: command
               command: echo
-    skills: true
+    skills:
+      - name: deploy
+        description: deploy things
+        context: fork
+        model: amazon-bedrock/nova-lite
+        instructions: go
   helper:
     model: cheap
     instruction: hi
@@ -72,8 +78,8 @@ func TestRequires(t *testing.T) {
 		// Custom provider and alias resolve to the registry key they are served by.
 		"anthropic":      {`models.main (provider "corp")`, "models.router"},
 		"openai":         {`models.cheap (provider "mistral")`, "models.main.title_model"},
-		"google":         {"models.google/gemini-2.5-flash"}, // routing targets are normalised into models by Load
-		"amazon-bedrock": {"agents.root.fallback.models[1]"},
+		"google":         {"models.google/gemini-2.5-flash", "agents.root.toolsets[0].model"}, // routing targets are normalised into models by Load
+		"amazon-bedrock": {"agents.root.fallback.models[1]", "agents.root.skills.inline[0].model"},
 		"dmr":            {"agents.root.compaction_model"},
 	}, r.Providers)
 
