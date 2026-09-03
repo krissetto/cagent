@@ -33,7 +33,6 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/deferred"
 	"github.com/docker/docker-agent/pkg/tools/builtin/handoff"
-	"github.com/docker/docker-agent/pkg/tools/builtin/lsp"
 	skillstool "github.com/docker/docker-agent/pkg/tools/builtin/skills"
 	"github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
 )
@@ -841,9 +840,12 @@ func compactionThresholdForAgent(cfg *latest.Config, a *latest.AgentConfig) *flo
 // (e.g. ${env.X}); they are expanded here using the runtime env provider.
 func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir string, runConfig *config.RuntimeConfig, configName string, loadOpts *loadOptions, expander Expander) ([]tools.ToolSet, []string, error) {
 	var (
-		toolSets    []tools.ToolSet
-		warnings    []string
-		lspBackends []lsp.Backend
+		toolSets []tools.ToolSet
+		warnings []string
+		// Toolsets implementing tools.Mergeable are grouped by key and
+		// combined after the loop, in first-declaration order.
+		mergeGroups map[string][]tools.MergeSibling
+		mergeOrder  []string
 	)
 	registry := loadOpts.toolsetRegistry
 
@@ -876,27 +878,30 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 			}
 		}
 
-		// Collect LSP backends for multiplexing when there are multiple.
-		// Instead of adding them individually (which causes duplicate tool names),
-		// they are combined into a single Multiplexer after the loop.
-		if toolset.Type == "lsp" {
-			if lspTool, ok := tool.(*lsp.ToolSet); ok {
-				lspBackends = append(lspBackends, lsp.Backend{LSP: lspTool, Toolset: wrapped})
-				continue
+		if m, ok := tools.As[tools.Mergeable](tool); ok {
+			key := m.MergeKey()
+			if mergeGroups == nil {
+				mergeGroups = map[string][]tools.MergeSibling{}
 			}
-			slog.WarnContext(ctx, "Toolset configured as type 'lsp' but registry returned unexpected type; treating as regular toolset",
-				"type", fmt.Sprintf("%T", tool), "command", toolset.Command)
+			if _, seen := mergeGroups[key]; !seen {
+				mergeOrder = append(mergeOrder, key)
+			}
+			mergeGroups[key] = append(mergeGroups[key], tools.MergeSibling{Raw: m, Wrapped: wrapped})
+			continue
 		}
 
 		toolSets = append(toolSets, wrapped)
 	}
 
-	// Merge LSP backends: if there are multiple, combine them into a single
-	// multiplexer so the LLM sees one set of lsp_* tools instead of duplicates.
-	if len(lspBackends) > 1 {
-		toolSets = append(toolSets, lsp.NewLSPMultiplexer(lspBackends))
-	} else if len(lspBackends) == 1 {
-		toolSets = append(toolSets, lspBackends[0].Toolset)
+	// A single mergeable toolset is used as-is; several sharing a key are
+	// combined so the model sees one set of tools instead of duplicates.
+	for _, key := range mergeOrder {
+		group := mergeGroups[key]
+		if len(group) == 1 {
+			toolSets = append(toolSets, group[0].Wrapped)
+			continue
+		}
+		toolSets = append(toolSets, group[0].Raw.(tools.Mergeable).Merge(group))
 	}
 
 	if deferredToolset.HasSources() {
