@@ -33,14 +33,15 @@ import (
 )
 
 func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
 	if len(os.Args) != 2 {
 		log.Fatal("usage: yamlstrict <agent.yaml | oci-reference>")
 	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
 	if err := run(ctx, os.Args[1]); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 	}
 }
 

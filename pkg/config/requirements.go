@@ -160,7 +160,7 @@ func (r *Requirements) agentRefs(refs []string, loc string) {
 // Check compares the requirements against what the application enabled and
 // returns nil when everything is satisfied. Otherwise it returns an
 // *UnsupportedError listing every unmet requirement at once.
-func (r Requirements) Check(hasProvider, hasToolset func(string) bool, features []Feature) error {
+func (r *Requirements) Check(hasProvider, hasToolset func(string) bool, features []Feature) error {
 	var u UnsupportedError
 	for _, p := range slices.Sorted(maps.Keys(r.Providers)) {
 		if !hasProvider(p) {

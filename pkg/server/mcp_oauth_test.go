@@ -43,9 +43,9 @@ func startServerBare(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	var store mockStore
 	runConfig := config.RuntimeConfig{}
-	sources, err := sources.ResolveSources(t.TempDir(), nil)
+	agentSources, err := sources.ResolveSources(t.TempDir(), nil)
 	require.NoError(t, err)
-	srv, err := New(ctx, store, &runConfig, 0, sources, "", 0)
+	srv, err := New(ctx, store, &runConfig, 0, agentSources, "", 0)
 	require.NoError(t, err)
 
 	socketPath := "unix://" + filepath.Join(t.TempDir(), "sock")

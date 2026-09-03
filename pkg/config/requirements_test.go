@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -95,14 +96,7 @@ func TestRequirements_Check(t *testing.T) {
 	r := Requires(cfg)
 
 	has := func(allowed ...string) func(string) bool {
-		return func(s string) bool {
-			for _, a := range allowed {
-				if a == s {
-					return true
-				}
-			}
-			return false
-		}
+		return func(s string) bool { return slices.Contains(allowed, s) }
 	}
 
 	t.Run("all satisfied", func(t *testing.T) {
