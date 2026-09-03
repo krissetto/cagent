@@ -224,6 +224,72 @@ func TestShellTool_DescriptionNamesInterpreter(t *testing.T) {
 	assert.Contains(t, description, displayOS())
 }
 
+// TestShellSyntaxHint_NamesPOSIXSubstitutes anchors the substitution list
+// against regression: the hint's whole point is to tell the model which
+// PowerShell cmdlet replaces each POSIX utility models reach for by habit.
+// Dropping any of these substitutions has been observed to bring the
+// corresponding wrong command back on turn 1.
+func TestShellSyntaxHint_NamesPOSIXSubstitutes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		shell    string
+		mustHave []string
+	}{
+		{
+			name:  "powershell hint chains the utilities models actually emit",
+			shell: "powershell",
+			mustHave: []string{
+				`";"`, `"&&"`, // separator
+				"Select-String", "grep",
+				"Select-Object", "head", "tail",
+				"Measure-Object", "wc",
+				"Get-Content", "cat",
+				"Expand-Archive", "gunzip",
+				"ls -la",
+			},
+		},
+		{
+			name:  "pwsh hint names the utility substitutes but not the && rule",
+			shell: "pwsh",
+			mustHave: []string{
+				"Select-String", "grep",
+				"Select-Object", "head", "tail",
+				"Measure-Object", "wc",
+				"Get-Content", "cat",
+				"Expand-Archive", "gunzip",
+				"ls -la",
+			},
+		},
+		{
+			name:     "cmd hint names the POSIX utilities and the variable-expansion trap",
+			shell:    "cmd",
+			mustHave: []string{"grep", "head", "tail", "wc", "cat", "%VAR%"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			hint := shellSyntaxHint(tt.shell)
+			require.NotEmpty(t, hint, "hint for %q must be non-empty", tt.shell)
+			for _, needle := range tt.mustHave {
+				assert.Contains(t, hint, needle, "%q hint must mention %q", tt.shell, needle)
+			}
+		})
+	}
+}
+
+// TestShellSyntaxHint_pwshDoesNotClaimAmpAmpFails guards against copy-pasting
+// the powershell (5.1) `&&`-is-a-parse-error clause into the pwsh (7+) hint:
+// pipeline-chain operators shipped in PowerShell 7, and telling a pwsh session
+// to avoid them is actively wrong.
+func TestShellSyntaxHint_pwshDoesNotClaimAmpAmpFails(t *testing.T) {
+	t.Parallel()
+	assert.NotContains(t, shellSyntaxHint("pwsh"), "&&")
+}
+
 func TestResolveWorkDir(t *testing.T) {
 	t.Parallel()
 
