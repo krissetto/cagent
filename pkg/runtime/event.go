@@ -586,11 +586,13 @@ func (e *SessionCompactionEvent) GetSessionID() string { return e.SessionID }
 // the turnEndReason* classification (normal, error, canceled) so consumers can
 // tell successful completion apart from crashes and user-initiated stops.
 //
-// Delivery is best-effort: it is emitted non-blockingly during teardown and is
-// dropped if the events buffer is full and the consumer has gone away (see
-// finalizeEventChannel). Treat the channel close, not receipt of this event, as
-// the guaranteed terminal signal. Do not assume session-end hooks have finished
-// when this event arrives: it is emitted before they run.
+// Delivery is bounded-blocking: finalizeEventChannel waits (up to a deadline)
+// for the consumer to accept it, so any consumer still draining the channel
+// reliably receives it, and it is dropped only once the consumer has
+// abandoned the channel entirely (#4136). Still, treat the channel close, not
+// receipt of this event, as the guaranteed terminal signal — it remains the
+// only delivery that can never be dropped. Do not assume session-end hooks
+// have finished when this event arrives: it is emitted before they run.
 type StreamStoppedEvent struct {
 	AgentContext
 
