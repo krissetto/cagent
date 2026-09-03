@@ -258,7 +258,7 @@ toolsets:
 
 See [Toolset Lifecycle](../../configuration/tools/index.md#toolset-lifecycle) for all profiles and tuning knobs, and [`/toolset-restart`](../../features/tui/index.md) to force a reconnect from the TUI.
 
-**Startup failure behaviour:** local MCP startup failures (missing binary, connection refused, authentication error) fail fast — each turn retries immediately with no artificial delay. The rate-limit backoff gate applies only to model-provider embedding calls (see [Indexing failures, retries and backoff](../rag/index.md#indexing-failures-retries-and-backoff)); it does not apply to MCP server startup.
+**Startup failure behaviour:** local MCP failures (missing binary, connection refused, bad auth) fail fast — each turn retries immediately with no artificial delay. Remote MCP servers (Streamable HTTP / SSE) that respond with one of a fixed set of retryable HTTP statuses — 429 Too Many Requests, 408 Request Timeout, 500/502/503/504, or 529 (Anthropic-style "overloaded") — are paced by the same [bounded exponential backoff gate](../rag/index.md#indexing-failures-retries-and-backoff) that RAG embedding calls use, so a temporarily-overloaded remote MCP server does not trigger a new connect attempt on every agent turn. This is a fixed enumeration, not a full 5xx range: less-common codes such as 501, 505, or the Cloudflare 520–527 family do not arm the gate. Note MCP's trigger set is broader than RAG's current 429-only pacing (see the linked page and [#4097](https://github.com/docker/docker-agent/issues/4097)). Not yet applied when toolsets are wrapped in code mode — see [#4067](https://github.com/docker/docker-agent/issues/4067).
 
 ## Combined Example
 
