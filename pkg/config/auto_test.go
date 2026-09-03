@@ -265,7 +265,7 @@ func TestAutoModelConfig(t *testing.T) {
 				"ANTHROPIC_API_KEY": "test-key",
 			},
 			expectedProvider:  "anthropic",
-			expectedModel:     "claude-sonnet-4-6",
+			expectedModel:     "claude-sonnet-5",
 			expectedMaxTokens: 32000,
 		},
 		{
@@ -283,7 +283,7 @@ func TestAutoModelConfig(t *testing.T) {
 				"GOOGLE_API_KEY": "test-key",
 			},
 			expectedProvider:  "google",
-			expectedModel:     "gemini-3.5-flash",
+			expectedModel:     "gemini-3.8-flash",
 			expectedMaxTokens: 32000,
 		},
 		{
@@ -301,7 +301,7 @@ func TestAutoModelConfig(t *testing.T) {
 				"OPENROUTER_API_KEY": "test-key",
 			},
 			expectedProvider:  "openrouter",
-			expectedModel:     "meta-llama/llama-3.3-70b-instruct",
+			expectedModel:     "meta-llama/llama-4-maverick",
 			expectedMaxTokens: 32000,
 		},
 		{
@@ -310,7 +310,7 @@ func TestAutoModelConfig(t *testing.T) {
 				"BASETEN_API_KEY": "test-key",
 			},
 			expectedProvider:  "baseten",
-			expectedModel:     "deepseek-ai/DeepSeek-V3.1",
+			expectedModel:     "deepseek-ai/DeepSeek-V4-Pro",
 			expectedMaxTokens: 32000,
 		},
 		{
@@ -382,7 +382,7 @@ func TestAutoModelConfig(t *testing.T) {
 				"MOONSHOT_API_KEY": "test-key",
 			},
 			expectedProvider:  "moonshot",
-			expectedModel:     "kimi-k2-0905-preview",
+			expectedModel:     "kimi-k3",
 			expectedMaxTokens: 32000,
 		},
 		{
@@ -406,7 +406,7 @@ func TestAutoModelConfig(t *testing.T) {
 			envVars:           map[string]string{},
 			gateway:           "gateway:8080",
 			expectedProvider:  "anthropic",
-			expectedModel:     "claude-sonnet-4-6",
+			expectedModel:     "claude-sonnet-5",
 			expectedMaxTokens: 32000,
 		},
 	}
@@ -489,12 +489,12 @@ func TestDefaultModels(t *testing.T) {
 	// Test specific model values
 	assert.Equal(t, "gpt-5.6", DefaultModels["openai"])
 	assert.Equal(t, "gpt-5.6", DefaultModels["github-copilot"])
-	assert.Equal(t, "claude-sonnet-4-6", DefaultModels["anthropic"])
-	assert.Equal(t, "gemini-3.5-flash", DefaultModels["google"])
+	assert.Equal(t, "claude-sonnet-5", DefaultModels["anthropic"])
+	assert.Equal(t, "gemini-3.8-flash", DefaultModels["google"])
 	assert.Equal(t, "ai/qwen3:latest", DefaultModels["dmr"])
 	assert.Equal(t, "mistral-small-latest", DefaultModels["mistral"])
-	assert.Equal(t, "meta-llama/llama-3.3-70b-instruct", DefaultModels["openrouter"])
-	assert.Equal(t, "deepseek-ai/DeepSeek-V3.1", DefaultModels["baseten"])
+	assert.Equal(t, "meta-llama/llama-4-maverick", DefaultModels["openrouter"])
+	assert.Equal(t, "deepseek-ai/DeepSeek-V4-Pro", DefaultModels["baseten"])
 	assert.Equal(t, "Qwen3.5-397B-A17B", DefaultModels["ovhcloud"])
 	assert.Equal(t, "llama-3.3-70b-versatile", DefaultModels["groq"])
 	assert.Equal(t, "accounts/fireworks/models/kimi-k2-instruct", DefaultModels["fireworks"])
@@ -502,9 +502,9 @@ func TestDefaultModels(t *testing.T) {
 	assert.Equal(t, "gpt-oss-120b", DefaultModels["cerebras"])
 	assert.Equal(t, "meta-llama/Llama-3.3-70B-Instruct-Turbo", DefaultModels["together"])
 	assert.Equal(t, "meta-llama/Llama-3.3-70B-Instruct", DefaultModels["huggingface"])
-	assert.Equal(t, "kimi-k2-0905-preview", DefaultModels["moonshot"])
+	assert.Equal(t, "kimi-k3", DefaultModels["moonshot"])
 	assert.Equal(t, "openai/gpt-5.6-sol", DefaultModels["vercel"])
-	assert.Equal(t, "global.anthropic.claude-sonnet-4-5-20250929-v1:0", DefaultModels["amazon-bedrock"])
+	assert.Equal(t, "global.anthropic.claude-sonnet-5", DefaultModels["amazon-bedrock"])
 	assert.Equal(t, "deepseek-v4-flash", DefaultModels["opencode-go"])
 	assert.Equal(t, "deepseek-v4-flash-free", DefaultModels["opencode-zen"])
 }
@@ -833,7 +833,7 @@ func TestAutoModelConfig_UserDefaultModel(t *testing.T) {
 			defaultModel:      nil,
 			envVars:           map[string]string{"GOOGLE_API_KEY": "test-key"},
 			expectedProvider:  "google",
-			expectedModel:     "gemini-3.5-flash",
+			expectedModel:     "gemini-3.8-flash",
 			expectedMaxTokens: 32000,
 		},
 		{
@@ -849,7 +849,7 @@ func TestAutoModelConfig_UserDefaultModel(t *testing.T) {
 			defaultModel:      &latest.ModelConfig{Provider: "openai", Model: ""},
 			envVars:           map[string]string{"ANTHROPIC_API_KEY": "test-key"},
 			expectedProvider:  "anthropic",
-			expectedModel:     "claude-sonnet-4-6",
+			expectedModel:     "claude-sonnet-5",
 			expectedMaxTokens: 32000,
 		},
 	}

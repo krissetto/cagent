@@ -1,12 +1,12 @@
 ---
 title: "OpenAI"
-description: "Use GPT-5.6, GPT-4o, GPT-5, GPT-5-mini, and other OpenAI models with Docker Agent."
+description: "Use GPT-5.6, GPT-4o, GPT-4.1, and other OpenAI models with Docker Agent."
 keywords: docker agent, ai agents, model providers, llm, openai
 weight: 200
 canonical: https://docs.docker.com/ai/docker-agent/providers/openai/
 ---
 
-_Use GPT-5.6, GPT-4o, GPT-5, GPT-5-mini, and other OpenAI models with Docker Agent._
+_Use GPT-5.6, GPT-4o, GPT-4.1, and other OpenAI models with Docker Agent._
 
 ## Setup
 
@@ -48,8 +48,8 @@ models:
 | `gpt-5.6-sol`     | Frontier model, most capable, complex reasoning       |
 | `gpt-5.6-terra`   | Everyday workhorse; successor to the `-mini` tier     |
 | `gpt-5.6-luna`    | High-volume, cost-efficient; successor to `-nano` tier |
-| `gpt-5`           | Previous-generation flagship                          |
-| `gpt-5-mini`      | Previous-generation fast, cost-effective model        |
+| `gpt-4.1`         | Previous-generation flagship                          |
+| `gpt-4.1-mini`    | Previous-generation fast, cost-effective model        |
 | `gpt-4o`          | Multimodal, balanced performance                      |
 | `gpt-4o-mini`     | Cheapest, fast for simple tasks                       |
 
@@ -103,7 +103,7 @@ Use `base_url` to connect to OpenAI-compatible APIs:
 models:
   custom:
     provider: openai
-    model: gpt-5-mini
+    model: gpt-5.6-terra
     base_url: https://your-proxy.example.com/v1
 ```
 

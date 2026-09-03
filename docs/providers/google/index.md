@@ -1,12 +1,12 @@
 ---
 title: "Google Gemini"
-description: "Use Gemini 2.5 Flash, Gemini 3 Pro, and other Google models with Docker Agent."
+description: "Use Gemini 2.5 Flash, Gemini 3.1 Pro, and other Google models with Docker Agent."
 keywords: docker agent, ai agents, model providers, llm, google gemini
 weight: 120
 canonical: https://docs.docker.com/ai/docker-agent/providers/google/
 ---
 
-_Use Gemini 2.5 Flash, Gemini 3 Pro, and other Google models with Docker Agent._
+_Use Gemini 2.5 Flash, Gemini 3.1 Pro, and other Google models with Docker Agent._
 
 ## Setup
 
@@ -38,7 +38,7 @@ export GOOGLE_CLOUD_LOCATION="us-central1"
 ```yaml
 agents:
   root:
-    model: google/gemini-3.5-flash
+    model: google/gemini-3.8-flash
 ```
 
 ### Named Model
@@ -47,18 +47,18 @@ agents:
 models:
   gemini:
     provider: google
-    model: gemini-3.5-flash
+    model: gemini-3.8-flash
     temperature: 0.5
 ```
 
 ## Available Models
 
-| Model              | Best For                        |
-| ------------------ | ------------------------------- |
-| `gemini-3-pro`     | Most capable Gemini model       |
-| `gemini-3-flash`   | Fast, efficient, good balance   |
-| `gemini-2.5-flash` | Fast inference, cost-effective  |
-| `gemini-2.5-pro`   | Strong reasoning, large context |
+| Model                     | Best For                        |
+| -------------------------- | ------------------------------- |
+| `gemini-3.1-pro-preview`  | Most capable Gemini model       |
+| `gemini-3.8-flash`        | Fast, efficient, good balance   |
+| `gemini-2.5-flash`        | Fast inference, cost-effective  |
+| `gemini-2.5-pro`          | Strong reasoning, large context |
 
 ## Thinking Budget
 
@@ -93,14 +93,14 @@ models:
 
 ```yaml
 models:
-  gemini-3-pro:
+  gemini-pro:
     provider: google
-    model: gemini-3-pro
+    model: gemini-3.1-pro-preview
     thinking_budget: high # default for Pro: low | high
 
-  gemini-3-flash:
+  gemini-flash:
     provider: google
-    model: gemini-3-flash
+    model: gemini-3.8-flash
     thinking_budget: medium # default for Flash: minimal | low | medium | high
 ```
 
@@ -155,7 +155,7 @@ gcloud auth application-default login
 models:
   claude-on-vertex:
     provider: google
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-5
     provider_opts:
       project: my-gcp-project       # GCP project ID (or set GOOGLE_CLOUD_PROJECT)
       location: us-east5             # GCP region (or set GOOGLE_CLOUD_LOCATION)
