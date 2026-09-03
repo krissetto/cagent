@@ -319,6 +319,10 @@ func (c *Agents) UnmarshalYAML(unmarshal func(any) error) error {
 			return errors.New("agent name must be a string")
 		}
 
+		if err := joinInstructionList(item.Value); err != nil {
+			return fmt.Errorf("agent %s: %w", name, err)
+		}
+
 		valueBytes, err := yaml.Marshal(item.Value)
 		if err != nil {
 			return fmt.Errorf("failed to marshal agent config for %s: %w", name, err)
@@ -335,6 +339,60 @@ func (c *Agents) UnmarshalYAML(unmarshal func(any) error) error {
 
 	*c = agents
 	return nil
+}
+
+// joinInstructionList lets `instruction` be written as a list of strings
+// (`instruction: [preamble, rules]`) as well as a single string. The parts are
+// joined by a blank line, like `instruction_file` does with several files, so
+// AgentConfig.Instruction stays a plain string for every consumer. The list
+// form is also what a flavor's `instruction+:` patch produces when it appends
+// to a scalar instruction. fields is the raw agent mapping, decoded either as
+// a map or as an ordered yaml.MapSlice; anything else is left untouched.
+func joinInstructionList(fields any) error {
+	switch fields := fields.(type) {
+	case map[string]any:
+		joined, err := joinInstructionValue(fields["instruction"])
+		if err != nil {
+			return err
+		}
+		if joined != nil {
+			fields["instruction"] = *joined
+		}
+	case yaml.MapSlice:
+		for i, field := range fields {
+			if field.Key != "instruction" {
+				continue
+			}
+			joined, err := joinInstructionValue(field.Value)
+			if err != nil {
+				return err
+			}
+			if joined != nil {
+				fields[i].Value = *joined
+			}
+		}
+	}
+	return nil
+}
+
+// joinInstructionValue returns the blank-line-joined string when value is a
+// list of strings, nil when it is anything else (left for the regular decoder
+// to handle), and an error when the list holds a non-string.
+func joinInstructionValue(value any) (*string, error) {
+	list, ok := value.([]any)
+	if !ok {
+		return nil, nil
+	}
+	parts := make([]string, 0, len(list))
+	for _, v := range list {
+		s, ok := v.(string)
+		if !ok {
+			return nil, errors.New("instruction must be a string or a list of strings")
+		}
+		parts = append(parts, s)
+	}
+	joined := strings.Join(parts, "\n\n")
+	return &joined, nil
 }
 
 func (c Agents) MarshalYAML() (any, error) {

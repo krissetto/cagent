@@ -311,13 +311,13 @@ agents:
 
 When you load an older config, Docker Agent automatically migrates it to the latest schema. It's recommended to include the version to ensure consistent behavior.
 
-If you use a config key that requires a newer schema version, Docker Agent will fail with a strict-parse error and include a hint like:
+If you use a config key or value syntax that requires a newer schema version, Docker Agent will fail with a strict-parse error and include a hint like:
 
 ```text
-hint: this key is supported by config version 12; update the top-level 'version' field (currently 11)
+hint: this syntax is supported by config version 12; update the top-level 'version' field (currently 11)
 ```
 
-Bump the `version` field as directed to enable the new key.
+Bump the `version` field as directed to enable the new syntax.
 
 ## Metadata Section
 

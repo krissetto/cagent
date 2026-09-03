@@ -211,9 +211,14 @@ func parseCurrentVersion(data []byte, version string) (any, error) {
 // the smallest version that parses the config successfully. Best-effort: a
 // newer version may accept the config for unrelated reasons (laxer schema),
 // so the original unknown-field error is always shown before the hint.
+// newerVersionHint returns a hint when a parse error is caused by a key or a
+// value shape that a newer config version accepts (an unknown field, or a type
+// mismatch such as a list where an older schema only takes a string), so the
+// user is pointed at the `version` bump instead of a generic YAML error.
 func newerVersionHint(data []byte, version string, parseErr error) string {
 	var unknownField *yaml.UnknownFieldError
-	if !errors.As(parseErr, &unknownField) {
+	var typeErr *yaml.TypeError
+	if !errors.As(parseErr, &unknownField) && !errors.As(parseErr, &typeErr) {
 		return ""
 	}
 
@@ -234,7 +239,7 @@ func newerVersionHint(data []byte, version string, parseErr error) string {
 	for _, n := range newer {
 		v := strconv.Itoa(n)
 		if _, err := parsers[v](data); err == nil {
-			return fmt.Sprintf("hint: this key is supported by config version %s; update the top-level 'version' field (currently %s)", v, version)
+			return fmt.Sprintf("hint: this syntax is supported by config version %s; update the top-level 'version' field (currently %s)", v, version)
 		}
 	}
 

@@ -63,7 +63,7 @@ semantics, with two extensions for arrays:
 | Object | Merged recursively into the existing object. |
 | Scalar or array | Replaces the existing value. |
 | `null` | Deletes the key. |
-| Key ending in `+` | Appends the items to the existing array. |
+| Key ending in `+` | Appends the items to the existing array (a scalar is promoted to a one-element array first). |
 | Key ending in `-` | Removes matching entries from an array or object. |
 
 ### Merging and replacing
@@ -110,6 +110,33 @@ flavors:
 ```
 
 With `--flavor with-shell` the root agent gets both `think` and `shell`.
+
+### Appending to an instruction
+
+An agent `instruction` may be a list of strings, joined by blank lines. Since
+`+` promotes a scalar to a one-element array, a flavor can extend the system
+prompt without repeating it:
+
+```yaml
+agents:
+  root:
+    instruction: You are a helpful assistant.
+
+flavors:
+  terse:
+    agents:
+      root:
+        instruction+:
+          - Answer in one sentence.
+```
+
+With `--flavor terse` the instruction becomes:
+
+```text
+You are a helpful assistant.
+
+Answer in one sentence.
+```
 
 ### Removing entries
 
@@ -166,6 +193,7 @@ flavors "with-shell" {
 
 - Flavors require config schema version 13 or later; older versions reject
   the `flavors` key with a hint to bump the top-level `version` field.
+  Appending to a string with `+` (e.g. `instruction+`) requires version 15.
 - Patches apply before validation, so a flavored config is validated exactly
   like a hand-written one.
 - `docker agent push` publishes the raw document, `flavors` section included,
