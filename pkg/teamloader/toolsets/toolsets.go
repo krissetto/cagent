@@ -11,6 +11,7 @@ import (
 	agenttool "github.com/docker/docker-agent/pkg/tools/builtin/agent"
 	"github.com/docker/docker-agent/pkg/tools/builtin/api"
 	"github.com/docker/docker-agent/pkg/tools/builtin/backgroundjobs"
+	"github.com/docker/docker-agent/pkg/tools/builtin/environment"
 	"github.com/docker/docker-agent/pkg/tools/builtin/fetch"
 	filetool "github.com/docker/docker-agent/pkg/tools/builtin/file"
 	"github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
@@ -61,6 +62,9 @@ func DefaultToolsetCreators() map[string]teamloader.ToolsetCreator {
 		},
 		"think": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
 			return think.CreateToolSet()
+		},
+		"environment": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
+			return environment.CreateToolSet()
 		},
 		"scheduler": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
 			return scheduler.CreateToolSet()

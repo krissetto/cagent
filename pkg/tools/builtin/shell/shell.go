@@ -407,13 +407,16 @@ func (t *ToolSet) Stop(context.Context) error {
 // Models default to POSIX syntax when the description only says "the
 // user's default shell", which wastes turns on Windows where the
 // resolved shell is PowerShell or cmd.exe (e.g. "pwd && ls -la" is a
-// parse error under Windows PowerShell 5.1).
+// parse error under Windows PowerShell 5.1). The trailing nudge points
+// the model at get_environment_info for edge cases the static hint
+// does not cover (custom shells, multi-agent handoffs, etc.).
 func shellToolDescription(shellPath string) string {
 	name := shellpath.ShellBaseName(shellPath)
 	desc := fmt.Sprintf("Executes the given shell command with %s on %s.", name, displayOS())
 	if hint := shellSyntaxHint(name); hint != "" {
 		desc += " " + hint
 	}
+	desc += " If unsure which shell syntax to use, call get_environment_info first."
 	return desc
 }
 

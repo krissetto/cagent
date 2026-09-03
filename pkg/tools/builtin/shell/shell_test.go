@@ -222,6 +222,8 @@ func TestShellTool_DescriptionNamesInterpreter(t *testing.T) {
 	description := allTools[0].Description
 	assert.Contains(t, description, shellpath.ShellBaseName(tool.handler.shell))
 	assert.Contains(t, description, displayOS())
+	assert.Contains(t, description, "get_environment_info",
+		"description must point the model at the environment tool for edge cases the static hint doesn't cover")
 }
 
 func TestResolveWorkDir(t *testing.T) {
