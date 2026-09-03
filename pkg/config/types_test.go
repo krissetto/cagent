@@ -347,6 +347,52 @@ func TestAgents_UnmarshalYAML_AcceptsValidConfig(t *testing.T) {
 	require.Equal(t, "You are a helpful assistant.", cfg.Agents[0].Instruction)
 }
 
+func TestAgents_UnmarshalYAML_InstructionList(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`agents:
+  root:
+    model: openai/gpt-4o
+    instruction:
+      - |
+        You are a helpful assistant.
+      - Always be concise.
+  other:
+    model: openai/gpt-4o
+    instruction: ["Single item."]
+`)
+
+	var cfg latest.Config
+	err := yaml.UnmarshalWithOptions(input, &cfg, yaml.Strict())
+	require.NoError(t, err)
+	require.Len(t, cfg.Agents, 2)
+	// Parts are joined by a blank line, like several instruction_file entries.
+	require.Equal(t, "You are a helpful assistant.\n\n\nAlways be concise.", cfg.Agents[0].Instruction)
+	require.Equal(t, "Single item.", cfg.Agents[1].Instruction)
+
+	// Marshalling emits the joined string: the list form is input sugar only.
+	out, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NotContains(t, string(out), "- Always be concise.")
+}
+
+func TestAgents_UnmarshalYAML_InstructionListRejectsNonStrings(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`agents:
+  root:
+    model: openai/gpt-4o
+    instruction:
+      - Be helpful.
+      - 42
+`)
+
+	var cfg latest.Config
+	err := yaml.UnmarshalWithOptions(input, &cfg, yaml.Strict())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "agent root: instruction must be a string or a list of strings")
+}
+
 func TestRAGStrategyConfig_MarshalUnmarshal_FlattenedParams(t *testing.T) {
 	t.Parallel()
 

@@ -127,7 +127,7 @@
     },
     "flavors": {
       "type": "object",
-      "description": "Named YAML patches applied on top of the rest of the document when enabled at run time (e.g. 'docker agent run --flavor <name>'). Each flavor is a partial config document merged with JSON Merge Patch semantics: objects merge recursively, scalars and arrays replace, null deletes a key. A key ending in '+' appends its items to the existing array (e.g. 'toolsets+:'); a key ending in '-' removes entries — from an object by key name, from an array by scalar equality or partial object match (e.g. 'toolsets-: [{type: shell}]'). Enabled flavors are applied in the order they were requested; requested flavors not defined here are ignored.",
+      "description": "Named YAML patches applied on top of the rest of the document when enabled at run time (e.g. 'docker agent run --flavor <name>'). Each flavor is a partial config document merged with JSON Merge Patch semantics: objects merge recursively, scalars and arrays replace, null deletes a key. A key ending in '+' appends its items to the existing array (e.g. 'toolsets+:'); a scalar existing value is promoted to a one-element array first, so 'instruction+:' extends a string instruction. A key ending in '-' removes entries — from an object by key name, from an array by scalar equality or partial object match (e.g. 'toolsets-: [{type: shell}]'). Enabled flavors are applied in the order they were requested; requested flavors not defined here are ignored.",
       "additionalProperties": {
         "type": ["object", "null"]
       }
@@ -604,8 +604,18 @@
           }
         },
         "instruction": {
-          "type": "string",
-          "description": "Instructions for the agent"
+          "description": "Instructions for the agent (the system prompt). Accepts a single string or a list of strings; list items are concatenated in order, separated by a blank line.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
         },
         "instruction_file": {
           "description": "Path(s) to a file or files, relative to the config file's directory, whose contents become the agent's instruction. Accepts a single string or a list of strings; when several files are given their contents are concatenated in order, separated by a blank line. Loaded at startup. Mutually exclusive with 'instruction'. Each path must be a local relative path inside the config directory (absolute paths and '..' traversal are rejected). Only supported for local file-based configs, not OCI/URL sources.",
