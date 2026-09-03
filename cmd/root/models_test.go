@@ -35,7 +35,7 @@ func testCatalog() *modelsdev.Database {
 		Providers: map[string]modelsdev.Provider{
 			"anthropic": {Models: map[string]modelsdev.Model{
 				"claude-sonnet-5": {
-					Name:       "Claude Sonnet 4.6",
+					Name:       "Claude Sonnet 5",
 					Modalities: modelsdev.Modalities{Output: []string{"text"}},
 				},
 				catalogOnlyModel: {
