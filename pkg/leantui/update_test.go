@@ -234,6 +234,43 @@ func TestSessionsCommandListsCurrentDirectoryAndResumesSelection(t *testing.T) {
 	assert.NotContains(t, transcript, "Other directory")
 }
 
+func TestLoadSessionTranscriptRestoresToolCalls(t *testing.T) {
+	t.Parallel()
+	sess := session.New()
+	sess.AddMessage(session.UserMessage("inspect the repository"))
+	sess.AddMessage(session.NewAgentMessage("coder", &chat.Message{
+		Role:             chat.MessageRoleAssistant,
+		ReasoningContent: "I should inspect the files.",
+		Content:          "I found the issue.",
+		ToolCalls: []tools.ToolCall{{
+			ID: "call-1",
+			Function: tools.FunctionCall{
+				Name:      "inspect_files",
+				Arguments: `{"path":"pkg/leantui"}`,
+			},
+		}},
+		ToolDefinitions: []tools.Tool{{Name: "inspect_files"}},
+	}))
+	sess.AddMessage(session.NewAgentMessage("coder", &chat.Message{
+		Role:       chat.MessageRoleTool,
+		ToolCallID: "call-1",
+		Content:    "update.go\nview.go",
+	}))
+
+	m := bareModel(80)
+	m.sessionState = service.NewSessionState(sess)
+	m.loadSessionTranscript(sess)
+
+	transcript := strings.Join(m.screen.Transcript.Lines(80, 0, false, m.sessionState, nil), "\n")
+	assert.Contains(t, transcript, "inspect the repository")
+	assert.Contains(t, transcript, "I should inspect the files.")
+	assert.Contains(t, transcript, "I found the issue.")
+	assert.Contains(t, transcript, "inspect_files")
+	assert.Contains(t, transcript, "pkg/leantui")
+	assert.Contains(t, transcript, "update.go")
+	assert.Zero(t, m.screen.Transcript.ToolCount())
+}
+
 func TestSessionsCommandReportsNoSessionsInCurrentDirectory(t *testing.T) {
 	t.Parallel()
 	store := session.NewInMemorySessionStore()

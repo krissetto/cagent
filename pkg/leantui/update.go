@@ -16,8 +16,10 @@ import (
 	"github.com/docker/docker-agent/pkg/modelpicker"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tui/messages"
 	"github.com/docker/docker-agent/pkg/tui/service"
+	tuitypes "github.com/docker/docker-agent/pkg/tui/types"
 )
 
 func (m *model) handleKey(ctx context.Context, k ui.Key) {
@@ -401,7 +403,15 @@ func (m *model) resumeSession(ctx context.Context, sessionID string) {
 }
 
 func (m *model) loadSessionTranscript(sess *session.Session) {
-	for _, msg := range sess.OwnMessages() {
+	storedMessages := sess.OwnMessages()
+	toolResults := make(map[string]chat.Message)
+	for _, msg := range storedMessages {
+		if msg.Message.Role == chat.MessageRoleTool && msg.Message.ToolCallID != "" {
+			toolResults[msg.Message.ToolCallID] = msg.Message
+		}
+	}
+
+	for _, msg := range storedMessages {
 		if msg.Implicit {
 			continue
 		}
@@ -417,6 +427,22 @@ func (m *model) loadSessionTranscript(sess *session.Session) {
 			if content != "" {
 				answer := content
 				m.screen.Transcript.AddBlock(func(w int) []string { return ui.RenderAssistantLines(answer, w) })
+			}
+			for i, toolCall := range msg.Message.ToolCalls {
+				toolDef := tools.Tool{}
+				if i < len(msg.Message.ToolDefinitions) {
+					toolDef = msg.Message.ToolDefinitions[i]
+				}
+				m.screen.Transcript.UpsertTool(msg.AgentName, toolCall, toolDef, tuitypes.ToolStatusCompleted)
+
+				result := toolResults[toolCall.ID]
+				toolResult := &tools.ToolCallResult{Output: result.Content, IsError: result.IsError}
+				m.screen.Transcript.FinishTool(toolCall.ID, ui.ToolResult{
+					Response:       result.Content,
+					Result:         toolResult,
+					AgentName:      msg.AgentName,
+					ToolDefinition: toolDef,
+				}, m.sessionState)
 			}
 		}
 	}
