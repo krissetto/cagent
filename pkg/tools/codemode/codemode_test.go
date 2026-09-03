@@ -3,6 +3,8 @@ package codemode
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/modelerrors"
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
@@ -970,4 +973,63 @@ func TestCodeModeTool_FailureIncludesToolArguments(t *testing.T) {
 	assert.Equal(t, "tool_with_args", scriptResult.ToolCalls[0].Name)
 	assert.Equal(t, map[string]any{"value": "test123"}, scriptResult.ToolCalls[0].Arguments)
 	assert.Equal(t, "result", scriptResult.ToolCalls[0].Result)
+}
+
+// TestCodeModeTool_RateLimitedInnerPacesRetry is the codemode-level
+// regression for #4067: when the composite degrades with a retryable inner
+// cause (e.g. a RAG toolset hitting 429s), the outer StartableToolSet gate
+// must pace the composite's own retry of the failed subset instead of
+// re-invoking every inner toolset's Start on every turn, while the healthy
+// subset's declarations stay listed throughout.
+func TestCodeModeTool_RateLimitedInnerPacesRetry(t *testing.T) {
+	t.Parallel()
+
+	healthy := &testToolSet{tools: []tools.Tool{{Name: "fetch_url"}}}
+	rateLimited := &testToolSet{
+		startErr: &modelerrors.StatusError{StatusCode: http.StatusTooManyRequests, Err: errors.New("rate limited")},
+		tools:    []tools.Tool{{Name: "rag_search"}},
+	}
+
+	composite := Wrap(healthy, rateLimited)
+
+	now := time.Now()
+	identityJitter := func(d time.Duration) time.Duration { return d }
+	s := tools.NewStartable(composite,
+		tools.WithStartRetryClock(func() time.Time { return now }),
+		tools.WithStartRetryJitter(identityJitter),
+	)
+
+	// Turn 1: partial start latches the wrapper (healthy subset stays
+	// listed) and arms the gate on the retryable inner cause.
+	_, err := s.TryStart(t.Context())
+	require.True(t, tools.IsPartialStart(err))
+	assert.True(t, s.IsStarted(), "healthy subset must be listed after a partial start")
+	assert.Equal(t, 1, healthy.start)
+	assert.Equal(t, 1, rateLimited.start)
+
+	allTools, terr := composite.Tools(t.Context())
+	require.NoError(t, terr)
+	require.Len(t, allTools, 1)
+	assert.Contains(t, allTools[0].Description, "FetchUrl")
+	assert.NotContains(t, allTools[0].Description, "RagSearch")
+
+	// Turn 2 (same instant): gated — neither inner is retried.
+	_, err = s.TryStart(t.Context())
+	require.Error(t, err)
+	assert.True(t, s.IsStarted(), "healthy subset must stay listed while gated")
+	assert.Equal(t, 1, healthy.start, "healthy inner must not be re-started while gated")
+	assert.Equal(t, 1, rateLimited.start, "degraded inner's retry must be paced, not re-attempted every turn")
+
+	// Advance comfortably past the (5-minute-capped) window: the next turn
+	// retries the degraded subset, which now recovers.
+	now = now.Add(6 * time.Minute)
+	rateLimited.startErr = nil
+	started, err := s.TryStart(t.Context())
+	require.NoError(t, err)
+	assert.True(t, started)
+	assert.Equal(t, 2, rateLimited.start, "degraded inner must be retried once the window elapses")
+
+	allTools, terr = composite.Tools(t.Context())
+	require.NoError(t, terr)
+	assert.Contains(t, allTools[0].Description, "RagSearch", "recovered inner's declarations must reappear")
 }
