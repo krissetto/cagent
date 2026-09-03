@@ -2,6 +2,8 @@ package leantui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +31,7 @@ type cycleThinkingRuntime struct {
 	cycleCalls int
 	setCalls   int
 	setLevel   effort.Level
+	runCalls   int
 	followUps  []runtime.QueuedMessage
 	steered    []runtime.QueuedMessage
 	steerErr   error
@@ -56,6 +59,7 @@ func (r *cycleThinkingRuntime) EmitAgentInfo(_ context.Context, sink runtime.Eve
 }
 func (r *cycleThinkingRuntime) ResetStartupInfo() {}
 func (r *cycleThinkingRuntime) RunStream(context.Context, *session.Session) <-chan runtime.Event {
+	r.runCalls++
 	ch := make(chan runtime.Event)
 	close(ch)
 	return ch
@@ -146,6 +150,53 @@ func (r *cycleThinkingRuntime) OnBackgroundEvent(func(runtime.Event))    {}
 func (r *cycleThinkingRuntime) OnElicitationRequest(func(runtime.Event)) {}
 
 var _ runtime.Runtime = (*cycleThinkingRuntime)(nil)
+
+func TestFirstMessageBangCommandRunsLocally(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "bang-output")
+	rt := &cycleThinkingRuntime{}
+	m := bareModel(80)
+	m.app = app.New(t.Context(), rt, session.New())
+
+	m.sendFirstMessage(t.Context(), `!printf bang > "`+outputPath+`"`, "")
+
+	output, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Equal(t, "bang", string(output))
+	assert.Zero(t, rt.runCalls)
+}
+
+func TestSubmitBangCommandRunsImmediatelyWhileBusy(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "bang-output")
+	rt := &cycleThinkingRuntime{}
+	m := bareModel(80)
+	m.app = app.New(t.Context(), rt, session.New())
+	m.busy = true
+
+	m.submitEditor(t.Context(), `!printf bang > "`+outputPath+`"`)
+
+	output, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Equal(t, "bang", string(output))
+	assert.Zero(t, rt.runCalls)
+	assert.Empty(t, rt.steered)
+	assert.Empty(t, m.queue)
+	assert.True(t, m.busy)
+}
+
+func TestSubmitBangCommandHonorsReadOnlySession(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "bang-output")
+	rt := &cycleThinkingRuntime{}
+	m := bareModel(80)
+	m.app = app.New(t.Context(), rt, session.New(), app.WithReadOnly())
+
+	m.submitEditor(t.Context(), `!printf bang > "`+outputPath+`"`)
+
+	_, err := os.Stat(outputPath)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	assert.Zero(t, rt.runCalls)
+	transcript := strings.Join(m.screen.Transcript.Lines(80, 0, false, m.sessionState, nil), "\n")
+	assert.Contains(t, transcript, "This session is read-only.")
+}
 
 func TestSessionsCommandListsCurrentDirectoryAndResumesSelection(t *testing.T) {
 	t.Parallel()
@@ -333,6 +384,8 @@ func TestAltEnterWhileBusyQueuesRuntimeFollowUp(t *testing.T) {
 	assert.Empty(t, rt.steered)
 	assert.Empty(t, m.queue)
 	assert.Len(t, m.pendingUsers, 1)
+	joined := strings.Join(m.screen.Transcript.Lines(80, 0, true, m.sessionState, m.pendingUsers), "\n")
+	assert.Contains(t, joined, "Follow-up: do this next")
 	assert.True(t, m.screen.Editor.IsEmpty())
 }
 
@@ -354,6 +407,7 @@ func TestEditorSubmitWhileBusySteersAndRendersAtStreamEnd(t *testing.T) {
 	assert.Len(t, m.pendingUsers, 1)
 
 	joined := strings.Join(m.screen.Transcript.Lines(80, 0, true, m.sessionState, m.pendingUsers), "\n")
+	assert.Contains(t, joined, "Steering: turn left")
 	assistantAt := strings.Index(joined, "assistant is still streaming")
 	steerAt := strings.Index(joined, "turn left")
 	assert.NotEqual(t, -1, assistantAt)
