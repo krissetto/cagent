@@ -39,6 +39,12 @@ The `Authorization` header shown above authenticates to endpoints served with `d
 
 When Docker Desktop is running, eligible requests use its PAC adapter before environment proxy settings. Set `DOCKER_AGENT_DISABLE_DESKTOP_PROXY=1` (or `true`, `yes`, or `on`) to restore standard `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` routing; `NO_PROXY` does not bypass Docker Desktop PAC selection. Docker Agent does not evaluate PAC files or URLs directly—see [Docker Desktop proxy](../fetch/index.md#docker-desktop-proxy).
 
+## Startup failure behaviour
+
+Starting the toolset fetches the remote agent's card (`/.well-known/agent-card.json`). When that request fails with one of a fixed set of retryable HTTP statuses — 429 Too Many Requests, 408 Request Timeout, 500/502/503/504, or 529 (Anthropic-style "overloaded") — Docker Agent paces the next start attempt with the same [bounded exponential backoff gate](../rag/index.md#indexing-failures-retries-and-backoff) that remote MCP and RAG embedding calls use, instead of re-fetching the card on every agent turn. This is a fixed enumeration, not a full 5xx range: less-common codes such as 501, 505, or the Cloudflare 520–527 family do not arm the gate. A server-supplied `Retry-After` header, when present, is honored.
+
+Everything else fails fast, retried every turn with no artificial delay: DNS failures, connection refused, SSRF-blocked private-IP targets (unless `allow_private_ips: true` is set), a malformed or unparsable agent card, and non-retryable HTTP statuses such as 400/401/403/404/501. Only the agent-card fetch during startup is paced; failures from an already-started toolset's per-call `SendStreamingMessage` requests are not.
+
 > [!TIP]
 > **See also**
 >
