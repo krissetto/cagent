@@ -1244,31 +1244,33 @@ func loadExternalAgent(ctx context.Context, ref string, runConfig *config.Runtim
 		return nil, err
 	}
 
-	var opts []Opt
-	if loadOpts.toolsetRegistry != nil {
-		opts = append(opts, WithToolsetRegistry(loadOpts.toolsetRegistry))
-	}
-
-	if loadOpts.providerRegistry != nil {
-		opts = append(opts, WithProviderRegistry(loadOpts.providerRegistry))
-	}
-
-	opts = append(opts, WithSourceResolver(loadOpts.sourceResolver))
-
-	if len(loadOpts.modelOpts) > 0 {
-		opts = append(opts, WithModelOptions(loadOpts.modelOpts...))
-	}
-
-	if loadOpts.strict {
-		opts = append(opts, WithStrict(loadOpts.features...))
-	}
-
-	result, err := Load(contextWithExternalDepth(ctx, depth+1), source, runConfig, opts...)
+	result, err := Load(contextWithExternalDepth(ctx, depth+1), source, runConfig, inheritOptions(loadOpts))
 	if err != nil {
 		return nil, err
 	}
 
 	return result.DefaultAgent()
+}
+
+// inheritOptions carries a parent load's capability options (registries,
+// resolver, expander, feature wrappers, strictness, model options) into the
+// load of an external agent, so it is built under the same rules. Per-load
+// inputs — working directory, model overrides, prompt files — are not
+// inherited.
+func inheritOptions(parent *loadOptions) Opt {
+	return func(opts *loadOptions) error {
+		opts.toolsetRegistry = parent.toolsetRegistry
+		opts.providerRegistry = parent.providerRegistry
+		opts.sourceResolver = parent.sourceResolver
+		opts.newExpander = parent.newExpander
+		opts.codeMode = parent.codeMode
+		opts.toon = parent.toon
+		opts.newDeferred = parent.newDeferred
+		opts.modelOpts = parent.modelOpts
+		opts.strict = parent.strict
+		opts.features = parent.features
+		return nil
+	}
 }
 
 // contextKey is an unexported type for context keys defined in this package.

@@ -8,9 +8,11 @@ import (
 
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/environment"
+	"github.com/docker/docker-agent/pkg/js"
 	"github.com/docker/docker-agent/pkg/model/provider"
 	"github.com/docker/docker-agent/pkg/model/provider/anthropic"
 	"github.com/docker/docker-agent/pkg/tools/builtin/think"
+	"github.com/docker/docker-agent/pkg/tools/toon"
 )
 
 const strictYAML = `
@@ -129,4 +131,64 @@ agents:
 	_, err := Load(t.Context(), config.NewBytesSource("agent.yaml", []byte(yaml)), runConfig, strictTestOpts(WithStrict())...)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `provider "openai" at agents.root.model (auto → openai/`)
+}
+
+// External agents must be built under the same capability options as the
+// parent: expander, feature wrappers, strictness.
+func TestLoadExternalAgent_InheritsLoaderOptions(t *testing.T) {
+	t.Parallel()
+
+	const helperYAML = `
+models:
+  main:
+    provider: anthropic
+    model: claude-sonnet-4-5
+agents:
+  root:
+    model: main
+    instruction: helper in ${env.REGION || 'nowhere'}
+    toolsets:
+      - type: think
+        toon: ".*"
+`
+	rootYAML := `
+models:
+  main:
+    provider: anthropic
+    model: claude-sonnet-4-5
+agents:
+  root:
+    model: main
+    instruction: root
+    sub_agents: [myorg/helper]
+`
+	resolver := func(ref string, _ environment.Provider) (config.Source, error) {
+		require.Equal(t, "myorg/helper", ref)
+		return config.NewBytesSource("helper.yaml", []byte(helperYAML)), nil
+	}
+	runConfig := &config.RuntimeConfig{
+		EnvProviderForTests: environment.NewEnvListProvider([]string{"ANTHROPIC_API_KEY=dummy", "REGION=eu"}),
+	}
+
+	t.Run("without toon the external agent is rejected like the parent would be", func(t *testing.T) {
+		t.Parallel()
+		_, err := Load(t.Context(), config.NewBytesSource("root.yaml", []byte(rootYAML)), runConfig,
+			strictTestOpts(WithSourceResolver(resolver), WithStrict(config.FeatureExternalAgents))...)
+		require.ErrorContains(t, err, `feature "toon"`)
+	})
+
+	t.Run("parent options apply to the external agent", func(t *testing.T) {
+		t.Parallel()
+		team, err := Load(t.Context(), config.NewBytesSource("root.yaml", []byte(rootYAML)), runConfig,
+			strictTestOpts(
+				WithSourceResolver(resolver),
+				WithExpander(js.NewJsExpander),
+				WithToon(toon.Wrap),
+				WithStrict(config.FeatureExternalAgents, config.FeatureToon),
+			)...)
+		require.NoError(t, err)
+		helper, err := team.Agent("helper")
+		require.NoError(t, err)
+		assert.Equal(t, "helper in eu", helper.Instruction(), "JS expander must be inherited")
+	})
 }

@@ -48,7 +48,6 @@ func TestDependencies(t *testing.T) {
 			"github.com/openai/openai-go",
 			"github.com/go-git/go-git",
 			"github.com/rumpl/harness",
-			"github.com/xeipuuv/gojsonschema",
 			"modernc.org/sqlite",
 			"github.com/docker/docker-agent/pkg/js",
 			"github.com/docker/docker-agent/pkg/codingharness",
