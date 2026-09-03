@@ -421,6 +421,7 @@ func (a *App) RunSkillFork(ctx context.Context, cancel context.CancelFunc, skill
 	// so the supervisor marks the session idle.
 	go func() {
 		events := make(chan runtime.Event, defaultRuntimeEventBuffer)
+		var failed atomic.Bool
 		go func() {
 			defer close(events)
 			result, err := a.runtime.RunSkillFork(ctx, a.session, skillstool.RunSkillArgs{
@@ -430,16 +431,41 @@ func (a *App) RunSkillFork(ctx context.Context, cancel context.CancelFunc, skill
 			switch {
 			case errors.Is(err, runtime.ErrUnsupported):
 				slog.WarnContext(ctx, "Runtime does not support fork-mode skills; skill not executed", "skill", skillName)
+				failed.Store(true)
 				a.sendEvent(ctx, runtime.Error(fmt.Sprintf("Skill %q cannot run: this runtime does not support fork-mode skills.", skillName)))
 			case err != nil:
 				slog.ErrorContext(ctx, "Failed to run fork-mode skill", "skill", skillName, "error", err)
+				failed.Store(true)
 				a.sendEvent(ctx, runtime.Error(fmt.Sprintf("Skill %q failed: %v", skillName, err)))
 			case result != nil && result.IsError:
+				failed.Store(true)
 				a.sendEvent(ctx, runtime.Error(result.Output))
 			}
 		}()
 
+		// sawStop tracks ANY StreamStoppedEvent forwarded here — unlike
+		// forwardRunStreamEvents' root-only rule (#4136), every event on this
+		// channel belongs to the fork's own sub-session, so a root-session
+		// check would always be false here and synthesize a spurious
+		// duplicate stop on every fork run, successful or not.
+		var (
+			sawStop       bool
+			lastSessionID string
+			agentName     string
+		)
 		for event := range events {
+			if scoped, ok := event.(runtime.SessionScoped); ok {
+				if id := scoped.GetSessionID(); id != "" {
+					lastSessionID = id
+				}
+			}
+			if name := event.GetAgentName(); name != "" {
+				agentName = name
+			}
+			if _, ok := event.(*runtime.StreamStoppedEvent); ok {
+				sawStop = true
+			}
+
 			if ctx.Err() != nil {
 				if _, ok := event.(*runtime.StreamStoppedEvent); ok {
 					// ctx is cancelled; detach cancellation but keep its trace
@@ -449,6 +475,10 @@ func (a *App) RunSkillFork(ctx context.Context, cancel context.CancelFunc, skill
 				continue
 			}
 			a.sendEvent(ctx, event)
+		}
+
+		if !sawStop {
+			a.synthesizeStreamStopped(ctx, cmp.Or(lastSessionID, a.session.ID), agentName, failed.Load())
 		}
 	}()
 }
@@ -758,7 +788,36 @@ func mustSkipMirroredElicitation(rt runtime.Runtime) bool {
 // RunWithMessage pass nil.
 func (a *App) forwardRunStreamEvents(ctx context.Context, ch <-chan runtime.Event, filter func(event runtime.Event) (forward bool)) {
 	skipMirroredElicitation := mustSkipMirroredElicitation(a.runtime)
+
+	// sawRootStop/sawRootError/agentName drive the #4136 fallback below: the
+	// runtime documents channel close (not receipt of StreamStoppedEvent) as
+	// the terminal signal, and may drop the event under back-pressure
+	// (LocalRuntime.finalizeEventChannel). Only a root-session stop counts —
+	// a sub-session (delegation/fork) stop leaves the root stream running.
+	var (
+		sawRootStop  bool
+		sawRootError bool
+		agentName    string
+	)
+
 	for event := range ch {
+		isRoot := isRootSessionEvent(event, a.session.ID)
+		if isRoot {
+			if name := event.GetAgentName(); name != "" {
+				agentName = name
+			}
+			switch event.(type) {
+			case *runtime.StreamStoppedEvent:
+				// Tracked here — before the cancellation/filter/dedupe checks
+				// below — so a filter that happens to veto a genuine root stop
+				// can never leave this bookkeeping thinking none arrived and
+				// synthesize a spurious duplicate.
+				sawRootStop = true
+			case *runtime.ErrorEvent:
+				sawRootError = true
+			}
+		}
+
 		// If context is cancelled, continue draining but don't forward events
 		// — except StreamStoppedEvent, which must always propagate so the
 		// supervisor can mark the session as no longer running.
@@ -791,6 +850,51 @@ func (a *App) forwardRunStreamEvents(ctx context.Context, ch <-chan runtime.Even
 
 		a.sendEvent(ctx, event)
 	}
+
+	if !sawRootStop {
+		a.synthesizeStreamStopped(ctx, a.session.ID, agentName, sawRootError)
+	}
+}
+
+// isRootSessionEvent reports whether event belongs to the given root
+// session rather than a sub-session (delegation or fork-skill child).
+// Events that don't implement [runtime.SessionScoped], or that carry an
+// empty SessionID, are treated as root-scoped by convention — matching how
+// [runtime.SessionScoped] consumers elsewhere (e.g. the supervisor's
+// isTopLevelStream) already interpret an absent session id.
+func isRootSessionEvent(event runtime.Event, sessionID string) bool {
+	scoped, ok := event.(runtime.SessionScoped)
+	if !ok {
+		return true
+	}
+	id := scoped.GetSessionID()
+	return id == "" || id == sessionID
+}
+
+// synthesizeStreamStopped sends a StreamStoppedEvent for sessionID when the
+// runtime's event channel closed without forwarding one (#4136). Consumers
+// (the chat page, the supervisor) clear their "Working…" state only on
+// receipt of this event and treat channel close as the terminal signal only
+// in the runtime's documentation, not in their own code — so a dropped
+// event (see LocalRuntime.finalizeEventChannel's non-blocking emit) leaves
+// them stuck indefinitely without this fallback.
+func (a *App) synthesizeStreamStopped(ctx context.Context, sessionID, agentName string, sawError bool) {
+	reason := runtime.TurnEndReasonNormal
+	switch {
+	case ctx.Err() != nil:
+		reason = runtime.TurnEndReasonCanceled
+	case sawError:
+		reason = runtime.TurnEndReasonError
+	}
+	if agentName == "" {
+		agentName = a.runtime.CurrentAgentName(ctx)
+	}
+	slog.WarnContext(ctx, "runtime stream closed without a StreamStoppedEvent; synthesizing one",
+		"session_id", sessionID, "reason", reason)
+	// ctx may already be cancelled; detach cancellation but keep its trace
+	// context so the synthesized stop still reaches subscribers, mirroring
+	// the ctx-cancelled StreamStoppedEvent forwarding above.
+	a.sendEvent(context.WithoutCancel(ctx), runtime.StreamStopped(sessionID, agentName, reason))
 }
 
 // acquireStreamGuard locks a.streamGuard (set via WithStreamGuard) and
