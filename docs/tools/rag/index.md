@@ -183,29 +183,38 @@ every agent turn.
 
 ### What triggers backoff
 
-For **RAG indexing**, backoff applies only to **HTTP 429 rate-limit** responses
-from the embedding or model provider — the one signal that reliably reaches the
-toolset gate. Other errors (5xx, 408) are handled per-file within the indexing
-run and do not arm the gate (tracked as a gap in
-[#4097](https://github.com/docker/docker-agent/issues/4097)). These are the
-current gate triggers for RAG indexing specifically:
+For **RAG indexing**, the toolset gate arms on two different signals depending
+on the failure:
+
+- **HTTP 429 (rate limit)** aborts the whole indexing run at the *first*
+  failure — continuing would just keep hammering a provider that asked for
+  backoff — and that abort error reaches the gate immediately.
+- **HTTP 408 (request timeout) and a fixed 5xx set** (`500, 502, 503, 504,
+  529`) are otherwise handled per-file: a single file's transient
+  failure is skipped so the run can keep indexing the rest. But if **no
+  file in the run is successfully indexed** — every attempted file hit one
+  of these retryable statuses — the run treats that as a sustained backend
+  failure rather than a one-off hiccup, and surfaces the error so the gate
+  arms on the next turn (fixed in
+  [#4097](https://github.com/docker/docker-agent/issues/4097); previously
+  only 429 reached the gate).
 
 | Failure kind | Behaviour |
 |---|---|
-| HTTP 429 (rate limit) | Backoff: next attempt delayed |
-| Other failures (5xx, 408, config errors, auth) | Fail fast: retried every turn with no added delay |
+| HTTP 429 (rate limit) | Aborts the run on the first failure; backoff: next attempt delayed |
+| HTTP 408 or 5xx, isolated to some files | Per-file skip; run succeeds, no backoff (indexed files persist, failures retried next run) |
+| HTTP 408 or 5xx, affecting every file | Run fails; backoff: next attempt delayed |
+| Other failures (config errors, auth, unrecognized 4xx) | Fail fast: retried every turn with no added delay |
 | Context cancellation or agent shutdown | Immediate: no delay |
 
 > [!NOTE]
-> 5xx and 408 errors from the embedding provider are retried per-file and do not
-> propagate to the toolset gate. Only 429 (rate-limit) terminates the indexing run
-> early and surfaces the gate so Docker Agent can pace the next attempt.
->
-> This 429-only trigger set is specific to the RAG/embedding path. Other toolset
-> types have their own trigger sets against the same gate — for example, remote
-> MCP toolsets also pace on 408 and a fixed set of 5xx-family statuses (see
+> This trigger set (429 always, 408/5xx when sustained across every file) is
+> specific to the RAG/embedding path. Other toolset types have their own
+> trigger sets against the same gate — for example, remote MCP toolsets pace
+> every connection attempt (not just a sustained run) on 408 and the same
+> fixed 5xx set (see
 > [MCP startup failure behaviour](../mcp/index.md#lifecycle-auto-restart-profiles)),
-> and the A2A toolset paces its agent-card fetch on the same fixed set (see
+> and the A2A toolset paces its agent-card fetch the same way (see
 > [A2A startup failure behaviour](../a2a/index.md#startup-failure-behaviour)).
 
 ### Retry policy and parameters
@@ -246,9 +255,9 @@ are not affected.
 - The knowledge-base tool does not appear in the agent's tool list until indexing
   succeeds. A successful start is silent — the tool is listed and the agent uses it.
 
-### Troubleshooting repeated 429 errors
+### Troubleshooting repeated 429/5xx/408 errors
 
-If you see persistent `429` errors in the logs:
+If you see persistent `429`, `5xx`, or `408` errors in the logs:
 
 1. **Check provider rate limits.** Your embedding API key may have a low requests-per-minute
    quota. Upgrading the plan or using a different API key can help.

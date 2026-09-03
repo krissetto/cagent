@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -302,6 +303,11 @@ func (s *VectorStore) Initialize(ctx context.Context, docPaths []string, chunkin
 	// Index files that need it in parallel
 	var indexed int
 	var indexedMu sync.Mutex
+	// firstGateArmingErr records the first transient failure whose HTTP
+	// status the StartableToolSet backoff gate paces on (see
+	// isGateArmingTransientError). CompareAndSwap makes "first" well-defined
+	// across concurrent goroutines without a separate mutex.
+	var firstGateArmingErr atomic.Pointer[error]
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(s.fileIndexConcurrency)
@@ -331,6 +337,9 @@ func (s *VectorStore) Initialize(ctx context.Context, docPaths []string, chunkin
 					return err
 				}
 				slog.ErrorContext(ctx, "Failed to index file", "path", status.path, "error", err)
+				if isGateArmingTransientError(err) {
+					firstGateArmingErr.CompareAndSwap(nil, &err)
+				}
 				// Transient/local failure - continue indexing other files
 				return nil
 			}
@@ -358,6 +367,20 @@ func (s *VectorStore) Initialize(ctx context.Context, docPaths []string, chunkin
 	if err := g.Wait(); err != nil {
 		s.emitEvent(types.Event{Type: types.EventTypeError, Error: err})
 		return err
+	}
+
+	// A gate-arming transient error (429/408/5xx) on every attempted file,
+	// with none indexed, means the provider is sustaining the same failure
+	// rather than hiccuping on one file - propagate it so the StartableToolSet
+	// backoff gate paces the next turn instead of retrying at full speed
+	// (see issue #4097). Partial progress still returns nil: indexed files
+	// persist via metadata, so the next run only retries the failures.
+	if indexed == 0 {
+		if errPtr := firstGateArmingErr.Load(); errPtr != nil {
+			err := fmt.Errorf("indexing failed for all %d file(s): %w", filesToIndex, *errPtr)
+			s.emitEvent(types.Event{Type: types.EventTypeError, Error: err})
+			return err
+		}
 	}
 
 	if err := s.cleanupOrphanedDocuments(ctx, seenFiles); err != nil {
