@@ -55,6 +55,7 @@ agents:
     instruction: hi
     harness:
       type: codex
+    code_mode_tools: true
 `
 
 func TestRequires(t *testing.T) {
@@ -85,6 +86,7 @@ func TestRequires(t *testing.T) {
 		FeatureHooks:          {"agents.root.hooks"},
 		FeatureSkills:         {"agents.root.skills"},
 		FeatureHarness:        {"agents.helper.harness"},
+		FeatureCodeMode:       {"agents.helper.code_mode_tools"},
 	}, r.Features)
 }
 
@@ -104,7 +106,7 @@ func TestRequirements_Check(t *testing.T) {
 		err := r.Check(
 			has("anthropic", "openai", "google", "amazon-bedrock", "dmr"),
 			has("filesystem", "shell", "mcp"),
-			[]Feature{FeatureExternalAgents, FeatureHooks, FeatureSkills, FeatureHarness},
+			[]Feature{FeatureExternalAgents, FeatureHooks, FeatureSkills, FeatureHarness, FeatureCodeMode},
 		)
 		require.NoError(t, err)
 	})
@@ -118,7 +120,7 @@ func TestRequirements_Check(t *testing.T) {
 		require.ErrorAs(t, err, &u)
 		assert.Len(t, u.Providers, 4)
 		assert.Len(t, u.Toolsets, 1)
-		assert.Len(t, u.Features, 3)
+		assert.Len(t, u.Features, 4)
 
 		msg := err.Error()
 		assert.Contains(t, msg, `provider "openai" at models.cheap (provider "mistral"), models.main.title_model`)

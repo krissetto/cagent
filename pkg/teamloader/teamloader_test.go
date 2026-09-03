@@ -28,6 +28,7 @@ import (
 	"github.com/docker/docker-agent/pkg/model/provider/options"
 	providerdefaults "github.com/docker/docker-agent/pkg/model/provider/providers"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tools/codemode"
 )
 
 // skipExamples contains example files that require cloud-specific configurations
@@ -41,6 +42,8 @@ func withTestProviderRegistry(opts ...Opt) []Opt {
 	return append([]Opt{
 		WithProviderRegistry(providerdefaults.NewDefaultRegistry()),
 		WithToolsetRegistry(testToolsetRegistry()),
+		WithExpander(js.NewJsExpander),
+		WithCodeMode(codemode.Wrap),
 	}, opts...)
 }
 
@@ -86,7 +89,8 @@ func TestGetToolsForAgent_ContinuesOnCreateToolError(t *testing.T) {
 
 	expander := js.NewJsExpander(runConfig.EnvProvider())
 
-	got, warnings := getToolsForAgent(t.Context(), a, ".", &runConfig, &toolsetRegistry{}, "test-config", expander)
+	got, warnings, err := getToolsForAgent(t.Context(), a, ".", &runConfig, "test-config", &loadOptions{toolsetRegistry: &toolsetRegistry{}}, expander)
+	require.NoError(t, err)
 
 	require.Empty(t, got)
 	require.NotEmpty(t, warnings)
@@ -935,7 +939,8 @@ func TestGetToolsForAgent_MultipleLSPToolsetsAreCombined(t *testing.T) {
 
 	expander := js.NewJsExpander(runConfig.EnvProvider())
 
-	got, warnings := getToolsForAgent(t.Context(), a, ".", &runConfig, testToolsetRegistry(), "test-config", expander)
+	got, warnings, err := getToolsForAgent(t.Context(), a, ".", &runConfig, "test-config", &loadOptions{toolsetRegistry: testToolsetRegistry()}, expander)
+	require.NoError(t, err)
 	require.Empty(t, warnings)
 
 	// Should have exactly one toolset (the multiplexer)
@@ -977,7 +982,8 @@ func TestGetToolsForAgent_SingleLSPToolsetNotWrapped(t *testing.T) {
 
 	expander := js.NewJsExpander(runConfig.EnvProvider())
 
-	got, warnings := getToolsForAgent(t.Context(), a, ".", &runConfig, testToolsetRegistry(), "test-config", expander)
+	got, warnings, err := getToolsForAgent(t.Context(), a, ".", &runConfig, "test-config", &loadOptions{toolsetRegistry: testToolsetRegistry()}, expander)
+	require.NoError(t, err)
 	require.Empty(t, warnings)
 
 	// Should have exactly one toolset that provides LSP tools.

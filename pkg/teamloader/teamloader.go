@@ -23,13 +23,11 @@ import (
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/gateway"
-	"github.com/docker/docker-agent/pkg/js"
 	"github.com/docker/docker-agent/pkg/model/provider"
 	"github.com/docker/docker-agent/pkg/model/provider/dmr/dmrmodels"
 	"github.com/docker/docker-agent/pkg/model/provider/options"
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/permissions"
-	"github.com/docker/docker-agent/pkg/runtime/jscommands"
 	"github.com/docker/docker-agent/pkg/skills"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
@@ -38,7 +36,6 @@ import (
 	"github.com/docker/docker-agent/pkg/tools/builtin/lsp"
 	skillstool "github.com/docker/docker-agent/pkg/tools/builtin/skills"
 	"github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
-	"github.com/docker/docker-agent/pkg/tools/codemode"
 )
 
 var defaultMaxTokens int64 = 32000
@@ -50,6 +47,8 @@ type loadOptions struct {
 	toolsetRegistry  ToolsetRegistry
 	providerRegistry *provider.Registry
 	sourceResolver   SourceResolver
+	newExpander      func(environment.Provider) Expander
+	codeMode         func(...tools.ToolSet) tools.ToolSet
 	modelOpts        []options.Opt
 	strict           bool
 	features         []config.Feature
@@ -136,6 +135,17 @@ func WithSourceResolver(resolver SourceResolver) Opt {
 	}
 }
 
+// WithCodeMode enables `code_mode_tools` (and RuntimeConfig.GlobalCodeMode):
+// wrap is applied to an agent's toolsets so the model calls them from a single
+// JavaScript tool. Pass codemode.Wrap from pkg/tools/codemode. Without it,
+// configs asking for code mode fail to load.
+func WithCodeMode(wrap func(toolSets ...tools.ToolSet) tools.ToolSet) Opt {
+	return func(opts *loadOptions) error {
+		opts.codeMode = wrap
+		return nil
+	}
+}
+
 // WithStrict rejects configs that rely on anything the application did not
 // enable: a model provider missing from the provider registry, a toolset type
 // missing from the toolset registry, or a [config.Feature] not listed here.
@@ -186,10 +196,6 @@ func Load(ctx context.Context, agentSource config.Source, runConfig *config.Runt
 // LoadWithConfig loads an agent team and returns both the team and config info
 // needed for runtime model switching.
 func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *config.RuntimeConfig, opts ...Opt) (result *LoadResult, err error) {
-	// YAML-loaded teams may use ${...} JavaScript expressions in their
-	// slash-command instructions; code-built teams opt in explicitly.
-	jscommands.Register()
-
 	// Cold-start path: parses config, resolves model aliases, may pull
 	// referenced sub-agents over the network, and starts every toolset.
 	// All synchronous from the caller's perspective. The span makes the
@@ -209,6 +215,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 	var loadOpts loadOptions
 	loadOpts.toolsetRegistry = NewDefaultToolsetRegistry()
 	loadOpts.providerRegistry = provider.DefaultRegistry()
+	loadOpts.newExpander = newEnvExpander
 
 	for _, o := range opts {
 		if err := o(&loadOpts); err != nil {
@@ -324,7 +331,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 	var agents []*agent.Agent
 	agentsByName := make(map[string]*agent.Agent)
 
-	expander := js.NewJsExpander(env)
+	expander := loadOpts.newExpander(env)
 
 	globalHooks := runConfig.GlobalHooks
 	cliHooks := runConfig.CLIHooks()
@@ -440,7 +447,10 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			}
 		}
 
-		agentTools, warnings := getToolsForAgent(ctx, &agentConfig, parentDir, runConfig, loadOpts.toolsetRegistry, configName, expander)
+		agentTools, warnings, err := getToolsForAgent(ctx, &agentConfig, parentDir, runConfig, configName, &loadOpts, expander)
+		if err != nil {
+			return nil, fmt.Errorf("agent %s: %w", agentConfig.Name, err)
+		}
 		if len(warnings) > 0 {
 			opts = append(opts, agent.WithLoadTimeWarnings(warnings))
 		}
@@ -829,12 +839,13 @@ func compactionThresholdForAgent(cfg *latest.Config, a *latest.AgentConfig) *flo
 // getToolsForAgent returns the tool definitions for an agent based on its
 // configuration. Toolset instructions support ${...} JavaScript placeholders
 // (e.g. ${env.X}); they are expanded here using the runtime env provider.
-func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir string, runConfig *config.RuntimeConfig, registry ToolsetRegistry, configName string, expander *js.Expander) ([]tools.ToolSet, []string) {
+func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir string, runConfig *config.RuntimeConfig, configName string, loadOpts *loadOptions, expander Expander) ([]tools.ToolSet, []string, error) {
 	var (
 		toolSets    []tools.ToolSet
 		warnings    []string
 		lspBackends []lsp.Backend
 	)
+	registry := loadOpts.toolsetRegistry
 
 	deferredToolset := deferred.New()
 
@@ -903,10 +914,13 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 	// This allows the agent to call multiple tools in a single response.
 	// It also allows to combine the results of multiple tools in a single response.
 	if a.CodeModeTools || runConfig.GlobalCodeMode {
-		toolSets = []tools.ToolSet{codemode.Wrap(toolSets...)}
+		if loadOpts.codeMode == nil {
+			return nil, nil, errors.New("code_mode_tools needs teamloader.WithCodeMode (e.g. codemode.Wrap from pkg/tools/codemode)")
+		}
+		toolSets = []tools.ToolSet{loadOpts.codeMode(toolSets...)}
 	}
 
-	return toolSets, warnings
+	return toolSets, warnings, nil
 }
 
 // inlineSkills converts inline skill definitions from the agent config into
@@ -968,7 +982,7 @@ func overrideWithInlineSkills(loaded, inline []skills.Skill) []skills.Skill {
 // skills without declared toolsets are skipped. Creation failures are
 // collected as warnings (parity with getToolsForAgent) rather than aborting
 // the load.
-func forkSkillToolSets(ctx context.Context, cfg *latest.Config, a *latest.AgentConfig, loadedSkills []skills.Skill, parentDir string, runConfig *config.RuntimeConfig, registry ToolsetRegistry, configName string, expander *js.Expander) (map[string][]tools.ToolSet, []string) {
+func forkSkillToolSets(ctx context.Context, cfg *latest.Config, a *latest.AgentConfig, loadedSkills []skills.Skill, parentDir string, runConfig *config.RuntimeConfig, registry ToolsetRegistry, configName string, expander Expander) (map[string][]tools.ToolSet, []string) {
 	var (
 		result   map[string][]tools.ToolSet
 		warnings []string

@@ -16,6 +16,9 @@ import (
 type Feature string
 
 const (
+	// FeatureCodeMode covers agents setting code_mode_tools, which needs the
+	// JavaScript tool wrapper (see teamloader.WithCodeMode).
+	FeatureCodeMode Feature = "code_mode"
 	// FeatureExternalAgents covers sub_agents, handoffs and force_handoff
 	// entries that reference another agent by OCI reference or URL.
 	FeatureExternalAgents Feature = "external_agents"
@@ -74,6 +77,9 @@ func Requires(cfg *latest.Config) Requirements {
 			r.toolset(ts, fmt.Sprintf("%s.toolsets[%d]", loc, i))
 		}
 
+		if a.CodeModeTools {
+			r.feature(FeatureCodeMode, loc+".code_mode_tools")
+		}
 		if a.Harness != nil {
 			r.feature(FeatureHarness, loc+".harness")
 		}
