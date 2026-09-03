@@ -94,7 +94,7 @@ func ParseKey(data []byte) (*Key, error) {
 		return nil, fmt.Errorf("malformed PEM key (a raw secret must not contain %q)", pemMarker)
 	}
 	if hasOpenSSHKeyType(data) {
-		return nil, fmt.Errorf("malformed OpenSSH public key: %w (a raw secret must not contain an OpenSSH key type)", sshErr)
+		return nil, fmt.Errorf("malformed OpenSSH public key: %w (a raw secret must not contain an OpenSSH key type such as \"ssh-\")", sshErr)
 	}
 
 	secret := bytes.Clone(bytes.TrimSpace(data))
@@ -118,17 +118,16 @@ func parseAuthorizedKey(data []byte) (crypto.PublicKey, error) {
 	return cpk.CryptoPublicKey(), nil
 }
 
-var opensshKeyTypes = []string{"ssh-", "ecdsa-sha2-", "sk-ssh-", "sk-ecdsa-"}
+var opensshKeyTypes = [][]byte{[]byte("ssh-"), []byte("ecdsa-sha2-"), []byte("sk-ssh-"), []byte("sk-ecdsa-")}
 
-// hasOpenSSHKeyType reports whether any whitespace-separated field starts
-// with an OpenSSH key-type prefix, wherever it appears (authorized_keys
-// options may precede it).
+// hasOpenSSHKeyType reports whether data contains an OpenSSH key-type marker
+// anywhere. A plain substring match, like the PEM check: anything subtler
+// (field boundaries, trailing material) leaves a BOM- or garbage-prefixed
+// public key free to pass as a secret.
 func hasOpenSSHKeyType(data []byte) bool {
-	for field := range strings.FieldsSeq(string(data)) {
-		for _, t := range opensshKeyTypes {
-			if strings.HasPrefix(field, t) {
-				return true
-			}
+	for _, t := range opensshKeyTypes {
+		if bytes.Contains(data, t) {
+			return true
 		}
 	}
 	return false

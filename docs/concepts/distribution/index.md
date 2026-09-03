@@ -63,7 +63,7 @@ The key kind is detected from the file contents:
 | PEM / OpenSSH public key (`.pub`)                          | asymmetric | ✗    | ✓      | ✗           |
 | Anything else: a raw **secret** of at least 16 bytes       | symmetric  | ✓    | ✓      | ✓           |
 
-Passphrase-protected keys are not supported. Anything containing a PEM boundary (`-----BEGIN`) or an OpenSSH key type (`ssh-…`, `ecdsa-sha2-…`, `sk-…`) is treated as a key file and rejected if it does not parse — a broken public key is never silently used as a secret. Symmetric secrets can be guessed offline against the public YAML, so use random material (`openssl rand -hex 32`), not a password.
+Passphrase-protected keys are not supported. Anything containing a PEM boundary (`-----BEGIN`) or an OpenSSH key-type marker (`ssh-`, `ecdsa-sha2-`, `sk-ssh-`, `sk-ecdsa-`) anywhere is treated as a key file and rejected if it does not parse — a broken public key is never silently used as a secret. Symmetric secrets can be guessed offline against the public YAML, so use random material (`openssl rand -hex 32`), not a password.
 
 ### Modes
 
