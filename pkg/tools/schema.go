@@ -135,6 +135,9 @@ func removeNullFromType(prop map[string]any) {
 // ensurePropertyTypes recursively walks a JSON Schema map and ensures
 // every property has a "type" set, defaulting to "object" if missing.
 // It descends into nested "properties" and array "items".
+// $ref nodes are skipped: a $ref's type is defined by its target, and
+// injecting one adds a sibling keyword that providers like OpenAI reject
+// on $ref nodes under strict mode.
 func ensurePropertyTypes(schema map[string]any) {
 	props, ok := schema["properties"].(map[string]any)
 	if !ok {
@@ -144,6 +147,10 @@ func ensurePropertyTypes(schema map[string]any) {
 	for _, v := range props {
 		prop, ok := v.(map[string]any)
 		if !ok {
+			continue
+		}
+
+		if _, isRef := prop["$ref"]; isRef {
 			continue
 		}
 
