@@ -102,7 +102,7 @@ func (r *Registry) createDirectProvider(ctx context.Context, cfg *latest.ModelCo
 		opts = append(opts, options.WithGateway(""))
 	}
 	providerType := resolveProviderType(enhancedCfg)
-	factory, ok := r.factories[providerType]
+	factory, ok := r.factory(providerType)
 	if !ok {
 		slog.ErrorContext(ctx, "Unknown provider type", "type", providerType)
 		return nil, unknownProviderError(providerType)

@@ -111,7 +111,7 @@ func (r *Registry) createDirectProvider(ctx context.Context, cfg *latest.ModelCo
 	// comment and options.WithOpenAIVendor for the full rationale).
 	opts = append(opts, options.WithOpenAIVendor(isOpenAIVendor(enhancedCfg)))
 	providerType := resolveProviderType(enhancedCfg)
-	factory, ok := r.factories[providerType]
+	factory, ok := r.factory(providerType)
 	if !ok {
 		slog.ErrorContext(ctx, "Unknown or unsupported provider type under js/wasm", "type", providerType)
 		return nil, fmt.Errorf("provider type %q is not registered", providerType)

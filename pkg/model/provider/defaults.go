@@ -72,8 +72,23 @@ func (r *Registry) Has(providerType string) bool {
 	if r == nil {
 		return false
 	}
-	_, ok := r.factories[providerType]
+	_, ok := r.factory(providerType)
 	return ok
+}
+
+// factory looks up the factory for a resolved provider type. The OpenAI
+// protocol variants ("openai_chatcompletions", "openai_responses") fall back
+// to the "openai" factory, which serves both, so hand-picked registries only
+// need to register "openai" to cover custom OpenAI-compatible providers.
+func (r *Registry) factory(providerType string) (Factory, bool) {
+	if f, ok := r.factories[providerType]; ok {
+		return f, true
+	}
+	if strings.HasPrefix(providerType, "openai_") {
+		f, ok := r.factories["openai"]
+		return f, ok
+	}
+	return nil, false
 }
 
 // Types returns the registered provider types, sorted.
