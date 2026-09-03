@@ -50,6 +50,8 @@ type loadOptions struct {
 	toolsetRegistry  ToolsetRegistry
 	providerRegistry *provider.Registry
 	modelOpts        []options.Opt
+	strict           bool
+	features         []config.Feature
 }
 
 type Opt func(*loadOptions) error
@@ -113,6 +115,22 @@ func WithProviderRegistry(registry *provider.Registry) Opt {
 func WithModelOptions(opts ...options.Opt) Opt {
 	return func(o *loadOptions) error {
 		o.modelOpts = append(o.modelOpts, opts...)
+		return nil
+	}
+}
+
+// WithStrict rejects configs that rely on anything the application did not
+// enable: a model provider missing from the provider registry, a toolset type
+// missing from the toolset registry, or a [config.Feature] not listed here.
+// Every unmet requirement is reported in one error before any model or
+// toolset is built (see [config.Requires]). Without it, unknown toolset types
+// are load-time warnings and unknown providers fail when their model is
+// built. External agents loaded through [config.FeatureExternalAgents] are
+// checked with the same rules.
+func WithStrict(features ...config.Feature) Opt {
+	return func(opts *loadOptions) error {
+		opts.strict = true
+		opts.features = append(opts.features, features...)
 		return nil
 	}
 }
@@ -265,6 +283,16 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		return nil, err
 	}
 
+	autoModel := sync.OnceValue(func() latest.ModelConfig {
+		return config.AutoModelConfig(ctx, runConfig.ModelsGateway, env, runConfig.DefaultModel, dmr.ListModels)
+	})
+
+	if loadOpts.strict {
+		if err := checkRequirements(cfg, &loadOpts, autoModel); err != nil {
+			return nil, err
+		}
+	}
+
 	// Make model definitions available to toolset creators (e.g., RAG reranking)
 	runConfig.Models = cfg.Models
 	runConfig.Providers = cfg.Providers
@@ -278,10 +306,6 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 	configName := configNameFromSource(agentSource.Name())
 	var agents []*agent.Agent
 	agentsByName := make(map[string]*agent.Agent)
-
-	autoModel := sync.OnceValue(func() latest.ModelConfig {
-		return config.AutoModelConfig(ctx, runConfig.ModelsGateway, env, runConfig.DefaultModel, dmr.ListModels)
-	})
 
 	expander := js.NewJsExpander(env)
 
@@ -1133,6 +1157,10 @@ func loadExternalAgent(ctx context.Context, ref string, runConfig *config.Runtim
 
 	if len(loadOpts.modelOpts) > 0 {
 		opts = append(opts, WithModelOptions(loadOpts.modelOpts...))
+	}
+
+	if loadOpts.strict {
+		opts = append(opts, WithStrict(loadOpts.features...))
 	}
 
 	result, err := Load(contextWithExternalDepth(ctx, depth+1), source, runConfig, opts...)
