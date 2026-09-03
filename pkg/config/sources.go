@@ -194,9 +194,10 @@ func (a ociSource) Read(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("normalizing OCI reference %s: %w", a.reference, err)
 	}
 	// A verified read must never be served to a reader holding a different
-	// key (or none), so the key identity is part of the cache key.
+	// key (or none, or only the public half), so the key identity is part of
+	// the cache key.
 	if a.verifyKey != nil {
-		cacheKey += "#" + a.verifyKey.Fingerprint()
+		cacheKey += "#" + a.verifyKey.Identity()
 	}
 
 	data, err := ociReadMemoizer.Memoize(cacheKey, func() ([]byte, error) {

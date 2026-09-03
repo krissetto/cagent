@@ -29,7 +29,7 @@ var (
 )
 
 // EncryptAlgorithm returns the encryption algorithm this key supports, or ""
-// if the key type cannot encrypt (e.g. Ed25519).
+// if the key type cannot encrypt (Ed25519).
 func (k *Key) EncryptAlgorithm() string {
 	if k.Symmetric() {
 		return AlgAESGCM
@@ -37,8 +37,6 @@ func (k *Key) EncryptAlgorithm() string {
 	switch p := k.pub.(type) {
 	case *rsa.PublicKey:
 		return AlgRSAOAEP
-	case *ecdh.PublicKey:
-		return eciesAlgorithm(p.Curve())
 	case *ecdsa.PublicKey:
 		if e, err := p.ECDH(); err == nil {
 			return eciesAlgorithm(e.Curve())
@@ -60,7 +58,8 @@ func (k *Key) CanEncrypt() bool { return k.EncryptAlgorithm() != "" }
 func (k *Key) CanDecrypt() bool { return k.CanEncrypt() && k.Private() }
 
 // Encrypt returns an authenticated ciphertext of data that only holders of
-// the secret (symmetric) or of the private key (asymmetric) can open.
+// the secret (symmetric) or of the private key (asymmetric) can open. The
+// algorithm label is bound as AEAD additional data.
 //
 // Blob layouts:
 //   - aes-256-gcm:      nonce || ciphertext
@@ -70,17 +69,23 @@ func (k *Key) Encrypt(data []byte) ([]byte, error) {
 	if !k.CanEncrypt() {
 		return nil, ErrCannotEncrypt
 	}
-	if k.Symmetric() {
-		return aeadSeal(deriveKey(k.secret, []byte("docker-agent/"+AlgAESGCM)), data)
+	aad := domainInput("encrypt", k.EncryptAlgorithm(), nil)
+	switch {
+	case k.Symmetric():
+		key, err := deriveKey(k.secret, "docker-agent/"+AlgAESGCM)
+		if err != nil {
+			return nil, err
+		}
+		return aeadSeal(key, data, aad)
+	case k.EncryptAlgorithm() == AlgRSAOAEP:
+		return rsaEncrypt(k.pub.(*rsa.PublicKey), data, aad)
+	default:
+		recipient, err := k.pub.(*ecdsa.PublicKey).ECDH()
+		if err != nil {
+			return nil, err
+		}
+		return eciesEncrypt(recipient, data, aad)
 	}
-	if p, ok := k.pub.(*rsa.PublicKey); ok {
-		return rsaEncrypt(p, data)
-	}
-	recipient, err := k.ecdhPublic()
-	if err != nil {
-		return nil, err
-	}
-	return eciesEncrypt(recipient, data)
 }
 
 // Decrypt opens a blob produced by Encrypt with the matching key.
@@ -88,87 +93,64 @@ func (k *Key) Decrypt(blob []byte) ([]byte, error) {
 	if !k.CanDecrypt() {
 		return nil, ErrCannotDecrypt
 	}
-	if k.Symmetric() {
-		return aeadOpen(deriveKey(k.secret, []byte("docker-agent/"+AlgAESGCM)), blob)
-	}
-	if p, ok := k.priv.(*rsa.PrivateKey); ok {
-		return rsaDecrypt(p, blob)
-	}
-	priv, err := k.ecdhPrivate()
-	if err != nil {
-		return nil, err
-	}
-	return eciesDecrypt(priv, blob)
-}
-
-func (k *Key) ecdhPublic() (*ecdh.PublicKey, error) {
-	switch p := k.pub.(type) {
-	case *ecdh.PublicKey:
-		return p, nil
-	case *ecdsa.PublicKey:
-		return p.ECDH()
-	default:
-		return nil, ErrCannotEncrypt
-	}
-}
-
-func (k *Key) ecdhPrivate() (*ecdh.PrivateKey, error) {
+	aad := domainInput("encrypt", k.EncryptAlgorithm(), nil)
 	switch p := k.priv.(type) {
-	case *ecdh.PrivateKey:
-		return p, nil
+	case nil:
+		key, err := deriveKey(k.secret, "docker-agent/"+AlgAESGCM)
+		if err != nil {
+			return nil, err
+		}
+		return aeadOpen(key, blob, aad)
+	case *rsa.PrivateKey:
+		return rsaDecrypt(p, blob, aad)
 	case *ecdsa.PrivateKey:
-		return p.ECDH()
+		priv, err := p.ECDH()
+		if err != nil {
+			return nil, err
+		}
+		return eciesDecrypt(priv, blob, aad)
 	default:
 		return nil, ErrCannotDecrypt
 	}
 }
 
-const (
-	aesKeySize   = 32
-	gcmNonceSize = 12
-)
+const aesKeySize = 32
 
-// deriveKey stretches arbitrary secret material into an AES-256 key. Using a
-// KDF with a purpose-specific info string keeps the AES key independent from
-// the HMAC use of the same secret.
-func deriveKey(secret, info []byte) []byte {
-	key, err := hkdf.Key(sha256.New, secret, nil, string(info), aesKeySize)
+// deriveKey stretches secret material into an AES-256 key. The
+// purpose-specific info keeps the AES key independent from other uses of the
+// same material (e.g. HMAC on a shared secret).
+func deriveKey(secret []byte, info string) ([]byte, error) {
+	key, err := hkdf.Key(sha256.New, secret, nil, info, aesKeySize)
 	if err != nil {
-		// Only fails for an absurd key length; aesKeySize is a constant.
-		panic(err)
+		return nil, fmt.Errorf("deriving key: %w", err)
 	}
-	return key
+	return key, nil
 }
 
+// newGCM returns AES-GCM with an internally generated random nonce that is
+// prepended to the ciphertext (and expected in front of it when opening).
 func newGCM(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-	return cipher.NewGCM(block)
+	return cipher.NewGCMWithRandomNonce(block)
 }
 
-func aeadSeal(key, data []byte) ([]byte, error) {
+func aeadSeal(key, data, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
 	}
-	nonce := make([]byte, gcmNonceSize)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, data, nil), nil
+	return gcm.Seal(nil, nil, data, aad), nil
 }
 
-func aeadOpen(key, blob []byte) ([]byte, error) {
+func aeadOpen(key, blob, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
 	}
-	if len(blob) < gcmNonceSize {
-		return nil, ErrDecryption
-	}
-	plain, err := gcm.Open(nil, blob[:gcmNonceSize], blob[gcmNonceSize:], nil)
+	plain, err := gcm.Open(nil, nil, blob, aad)
 	if err != nil {
 		return nil, ErrDecryption
 	}
@@ -177,7 +159,7 @@ func aeadOpen(key, blob []byte) ([]byte, error) {
 
 // eciesEncrypt performs ephemeral-static ECDH and encrypts under the derived
 // key. Binding both public keys into the KDF info prevents key-substitution.
-func eciesEncrypt(recipient *ecdh.PublicKey, data []byte) ([]byte, error) {
+func eciesEncrypt(recipient *ecdh.PublicKey, data, aad []byte) ([]byte, error) {
 	ephemeral, err := recipient.Curve().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -187,14 +169,18 @@ func eciesEncrypt(recipient *ecdh.PublicKey, data []byte) ([]byte, error) {
 		return nil, err
 	}
 	ephPub := ephemeral.PublicKey().Bytes()
-	sealed, err := aeadSeal(deriveKey(shared, eciesInfo(ephPub, recipient.Bytes())), data)
+	key, err := deriveKey(shared, eciesInfo(ephPub, recipient.Bytes()))
+	if err != nil {
+		return nil, err
+	}
+	sealed, err := aeadSeal(key, data, aad)
 	if err != nil {
 		return nil, err
 	}
 	return append(ephPub, sealed...), nil
 }
 
-func eciesDecrypt(priv *ecdh.PrivateKey, blob []byte) ([]byte, error) {
+func eciesDecrypt(priv *ecdh.PrivateKey, blob, aad []byte) ([]byte, error) {
 	pubLen := len(priv.PublicKey().Bytes())
 	if len(blob) < pubLen {
 		return nil, ErrDecryption
@@ -207,17 +193,19 @@ func eciesDecrypt(priv *ecdh.PrivateKey, blob []byte) ([]byte, error) {
 	if err != nil {
 		return nil, ErrDecryption
 	}
-	return aeadOpen(deriveKey(shared, eciesInfo(blob[:pubLen], priv.PublicKey().Bytes())), blob[pubLen:])
+	key, err := deriveKey(shared, eciesInfo(blob[:pubLen], priv.PublicKey().Bytes()))
+	if err != nil {
+		return nil, err
+	}
+	return aeadOpen(key, blob[pubLen:], aad)
 }
 
-func eciesInfo(ephPub, recipientPub []byte) []byte {
-	info := []byte("docker-agent/ecies")
-	info = append(info, ephPub...)
-	return append(info, recipientPub...)
+func eciesInfo(ephPub, recipientPub []byte) string {
+	return "docker-agent/ecies" + string(ephPub) + string(recipientPub)
 }
 
 // rsaEncrypt wraps a fresh AES key with RSA-OAEP and encrypts data under it.
-func rsaEncrypt(pub *rsa.PublicKey, data []byte) ([]byte, error) {
+func rsaEncrypt(pub *rsa.PublicKey, data, aad []byte) ([]byte, error) {
 	key := make([]byte, aesKeySize)
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
@@ -226,14 +214,14 @@ func rsaEncrypt(pub *rsa.PublicKey, data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	sealed, err := aeadSeal(key, data)
+	sealed, err := aeadSeal(key, data, aad)
 	if err != nil {
 		return nil, err
 	}
 	return append(wrapped, sealed...), nil
 }
 
-func rsaDecrypt(priv *rsa.PrivateKey, blob []byte) ([]byte, error) {
+func rsaDecrypt(priv *rsa.PrivateKey, blob, aad []byte) ([]byte, error) {
 	size := priv.Size()
 	if len(blob) < size {
 		return nil, ErrDecryption
@@ -242,5 +230,5 @@ func rsaDecrypt(priv *rsa.PrivateKey, blob []byte) ([]byte, error) {
 	if err != nil {
 		return nil, ErrDecryption
 	}
-	return aeadOpen(key, blob[size:])
+	return aeadOpen(key, blob[size:], aad)
 }

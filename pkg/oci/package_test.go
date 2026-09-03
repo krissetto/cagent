@@ -213,9 +213,9 @@ agents:
 func TestPackageFileAsOCIToStore_WithProtection(t *testing.T) {
 	t.Parallel()
 
-	key, err := protect.ParseKey([]byte("shared-secret"))
+	key, err := protect.ParseKey([]byte("a shared secret long enough"))
 	require.NoError(t, err)
-	other, err := protect.ParseKey([]byte("other-secret"))
+	other, err := protect.ParseKey([]byte("an other secret long enough"))
 	require.NoError(t, err)
 
 	for _, mode := range []protect.Mode{protect.ModeSign, protect.ModeEncrypt} {

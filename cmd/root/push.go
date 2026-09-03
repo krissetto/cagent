@@ -31,24 +31,25 @@ func newPushCmd() *cobra.Command {
 
 With --key, the agent YAML is protected and the proof is stored as manifest
 annotations; the YAML itself is always pushed in clear. The key kind is
-detected from the file: PEM or OpenSSH keys are asymmetric, anything else is
-a raw symmetric secret.
+detected from the file: PEM or OpenSSH keys (Ed25519, ECDSA, RSA) are
+asymmetric, anything else is a raw symmetric secret of at least 16 bytes
+(e.g. 'openssl rand -hex 32 > agent.key').
 
   Default (sign):  a signature (private key) or MAC (secret) is recorded.
                    Holders of the public key or secret can check integrity
                    with 'share pull --key'.
-  --encrypt:       an encrypted copy of the whole YAML is recorded instead,
-                   encrypted with the secret or to the given public key.
-                   Holders of the secret or private key can check integrity
-                   and recover the YAML from the annotation alone.
-
-Signing needs Ed25519, ECDSA or RSA. Encrypting needs X25519, ECDSA or RSA.`,
+  --encrypt:       an encrypted copy of the whole YAML is recorded as well,
+                   so holders of the secret or private key can also recover
+                   the YAML from the annotation alone. With an asymmetric
+                   key this needs the private key and still records a
+                   signature, since a copy encrypted to a public key proves
+                   nothing about who published it. Ed25519 cannot encrypt.`,
 		Args: cobra.ExactArgs(2),
 		RunE: flags.runPushCommand,
 	}
 
 	cmd.Flags().StringVar(&flags.keyFile, "key", "", "Path to a key file (PEM/OpenSSH) or symmetric secret used to protect the agent")
-	cmd.Flags().BoolVar(&flags.encrypt, "encrypt", false, "Embed an encrypted copy of the agent instead of a signature (requires --key)")
+	cmd.Flags().BoolVar(&flags.encrypt, "encrypt", false, "Also embed an encrypted copy of the agent in the annotations (requires --key)")
 
 	return cmd
 }
@@ -68,11 +69,8 @@ func (f *pushFlags) protection() (oci.PackageOption, error) {
 	if f.encrypt {
 		mode = protect.ModeEncrypt
 	}
-	switch {
-	case mode == protect.ModeSign && !key.CanSign():
-		return nil, fmt.Errorf("%s (%s) cannot sign: use a private Ed25519/ECDSA/RSA key or a secret, or pass --encrypt", f.keyFile, key.Describe())
-	case mode == protect.ModeEncrypt && !key.CanEncrypt():
-		return nil, fmt.Errorf("%s (%s) cannot encrypt: use an X25519/ECDSA/RSA key or a secret", f.keyFile, key.Describe())
+	if err := key.Supports(mode); err != nil {
+		return nil, fmt.Errorf("%s: %w", f.keyFile, err)
 	}
 	return oci.WithProtection(key, mode), nil
 }

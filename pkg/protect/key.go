@@ -6,15 +6,29 @@
 // (RFC 7468) or OpenSSH keys are asymmetric; anything else is a raw secret.
 //
 // The YAML always stays in clear in the artifact layer. Depending on the
-// Mode chosen by the publisher, the manifest annotations carry either a
-// signature (MAC or digital signature) or an authenticated encrypted copy of
-// the whole YAML that key holders can decrypt.
+// Mode chosen by the publisher, the manifest annotations carry a signature
+// (MAC or digital signature) and optionally an authenticated encrypted copy
+// of the whole YAML that key holders can decrypt.
+//
+// # Security model
+//
+// Verification answers "was this produced by a holder of the key?". For a
+// symmetric secret, both the MAC and the AEAD ciphertext require the secret,
+// so either annotation alone is proof. For an asymmetric key, only a
+// signature proves possession of the private key: anyone holding the public
+// key can encrypt. Encrypt mode with an asymmetric key therefore requires the
+// private key and records both a signature and an encrypted copy, and
+// verification with an asymmetric key always requires a signature. This also
+// rules out downgrading a signed artifact to an encrypted-only one.
+//
+// Signatures cover the layer bytes only. Re-tagging a signed artifact or
+// serving an older signed version under a tag is not detected; pin digests
+// when that matters.
 package protect
 
 import (
 	"bytes"
 	"crypto"
-	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
@@ -30,11 +44,18 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// MinSecretLen is the minimum accepted length of a symmetric secret. The
+// clear YAML plus its MAC/ciphertext is an offline oracle for guessing the
+// secret, and HKDF adds no entropy, so short secrets are refused outright.
+const MinSecretLen = 16
+
+var ErrSecretTooShort = fmt.Errorf("symmetric secret must be at least %d bytes (generate one with `openssl rand -hex 32`)", MinSecretLen)
+
 // Key is a symmetric secret or an asymmetric key (private, or public-only).
 type Key struct {
 	secret []byte
 	// priv is nil for public-only keys. One of: *rsa.PrivateKey,
-	// *ecdsa.PrivateKey, ed25519.PrivateKey, *ecdh.PrivateKey.
+	// *ecdsa.PrivateKey, ed25519.PrivateKey.
 	priv crypto.PrivateKey
 	// pub is always set for asymmetric keys.
 	pub crypto.PublicKey
@@ -53,15 +74,24 @@ func LoadKey(path string) (*Key, error) {
 	return key, nil
 }
 
-// ParseKey detects the key kind from its encoding. PEM blocks and OpenSSH
-// authorized_keys lines are parsed as asymmetric keys; any other content is a
-// raw symmetric secret (surrounding whitespace is trimmed so a trailing
-// newline does not change the key).
+// ParseKey detects the key kind from its encoding. Input that looks like a
+// PEM block or an OpenSSH authorized_keys line is parsed as an asymmetric key
+// and any parse error is reported rather than falling back to a secret.
+// Anything else is a raw symmetric secret (surrounding whitespace is trimmed
+// so a trailing newline does not change the key).
 func ParseKey(data []byte) (*Key, error) {
-	if block, _ := pem.Decode(data); block != nil {
+	if bytes.Contains(data, []byte("-----BEGIN")) {
+		block, _ := pem.Decode(data)
+		if block == nil {
+			return nil, errors.New("malformed PEM key")
+		}
 		return parsePEM(block, data)
 	}
-	if pub, _, _, _, err := ssh.ParseAuthorizedKey(data); err == nil {
+	if looksLikeOpenSSHPublicKey(data) {
+		pub, _, _, _, err := ssh.ParseAuthorizedKey(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing OpenSSH public key: %w", err)
+		}
 		cpk, ok := pub.(ssh.CryptoPublicKey)
 		if !ok {
 			return nil, fmt.Errorf("unsupported ssh public key type %s", pub.Type())
@@ -69,11 +99,23 @@ func ParseKey(data []byte) (*Key, error) {
 		return fromPublic(cpk.CryptoPublicKey())
 	}
 
-	secret := bytes.TrimSpace(data)
-	if len(secret) == 0 {
-		return nil, errors.New("key is empty")
+	secret := bytes.Clone(bytes.TrimSpace(data))
+	if len(secret) < MinSecretLen {
+		return nil, ErrSecretTooShort
 	}
 	return &Key{secret: secret}, nil
+}
+
+var opensshKeyTypePrefixes = []string{"ssh-", "ecdsa-sha2-", "sk-ssh-", "sk-ecdsa-"}
+
+func looksLikeOpenSSHPublicKey(data []byte) bool {
+	first := string(bytes.TrimSpace(data))
+	for _, p := range opensshKeyTypePrefixes {
+		if strings.HasPrefix(first, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func parsePEM(block *pem.Block, data []byte) (*Key, error) {
@@ -81,7 +123,7 @@ func parsePEM(block *pem.Block, data []byte) (*Key, error) {
 	case strings.Contains(block.Type, "ENCRYPTED"):
 		return nil, errors.New("passphrase-protected keys are not supported")
 	case strings.HasSuffix(block.Type, "PRIVATE KEY"):
-		// Handles PKCS#1, SEC1, PKCS#8 (incl. X25519) and OpenSSH private keys.
+		// Handles PKCS#1, SEC1, PKCS#8 and OpenSSH private keys.
 		priv, err := ssh.ParseRawPrivateKey(data)
 		if err != nil {
 			if _, missing := errors.AsType[*ssh.PassphraseMissingError](err); missing {
@@ -117,20 +159,22 @@ func fromPrivate(priv any) (*Key, error) {
 		return &Key{priv: p, pub: p.Public()}, nil
 	case *ed25519.PrivateKey:
 		return fromPrivate(*p)
-	case *ecdh.PrivateKey:
-		return &Key{priv: p, pub: p.PublicKey()}, nil
 	default:
-		return nil, fmt.Errorf("unsupported private key type %T", priv)
+		return nil, unsupportedKeyType(priv)
 	}
 }
 
 func fromPublic(pub crypto.PublicKey) (*Key, error) {
 	switch pub.(type) {
-	case *rsa.PublicKey, *ecdsa.PublicKey, ed25519.PublicKey, *ecdh.PublicKey:
+	case *rsa.PublicKey, *ecdsa.PublicKey, ed25519.PublicKey:
 		return &Key{pub: pub}, nil
 	default:
-		return nil, fmt.Errorf("unsupported public key type %T", pub)
+		return nil, unsupportedKeyType(pub)
 	}
+}
+
+func unsupportedKeyType(key any) error {
+	return fmt.Errorf("unsupported key type %T: use an Ed25519, ECDSA or RSA key", key)
 }
 
 // Symmetric reports whether the key is a raw secret.
@@ -153,6 +197,16 @@ func (k *Key) Fingerprint() string {
 	return hex.EncodeToString(sum[:])
 }
 
+// Identity extends Fingerprint with the key's role, so that the private and
+// public halves of a pair — which have different verification capabilities —
+// are told apart. Suitable as a cache key for verification results.
+func (k *Key) Identity() string {
+	if k.Private() {
+		return k.Fingerprint() + "/private"
+	}
+	return k.Fingerprint() + "/public"
+}
+
 // Describe returns a short human-readable description of the key.
 func (k *Key) Describe() string {
 	if k.Symmetric() {
@@ -169,8 +223,6 @@ func (k *Key) Describe() string {
 		return fmt.Sprintf("ECDSA %s %s key", p.Curve.Params().Name, half)
 	case ed25519.PublicKey:
 		return "Ed25519 " + half + " key"
-	case *ecdh.PublicKey:
-		return fmt.Sprintf("%s %s key", p.Curve(), half)
 	default:
 		return "unknown key"
 	}

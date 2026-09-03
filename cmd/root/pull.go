@@ -31,8 +31,9 @@ func newPullCmd() *cobra.Command {
 With --key, the pulled agent YAML is verified against the protection recorded
 by 'share push --key': a signature is checked with the same secret or the
 matching public key; an encrypted copy (push --encrypt) is decrypted with the
-same secret or the matching private key and compared to the YAML. The pull
-fails if the artifact is unprotected or the check does not pass.`,
+same secret or the matching private key and compared to the YAML. With an
+asymmetric key the artifact must carry a signature. The pull fails if the
+artifact is unprotected or the check does not pass.`,
 		Args: cobra.ExactArgs(1),
 		RunE: flags.runPullCommand,
 	}
