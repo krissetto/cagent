@@ -160,7 +160,7 @@ var DefaultModels = map[string]string{
 	"baseten":        "deepseek-ai/DeepSeek-V4-Pro",
 	"ovhcloud":       "Qwen3.5-397B-A17B",
 	"groq":           "llama-3.3-70b-versatile",
-	"fireworks":      "accounts/fireworks/models/kimi-k2-instruct",
+	"fireworks":      "accounts/fireworks/models/kimi-k3",
 	"deepseek":       "deepseek-v4-pro",
 	"cerebras":       "gpt-oss-120b",
 	"together":       "meta-llama/Llama-3.3-70B-Instruct-Turbo",
