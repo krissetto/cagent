@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/environment"
+	"github.com/docker/docker-agent/pkg/model/provider/options"
 	"github.com/docker/docker-agent/pkg/modelinfo"
 )
 
@@ -48,6 +49,21 @@ func resolveProviderType(cfg *latest.ModelConfig) string {
 // not mutated.
 func ResolveType(cfg *latest.ModelConfig, customProviders map[string]latest.ProviderConfig) string {
 	return resolveProviderType(applyProviderDefaults(cfg, customProviders))
+}
+
+// Adapt turns a provider package's concrete constructor (e.g.
+// anthropic.NewClient, which returns *anthropic.Client) into a [Factory] so
+// it can be registered without a hand-written closure:
+//
+//	provider.NewRegistry(map[string]provider.Factory{"anthropic": provider.Adapt(anthropic.NewClient)})
+func Adapt[P Provider](newClient func(context.Context, *latest.ModelConfig, environment.Provider, ...options.Opt) (P, error)) Factory {
+	return func(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider, opts ...options.Opt) (Provider, error) {
+		p, err := newClient(ctx, cfg, env, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
+	}
 }
 
 // Has reports whether a factory is registered for providerType, a key as

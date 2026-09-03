@@ -1,12 +1,11 @@
+// Package toolsets wires every built-in toolset type into a
+// teamloader.ToolsetRegistry. Importing it links all of them; embedders that
+// want a smaller binary build their own registry from the individual
+// packages' Creator functions instead.
 package toolsets
 
 import (
-	"context"
-
-	"github.com/docker/docker-agent/pkg/config"
-	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/teamloader"
-	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/a2a"
 	agenttool "github.com/docker/docker-agent/pkg/tools/builtin/agent"
 	"github.com/docker/docker-agent/pkg/tools/builtin/api"
@@ -40,98 +39,37 @@ func NewDefaultToolsetRegistry() teamloader.ToolsetRegistry {
 	return teamloader.NewToolsetRegistry(DefaultToolsetCreators())
 }
 
+// DefaultToolsetCreators maps every built-in toolset type to its creator.
+// Callers may copy and trim it before building a registry.
 func DefaultToolsetCreators() map[string]teamloader.ToolsetCreator {
 	return map[string]teamloader.ToolsetCreator{
-		"todo": func(_ context.Context, toolset latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return todo.CreateToolSet(toolset)
-		},
-		"tasks": func(_ context.Context, toolset latest.Toolset, parentDir string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return tasks.CreateToolSet(toolset, parentDir, runConfig)
-		},
-		"plan": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return plan.CreateToolSet()
-		},
-		"session_plan": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return sessionplan.CreateToolSet()
-		},
-		"session_context": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return sessioncontext.CreateToolSet()
-		},
-		"memory": func(_ context.Context, toolset latest.Toolset, parentDir string, runConfig *config.RuntimeConfig, configName string) (tools.ToolSet, error) {
-			return memory.CreateToolSet(toolset, parentDir, runConfig, configName)
-		},
-		"think": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return think.CreateToolSet()
-		},
-		"environment": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return environment.CreateToolSet()
-		},
-		"scheduler": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return scheduler.CreateToolSet()
-		},
-		"shell": func(ctx context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return shell.CreateToolSet(ctx, toolset, runConfig)
-		},
-		"background_jobs": func(ctx context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return backgroundjobs.CreateToolSet(ctx, toolset, runConfig)
-		},
-		"script": func(ctx context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return shell.CreateScriptToolSet(ctx, toolset, runConfig)
-		},
-		"filesystem": func(_ context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return filesystem.CreateToolSet(toolset, runConfig)
-		},
-		"file": func(_ context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return filetool.CreateToolSet(toolset, runConfig)
-		},
-		"fetch": func(_ context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return fetch.CreateToolSet(toolset, runConfig)
-		},
-		"git": func(_ context.Context, _ latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return gittool.CreateToolSet(runConfig)
-		},
-		"mcp": func(ctx context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return mcp.CreateToolSet(ctx, toolset, runConfig)
-		},
-		"mcp_catalog": func(_ context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			var opts []mcpcatalog.Option
-			if len(toolset.AllowedServers) > 0 {
-				opts = append(opts, mcpcatalog.WithAllowedServers(toolset.AllowedServers))
-			}
-			if len(toolset.BlockedServers) > 0 {
-				opts = append(opts, mcpcatalog.WithBlockedServers(toolset.BlockedServers))
-			}
-			return mcpcatalog.New(opts...), nil
-		},
-		"api": func(_ context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return api.CreateToolSet(toolset, runConfig)
-		},
-		"a2a": func(ctx context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return a2a.CreateToolSet(ctx, toolset, runConfig)
-		},
-		"lsp": func(ctx context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return lsp.CreateToolSet(ctx, toolset, runConfig)
-		},
-		"user_prompt": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return userprompt.CreateToolSet()
-		},
-		"openapi": func(ctx context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return openapi.CreateToolSet(ctx, toolset, runConfig)
-		},
-		"open_url": func(_ context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return openurl.CreateToolSet(toolset, runConfig)
-		},
-		"model_picker": func(_ context.Context, toolset latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return modelpicker.CreateToolSet(toolset)
-		},
-		"background_agents": func(_ context.Context, _ latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return agenttool.CreateToolSet()
-		},
-		"rag": func(ctx context.Context, toolset latest.Toolset, parentDir string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return rag.CreateToolSet(ctx, toolset, parentDir, runConfig)
-		},
-		"webhook": func(_ context.Context, toolset latest.Toolset, _ string, runConfig *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
-			return webhook.CreateToolSet(toolset, runConfig)
-		},
+		"a2a":               a2a.Creator,
+		"api":               api.Creator,
+		"background_agents": agenttool.Creator,
+		"background_jobs":   backgroundjobs.Creator,
+		"environment":       environment.Creator,
+		"fetch":             fetch.Creator,
+		"file":              filetool.Creator,
+		"filesystem":        filesystem.Creator,
+		"git":               gittool.Creator,
+		"lsp":               lsp.Creator,
+		"mcp":               mcp.Creator,
+		"mcp_catalog":       mcpcatalog.Creator,
+		"memory":            memory.Creator,
+		"model_picker":      modelpicker.Creator,
+		"open_url":          openurl.Creator,
+		"openapi":           openapi.Creator,
+		"plan":              plan.Creator,
+		"rag":               rag.Creator,
+		"scheduler":         scheduler.Creator,
+		"script":            shell.ScriptCreator,
+		"session_context":   sessioncontext.Creator,
+		"session_plan":      sessionplan.Creator,
+		"shell":             shell.Creator,
+		"tasks":             tasks.Creator,
+		"think":             think.Creator,
+		"todo":              todo.Creator,
+		"user_prompt":       userprompt.Creator,
+		"webhook":           webhook.Creator,
 	}
 }

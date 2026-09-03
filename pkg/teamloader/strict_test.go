@@ -1,19 +1,15 @@
 package teamloader
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/config"
-	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/model/provider"
 	"github.com/docker/docker-agent/pkg/model/provider/anthropic"
-	"github.com/docker/docker-agent/pkg/model/provider/options"
-	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/think"
 )
 
@@ -40,16 +36,8 @@ agents:
 `
 
 func strictTestOpts(extra ...Opt) []Opt {
-	anthropicOnly := provider.NewRegistry(map[string]provider.Factory{
-		"anthropic": func(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider, opts ...options.Opt) (provider.Provider, error) {
-			return anthropic.NewClient(ctx, cfg, env, opts...)
-		},
-	})
-	thinkOnly := NewToolsetRegistry(map[string]ToolsetCreator{
-		"think": func(context.Context, latest.Toolset, string, *config.RuntimeConfig, string) (tools.ToolSet, error) {
-			return think.CreateToolSet()
-		},
-	})
+	anthropicOnly := provider.NewRegistry(map[string]provider.Factory{"anthropic": provider.Adapt(anthropic.NewClient)})
+	thinkOnly := NewToolsetRegistry(map[string]ToolsetCreator{"think": think.Creator})
 	return append([]Opt{WithProviderRegistry(anthropicOnly), WithToolsetRegistry(thinkOnly)}, extra...)
 }
 
