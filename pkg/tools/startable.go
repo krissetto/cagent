@@ -265,11 +265,12 @@ type StartableToolSet struct {
 	ToolSet
 
 	// mu serializes lifecycle operations (Start/Stop) and guards started
-	// and the failure streaks. TryStart and TryIsStarted use TryLock to
-	// detect an in-flight lifecycle operation without blocking (#4001);
-	// StopIfStarted uses LockContext so shutdown deadlines are honored even
-	// when an in-flight Start ignores cancellation and keeps the lock past
-	// them. Every holder must release through unlock — never mu.Unlock
+	// and the failure streaks. TryStart, TryIsStarted and TryState use
+	// TryLock to detect an in-flight lifecycle operation without blocking
+	// (#4001); StopIfStarted uses LockContext so shutdown deadlines are
+	// honored even when an in-flight Start ignores cancellation and keeps
+	// the lock past them. Every holder must release through unlock — never
+	// mu.Unlock
 	// directly — so a stop request abandoned by a timed-out StopIfStarted
 	// is consumed by whichever holder releases the lock next.
 	mu      lifecycleMutex
@@ -355,17 +356,37 @@ func (s *StartableToolSet) IsStarted() bool {
 // collecting tools for a turn) rather than stall behind a wedged Start
 // (#4001); callers that need the settled state must use IsStarted.
 func (s *StartableToolSet) TryIsStarted() bool {
-	if !s.mu.TryLock() {
-		return false
-	}
-	started := s.started
-	// The release handshake may consume a pending StopIfStarted request and
-	// stop the toolset this probe just observed started: report a reaped
-	// start as not-ready rather than as started.
-	if s.unlock() {
-		return false
-	}
+	started, _ := s.TryState()
 	return started
+}
+
+// TryState is the non-blocking status probe backing TryIsStarted, returning
+// the extra inFlight bit callers need to distinguish "not started" from
+// "a lifecycle operation is running right now" — most notably a Start that
+// legitimately keeps running for a long time (e.g. RAG indexing a large
+// knowledge base) past the caller's own wait budget. Status/introspection
+// surfaces that must never block behind such a Start use TryState instead
+// of the blocking IsStarted.
+//
+// Outcomes:
+//   - (false, true): another lifecycle operation (Start/Stop/Tools) holds
+//     the single-flight lock; started carries no information.
+//   - (false, false): settled and not started.
+//   - (true, false): settled and started.
+//
+// As with TryIsStarted, the release handshake may consume a pending
+// StopIfStarted request and stop the toolset this probe just observed
+// started: that case reports (false, false) — reaped, not in flight —
+// rather than a started toolset that no longer is.
+func (s *StartableToolSet) TryState() (started, inFlight bool) {
+	if !s.mu.TryLock() {
+		return false, true
+	}
+	started = s.started
+	if s.unlock() {
+		return false, false
+	}
+	return started, false
 }
 
 // Start starts the toolset with single-flight semantics.
@@ -709,8 +730,8 @@ func (s *StartableToolSet) stopLocked(ctx context.Context) error {
 // and, when the toolset is started, stops it. The requester may have timed
 // out and returned long ago, so the stop runs under context.WithoutCancel
 // of the request ctx and a failure can only be logged. It reports whether
-// any request was settled, so non-blocking probes (TryIsStarted) can avoid
-// reporting a started toolset this very release just reaped.
+// any request was settled, so non-blocking probes (TryIsStarted, TryState)
+// can avoid reporting a started toolset this very release just reaped.
 //
 // Each round settles one request; the lock is released by the round that
 // finds none. Re-checking after a stop keeps stopRequestMu holds brief

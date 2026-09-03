@@ -1029,13 +1029,17 @@ func toolsetStateBucket(s lifecycle.State) ToolsetState {
 }
 
 // startedToolNames returns the live tool names of ts, but only when it is a
-// started toolset; the boolean is false for not-yet-started toolsets so the
-// caller can fall back to the declared allow-list. context.TODO is safe here:
-// the toolset is already started, so listing returns its cached tools without
-// a cancellable round-trip.
+// started toolset; the boolean is false for a not-yet-started toolset, or one
+// whose Start is still in flight, so the caller can fall back to the declared
+// allow-list without blocking on a long-running Start (e.g. RAG indexing).
+// context.TODO is safe here: the toolset is already started, so listing
+// returns its cached tools without a cancellable round-trip.
 func startedToolNames(ctx context.Context, ts tools.ToolSet) ([]string, bool) {
 	s, ok := tools.As[*tools.StartableToolSet](ts)
-	if !ok || !s.IsStarted() {
+	if !ok {
+		return nil, false
+	}
+	if started, _ := s.TryState(); !started {
 		return nil, false
 	}
 	tl, err := s.Tools(ctx)
@@ -1190,11 +1194,24 @@ func toolsetStatusFor(ts tools.ToolSet) tools.ToolsetStatus {
 	return status
 }
 
+// lifecycleStateForUnsupervised reports the lifecycle state of a toolset with
+// no Statable supervisor, using the wrapper's own non-blocking status probe
+// so a toolset whose Start is legitimately still running (e.g. RAG indexing
+// a large knowledge base) never stalls a status/introspection caller.
 func lifecycleStateForUnsupervised(ts tools.ToolSet) lifecycle.State {
-	if s, ok := ts.(*tools.StartableToolSet); ok && !s.IsStarted() {
-		return lifecycle.StateStopped
+	s, ok := ts.(*tools.StartableToolSet)
+	if !ok {
+		return lifecycle.StateReady
 	}
-	return lifecycle.StateReady
+	started, inFlight := s.TryState()
+	switch {
+	case inFlight:
+		return lifecycle.StateStarting
+	case !started:
+		return lifecycle.StateStopped
+	default:
+		return lifecycle.StateReady
+	}
 }
 
 // nameFor picks a stable, user-visible name for a toolset. We look for
