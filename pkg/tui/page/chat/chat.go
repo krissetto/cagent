@@ -214,6 +214,7 @@ type chatPage struct {
 	sendMode       msgtypes.SendMode
 
 	msgCancel       context.CancelFunc
+	cancel          context.CancelFunc
 	streamCancelled bool
 	// streamDepth is the nesting depth of active streams (StreamStarted++,
 	// StreamStopped--). >0 during a root compaction marks it as automatic
@@ -381,10 +382,12 @@ func defaultKeyMap() KeyMap {
 
 // New creates a new chat page
 func New(ar *animation.Runtime, ctx context.Context, a *app.App, sessionState *service.SessionState, opts ...PageOption) Page {
+	pageCtx, cancel := context.WithCancel(ctx)
 	p := &chatPage{
 		ar:                ar,
+		cancel:            cancel,
 		ctx:               func() context.Context { return context.WithoutCancel(ctx) },
-		sidebar:           sidebar.New(ar, ctx, sessionState),
+		sidebar:           sidebar.New(ar, pageCtx, sessionState),
 		messages:          messages.New(ar, sessionState),
 		app:               a,
 		keyMap:            defaultKeyMap(),
@@ -484,10 +487,7 @@ func agentInfoMode(mode msgtypes.SidebarInfoMode) sidebar.AgentInfoMode {
 func (p *chatPage) Init() tea.Cmd {
 	var cmds []tea.Cmd
 
-	cmds = append(cmds,
-		p.sidebar.Init(),
-		p.messages.Init(),
-	)
+	cmds = append(cmds, p.messages.Init())
 
 	// Load state from existing session (for session restore and branching)
 	if sess := p.app.Session(); sess != nil {
@@ -498,6 +498,19 @@ func (p *chatPage) Init() tea.Cmd {
 	}
 
 	return tea.Batch(cmds...)
+}
+
+func WatchGitBranch(page Page) tea.Cmd {
+	if p, ok := page.(*chatPage); ok {
+		return p.sidebar.Init()
+	}
+	return nil
+}
+
+func Cleanup(page Page) {
+	if p, ok := page.(*chatPage); ok {
+		p.cancel()
+	}
 }
 
 // Update handles messages and updates the page state

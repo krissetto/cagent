@@ -719,6 +719,9 @@ func (m *appModel) editorOpts() []editor.Option {
 // the given app and stores them in the per-session maps under tabID. The active
 // convenience pointers (m.chatPage, m.sessionState, m.editor) are also updated.
 func (m *appModel) initSessionComponents(tabID string, a *app.App, sess *session.Session) {
+	if old := m.chatPages[tabID]; old != nil {
+		chat.Cleanup(old)
+	}
 	ss := service.NewSessionState(sess)
 	cp := chat.New(m.ar, m.ctx(), a, ss, m.chatPageOpts()...)
 	cp.SetRoutingID(tabID)
@@ -740,6 +743,7 @@ func (m *appModel) initAndFocusComponents() tea.Cmd {
 	m.reapplyKeyboardEnhancements()
 	return tea.Batch(
 		m.chatPage.Init(),
+		chat.WatchGitBranch(m.chatPage),
 		m.editor.Init(),
 		m.editor.Focus(),
 		m.resizeAll(),
@@ -843,6 +847,7 @@ func (m *appModel) init() tea.Cmd {
 		shutdownCmd,
 		m.dialogMgr.Init(),
 		m.chatPage.Init(),
+		chat.WatchGitBranch(m.chatPage),
 		m.editor.Init(),
 		m.editor.Focus(),
 		m.application.SendFirstMessage(),
@@ -1814,10 +1819,13 @@ func (m *appModel) handleClearSession() (tea.Model, tea.Cmd) {
 
 	m.reapplyKeyboardEnhancements()
 
-	return m, tea.Sequence(
-		m.chatPage.Init(),
-		m.resizeAll(),
-		m.editor.Focus(),
+	return m, tea.Batch(
+		tea.Sequence(
+			m.chatPage.Init(),
+			m.resizeAll(),
+			m.editor.Focus(),
+		),
+		chat.WatchGitBranch(m.chatPage),
 	)
 }
 
@@ -2026,7 +2034,7 @@ func (m *appModel) handleSwitchTab(sessionID string) (tea.Model, tea.Cmd) {
 
 	if !pageExists || !editorExists {
 		if !pageExists {
-			cmds = append(cmds, m.chatPage.Init())
+			cmds = append(cmds, m.chatPage.Init(), chat.WatchGitBranch(m.chatPage))
 		}
 		if !editorExists {
 			cmds = append(cmds, m.editor.Init())
@@ -2213,6 +2221,9 @@ func (m *appModel) handleCloseTab(sessionID string) (tea.Model, tea.Cmd) {
 	nextActiveID := m.supervisor.CloseSession(sessionID)
 
 	// Clean up per-session state
+	if page, ok := m.chatPages[sessionID]; ok {
+		chat.Cleanup(page)
+	}
 	delete(m.chatPages, sessionID)
 	if ed, ok := m.editors[sessionID]; ok {
 		ed.Cleanup()
@@ -3266,6 +3277,9 @@ func (m *appModel) cleanupAll() {
 		m.closeTranscriptCh()
 		for _, ed := range m.editors {
 			ed.Cleanup()
+		}
+		for _, page := range m.chatPages {
+			chat.Cleanup(page)
 		}
 
 		// Shut down managed resources (supervisor, TUI state store) in the
