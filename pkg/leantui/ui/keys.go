@@ -252,6 +252,9 @@ func parseCSI(b []byte) (int, Key) {
 			return consumed, Key{Typ: KeyNone}
 		}
 		mod := modifier()
+		if (code == 127 || code == 8) && mod == "3" {
+			return consumed, Key{Typ: KeyCtrlW}
+		}
 		switch code {
 		case 9:
 			if mod == "2" {
@@ -267,6 +270,8 @@ func parseCSI(b []byte) (int, Key) {
 			default:
 				return consumed, Key{Typ: KeyEnter}
 			}
+		case 27:
+			return consumed, Key{Typ: KeyEsc}
 		}
 		if mod == "5" {
 			switch code {

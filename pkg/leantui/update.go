@@ -24,7 +24,11 @@ import (
 
 func (m *model) handleKey(ctx context.Context, k ui.Key) {
 	if m.screen.Confirm != nil {
-		m.handleConfirmKey(k)
+		if k.Typ == ui.KeyEsc || k.Typ == ui.KeyCtrlC {
+			m.handleInterrupt()
+		} else {
+			m.handleConfirmKey(k)
+		}
 		return
 	}
 
@@ -82,7 +86,11 @@ func (m *model) handleKey(ctx context.Context, k ui.Key) {
 	case ui.KeyCtrlW:
 		m.screen.Editor.DeleteWordBack()
 	case ui.KeyEsc:
-		m.screen.Autocomplete.Dismiss()
+		if m.busy || m.runCancel != nil {
+			m.handleInterrupt()
+		} else {
+			m.screen.Autocomplete.Dismiss()
+		}
 	case ui.KeyCtrlL:
 		m.clearScreen()
 	case ui.KeyRune, ui.KeyPaste:
@@ -101,7 +109,8 @@ func (m *model) handleInterrupt() {
 		m.queue = nil
 		m.pendingUsers = nil
 		m.ignoredUsers = nil
-		m.screen.Transcript.AddBlock(func(int) []string { return []string{ui.StWarning().Render("⏹ Cancelled")} })
+		m.screen.Confirm = nil
+		m.cancelMarkerPending = true
 	case !m.screen.Editor.IsEmpty():
 		m.screen.Editor.Reset()
 		m.screen.Autocomplete.Dismiss()
@@ -581,6 +590,7 @@ func (m *model) beginRun(ctx context.Context) (context.Context, context.CancelFu
 	runCtx, cancel := context.WithCancel(ctx)
 	m.runCancel = cancel
 	m.busy = true
+	m.cancelMarkerPending = false
 	return runCtx, cancel
 }
 
@@ -655,6 +665,7 @@ func (m *model) resetConversation() {
 	m.pendingUsers = nil
 	m.ignoredUsers = nil
 	m.busy = false
+	m.cancelMarkerPending = false
 	m.screen.Confirm = nil
 	m.usage.Reset()
 	m.status.ContextLength = 0
@@ -736,7 +747,8 @@ func (m *model) commitHelp() {
 			ui.StMuted().Render("  Enter      send             Shift+Enter insert newline"),
 			ui.StMuted().Render("  Alt+Enter  follow up        Up/Down     history"),
 			ui.StMuted().Render("  Tab        complete command Shift+Tab   cycle thinking"),
-			ui.StMuted().Render("  Ctrl+C     cancel / quit    Ctrl+W      delete previous word"),
+			ui.StMuted().Render("  Esc        interrupt         Ctrl+C     cancel / quit"),
+			ui.StMuted().Render("  Ctrl+W     delete previous word"),
 		}
 	})
 }

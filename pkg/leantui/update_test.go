@@ -395,6 +395,69 @@ func TestModelCommandOpensModelAutocomplete(t *testing.T) {
 	}
 }
 
+func TestEscapeInterruptsActiveRun(t *testing.T) {
+	t.Parallel()
+	m := bareModel(24)
+	runCtx, cancel := context.WithCancel(t.Context())
+	m.busy = true
+	m.runCancel = cancel
+	m.queue = []ui.PendingUserMessage{{Content: "queued"}}
+	m.pendingUsers = []ui.PendingUserMessage{{Content: "pending"}}
+	m.ignoredUsers = []string{"ignored"}
+	m.screen.Confirm = &ui.ConfirmModel{}
+	m.screen.Autocomplete.SetCommands([]ui.Command{{Name: "help"}})
+	m.screen.Autocomplete.Sync("/h")
+
+	m.handleKey(t.Context(), ui.Key{Typ: ui.KeyEsc})
+
+	require.ErrorIs(t, runCtx.Err(), context.Canceled)
+	assert.Empty(t, m.queue)
+	assert.Empty(t, m.pendingUsers)
+	assert.Empty(t, m.ignoredUsers)
+	assert.Nil(t, m.screen.Confirm)
+	assert.NotContains(t, strings.Join(m.screen.Transcript.Lines(80, 0, true, m.sessionState, nil), "\n"), "Cancelled")
+
+	m.screen.Transcript.AppendAssistant("partial response")
+	m.handleEvent(t.Context(), runtime.StreamStopped("session", "coder", "canceled"))
+
+	transcript := strings.Join(m.screen.Transcript.Lines(80, 0, false, m.sessionState, nil), "\n")
+	responseAt := strings.Index(transcript, "partial response")
+	cancelledAt := strings.Index(transcript, "Cancelled")
+	assert.NotEqual(t, -1, responseAt)
+	assert.NotEqual(t, -1, cancelledAt)
+	assert.Less(t, responseAt, cancelledAt)
+}
+
+func TestCtrlCCancelMarkerFollowsBufferedResponse(t *testing.T) {
+	t.Parallel()
+	m := bareModel(24)
+	m.busy = true
+	m.runCancel = func() {}
+
+	m.handleKey(t.Context(), ui.Key{Typ: ui.KeyCtrlC})
+	m.screen.Transcript.AppendAssistant("partial response")
+	m.handleEvent(t.Context(), runtime.StreamStopped("session", "coder", "canceled"))
+
+	transcript := strings.Join(m.screen.Transcript.Lines(80, 0, false, m.sessionState, nil), "\n")
+	responseAt := strings.Index(transcript, "partial response")
+	cancelledAt := strings.Index(transcript, "Cancelled")
+	assert.NotEqual(t, -1, responseAt)
+	assert.NotEqual(t, -1, cancelledAt)
+	assert.Less(t, responseAt, cancelledAt)
+}
+
+func TestEscapeWhileIdleDismissesAutocomplete(t *testing.T) {
+	t.Parallel()
+	m := bareModel(24)
+	m.screen.Autocomplete.SetCommands([]ui.Command{{Name: "help"}})
+	require.True(t, m.screen.Autocomplete.Sync("/h"))
+
+	m.handleKey(t.Context(), ui.Key{Typ: ui.KeyEsc})
+
+	assert.False(t, m.screen.Autocomplete.Active)
+	assert.False(t, m.quitting)
+}
+
 func TestShiftEnterInsertsNewline(t *testing.T) {
 	t.Parallel()
 	m := bareModel(24)
