@@ -152,13 +152,35 @@ func (r *LocalRuntime) executeTurnStartHooks(ctx context.Context, sess *session.
 }
 
 // Reason values reported in [hooks.Input.Reason] when [hooks.EventTurnEnd]
-// fires. The runtime guarantees that turn_end runs once per turn that
-// fired turn_start, no matter how the turn exited; the reason classifies
-// which exit path the runtime took.
+// fires. The same values (including the exported trio below, plus
+// hook_blocked/loop_detected/budget_exceeded) are also reported verbatim in
+// [runtime.StreamStoppedEvent.Reason] — loop.go passes its turnEndReason*
+// classification straight through to StreamStopped. The runtime guarantees
+// that turn_end runs once per turn that fired turn_start, no matter how the
+// turn exited; the reason classifies which exit path the runtime took.
 const (
-	// turnEndReasonNormal — the model finished the turn cleanly and the
+	// TurnEndReasonNormal — the model finished the turn cleanly and the
 	// run loop is about to break out (no further iterations).
-	turnEndReasonNormal = "normal"
+	TurnEndReasonNormal = "normal"
+	// TurnEndReasonError — the model call failed and the runtime is
+	// shutting down the run (handleStreamError returned non-retry).
+	TurnEndReasonError = "error"
+	// TurnEndReasonCanceled — the turn ended because the stream context
+	// was cancelled (e.g. user Ctrl+C). Includes deferred firing on
+	// any return path while ctx is done.
+	TurnEndReasonCanceled = "canceled"
+)
+
+// The remaining turnEndReason values below also end up in
+// StreamStoppedEvent.Reason via loop.go's streamReason/ls.exitReason
+// plumbing, same as the exported trio above. They stay unexported because
+// nothing outside pkg/runtime constructs one of these values directly —
+// consumers (e.g. the TUI's isSuccessfulStop) only ever compare against the
+// string, never need to produce it.
+const (
+	// turnEndReasonNormal aliases [TurnEndReasonNormal] to avoid churning
+	// the call sites below.
+	turnEndReasonNormal = TurnEndReasonNormal
 	// turnEndReasonContinue — the turn finished cleanly and the loop is
 	// about to start a new iteration (e.g. after tool calls, or after a
 	// stop with a queued follow-up).
@@ -166,13 +188,10 @@ const (
 	// turnEndReasonSteered — the turn finished and was followed by
 	// drained steered messages, prompting a new iteration.
 	turnEndReasonSteered = "steered"
-	// turnEndReasonError — the model call failed and the runtime is
-	// shutting down the run (handleStreamError returned non-retry).
-	turnEndReasonError = "error"
-	// turnEndReasonCanceled — the turn ended because the stream context
-	// was cancelled (e.g. user Ctrl+C). Includes deferred firing on
-	// any return path while ctx is done.
-	turnEndReasonCanceled = "canceled"
+	// turnEndReasonError aliases [TurnEndReasonError].
+	turnEndReasonError = TurnEndReasonError
+	// turnEndReasonCanceled aliases [TurnEndReasonCanceled].
+	turnEndReasonCanceled = TurnEndReasonCanceled
 	// turnEndReasonHookBlocked — a hook (before_llm_call or
 	// post_tool_use) signalled run termination via a deny verdict.
 	turnEndReasonHookBlocked = "hook_blocked"
