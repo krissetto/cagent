@@ -275,10 +275,14 @@ func parseCSI(b []byte) (int, Key) {
 		}
 		if mod == "5" {
 			switch code {
+			case 'a', 'A':
+				return consumed, Key{Typ: KeyHome}
 			case 'c', 'C':
 				return consumed, Key{Typ: KeyCtrlC}
 			case 'd', 'D':
 				return consumed, Key{Typ: KeyCtrlD}
+			case 'e', 'E':
+				return consumed, Key{Typ: KeyEnd}
 			case 'u', 'U':
 				return consumed, Key{Typ: KeyCtrlU}
 			case 'k', 'K':
