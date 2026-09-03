@@ -1,4 +1,8 @@
-package teamloader
+// Package toon wraps tool outputs in TOON, a compact encoding of JSON that
+// saves tokens on large structured results. Toolsets opt in with the `toon`
+// field of their YAML declaration; teamloader applies the wrapper when
+// enabled with teamloader.WithToon(toon.Wrap).
+package toon
 
 import (
 	"context"
@@ -75,14 +79,16 @@ func (f *toonTools) Unwrap() tools.ToolSet {
 	return f.ToolSet
 }
 
-func WithToon(inner tools.ToolSet, toon string) tools.ToolSet {
-	if toon == "" {
+// Wrap TOON-encodes the JSON output of the tools whose name matches one of
+// the comma-separated regular expressions in spec.
+func Wrap(inner tools.ToolSet, spec string) tools.ToolSet {
+	if spec == "" {
 		return inner
 	}
 
 	var toolRegexps []*regexp.Regexp
 
-	for toolName := range strings.SplitSeq(toon, ",") {
+	for toolName := range strings.SplitSeq(spec, ",") {
 		toolRegexps = append(toolRegexps, regexp.MustCompile(strings.TrimSpace(toolName)))
 	}
 	return &toonTools{

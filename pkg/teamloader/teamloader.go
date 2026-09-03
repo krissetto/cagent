@@ -31,7 +31,6 @@ import (
 	"github.com/docker/docker-agent/pkg/skills"
 	"github.com/docker/docker-agent/pkg/team"
 	"github.com/docker/docker-agent/pkg/tools"
-	"github.com/docker/docker-agent/pkg/tools/builtin/deferred"
 	"github.com/docker/docker-agent/pkg/tools/builtin/handoff"
 	skillstool "github.com/docker/docker-agent/pkg/tools/builtin/skills"
 	"github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
@@ -48,6 +47,8 @@ type loadOptions struct {
 	sourceResolver   SourceResolver
 	newExpander      func(environment.Provider) Expander
 	codeMode         func(...tools.ToolSet) tools.ToolSet
+	toon             func(tools.ToolSet, string) tools.ToolSet
+	newDeferred      func() DeferredToolSet
 	modelOpts        []options.Opt
 	strict           bool
 	features         []config.Feature
@@ -141,6 +142,33 @@ func WithSourceResolver(resolver SourceResolver) Opt {
 func WithCodeMode(wrap func(toolSets ...tools.ToolSet) tools.ToolSet) Opt {
 	return func(opts *loadOptions) error {
 		opts.codeMode = wrap
+		return nil
+	}
+}
+
+// WithToon enables the `toon` toolset field, which re-encodes matching tools'
+// JSON output in the compact TOON format. Pass toon.Wrap from pkg/tools/toon.
+// Without it, configs using `toon` fail to load.
+func WithToon(wrap func(inner tools.ToolSet, spec string) tools.ToolSet) Opt {
+	return func(opts *loadOptions) error {
+		opts.toon = wrap
+		return nil
+	}
+}
+
+// DeferredToolSet collects tools declared with `defer` so the model discovers
+// and activates them on demand; pkg/tools/builtin/deferred implements it.
+type DeferredToolSet interface {
+	tools.ToolSet
+	AddSource(toolset tools.ToolSet, deferAll bool, toolNames []string)
+	HasSources() bool
+}
+
+// WithDeferredTools enables the `defer` toolset field. Pass deferred.New from
+// pkg/tools/builtin/deferred. Without it, configs using `defer` fail to load.
+func WithDeferredTools[D DeferredToolSet](newDeferred func() D) Opt {
+	return func(opts *loadOptions) error {
+		opts.newDeferred = func() DeferredToolSet { return newDeferred() }
 		return nil
 	}
 }
@@ -465,7 +493,10 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 				skillSet := skillstool.New(loadedSkills, workingDir)
 				// Resolve the additional toolsets each fork skill exposes in
 				// its sub-session from the top-level toolsets section.
-				forkToolSets, forkWarnings := forkSkillToolSets(ctx, cfg, &agentConfig, loadedSkills, parentDir, runConfig, loadOpts.toolsetRegistry, configName, expander)
+				forkToolSets, forkWarnings, err := forkSkillToolSets(ctx, cfg, &agentConfig, loadedSkills, parentDir, runConfig, configName, &loadOpts, expander)
+				if err != nil {
+					return nil, fmt.Errorf("agent %s: %w", agentConfig.Name, err)
+				}
 				if len(forkToolSets) > 0 {
 					skillSet.SetForkToolSets(forkToolSets)
 				}
@@ -849,7 +880,7 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 	)
 	registry := loadOpts.toolsetRegistry
 
-	deferredToolset := deferred.New()
+	var deferredToolset DeferredToolSet
 
 	for i := range a.Toolsets {
 		toolset := a.Toolsets[i]
@@ -865,11 +896,20 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 		wrapped := WithToolsFilter(tool, toolset.Tools...)
 		wrapped = WithReadOnlyFilter(wrapped, toolset.ReadOnly || a.ReadOnly)
 		wrapped = WithInstructions(wrapped, expander.Expand(ctx, toolset.Instruction, nil))
-		wrapped = WithToon(wrapped, toolset.Toon)
+		wrapped, err = loadOpts.withToon(wrapped, toolset.Toon)
+		if err != nil {
+			return nil, nil, err
+		}
 		wrapped = WithModelOverride(wrapped, toolset.Model)
 
 		// Handle deferred tools
 		if !toolset.Defer.IsEmpty() {
+			if loadOpts.newDeferred == nil {
+				return nil, nil, errors.New("toolset defer needs teamloader.WithDeferredTools (e.g. deferred.New from pkg/tools/builtin/deferred)")
+			}
+			if deferredToolset == nil {
+				deferredToolset = loadOpts.newDeferred()
+			}
 			deferredToolset.AddSource(wrapped, toolset.Defer.DeferAll, toolset.Defer.Tools)
 			if toolset.Defer.DeferAll {
 				wrapped = WithNoToolsFilter(wrapped)
@@ -904,7 +944,7 @@ func getToolsForAgent(ctx context.Context, a *latest.AgentConfig, parentDir stri
 		toolSets = append(toolSets, group[0].Raw.(tools.Mergeable).Merge(group))
 	}
 
-	if deferredToolset.HasSources() {
+	if deferredToolset != nil && deferredToolset.HasSources() {
 		toolSets = append(toolSets, deferredToolset)
 	}
 
@@ -987,11 +1027,12 @@ func overrideWithInlineSkills(loaded, inline []skills.Skill) []skills.Skill {
 // skills without declared toolsets are skipped. Creation failures are
 // collected as warnings (parity with getToolsForAgent) rather than aborting
 // the load.
-func forkSkillToolSets(ctx context.Context, cfg *latest.Config, a *latest.AgentConfig, loadedSkills []skills.Skill, parentDir string, runConfig *config.RuntimeConfig, registry ToolsetRegistry, configName string, expander Expander) (map[string][]tools.ToolSet, []string) {
+func forkSkillToolSets(ctx context.Context, cfg *latest.Config, a *latest.AgentConfig, loadedSkills []skills.Skill, parentDir string, runConfig *config.RuntimeConfig, configName string, loadOpts *loadOptions, expander Expander) (map[string][]tools.ToolSet, []string, error) {
 	var (
 		result   map[string][]tools.ToolSet
 		warnings []string
 	)
+	registry := loadOpts.toolsetRegistry
 	for i := range loadedSkills {
 		skill := loadedSkills[i]
 		if !skill.IsFork() || len(skill.Toolsets) == 0 {
@@ -1016,7 +1057,10 @@ func forkSkillToolSets(ctx context.Context, cfg *latest.Config, a *latest.AgentC
 			// a readonly agent must not gain mutating tools through a fork skill.
 			wrapped = WithReadOnlyFilter(wrapped, toolset.ReadOnly || a.ReadOnly)
 			wrapped = WithInstructions(wrapped, expander.Expand(ctx, toolset.Instruction, nil))
-			wrapped = WithToon(wrapped, toolset.Toon)
+			wrapped, err = loadOpts.withToon(wrapped, toolset.Toon)
+			if err != nil {
+				return nil, nil, err
+			}
 			wrapped = WithModelOverride(wrapped, toolset.Model)
 			// Wrap for lazy, single-flight start + failure-dedup, matching
 			// agent.WithToolSets. skillSubSessionTools calls Start() on every
@@ -1030,7 +1074,18 @@ func forkSkillToolSets(ctx context.Context, cfg *latest.Config, a *latest.AgentC
 			result[skill.Name] = built
 		}
 	}
-	return result, warnings
+	return result, warnings, nil
+}
+
+// withToon applies the configured TOON wrapper when a toolset asks for it.
+func (o *loadOptions) withToon(inner tools.ToolSet, spec string) (tools.ToolSet, error) {
+	if spec == "" {
+		return inner, nil
+	}
+	if o.toon == nil {
+		return nil, errors.New("toolset toon needs teamloader.WithToon (e.g. toon.Wrap from pkg/tools/toon)")
+	}
+	return o.toon(inner, spec), nil
 }
 
 // filterSkillsByName returns the subset of skills whose Name matches one of

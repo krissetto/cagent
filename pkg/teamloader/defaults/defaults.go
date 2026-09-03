@@ -13,7 +13,9 @@ import (
 	"github.com/docker/docker-agent/pkg/runtime/jscommands"
 	"github.com/docker/docker-agent/pkg/teamloader"
 	"github.com/docker/docker-agent/pkg/teamloader/toolsets"
+	"github.com/docker/docker-agent/pkg/tools/builtin/deferred"
 	"github.com/docker/docker-agent/pkg/tools/codemode"
+	"github.com/docker/docker-agent/pkg/tools/toon"
 )
 
 func Opts() []teamloader.Opt {
@@ -26,6 +28,8 @@ func Opts() []teamloader.Opt {
 		teamloader.WithSourceResolver(resolveExternalAgent),
 		teamloader.WithExpander(js.NewJsExpander),
 		teamloader.WithCodeMode(codemode.Wrap),
+		teamloader.WithToon(toon.Wrap),
+		teamloader.WithDeferredTools(deferred.New),
 	}
 }
 

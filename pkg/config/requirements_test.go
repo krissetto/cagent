@@ -36,8 +36,10 @@ agents:
     instruction: hi
     toolsets:
       - type: shell
+        toon: ".*"
       - type: mcp
         command: foo
+        defer: true
     use_toolsets: [fs]
     fallback:
       models: [cheap, amazon-bedrock/nova]
@@ -87,6 +89,8 @@ func TestRequires(t *testing.T) {
 		FeatureSkills:         {"agents.root.skills"},
 		FeatureHarness:        {"agents.helper.harness"},
 		FeatureCodeMode:       {"agents.helper.code_mode_tools"},
+		FeatureToon:           {"agents.root.toolsets[0].toon"},
+		FeatureDeferredTools:  {"agents.root.toolsets[1].defer"},
 	}, r.Features)
 }
 
@@ -106,7 +110,7 @@ func TestRequirements_Check(t *testing.T) {
 		err := r.Check(
 			has("anthropic", "openai", "google", "amazon-bedrock", "dmr"),
 			has("filesystem", "shell", "mcp"),
-			[]Feature{FeatureExternalAgents, FeatureHooks, FeatureSkills, FeatureHarness, FeatureCodeMode},
+			[]Feature{FeatureExternalAgents, FeatureHooks, FeatureSkills, FeatureHarness, FeatureCodeMode, FeatureToon, FeatureDeferredTools},
 		)
 		require.NoError(t, err)
 	})
@@ -120,7 +124,7 @@ func TestRequirements_Check(t *testing.T) {
 		require.ErrorAs(t, err, &u)
 		assert.Len(t, u.Providers, 4)
 		assert.Len(t, u.Toolsets, 1)
-		assert.Len(t, u.Features, 4)
+		assert.Len(t, u.Features, 6)
 
 		msg := err.Error()
 		assert.Contains(t, msg, `provider "openai" at models.cheap (provider "mistral"), models.main.title_model`)

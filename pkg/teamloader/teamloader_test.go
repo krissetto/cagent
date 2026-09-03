@@ -28,7 +28,9 @@ import (
 	"github.com/docker/docker-agent/pkg/model/provider/options"
 	providerdefaults "github.com/docker/docker-agent/pkg/model/provider/providers"
 	"github.com/docker/docker-agent/pkg/tools"
+	"github.com/docker/docker-agent/pkg/tools/builtin/deferred"
 	"github.com/docker/docker-agent/pkg/tools/codemode"
+	"github.com/docker/docker-agent/pkg/tools/toon"
 )
 
 // skipExamples contains example files that require cloud-specific configurations
@@ -44,6 +46,8 @@ func withTestProviderRegistry(opts ...Opt) []Opt {
 		WithToolsetRegistry(testToolsetRegistry()),
 		WithExpander(js.NewJsExpander),
 		WithCodeMode(codemode.Wrap),
+		WithToon(toon.Wrap),
+		WithDeferredTools(deferred.New),
 	}, opts...)
 }
 

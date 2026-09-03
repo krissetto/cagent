@@ -19,6 +19,9 @@ const (
 	// FeatureCodeMode covers agents setting code_mode_tools, which needs the
 	// JavaScript tool wrapper (see teamloader.WithCodeMode).
 	FeatureCodeMode Feature = "code_mode"
+	// FeatureDeferredTools covers toolsets using `defer` (see
+	// teamloader.WithDeferredTools).
+	FeatureDeferredTools Feature = "deferred_tools"
 	// FeatureExternalAgents covers sub_agents, handoffs and force_handoff
 	// entries that reference another agent by OCI reference or URL.
 	FeatureExternalAgents Feature = "external_agents"
@@ -28,6 +31,9 @@ const (
 	FeatureHooks Feature = "hooks"
 	// FeatureSkills covers agents loading skills from disk or inline.
 	FeatureSkills Feature = "skills"
+	// FeatureToon covers toolsets using `toon` output encoding (see
+	// teamloader.WithToon).
+	FeatureToon Feature = "toon"
 )
 
 // Requirements lists what a config needs from the host application to be
@@ -149,6 +155,12 @@ func (r *Requirements) toolset(ts latest.Toolset, loc string) {
 		return
 	}
 	r.Toolsets[ts.Type] = append(r.Toolsets[ts.Type], loc)
+	if ts.Toon != "" {
+		r.feature(FeatureToon, loc+".toon")
+	}
+	if !ts.Defer.IsEmpty() {
+		r.feature(FeatureDeferredTools, loc+".defer")
+	}
 }
 
 func (r *Requirements) feature(f Feature, loc string) {

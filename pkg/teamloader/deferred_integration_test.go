@@ -19,6 +19,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/deferred"
 	"github.com/docker/docker-agent/pkg/tools/lifecycle"
+	"github.com/docker/docker-agent/pkg/tools/toon"
 )
 
 // slowSourceToolSet behaves like an MCP toolset: Tools fails with
@@ -101,7 +102,7 @@ func TestDeferredToolsSurviveSlowSourceStart(t *testing.T) {
 		}},
 	}
 	runConfig := config.RuntimeConfig{EnvProviderForTests: &noEnvProvider{}}
-	toolSets, warnings, err := getToolsForAgent(t.Context(), a, ".", &runConfig, "test-config", &loadOptions{toolsetRegistry: registry}, js.NewJsExpander(runConfig.EnvProvider()))
+	toolSets, warnings, err := getToolsForAgent(t.Context(), a, ".", &runConfig, "test-config", &loadOptions{toolsetRegistry: registry, toon: toon.Wrap, newDeferred: func() DeferredToolSet { return deferred.New() }}, js.NewJsExpander(runConfig.EnvProvider()))
 	require.NoError(t, err)
 	require.Empty(t, warnings)
 	require.Len(t, toolSets, 2, "source (with all tools hidden) + deferred aggregator")
