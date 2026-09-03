@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -226,59 +227,100 @@ func TestShellTool_DescriptionNamesInterpreter(t *testing.T) {
 		"description must point the model at the environment tool for edge cases the static hint doesn't cover")
 }
 
-// TestShellSyntaxHint_NamesPOSIXSubstitutes anchors the substitution list
-// against regression: the hint's whole point is to tell the model which
-// PowerShell cmdlet replaces each POSIX utility models reach for by habit.
-// Dropping any of these substitutions has been observed to bring the
-// corresponding wrong command back on turn 1.
-func TestShellSyntaxHint_NamesPOSIXSubstitutes(t *testing.T) {
+func TestShellDialectHint(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
 		shell    string
-		mustHave []string
+		output   string
+		wantHint string // substring the hint must contain; empty means no hint
 	}{
 		{
-			name:  "powershell hint chains the utilities models actually emit",
-			shell: "powershell",
-			mustHave: []string{
-				`";"`, `"&&"`, // separator
-				"Select-String", "grep",
-				"Select-Object", "head", "tail",
-				"Measure-Object", "wc",
-				"Get-Content", "cat",
-				"Expand-Archive", "gunzip",
-				"ls -la",
-			},
+			name:     "powershell 5.1 && parse error",
+			shell:    "powershell",
+			output:   "At line:1 char:17\n+ docker ps && docker images\n+                 ~~\nThe token '&&' is not a valid statement separator in this version.",
+			wantHint: "chain commands with `;`",
 		},
 		{
-			name:  "pwsh hint names the utility substitutes but not the && rule",
-			shell: "pwsh",
-			mustHave: []string{
-				"Select-String", "grep",
-				"Select-Object", "head", "tail",
-				"Measure-Object", "wc",
-				"Get-Content", "cat",
-				"Expand-Archive", "gunzip",
-				"ls -la",
-			},
+			name:     "powershell 5.1 || parse error",
+			shell:    "powershell",
+			output:   "The token '||' is not a valid statement separator in this version.",
+			wantHint: "chain commands with `;`",
 		},
 		{
-			name:     "cmd hint names the POSIX utilities and the variable-expansion trap",
+			name:     "powershell posix stderr redirection",
+			shell:    "powershell",
+			output:   `out-file : Could not find a part of the path 'C:\dev\null'.`,
+			wantHint: "2>$null",
+		},
+		{
+			name:     "powershell 5.1 grep not a cmdlet",
+			shell:    "powershell",
+			output:   "grep : The term 'grep' is not recognized as the name of a cmdlet, function, script file, or operable program.",
+			wantHint: "Select-String",
+		},
+		{
+			name:     "pwsh 7 head not a cmdlet",
+			shell:    "pwsh",
+			output:   "head : The term 'head' is not recognized as a name of a cmdlet, function, script file, or executable program.",
+			wantHint: "Select-Object -First",
+		},
+		{
+			name:     "cmd.exe unknown command",
 			shell:    "cmd",
-			mustHave: []string{"grep", "head", "tail", "wc", "cat", "%VAR%"},
+			output:   "'grep' is not recognized as an internal or external command,\noperable program or batch file.",
+			wantHint: "findstr",
+		},
+		{
+			name:     "powershell rejects posix short flag",
+			shell:    "powershell",
+			output:   "Get-ChildItem : A parameter cannot be found that matches parameter name 'la'.",
+			wantHint: "POSIX-style short flags",
+		},
+		{
+			name:     "zsh does not fire windows hints",
+			shell:    "zsh",
+			output:   "The token '&&' is not a valid statement separator in this version.",
+			wantHint: "",
+		},
+		{
+			name:     "powershell does not fire cmd.exe hint on child cmd failure",
+			shell:    "powershell",
+			output:   "'grep' is not recognized as an internal or external command,\noperable program or batch file.",
+			wantHint: "",
+		},
+		{
+			name:     "pwsh 7 does not fire powershell-5.1-only && hint",
+			shell:    "pwsh",
+			output:   "The token '&&' is not a valid statement separator in this version.",
+			wantHint: "",
+		},
+		{
+			name:     "benign output leaves no hint",
+			shell:    "powershell",
+			output:   "hello world",
+			wantHint: "",
+		},
+		{
+			name:     "docker error unrelated to shell dialect",
+			shell:    "powershell",
+			output:   "Error response from daemon: No such container: comfy-worker",
+			wantHint: "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			hint := shellSyntaxHint(tt.shell)
-			require.NotEmpty(t, hint, "hint for %q must be non-empty", tt.shell)
-			for _, needle := range tt.mustHave {
-				assert.Contains(t, hint, needle, "%q hint must mention %q", tt.shell, needle)
+			got := shellDialectHint(tt.shell, tt.output)
+			if tt.wantHint == "" {
+				assert.Empty(t, got, "expected no hint for shell=%q output=%q", tt.shell, tt.output)
+				return
 			}
+			require.NotEmpty(t, got, "expected a hint for shell=%q output=%q", tt.shell, tt.output)
+			assert.Contains(t, got, tt.wantHint,
+				"hint for shell=%q output=%q missing %q; got %q", tt.shell, tt.output, tt.wantHint, got)
 		})
 	}
 }
@@ -290,6 +332,46 @@ func TestShellSyntaxHint_NamesPOSIXSubstitutes(t *testing.T) {
 func TestShellSyntaxHint_pwshDoesNotClaimAmpAmpFails(t *testing.T) {
 	t.Parallel()
 	assert.NotContains(t, shellSyntaxHint("pwsh"), "&&")
+}
+
+func TestFormatCommandOutput_PrependsHint(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
+	raw := "The token '&&' is not a valid statement separator in this version."
+	got := formatCommandOutput(timeoutCtx, ctx, nil, raw, `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, time.Minute)
+
+	assert.True(t, strings.HasPrefix(got, "[shell-hint] "),
+		"hint must lead the output so the model sees it first; got %q", got)
+	assert.Contains(t, got, raw, "original output must be preserved after the hint")
+}
+
+// TestFormatCommandOutput_NoHintOnPosixShell: raw output mentioning a Windows
+// error string on a POSIX host must not trigger the hint.
+func TestFormatCommandOutput_NoHintOnPosixShell(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
+	raw := "The token '&&' is not a valid statement separator in this version."
+	got := formatCommandOutput(timeoutCtx, ctx, nil, raw, "/bin/zsh", time.Minute)
+	assert.Equal(t, raw, got)
+}
+
+func TestFormatCommandOutput_NoHintOnBenignOutput(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
+	got := formatCommandOutput(timeoutCtx, ctx, nil, "hello world", `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, time.Minute)
+	assert.Equal(t, "hello world", got)
 }
 
 func TestResolveWorkDir(t *testing.T) {
