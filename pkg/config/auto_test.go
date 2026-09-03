@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker-agent/pkg/chatgpt"
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/environment"
+	"github.com/docker/docker-agent/pkg/modelsdev"
 )
 
 func TestAvailableProviders_NoGateway(t *testing.T) {
@@ -488,7 +489,7 @@ func TestDefaultModels(t *testing.T) {
 
 	// Test specific model values
 	assert.Equal(t, "gpt-5.6", DefaultModels["openai"])
-	assert.Equal(t, "gpt-5.6", DefaultModels["github-copilot"])
+	assert.Equal(t, "gpt-5.6-sol", DefaultModels["github-copilot"])
 	assert.Equal(t, "claude-sonnet-5", DefaultModels["anthropic"])
 	assert.Equal(t, "gemini-3.8-flash", DefaultModels["google"])
 	assert.Equal(t, "ai/qwen3:latest", DefaultModels["dmr"])
@@ -1179,4 +1180,30 @@ func TestCloudProviderEnvVars(t *testing.T) {
 	})
 	require.GreaterOrEqual(t, copilotIdx, 0)
 	assert.Equal(t, []string{"GITHUB_TOKEN", "GH_TOKEN"}, providers[copilotIdx].EnvVars)
+}
+
+// TestDefaultModelsExistInModelsDev is the regression test for issue #4133:
+// DefaultModels must reference models that actually exist in the models.dev
+// catalog, since AutoModelConfig hands them straight to real users with no
+// other validation. modelsDevAbsentProviders (defined in examples_test.go) is
+// reused so providers legitimately absent, or aliased, in the catalog don't
+// produce false failures.
+func TestDefaultModelsExistInModelsDev(t *testing.T) {
+	t.Parallel()
+
+	modelsStore, err := modelsdev.NewStore()
+	require.NoError(t, err)
+
+	for provider, model := range DefaultModels {
+		t.Run(provider, func(t *testing.T) {
+			t.Parallel()
+
+			if modelsDevAbsentProviders[provider] {
+				t.Skipf("provider %q is not expected to exist in the models.dev catalog", provider)
+			}
+
+			_, err := modelsStore.GetModel(t.Context(), modelsdev.NewID(provider, model))
+			require.NoError(t, err, "DefaultModels[%q] = %q must exist in the models.dev catalog", provider, model)
+		})
+	}
 }

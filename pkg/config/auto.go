@@ -151,7 +151,7 @@ func (e *AutoModelFallbackError) Unwrap() error { return e.Cause }
 var DefaultModels = map[string]string{
 	"openai":         "gpt-5.6",
 	"chatgpt":        "gpt-5.6",
-	"github-copilot": "gpt-5.6",
+	"github-copilot": "gpt-5.6-sol",
 	"anthropic":      "claude-sonnet-5",
 	"google":         "gemini-3.8-flash",
 	"dmr":            "ai/qwen3:latest",
