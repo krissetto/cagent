@@ -74,6 +74,19 @@ func TestEmbeddedSnapshotParses(t *testing.T) {
 	assert.NotEmpty(t, openai.Models, "openai provider must list models")
 }
 
+// TestEmbeddedSnapshotExported verifies the exported EmbeddedSnapshot wrapper
+// returns the same singleton as the internal embeddedSnapshot accessor, so
+// callers that need a guaranteed-hermetic catalog (e.g. NewDatabaseStore in
+// tests) get exactly the committed snapshot with no extra copying.
+func TestEmbeddedSnapshotExported(t *testing.T) {
+	t.Parallel()
+
+	db := EmbeddedSnapshot()
+	require.NotNil(t, db)
+	assert.NotEmpty(t, db.Providers, "EmbeddedSnapshot must contain providers")
+	assert.Same(t, embeddedSnapshot(), db, "EmbeddedSnapshot must return the same singleton as embeddedSnapshot")
+}
+
 // TestSnapshotDateParses verifies the embedded snapshot date is a valid,
 // non-zero RFC3339 timestamp. This always runs: a malformed date is a build
 // artefact bug, not a function of wall-clock time.
