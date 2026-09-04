@@ -57,6 +57,11 @@ func TestBuildPermissionPattern(t *testing.T) {
 			want: "shell",
 		},
 		{
+			name: "background job extracts the command",
+			call: tools.ToolCall{Function: tools.FunctionCall{Name: "run_background_job", Arguments: `{"cmd":"npm run dev"}`}},
+			want: "run_background_job:cmd=npm*",
+		},
+		{
 			name: "other tools use the tool name",
 			call: tools.ToolCall{Function: tools.FunctionCall{Name: "write_file", Arguments: `{"path":"/x"}`}},
 			want: "write_file",

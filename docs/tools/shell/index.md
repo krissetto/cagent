@@ -58,7 +58,7 @@ toolsets:
 
 ### Command classification
 
-Every shell command is classified against an embedded taxonomy before the approval decision — no opt-in required:
+Every shell command is classified against an embedded taxonomy before the approval decision — no opt-in required. The same classification applies to the `cmd` of [`run_background_job`](../background-jobs/index.md#command-classification):
 
 - **Destructive matches** (`rm -rf <path>`, `docker volume rm`, `mkfs`, `dd if=… of=/dev/<disk>`, …) are labelled `destructive` with a `blast_radius` (`low` / `medium` / `high`) and a `category` tag. The TUI confirmation dialog renders the blast radius with a color badge.
 - **Known-safe reads** (`ls`, `cat`, `git status`, `git diff`, `docker ps`, `docker logs`, `kubectl get`, …) are labelled `safe`.

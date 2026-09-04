@@ -14,12 +14,20 @@ import (
 
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/latest"
+	"github.com/docker/docker-agent/pkg/safety"
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
 func newTestTool(t *testing.T) *ToolSet {
 	t.Helper()
 	return New(nil, &config.RuntimeConfig{Config: config.Config{WorkingDir: t.TempDir()}})
+}
+
+// pkg/safety duplicates the tool name to classify background commands
+// without importing this package; a rename must update both.
+func TestToolNameMatchesSafetyPackage(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, ToolNameRunBackgroundJob, safety.BackgroundJobToolName)
 }
 
 func TestRunBackgroundJobArgs_UnmarshalJSON_AcceptsCmdAndCommand(t *testing.T) {

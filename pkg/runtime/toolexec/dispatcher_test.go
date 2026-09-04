@@ -759,6 +759,71 @@ func TestDispatcher_BalancedClassifiesShellCommands(t *testing.T) {
 	})
 }
 
+// TestDispatcher_BalancedClassifiesBackgroundJobCommands pins that the
+// command carried by run_background_job is classified exactly like a
+// shell command: a destructive command cannot be laundered through the
+// background-job tool to lose its badge, and a safe one auto-runs.
+func TestDispatcher_BalancedClassifiesBackgroundJobCommands(t *testing.T) {
+	t.Parallel()
+	a := newAgent()
+
+	t.Run("safe command auto-approves", func(t *testing.T) {
+		t.Parallel()
+		sess := session.New(session.WithSafetyPolicy(session.SafetyPolicyBalanced))
+
+		var ran bool
+		tool := tools.Tool{
+			Name: "run_background_job",
+			Handler: func(context.Context, tools.ToolCall, tools.Runtime) (*tools.ToolCallResult, error) {
+				ran = true
+				return tools.ResultSuccess("ok"), nil
+			},
+		}
+		d := &toolexec.Dispatcher{
+			AgentFor: func(*session.Session) *agent.Agent { return a },
+		}
+		em := &captureEmitter{}
+
+		d.Process(t.Context(), sess, []tools.ToolCall{{
+			ID:       "b",
+			Function: tools.FunctionCall{Name: "run_background_job", Arguments: `{"cmd":"git log --oneline"}`},
+		}}, []tools.Tool{tool}, em)
+
+		assert.True(t, ran, "balanced must auto-approve classifier-safe background commands")
+		assert.Empty(t, em.confirmations)
+	})
+
+	t.Run("destructive command prompts with label", func(t *testing.T) {
+		t.Parallel()
+		sess := session.New(session.WithSafetyPolicy(session.SafetyPolicyBalanced))
+
+		tool := tools.Tool{
+			Name: "run_background_job",
+			Handler: func(context.Context, tools.ToolCall, tools.Runtime) (*tools.ToolCallResult, error) {
+				panic("must not run")
+			},
+		}
+		resume := make(chan toolexec.ResumeRequest, 1)
+		d := &toolexec.Dispatcher{
+			AgentFor: func(*session.Session) *agent.Agent { return a },
+			Resume:   resume,
+		}
+		em := &captureEmitter{}
+
+		resume <- toolexec.ResumeRequest{Type: toolexec.ResumeTypeReject}
+
+		d.Process(t.Context(), sess, []tools.ToolCall{{
+			ID:       "b",
+			Function: tools.FunctionCall{Name: "run_background_job", Arguments: `{"cmd":"rm -rf /tmp/x"}`},
+		}}, []tools.Tool{tool}, em)
+
+		require.Len(t, em.confirmations, 1)
+		require.Len(t, em.confirmationMeta, 1)
+		assert.Equal(t, "destructive", em.confirmationMeta[0]["safety_label"])
+		assert.Equal(t, "high", em.confirmationMeta[0]["blast_radius"])
+	})
+}
+
 // Restricted is the fail-closed profile for unattended runs: safe
 // calls auto-run, everything else is rejected outright — no
 // confirmation prompt, no tool execution — with the stable
@@ -1557,7 +1622,7 @@ func TestDispatcher_PreToolUsePreYoloAskHonorsSessionAllow(t *testing.T) {
 // generic matcher and would also cover "mkdir x && rm -rf ~" — a
 // compound command that smuggles a destructive call behind the
 // approved word. Overriding a preempt-yolo Ask therefore requires the
-// word-boundary, no-metacharacter reading (shellGrantCoversCommand):
+// word-boundary, no-metacharacter reading (commandGrantCoversCall):
 // the compound call must still prompt.
 func TestDispatcher_PreToolUsePreYoloAskSessionAllowRefusesCompound(t *testing.T) {
 	t.Parallel()

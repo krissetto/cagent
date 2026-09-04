@@ -81,17 +81,28 @@ func (l Label) Metadata() map[string]string {
 	return meta
 }
 
-// ShellToolName is the canonical name of the builtin shell tool. It is
-// duplicated here as a string literal so pkg/safety does not depend on
-// pkg/tools/builtin/shell; the name is part of the user-facing wire
-// protocol and a rename is caught by tests in both packages.
-const ShellToolName = "shell"
+// Canonical names of the builtin tools that execute the shell command
+// carried in their cmd argument. Duplicated here as string literals so
+// pkg/safety does not depend on pkg/tools/builtin; the names are part
+// of the user-facing wire protocol and a rename is caught by tests in
+// both packages.
+const (
+	ShellToolName         = "shell"
+	BackgroundJobToolName = "run_background_job"
+)
 
-// LabelToolCall labels a tool call for the safety-mode table. Shell
-// calls are classified by command text; every other tool is labelled
-// from its MCP annotation hints.
+// IsCommandTool reports whether toolName runs the shell command in its
+// cmd argument, and so must be classified by command text rather than
+// by annotation hints.
+func IsCommandTool(toolName string) bool {
+	return toolName == ShellToolName || toolName == BackgroundJobToolName
+}
+
+// LabelToolCall labels a tool call for the safety-mode table. Command
+// tools (see [IsCommandTool]) are classified by command text; every
+// other tool is labelled from its MCP annotation hints.
 func LabelToolCall(toolName string, args map[string]any, readOnlyHint, destructiveHint bool) Label {
-	if toolName == ShellToolName {
+	if IsCommandTool(toolName) {
 		cmd, _ := CommandArg(args)
 		return ClassifyCommand(cmd)
 	}

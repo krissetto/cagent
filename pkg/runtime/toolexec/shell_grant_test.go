@@ -4,14 +4,16 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/docker/docker-agent/pkg/safety"
 )
 
-func TestShellGrantCoversCommand(t *testing.T) {
+func TestCommandGrantCoversCall(t *testing.T) {
 	t.Parallel()
 
 	grant := []string{"shell:cmd=mkdir*"}
 	cover := func(patterns []string, cmd string) bool {
-		return shellGrantCoversCommand(patterns, map[string]any{"cmd": cmd})
+		return commandGrantCoversCall(safety.ShellToolName, patterns, map[string]any{"cmd": cmd})
 	}
 
 	t.Run("covers simple invocations at word boundary", func(t *testing.T) {
@@ -83,8 +85,22 @@ func TestShellGrantCoversCommand(t *testing.T) {
 
 	t.Run("command key fallback and missing command", func(t *testing.T) {
 		t.Parallel()
-		assert.True(t, shellGrantCoversCommand(grant, map[string]any{"command": "mkdir foo"}))
-		assert.False(t, shellGrantCoversCommand(grant, map[string]any{}), "no command arg → never override")
-		assert.False(t, shellGrantCoversCommand(grant, map[string]any{"cmd": 42}), "non-string cmd")
+		assert.True(t, commandGrantCoversCall(safety.ShellToolName, grant, map[string]any{"command": "mkdir foo"}))
+		assert.False(t, commandGrantCoversCall(safety.ShellToolName, grant, map[string]any{}), "no command arg → never override")
+		assert.False(t, commandGrantCoversCall(safety.ShellToolName, grant, map[string]any{"cmd": 42}), "non-string cmd")
+	})
+
+	t.Run("background job grants are tool-scoped", func(t *testing.T) {
+		t.Parallel()
+		bg := func(patterns []string, cmd string) bool {
+			return commandGrantCoversCall(safety.BackgroundJobToolName, patterns, map[string]any{"cmd": cmd})
+		}
+		g := []string{"run_background_job:cmd=npm*"}
+		assert.True(t, bg(g, "npm run dev"))
+		assert.False(t, bg(g, "npm run dev && rm -rf ~"), "metachar check applies")
+		assert.False(t, bg(g, "npmx run dev"), "word boundary applies")
+		assert.True(t, bg([]string{"run_background_job"}, "git log --oneline"), "whole-tool grant")
+		assert.False(t, bg(grant, "mkdir foo"), "a shell grant never covers a background job")
+		assert.False(t, cover(g, "npm run dev"), "a background-job grant never covers a shell call")
 	})
 }

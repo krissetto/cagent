@@ -18,6 +18,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/docker/docker-agent/pkg/runtime"
+	"github.com/docker/docker-agent/pkg/safety"
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
@@ -67,13 +68,14 @@ func (d Decision) Resume(pattern, reason string) runtime.ResumeRequest {
 }
 
 // BuildPermissionPattern creates the permission pattern granted by the
-// "always allow" decision. For shell commands it extracts the first word of
-// the command and creates a pattern like "shell:cmd=ls*" matching all
-// invocations of that command; for other tools it returns the tool name.
+// "always allow" decision. For command tools (shell, run_background_job)
+// it extracts the first word of the command and creates a pattern like
+// "shell:cmd=ls*" matching all invocations of that command; for other
+// tools it returns the tool name.
 func BuildPermissionPattern(toolCall tools.ToolCall) string {
 	toolName := toolCall.Function.Name
 
-	if toolName == "shell" {
+	if safety.IsCommandTool(toolName) {
 		var args struct {
 			Cmd string `json:"cmd"`
 		}

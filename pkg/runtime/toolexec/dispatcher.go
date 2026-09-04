@@ -335,8 +335,8 @@ type call struct {
 	label         safety.Label
 }
 
-// safetyLabel labels the call for the (mode × label) table: shell
-// commands via the pattern classifier, everything else via MCP
+// safetyLabel labels the call for the (mode × label) table: command
+// tools via the pattern classifier, everything else via MCP
 // annotation hints. Cached after the first call.
 func (c *call) safetyLabel() safety.Label {
 	if c.labelComputed {
@@ -563,11 +563,12 @@ func (c *call) autoApprovalAfterConfirmationWait() (PermissionDecision, bool) {
 // [permissions.Checker.CheckWithArgs] ordering (Deny > Allow > Ask), so a
 // session-level Deny or explicit Ask never yields an allow here.
 //
-// For the shell tool a matching allow pattern is necessary but not
-// sufficient: the generic matcher's trailing-* patterns are plain prefix
-// matches, so the "T = always allow mkdir*" grant would also cover
-// "mkdir x && rm -rf ~". Silencing a safety verdict demands the stricter
-// word-boundary, no-metacharacter reading — see shellGrantCoversCommand.
+// For the command tools (shell, run_background_job) a matching allow
+// pattern is necessary but not sufficient: the generic matcher's
+// trailing-* patterns are plain prefix matches, so the "T = always allow
+// mkdir*" grant would also cover "mkdir x && rm -rf ~". Silencing a
+// safety verdict demands the stricter word-boundary, no-metacharacter
+// reading — see commandGrantCoversCall.
 func (c *call) sessionPermissionsAllow() bool {
 	perms := c.sess.ClonePermissions()
 	if perms == nil {
@@ -578,8 +579,8 @@ func (c *call) sessionPermissionsAllow() bool {
 	if checker.CheckWithArgs(c.tc.Function.Name, args) != permissions.Allow {
 		return false
 	}
-	if c.tc.Function.Name == shellToolName {
-		return shellGrantCoversCommand(perms.Allow, args)
+	if safety.IsCommandTool(c.tc.Function.Name) {
+		return commandGrantCoversCall(c.tc.Function.Name, perms.Allow, args)
 	}
 	return true
 }
