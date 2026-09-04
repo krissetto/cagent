@@ -39,7 +39,7 @@ artifact is unprotected or the check does not pass.`,
 	}
 
 	cmd.PersistentFlags().BoolVar(&flags.force, "force", false, "Force pull even if the configuration already exists locally")
-	cmd.Flags().StringVar(&flags.keyFile, "key", "", "Path to a key file (PEM/OpenSSH) or symmetric secret used to verify the agent")
+	cmd.Flags().StringVar(&flags.keyFile, "key", "", "Path to a key file (PEM/OpenSSH) or symmetric secret used to verify the agent (or set "+envEncryptKey+" with the secret inline)")
 
 	return cmd
 }
@@ -59,6 +59,11 @@ func (f *pullFlags) runPullCommand(cmd *cobra.Command, args []string) (commandEr
 	if f.keyFile != "" {
 		var err error
 		if key, err = protect.LoadKey(f.keyFile); err != nil {
+			return err
+		}
+	} else if secret := os.Getenv(envEncryptKey); secret != "" {
+		var err error
+		if key, err = protect.ParseKey([]byte(secret)); err != nil {
 			return err
 		}
 	}

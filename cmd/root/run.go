@@ -885,6 +885,7 @@ func (f *runExecFlags) runtimeOpts(loadResult *teamloader.LoadResult, runConfig 
 		Models:             loadResult.Models,
 		Providers:          loadResult.Providers,
 		ModelsGateway:      runConfig.ModelsGateway,
+		EncryptedConfig:    loadResult.EncryptedConfig,
 		EnvProvider:        runConfig.EnvProvider(),
 		ProviderRegistry:   loadResult.ProviderRegistry,
 		AgentDefaultModels: loadResult.AgentDefaultModels,
