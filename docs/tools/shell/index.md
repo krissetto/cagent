@@ -43,7 +43,6 @@ toolsets:
 | Property       | Type    | Description                                                                                          |
 | -------------- | ------- | --------------------------------------------------------------------------------------------------- |
 | `env`          | object  | Environment variables to set for all shell commands                                                 |
-| `safer`        | boolean | Deprecated and ignored — shell commands are always classified now (see [Command classification](#command-classification)). Kept so existing YAMLs still parse. |
 | `sudo_askpass` | boolean | Opt in to prompting for a `sudo` password (see [Sudo support](#sudo-support)). Default `false`.     |
 
 ### Custom Environment Variables
@@ -68,7 +67,7 @@ The session's [safety mode](../../configuration/permissions/index.md#safety-mode
 
 Compound shell (`a && b`, `a; b`, `a | b`) is never matched against the safe allowlist; any destructive segment falls through to ask. The full taxonomy lives in [`pkg/safety/safety_patterns.json`](https://github.com/docker/docker-agent/blob/main/pkg/safety/safety_patterns.json).
 
-See [`examples/safety_modes.yaml`](https://github.com/docker/docker-agent/blob/main/examples/safety_modes.yaml) for a full example. The legacy `safer: true` toolset flag is deprecated and ignored.
+See [`examples/safety_modes.yaml`](https://github.com/docker/docker-agent/blob/main/examples/safety_modes.yaml) for a full example. The legacy `safer: true` toolset flag was removed in config version 15 (it is still accepted, and ignored, by older config versions).
 
 ### Sudo support
 
