@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker-agent/pkg/environment"
@@ -25,6 +26,18 @@ type Source interface {
 	Name() string
 	ParentDir() string
 	Read(ctx context.Context) ([]byte, error)
+}
+
+// EncryptedConfigSource is implemented by sources that may discover an
+// encrypted representation of the agent config while reading it (for example a
+// trusted Docker URL that returns the X-Cagent-Encrypted-Config response
+// header). Callers can type-assert a Source to this interface after Read to
+// pick up the value, which is then forwarded to a trusted Docker models gateway
+// on subsequent model requests.
+type EncryptedConfigSource interface {
+	// EncryptedConfig returns the encrypted config captured during the most
+	// recent successful Read, or "" if none was seen. Safe to call concurrently.
+	EncryptedConfig() string
 }
 
 type Sources map[string]Source
@@ -103,15 +116,122 @@ type urlSource struct {
 	// sources_test.go), which exists because tests use httptest.NewServer
 	// (plain HTTP, 127.0.0.1).
 	unsafe bool
+	// encryptedConfig captures the X-Cagent-Encrypted-Config response header
+	// seen on a successful fetch from a trusted Docker URL. It is a pointer so
+	// the value-receiver Read can persist the captured value back onto the
+	// pointer the caller holds, and so concurrent readers see a consistent
+	// value.
+	encryptedConfig *atomic.Pointer[string]
 }
 
 // NewURLSource creates a new URL source. If envProvider is non-nil, it will be used
 // to look up GITHUB_TOKEN for authentication when fetching from GitHub URLs.
 func NewURLSource(rawURL string, envProvider environment.Provider) Source {
 	return &urlSource{
-		url:         rawURL,
-		envProvider: envProvider,
+		url:             rawURL,
+		envProvider:     envProvider,
+		encryptedConfig: &atomic.Pointer[string]{},
 	}
+}
+
+// EncryptedConfig returns the encrypted agent config captured from the
+// X-Cagent-Encrypted-Config response header during the most recent successful
+// Read from a trusted Docker URL, or "" if none was seen. It implements
+// [EncryptedConfigSource].
+func (a urlSource) EncryptedConfig() string {
+	if a.encryptedConfig == nil {
+		return ""
+	}
+	if v := a.encryptedConfig.Load(); v != nil {
+		return *v
+	}
+	return ""
+}
+
+// storeEncryptedConfig records enc both in memory (for this process) and on
+// disk (encPath, next to the cached YAML) so a later run that revalidates the
+// URL and gets a 304 — which no longer carries the full config, only its digest
+// — can recover the value from disk instead of the response.
+func (a urlSource) storeEncryptedConfig(ctx context.Context, enc, encPath string) {
+	if a.encryptedConfig != nil {
+		a.encryptedConfig.Store(&enc)
+	}
+	// Ensure the cache directory exists: captureEncryptedConfig may run before
+	// the YAML-caching block that creates it (e.g. this fetch returns early).
+	if err := os.MkdirAll(filepath.Dir(encPath), 0o700); err != nil {
+		slog.DebugContext(ctx, "Failed to create cache dir for encrypted agent config", "url", a.url, "error", err)
+		return
+	}
+	if err := os.WriteFile(encPath, []byte(enc), 0o600); err != nil {
+		slog.DebugContext(ctx, "Failed to cache encrypted agent config", "url", a.url, "error", err)
+	}
+}
+
+// clearEncryptedConfig drops any in-memory encrypted config so that, until the
+// next successful capture, no (potentially stale) value is forwarded to the
+// gateway. The on-disk sidecar is left untouched. Safe to call concurrently.
+func (a urlSource) clearEncryptedConfig() {
+	if a.encryptedConfig != nil {
+		a.encryptedConfig.Store(nil)
+	}
+}
+
+// adoptCachedEncryptedConfig loads the encrypted config cached on disk and, if
+// present, records it in memory so it is forwarded to the Docker models gateway
+// on subsequent model requests. When wantDigest is non-empty (the server sent
+// X-Cagent-Encrypted-Config-Digest on a 304), the cached value is only adopted
+// if its digest matches, so a stale cache is never replayed. It reports whether
+// a usable, matching value was adopted.
+func (a urlSource) adoptCachedEncryptedConfig(ctx context.Context, encPath, wantDigest string) bool {
+	if a.encryptedConfig == nil {
+		return false
+	}
+	if !isTrustedDockerURL(a.url) {
+		return false
+	}
+	data, err := os.ReadFile(encPath)
+	if err != nil || len(data) == 0 {
+		return false
+	}
+	enc := string(data)
+	if wantDigest != "" && encryptedConfigDigest(enc) != wantDigest {
+		slog.DebugContext(ctx, "Cached encrypted agent config does not match server digest; discarding", "url", a.url)
+		return false
+	}
+	a.encryptedConfig.Store(&enc)
+	slog.DebugContext(ctx, "Recovered encrypted agent config from cache", "url", a.url)
+	return true
+}
+
+// captureEncryptedConfig records the X-Cagent-Encrypted-Config response header
+// when the fetch targets a trusted Docker URL. The trust check mirrors the
+// Docker JWT injection so the value is never captured from an untrusted host.
+// The full value only appears on a 200; on a 304 the server sends just the
+// digest, so the 304 path recovers the value from disk instead (see
+// [urlSource.adoptCachedEncryptedConfig]).
+func (a urlSource) captureEncryptedConfig(ctx context.Context, resp *http.Response, encPath string) {
+	if a.encryptedConfig == nil || resp == nil {
+		return
+	}
+	if !isTrustedDockerURL(a.url) {
+		return
+	}
+	enc := resp.Header.Get(httpclient.EncryptedConfigHeader)
+	if enc == "" {
+		return
+	}
+	a.storeEncryptedConfig(ctx, enc, encPath)
+	slog.DebugContext(ctx, "Captured encrypted agent config from Docker source response header", "url", a.url)
+}
+
+// encryptedConfigDigest returns the "sha256:<hex>" fingerprint of enc, matching
+// the format a trusted Docker source sends in X-Cagent-Encrypted-Config-Digest.
+func encryptedConfigDigest(enc string) string {
+	if enc == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(enc))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func (a urlSource) Name() string {
@@ -138,11 +258,26 @@ func (a urlSource) Read(ctx context.Context) ([]byte, error) {
 	urlHash := hashURL(a.url)
 	cachePath := filepath.Join(cacheDir, urlHash)
 	etagPath := cachePath + ".etag"
+	// encPath sidecars the cached YAML with the encrypted agent config captured
+	// from the X-Cagent-Encrypted-Config header on a 200, so a later 304 (which
+	// carries only the digest) can recover it.
+	encPath := cachePath + ".enc"
 
-	// Read cached ETag if available
+	return a.read(ctx, cacheDir, cachePath, etagPath, encPath, false)
+}
+
+// read performs the conditional fetch and caching. When forceReload is true it
+// skips the If-None-Match revalidation so the server answers with a fresh 200
+// (never a 304); this is the self-healing path taken when a 304 arrives but the
+// encrypted config could not be recovered from cache (missing or digest
+// mismatch).
+func (a urlSource) read(ctx context.Context, cacheDir, cachePath, etagPath, encPath string, forceReload bool) ([]byte, error) {
+	// Read cached ETag if available (skipped when forcing a reload).
 	cachedETag := ""
-	if etagData, err := os.ReadFile(etagPath); err == nil {
-		cachedETag = string(etagData)
+	if !forceReload {
+		if etagData, err := os.ReadFile(etagPath); err == nil {
+			cachedETag = string(etagData)
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.url, http.NoBody)
@@ -150,9 +285,17 @@ func (a urlSource) Read(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	// Include If-None-Match header if we have a cached ETag
+	// Include If-None-Match header if we have a cached ETag and are not forcing
+	// a full reload.
 	if cachedETag != "" {
 		req.Header.Set("If-None-Match", cachedETag)
+	}
+	// On a forced reload, ask any intermediary (and the origin) not to answer
+	// from cache, so we are guaranteed a fresh 200 carrying the full encrypted
+	// config rather than another 304.
+	if forceReload {
+		req.Header.Set("Cache-Control", "no-cache")
+		req.Header.Set("Pragma", "no-cache")
 	}
 
 	a.addGitHubAuth(ctx, req)
@@ -179,15 +322,48 @@ func (a urlSource) Read(ctx context.Context) ([]byte, error) {
 		// Network error - try to use cached version
 		if cachedData, cacheErr := os.ReadFile(cachePath); cacheErr == nil {
 			slog.DebugContext(ctx, "Network error fetching URL, using cached version", "url", a.url, "error", err)
+			a.adoptCachedEncryptedConfig(ctx, encPath, "")
 			return cachedData, nil
 		}
 		return nil, fmt.Errorf("%w: fetching %s: %w", ErrSourceFetchFailed, a.url, err)
 	}
 	defer resp.Body.Close()
 
+	// Capture the full encrypted agent config header. It is present on a 200
+	// (and persisted to encPath); a 304 carries only the digest, handled below.
+	a.captureEncryptedConfig(ctx, resp, encPath)
+
 	// 304 Not Modified - return cached content
 	if resp.StatusCode == http.StatusNotModified {
 		if cachedData, cacheErr := os.ReadFile(cachePath); cacheErr == nil {
+			// Recover the encrypted config from disk, verifying it against the
+			// digest the server sent (when present). If it is missing or stale,
+			// self-heal by forcing a full reload so we get the config again.
+			wantDigest := resp.Header.Get(httpclient.EncryptedConfigDigestHeader)
+			if wantDigest != "" && !a.adoptCachedEncryptedConfig(ctx, encPath, wantDigest) {
+				if !forceReload {
+					slog.DebugContext(ctx, "304 received but cached encrypted config is missing or stale; forcing a reload", "url", a.url)
+					return a.read(ctx, cacheDir, cachePath, etagPath, encPath, true)
+				}
+				// We already forced a reload (Cache-Control: no-cache), yet the
+				// server answered 304 again with a digest we still cannot match
+				// from cache. A forced reload is supposed to bypass caching and
+				// return a fresh 200 carrying the full config, so a second 304 is
+				// a server/protocol violation we cannot recover from here.
+				//
+				// The YAML config itself is valid and cached, so we do NOT fail
+				// the whole config load over it — that would keep the agent from
+				// starting for what is only an encrypted-config-forwarding issue.
+				// Instead we leave the encrypted config unset (nothing stale or
+				// mismatched is forwarded to the gateway; the proxy-side check
+				// fails open for a missing header) and warn loudly.
+				a.clearEncryptedConfig()
+				slog.WarnContext(ctx, "Server returned 304 to a forced reload but the cached encrypted agent config does not match the advertised digest; forwarding no encrypted config for this URL", "url", a.url, "want_digest", wantDigest)
+			}
+			if wantDigest == "" {
+				// No digest advertised: best-effort adopt whatever is cached.
+				a.adoptCachedEncryptedConfig(ctx, encPath, "")
+			}
 			slog.DebugContext(ctx, "URL not modified, using cached version", "url", a.url)
 			return cachedData, nil
 		}
@@ -198,6 +374,7 @@ func (a urlSource) Read(ctx context.Context) ([]byte, error) {
 		// HTTP error - try to use cached version
 		if cachedData, cacheErr := os.ReadFile(cachePath); cacheErr == nil {
 			slog.DebugContext(ctx, "HTTP error fetching URL, using cached version", "url", a.url, "status", resp.Status)
+			a.adoptCachedEncryptedConfig(ctx, encPath, "")
 			return cachedData, nil
 		}
 		return nil, fmt.Errorf("%w: fetching %s: %s", ErrSourceFetchFailed, a.url, resp.Status)

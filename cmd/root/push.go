@@ -1,9 +1,9 @@
 package root
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -49,22 +49,41 @@ OpenSSH key markers.
 		RunE: flags.runPushCommand,
 	}
 
-	cmd.Flags().StringVar(&flags.keyFile, "key", "", "Path to a key file (PEM/OpenSSH) or symmetric secret used to protect the agent")
+	cmd.Flags().StringVar(&flags.keyFile, "key", "", "Path to a key file (PEM/OpenSSH) or symmetric secret used to protect the agent (or set "+envEncryptKey+" with the secret inline)")
 	cmd.Flags().BoolVar(&flags.encrypt, "encrypt", false, "Also embed an encrypted copy of the agent in the annotations (requires --key)")
 
 	return cmd
 }
 
-func (f *pushFlags) protection() (oci.PackageOption, error) {
-	if f.keyFile == "" {
-		if f.encrypt {
-			return nil, errors.New("--encrypt requires --key")
-		}
-		return nil, nil
+// envEncryptKey is an alternative to --key for callers that prefer not to write
+// the secret to a file: its value is used as the symmetric secret directly
+// (never a file path). The --key flag takes precedence when both are set.
+const envEncryptKey = "DOCKER_AGENT_ENCRYPT_KEY"
+
+// resolveKey loads the protection key from the --key flag (a file path) or,
+// when the flag is empty, from the [envEncryptKey] environment variable (an
+// inline symmetric secret). It returns a nil key and nil error when neither is
+// set, so callers can treat "no key" as "no protection".
+func (f *pushFlags) resolveKey() (*protect.Key, error) {
+	if f.keyFile != "" {
+		return protect.LoadKey(f.keyFile)
 	}
-	key, err := protect.LoadKey(f.keyFile)
+	if secret := os.Getenv(envEncryptKey); secret != "" {
+		return protect.ParseKey([]byte(secret))
+	}
+	return nil, nil
+}
+
+func (f *pushFlags) protection() (oci.PackageOption, error) {
+	key, err := f.resolveKey()
 	if err != nil {
 		return nil, err
+	}
+	if key == nil {
+		if f.encrypt {
+			return nil, fmt.Errorf("--encrypt requires --key or %s", envEncryptKey)
+		}
+		return nil, nil
 	}
 	mode := protect.ModeSign
 	if f.encrypt {

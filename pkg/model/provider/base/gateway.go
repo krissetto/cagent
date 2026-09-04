@@ -74,6 +74,24 @@ func GatewayHTTPOptions(gatewayURL *url.URL, defaultBaseURL string, cfg *latest.
 		httpclient.WithModelName(cfg.Name),
 		httpclient.WithQuery(gatewayURL.Query()),
 	}
+	// Forward the encrypted agent config to trusted Docker gateways only. The
+	// gateway string here is the full URL; reuse the same trust check the
+	// Docker JWT injection relies on so we never leak the value to third-party
+	// gateways.
+	if enc := modelOpts.EncryptedConfig(); enc != "" {
+		if environment.IsTrustedDockerURL(gatewayURL.String()) {
+			opts = append(opts, httpclient.WithHeader(httpclient.EncryptedConfigHeader, enc))
+			slog.Debug("Forwarding encrypted agent config to Docker gateway",
+				"header", httpclient.EncryptedConfigHeader,
+				"gateway", gatewayURL.String(),
+				"provider", cfg.Provider,
+				"model", cfg.Model,
+				"value_length", len(enc))
+		} else {
+			slog.Debug("Not forwarding encrypted agent config: gateway is not a trusted Docker URL",
+				"gateway", gatewayURL.String())
+		}
+	}
 	if modelOpts.GeneratingTitle() {
 		opts = append(opts, httpclient.WithHeader("X-Cagent-GeneratingTitle", "1"))
 	}
