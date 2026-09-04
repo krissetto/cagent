@@ -65,6 +65,18 @@ func (t *Config) Validate() error {
 		}
 	}
 
+	// Top-level "rag" definitions skip Toolset.validate() during YAML
+	// unmarshaling (see RAGToolset.UnmarshalYAML), so their RAGConfig is
+	// validated here instead.
+	for name, def := range t.RAG {
+		if def.RAGConfig == nil {
+			continue
+		}
+		if err := def.RAGConfig.validate(); err != nil {
+			return fmt.Errorf("rag.%s: %w", name, err)
+		}
+	}
+
 	for i := range t.Agents {
 		agent := &t.Agents[i]
 
@@ -451,10 +463,24 @@ func (t *Toolset) validate() error {
 		if t.Ref == "" && t.RAGConfig == nil {
 			return errors.New("rag toolset requires either ref or rag_config")
 		}
+		if t.RAGConfig != nil {
+			if err := t.RAGConfig.validate(); err != nil {
+				return err
+			}
+		}
 	case "background_agents":
 		// no additional validation needed
 	}
 
+	return nil
+}
+
+// validate rejects an invalid RAGConfig. Currently only IndexingTimeout is
+// checked; a negative value would make context.WithTimeout fire immediately.
+func (c *RAGConfig) validate() error {
+	if c.IndexingTimeout != nil && c.IndexingTimeout.Duration < 0 {
+		return errors.New("indexing_timeout must not be negative")
+	}
 	return nil
 }
 

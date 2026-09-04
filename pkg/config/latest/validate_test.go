@@ -247,6 +247,7 @@ func TestToolsetValidateTypeRequirements(t *testing.T) {
 		{name: "open_url without url", toolset: Toolset{Type: "open_url"}, wantErr: "open_url toolset requires a url to be set"},
 		{name: "model_picker without models", toolset: Toolset{Type: "model_picker"}, wantErr: "model_picker toolset requires at least one model in the 'models' list"},
 		{name: "rag without ref or config", toolset: Toolset{Type: "rag"}, wantErr: "rag toolset requires either ref or rag_config"},
+		{name: "rag inline config with negative indexing_timeout", toolset: Toolset{Type: "rag", RAGConfig: &RAGConfig{IndexingTimeout: &Duration{Duration: -time.Second}}}, wantErr: "indexing_timeout must not be negative"},
 	}
 
 	for _, tt := range tests {

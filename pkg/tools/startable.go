@@ -432,6 +432,12 @@ func (s *StartableToolSet) TryStart(ctx context.Context) (started bool, err erro
 // startup probe so both give up on a wedged toolset after the same grace
 // period; it is deliberately generous because a cold start can legitimately
 // include an image pull.
+//
+// This is a *wait* budget, not a bound on the start itself: a toolset whose
+// Start legitimately outlives it (e.g. RAG indexing a large knowledge base,
+// bounded by its own indexing_timeout) is expected to keep running past this
+// deadline by design — see TryStartWithTimeout below for the abandon-and-
+// resume contract that makes that safe.
 const DefaultStartTimeout = 30 * time.Second
 
 // TryStartWithTimeout runs TryStart bounded by timeout (DefaultStartTimeout
