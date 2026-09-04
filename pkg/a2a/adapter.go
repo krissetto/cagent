@@ -135,6 +135,21 @@ func runDockerAgent(ctx agent.InvocationContext, t *team.Team, agentName string,
 		// Track accumulated content for chunked responses
 		var contentBuilder strings.Builder
 
+		// finalEvent builds the turn-complete ADK event from whatever content
+		// was accumulated so far. Shared by the StreamStoppedEvent case and the
+		// post-loop fallback below, so both paths build an identical event.
+		finalEvent := func() *adksession.Event {
+			return &adksession.Event{
+				Author: agentName,
+				LLMResponse: model.LLMResponse{
+					Content:      genai.NewContentFromParts([]*genai.Part{{Text: contentBuilder.String()}}, genai.RoleModel),
+					Partial:      false,
+					TurnComplete: true,
+					FinishReason: genai.FinishReasonStop,
+				},
+			}
+		}
+
 		// Convert docker agent events to ADK events and yield them
 
 		for event := range eventsChan {
@@ -171,19 +186,18 @@ func runDockerAgent(ctx agent.InvocationContext, t *team.Team, agentName string,
 			case *runtime.StreamStoppedEvent:
 				// Send final complete event with all accumulated content
 				if contentBuilder.Len() > 0 {
-					finalEvent := &adksession.Event{
-						Author: agentName,
-						LLMResponse: model.LLMResponse{
-							Content:      genai.NewContentFromParts([]*genai.Part{{Text: contentBuilder.String()}}, genai.RoleModel),
-							Partial:      false,
-							TurnComplete: true,
-							FinishReason: genai.FinishReasonStop,
-						},
-					}
-					yield(finalEvent, nil)
+					yield(finalEvent(), nil)
 					return
 				}
 			}
+		}
+
+		// The channel closed without a StreamStoppedEvent: the runtime bounds
+		// how long it waits to deliver that event (#4136), but a consumer that
+		// abandoned the channel or an unexpected close should still complete
+		// the ADK turn rather than leave it hanging.
+		if contentBuilder.Len() > 0 {
+			yield(finalEvent(), nil)
 		}
 	}
 }

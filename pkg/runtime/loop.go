@@ -193,11 +193,16 @@ func (r *LocalRuntime) emitHookDrivenShutdown(
 // "all cleanup done" signal is the channel close (done last, in
 // restoreAndClose) that terminates a `for range`, not the StreamStopped event.
 //
-// Delivery: StreamStopped is best-effort. It is emitted non-blockingly and is
-// dropped when the buffer is full and the consumer has gone away, rather than
-// blocking teardown (a blocking send here is the deadlock #3070 fixed).
-// Consumers must rely on the channel close, not on receiving StreamStopped, as
-// the guaranteed terminal signal.
+// Delivery: StreamStopped is delivered with a bounded blocking send (see
+// [boundedChannelSink]) rather than a plain non-blocking one. A consumer
+// still draining the channel — including one that already got Esc or
+// otherwise cancelled its context, since the TUI keeps draining until close —
+// reliably receives it. It is dropped only if nothing accepts it within
+// streamStoppedTimeout, i.e. the consumer has genuinely abandoned the channel
+// (#4136 fixed the non-blocking drop that caused this; #3070 is why the send
+// is bounded rather than unbounded). Consumers must still rely on the channel
+// close, not on receiving StreamStopped, as the one guaranteed terminal
+// signal.
 func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.Session, reason string, prevElicitationCh, events chan Event) {
 	a := r.resolveSessionAgent(sess)
 
@@ -205,10 +210,10 @@ func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.S
 		reason = turnEndReasonCanceled
 	}
 
-	// Best-effort, non-blocking on purpose: a blocking send here reintroduces
-	// the #3070 teardown deadlock. See the doc comment for the ordering and
-	// delivery contract.
-	nonBlocking(&channelSink{ch: events}).Emit(StreamStopped(sess.ID, a.Name(), reason))
+	// Bounded, not unbounded: an abandoned consumer must not hang teardown
+	// forever (#3070), but a live one draining past cancellation must still
+	// get this event (#4136) — so this never selects on ctx.Done().
+	bounded(&channelSink{ch: events}, r.streamStoppedTimeout()).Emit(StreamStopped(sess.ID, a.Name(), reason))
 
 	// Execute session end hooks with a context that won't be cancelled so
 	// cleanup hooks run even when the stream was interrupted (e.g. Ctrl+C).
@@ -225,6 +230,17 @@ func (r *LocalRuntime) finalizeEventChannel(ctx context.Context, sess *session.S
 	r.telemetry.RecordSessionEnd(ctx)
 
 	r.elicitation.restoreAndClose(events, prevElicitationCh)
+}
+
+// streamStoppedTimeout returns the bounded-delivery deadline for the
+// StreamStopped emit in finalizeEventChannel, falling back to
+// defaultStreamStoppedDeliveryTimeout when unset (e.g. a *LocalRuntime built
+// directly as a struct literal in tests, bypassing NewLocalRuntime).
+func (r *LocalRuntime) streamStoppedTimeout() time.Duration {
+	if r.streamStoppedDeliveryTimeout > 0 {
+		return r.streamStoppedDeliveryTimeout
+	}
+	return defaultStreamStoppedDeliveryTimeout
 }
 
 // RunStream starts the agent's interaction loop and returns a channel of events.

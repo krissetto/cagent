@@ -402,6 +402,14 @@ type LocalRuntime struct {
 	// Defaults to defaultToolStartTimeout; overridden via WithToolStartTimeout.
 	toolStartTimeout time.Duration
 
+	// streamStoppedDeliveryTimeout bounds how long finalizeEventChannel
+	// blocks trying to deliver StreamStopped when the event buffer is full.
+	// Defaults to defaultStreamStoppedDeliveryTimeout; tests shrink it to
+	// exercise the drop-when-abandoned path without a real-time wait. Zero
+	// falls back to the default (see streamStoppedTimeout), so runtimes built
+	// directly via a struct literal in tests still get bounded delivery.
+	streamStoppedDeliveryTimeout time.Duration
+
 	// pauseMu guards pauseCh.
 	pauseMu sync.Mutex
 	// pauseCh is non-nil and open while /pause has paused the run loop;
@@ -678,25 +686,26 @@ func NewLocalRuntime(ctx context.Context, agents *team.Team, opts ...Opt) (*Loca
 	}
 
 	r := &LocalRuntime{
-		ctx:                    func() context.Context { return context.WithoutCancel(ctx) },
-		toolMap:                make(map[string]ToolHandlerFunc),
-		liveSessions:           make(map[string]*liveSessionEntry),
-		team:                   agents,
-		agents:                 newAgentRouter(agents, defaultAgent.Name()),
-		resumeChan:             make(chan ResumeRequest),
-		steerQueue:             NewInMemoryMessageQueue(defaultSteerQueueCapacity),
-		followUpQueue:          NewInMemoryMessageQueue(defaultFollowUpQueueCapacity),
-		sessionCompaction:      true,
-		managedOAuth:           true,
-		sessionStore:           session.NewInMemorySessionStore(),
-		fallback:               newFallbackExecutor(),
-		now:                    time.Now,
-		telemetry:              defaultTelemetry{},
-		providerRegistry:       provider.DefaultRegistry(),
-		maxOverflowCompactions: defaultMaxOverflowCompactions,
-		toolListTimeout:        defaultToolListTimeout,
-		toolStartTimeout:       defaultToolStartTimeout,
-		dmrModelLister:         dmrmodels.ListModels,
+		ctx:                          func() context.Context { return context.WithoutCancel(ctx) },
+		toolMap:                      make(map[string]ToolHandlerFunc),
+		liveSessions:                 make(map[string]*liveSessionEntry),
+		team:                         agents,
+		agents:                       newAgentRouter(agents, defaultAgent.Name()),
+		resumeChan:                   make(chan ResumeRequest),
+		steerQueue:                   NewInMemoryMessageQueue(defaultSteerQueueCapacity),
+		followUpQueue:                NewInMemoryMessageQueue(defaultFollowUpQueueCapacity),
+		sessionCompaction:            true,
+		managedOAuth:                 true,
+		sessionStore:                 session.NewInMemorySessionStore(),
+		fallback:                     newFallbackExecutor(),
+		now:                          time.Now,
+		telemetry:                    defaultTelemetry{},
+		providerRegistry:             provider.DefaultRegistry(),
+		maxOverflowCompactions:       defaultMaxOverflowCompactions,
+		toolListTimeout:              defaultToolListTimeout,
+		toolStartTimeout:             defaultToolStartTimeout,
+		streamStoppedDeliveryTimeout: defaultStreamStoppedDeliveryTimeout,
+		dmrModelLister:               dmrmodels.ListModels,
 	}
 	r.bgAgents = agenttool.NewHandler(r)
 
