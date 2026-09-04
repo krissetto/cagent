@@ -389,14 +389,14 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 		// and the reason must reach the loop as a finish reason so the empty
 		// turn is explained rather than reported as "stop reason: null".
 		reason := event.Response.IncompleteDetails.Reason
-		slog.Warn("Response incomplete",
+		slog.Debug("Response incomplete",
 			"reason", reason,
 			"response_id", event.Response.ID,
 			"output_items", len(event.Response.Output),
 			"output_tokens", event.Response.Usage.OutputTokens,
 			"reasoning_tokens", event.Response.Usage.OutputTokensDetails.ReasoningTokens,
+			"response_raw", event.Response.RawJSON(),
 		)
-		slog.Debug("Incomplete response payload", "response_raw", event.Response.RawJSON())
 		u := event.Response.Usage
 		if u.TotalTokens > 0 {
 			response.Usage = &chat.Usage{
