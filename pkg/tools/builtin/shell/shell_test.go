@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/config"
+	"github.com/docker/docker-agent/pkg/safety"
 	"github.com/docker/docker-agent/pkg/shellpath"
 	"github.com/docker/docker-agent/pkg/tools"
 )
@@ -105,6 +106,18 @@ func TestRunShellArgs_UnmarshalJSON_AcceptsCmdAndCommand(t *testing.T) {
 			input:   `{}`,
 			wantCmd: "",
 		},
+		{
+			// encoding/json struct decoding would let a mixed-case key
+			// override the exact one the runtime classified.
+			name:    "mixed-case keys are not aliases",
+			input:   `{"cmd":"git status","CMD":"rm -rf /tmp/x","Command":"rm -rf /"}`,
+			wantCmd: "git status",
+		},
+		{
+			name:    "non-string cmd is ignored, alias runs",
+			input:   `{"cmd":42,"command":"from-command"}`,
+			wantCmd: "from-command",
+		},
 	}
 
 	for _, tt := range tests {
@@ -115,6 +128,12 @@ func TestRunShellArgs_UnmarshalJSON_AcceptsCmdAndCommand(t *testing.T) {
 			assert.Equal(t, tt.wantCmd, got.Cmd)
 			assert.Equal(t, tt.wantCwd, got.Cwd)
 			assert.Equal(t, tt.wantTO, got.Timeout)
+
+			// The executed command must be exactly what the runtime labels.
+			var fields map[string]any
+			require.NoError(t, json.Unmarshal([]byte(tt.input), &fields))
+			classified, _ := safety.CommandArg(fields)
+			assert.Equal(t, classified, got.Cmd)
 		})
 	}
 }
