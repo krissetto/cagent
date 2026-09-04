@@ -8,6 +8,8 @@
 // degrade to [ClassUnknown] — a labeller must never block a call.
 package safety
 
+import "strings"
+
 // Class is the three-value safety taxonomy every tool call maps onto.
 type Class string
 
@@ -123,14 +125,17 @@ func LabelForHints(readOnlyHint, destructiveHint bool) Label {
 }
 
 // CommandArg extracts the shell command string from tool-call
-// arguments, accepting both the canonical "cmd" key and the "command"
-// alias some models emit.
+// arguments with the same precedence as the shell and background-job
+// handlers: a non-blank canonical "cmd" wins, otherwise the "command"
+// alias some models emit. Classifying anything else would label a
+// command the handler does not run.
 func CommandArg(input map[string]any) (string, bool) {
-	if v, ok := input["cmd"].(string); ok {
-		return v, true
+	cmd, hasCmd := input["cmd"].(string)
+	if hasCmd && strings.TrimSpace(cmd) != "" {
+		return cmd, true
 	}
 	if v, ok := input["command"].(string); ok {
 		return v, true
 	}
-	return "", false
+	return cmd, hasCmd
 }

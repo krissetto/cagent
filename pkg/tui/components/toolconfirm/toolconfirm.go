@@ -76,13 +76,14 @@ func BuildPermissionPattern(toolCall tools.ToolCall) string {
 	toolName := toolCall.Function.Name
 
 	if safety.IsCommandTool(toolName) {
-		var args struct {
-			Cmd string `json:"cmd"`
-		}
+		var args map[string]any
 		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err == nil {
-			// First word of the command ("ls -la /tmp" -> "ls"); the
-			// trailing * matches any arguments.
-			if fields := strings.Fields(args.Cmd); len(fields) > 0 {
+			// Resolve cmd/command the way the handler will, so the grant
+			// is built from the command that actually runs. First word
+			// only ("ls -la /tmp" -> "ls"); the trailing * matches any
+			// arguments.
+			cmd, _ := safety.CommandArg(args)
+			if fields := strings.Fields(cmd); len(fields) > 0 {
 				return toolName + ":cmd=" + fields[0] + "*"
 			}
 		}

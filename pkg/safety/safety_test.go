@@ -269,6 +269,39 @@ func TestIsCommandTool(t *testing.T) {
 	assert.False(t, IsCommandTool("read_file"))
 }
 
+// CommandArg must resolve the same command the handlers execute, or
+// the label describes a command that never runs.
+func TestCommandArg_MatchesHandlerPrecedence(t *testing.T) {
+	tests := []struct {
+		name   string
+		args   map[string]any
+		want   string
+		wantOK bool
+	}{
+		{"cmd only", map[string]any{"cmd": "ls"}, "ls", true},
+		{"command alias only", map[string]any{"command": "ls"}, "ls", true},
+		{"non-blank cmd wins over command", map[string]any{"cmd": "ls", "command": "rm -rf /"}, "ls", true},
+		{"blank cmd yields to command", map[string]any{"cmd": "  ", "command": "rm -rf /"}, "rm -rf /", true},
+		{"empty cmd yields to command", map[string]any{"cmd": "", "command": "rm -rf /"}, "rm -rf /", true},
+		{"blank cmd alone is still present", map[string]any{"cmd": "  "}, "  ", true},
+		{"non-string cmd ignored", map[string]any{"cmd": 42, "command": "ls"}, "ls", true},
+		{"missing", map[string]any{}, "", false},
+		{"nil map", nil, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := CommandArg(tt.args)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantOK, ok)
+		})
+	}
+}
+
+func TestLabelToolCall_BlankCmdClassifiesCommandAlias(t *testing.T) {
+	label := LabelToolCall(ShellToolName, map[string]any{"cmd": " ", "command": "rm -rf /tmp/x"}, false, false)
+	assert.Equal(t, ClassDestructive, label.Class, "the handler runs the alias, so the label must describe it")
+}
+
 func TestLabelToolCall_NonShellUsesAnnotations(t *testing.T) {
 	// Annotation hints must apply even if the args happen to carry a
 	// destructive-looking command string.

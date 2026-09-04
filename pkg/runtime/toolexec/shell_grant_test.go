@@ -86,6 +86,8 @@ func TestCommandGrantCoversCall(t *testing.T) {
 	t.Run("command key fallback and missing command", func(t *testing.T) {
 		t.Parallel()
 		assert.True(t, commandGrantCoversCall(safety.ShellToolName, grant, map[string]any{"command": "mkdir foo"}))
+		assert.True(t, commandGrantCoversCall(safety.ShellToolName, grant, map[string]any{"cmd": " ", "command": "mkdir foo"}), "blank cmd defers to the alias, like the handler")
+		assert.False(t, commandGrantCoversCall(safety.ShellToolName, grant, map[string]any{"cmd": " ", "command": "mkdir x && rm -rf ~"}), "the executed alias is what gets the metachar check")
 		assert.False(t, commandGrantCoversCall(safety.ShellToolName, grant, map[string]any{}), "no command arg → never override")
 		assert.False(t, commandGrantCoversCall(safety.ShellToolName, grant, map[string]any{"cmd": 42}), "non-string cmd")
 	})
