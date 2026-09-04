@@ -23,7 +23,7 @@ type CommandEvaluator interface {
 
 // commandEvaluatorFactory builds the CommandEvaluator used by
 // ResolveCommand. It is empty until a JS engine is registered: calling
-// jscommands.Register (done by teamloader, the CLI and
+// jscommands.Register (done by loaderdefaults.Opts, the CLI and
 // embeddedchat/defaults) wires in the goja-backed evaluator from pkg/js.
 // The indirection keeps the JS engine out of pkg/runtime's import graph for
 // embedders that build teams in code and never use JS command expressions.

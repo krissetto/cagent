@@ -17,7 +17,6 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	hclconv "github.com/docker/docker-agent/pkg/config/hcl"
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/environment"
 )
@@ -47,17 +46,6 @@ func Load(ctx context.Context, source Source, opts ...LoadOption) (*latest.Confi
 	data, err := source.Read(ctx)
 	if err != nil {
 		return nil, err
-	}
-
-	// Configurations may be authored in HCL as an alternative to YAML.
-	// Detect the format from the source name extension or, when no hint is
-	// available (OCI artifacts, etc.), from the content itself, then
-	// transparently convert to YAML for the rest of the pipeline.
-	if IsHCLSource(source.Name(), data) {
-		data, err = hclconv.ToYAML(data, source.Name())
-		if err != nil {
-			return nil, fmt.Errorf("parsing HCL config file: %w", err)
-		}
 	}
 
 	// Flavor patches rewrite the raw document, so they run before anything
@@ -398,16 +386,6 @@ func validateForceHandoffs(cfg *latest.Config, allNames map[string]bool) error {
 	}
 
 	return nil
-}
-
-// IsHCLSource reports whether the configuration data should be parsed as HCL
-// rather than YAML. The decision is based first on the source name extension,
-// and then on a content-based heuristic when no extension hint is available.
-func IsHCLSource(name string, data []byte) bool {
-	if strings.EqualFold(filepath.Ext(name), ".hcl") {
-		return true
-	}
-	return hclconv.LooksLikeHCL(data)
 }
 
 // providerAPITypes are the allowed values for api_type in provider configs

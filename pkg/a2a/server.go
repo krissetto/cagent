@@ -23,6 +23,7 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 
 	"github.com/docker/docker-agent/pkg/config"
+	"github.com/docker/docker-agent/pkg/config/sources"
 	"github.com/docker/docker-agent/pkg/httpsec"
 	pathx "github.com/docker/docker-agent/pkg/path"
 	"github.com/docker/docker-agent/pkg/servesafety"
@@ -57,7 +58,7 @@ type RunOptions struct {
 func Run(ctx context.Context, agentFilename, agentName, sessionDB string, runConfig *config.RuntimeConfig, ln net.Listener, options RunOptions) error {
 	slog.DebugContext(ctx, "Starting A2A server", "source", agentFilename, "agent", agentName, "addr", ln.Addr().String())
 
-	agentSource, err := config.Resolve(agentFilename, nil)
+	agentSource, err := sources.Resolve(agentFilename, nil)
 	if err != nil {
 		return err
 	}

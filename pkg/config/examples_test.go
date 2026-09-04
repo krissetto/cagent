@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/config/hcl"
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/modelsdev"
 )
@@ -112,7 +113,7 @@ func TestParseExamples(t *testing.T) {
 		t.Run(file, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := Load(t.Context(), NewFileSource(file))
+			cfg, err := Load(t.Context(), hcl.NewSource(NewFileSource(file)))
 
 			require.NoError(t, err)
 			require.Equal(t, latest.Version, cfg.Version, "Version should be %d in %s", latest.Version, file)
@@ -196,7 +197,7 @@ func TestParseExamplesAfterMarshalling(t *testing.T) {
 		t.Run(file, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := Load(t.Context(), NewFileSource(file))
+			cfg, err := Load(t.Context(), hcl.NewSource(NewFileSource(file)))
 			require.NoError(t, err)
 
 			// Make sure that a config can be marshalled and parsed again.
@@ -230,7 +231,7 @@ func TestHCLExamplesMatchYAML(t *testing.T) {
 		t.Run(file, func(t *testing.T) {
 			t.Parallel()
 
-			cfgHCL, err := Load(t.Context(), NewFileSource(file))
+			cfgHCL, err := Load(t.Context(), hcl.NewSource(NewFileSource(file)))
 			require.NoError(t, err)
 			cfgYAML, err := Load(t.Context(), NewFileSource(yamlFile))
 			require.NoError(t, err)

@@ -679,7 +679,7 @@ func (f *runExecFlags) applyAliasOptions(ctx context.Context, alias *userconfig.
 }
 
 // aliasOptions resolves the alias options for an agent reference from an
-// already-loaded user config, mirroring config.ResolveAlias: the empty
+// already-loaded user config, mirroring sources.ResolveAlias: the empty
 // reference maps to the "default" alias, and an alias without options is
 // not returned.
 func aliasOptions(cfg *userconfig.Config, agentFileName string) *userconfig.Alias {

@@ -1,4 +1,4 @@
-package teamloader
+package toon
 
 import (
 	"context"
@@ -60,7 +60,7 @@ func TestToon(t *testing.T) {
 			if tc.filter != "" {
 				toolFilter = tc.filter
 			}
-			wrapped := WithToon(inner, toolFilter)
+			wrapped := Wrap(inner, toolFilter)
 
 			resultTools, err := wrapped.Tools(t.Context())
 			require.NoError(t, err)
@@ -89,7 +89,7 @@ func TestToonDoesNotMutateInnerSlice(t *testing.T) {
 	inner := &mockToolSet{
 		toolsFunc: func(context.Context) ([]tools.Tool, error) { return cached, nil },
 	}
-	wrapped := WithToon(inner, "test_.*,.*_tool")
+	wrapped := Wrap(inner, "test_.*,.*_tool")
 
 	for range 3 {
 		resultTools, err := wrapped.Tools(t.Context())
@@ -104,4 +104,17 @@ func TestToonDoesNotMutateInnerSlice(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"key": "value"}`, res.Output)
 	assert.Equal(t, 4, calls)
+}
+
+type mockToolSet struct {
+	tools.ToolSet
+
+	toolsFunc func(ctx context.Context) ([]tools.Tool, error)
+}
+
+func (m *mockToolSet) Tools(ctx context.Context) ([]tools.Tool, error) {
+	if m.toolsFunc != nil {
+		return m.toolsFunc(ctx)
+	}
+	return nil, nil
 }

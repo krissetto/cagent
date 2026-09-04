@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/docker/docker-agent/pkg/config"
+	"github.com/docker/docker-agent/pkg/config/sources"
 	"github.com/docker/docker-agent/pkg/content"
 	"github.com/docker/docker-agent/pkg/protect"
 )
@@ -28,7 +29,7 @@ agents:
 	store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
 	require.NoError(t, err)
 
-	agentSource, err := config.Resolve(agentFilename, nil)
+	agentSource, err := sources.Resolve(agentFilename, nil)
 	require.NoError(t, err)
 
 	tag := "test-app:v1.0.0"
@@ -75,7 +76,7 @@ agents:
 	store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
 	require.NoError(t, err)
 
-	agentSource, err := config.Resolve(agentFilename, nil)
+	agentSource, err := sources.Resolve(agentFilename, nil)
 	require.NoError(t, err)
 
 	tag := "test-tags:v1.0.0"
@@ -111,7 +112,7 @@ agents:
 	store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
 	require.NoError(t, err)
 
-	agentSource, err := config.Resolve(agentFilename, nil)
+	agentSource, err := sources.Resolve(agentFilename, nil)
 	require.NoError(t, err)
 
 	tag := "test-instruction-file:v1.0.0"
@@ -168,7 +169,7 @@ agent "helper" {
 	store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
 	require.NoError(t, err)
 
-	agentSource, err := config.Resolve(agentFilename, nil)
+	agentSource, err := sources.Resolve(agentFilename, nil)
 	require.NoError(t, err)
 
 	tag := "test-hcl-instruction-file:v1.0.0"
@@ -203,7 +204,7 @@ func TestPackageFileAsOCIToStoreInvalidTag(t *testing.T) {
 	agentFilename := filepath.Join(t.TempDir(), "test.txt")
 	require.NoError(t, os.WriteFile(agentFilename, []byte("test content"), 0o644))
 
-	agentSource, err := config.Resolve(agentFilename, nil)
+	agentSource, err := sources.Resolve(agentFilename, nil)
 	require.NoError(t, err)
 
 	store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
@@ -232,7 +233,7 @@ agents:
 	store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
 	require.NoError(t, err)
 
-	agentSource, err := config.Resolve(agentFilename, nil)
+	agentSource, err := sources.Resolve(agentFilename, nil)
 	require.NoError(t, err)
 
 	tag := "test-providers:v1.0.0"
@@ -289,7 +290,7 @@ agents:
 			store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
 			require.NoError(t, err)
 
-			agentSource, err := config.Resolve(agentFilename, nil)
+			agentSource, err := sources.Resolve(agentFilename, nil)
 			require.NoError(t, err)
 
 			tag := "test-protected:" + string(mode)
@@ -326,7 +327,7 @@ func TestPackageFileAsOCIToStore_WithoutProtectionHasNoAnnotations(t *testing.T)
 	store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
 	require.NoError(t, err)
 
-	agentSource, err := config.Resolve(agentFilename, nil)
+	agentSource, err := sources.Resolve(agentFilename, nil)
 	require.NoError(t, err)
 
 	tag := "test-unsigned:v1"

@@ -19,6 +19,7 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin/deferred"
 	"github.com/docker/docker-agent/pkg/tools/lifecycle"
+	"github.com/docker/docker-agent/pkg/tools/toon"
 )
 
 // slowSourceToolSet behaves like an MCP toolset: Tools fails with
@@ -101,7 +102,8 @@ func TestDeferredToolsSurviveSlowSourceStart(t *testing.T) {
 		}},
 	}
 	runConfig := config.RuntimeConfig{EnvProviderForTests: &noEnvProvider{}}
-	toolSets, warnings := getToolsForAgent(t.Context(), a, ".", &runConfig, registry, "test-config", js.NewJsExpander(runConfig.EnvProvider()))
+	toolSets, warnings, err := getToolsForAgent(t.Context(), a, ".", &runConfig, "test-config", &loadOptions{toolsetRegistry: registry, toon: toon.Wrap, newDeferred: func() DeferredToolSet { return deferred.New() }}, js.NewJsExpander(runConfig.EnvProvider()))
+	require.NoError(t, err)
 	require.Empty(t, warnings)
 	require.Len(t, toolSets, 2, "source (with all tools hidden) + deferred aggregator")
 	_, isDeferred := toolSets[1].(*deferred.ToolSet)
@@ -154,7 +156,7 @@ func TestDeferredToolsSurviveSlowSourceStart(t *testing.T) {
 		return strings.Contains(callTool(t, got, deferred.ToolNameSearchTool, deferred.SearchToolArgs{Query: "echo"}), "remote_echo")
 	}, 5*time.Second, 20*time.Millisecond)
 
-	got, err := ag.Tools(t.Context())
+	got, err = ag.Tools(t.Context())
 	require.NoError(t, err)
 	out = callTool(t, got, deferred.ToolNameAddTool, deferred.AddToolArgs{Name: "remote_echo"})
 	assert.Contains(t, out, "has been activated")

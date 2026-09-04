@@ -37,6 +37,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/docker/docker-agent/pkg/config"
+	"github.com/docker/docker-agent/pkg/config/sources"
 	"github.com/docker/docker-agent/pkg/echolog"
 	"github.com/docker/docker-agent/pkg/httpsec"
 	"github.com/docker/docker-agent/pkg/runtime"
@@ -175,7 +176,7 @@ func conversationTTL(opts Options) time.Duration {
 
 // loadTeam resolves and loads the team referenced by agentFilename.
 func loadTeam(ctx context.Context, agentFilename string, runConfig *config.RuntimeConfig) (*team.Team, error) {
-	src, err := config.Resolve(agentFilename, nil)
+	src, err := sources.Resolve(agentFilename, nil)
 	if err != nil {
 		return nil, err
 	}
