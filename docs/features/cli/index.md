@@ -734,7 +734,7 @@ $ docker agent debug <subcommand> [flags]
 
 | Subcommand | Description |
 | ---------- | ----------- |
-| `config <agent-file>` | Print the fully-resolved, canonical form of an agent's configuration (defaults applied, references resolved). |
+| `config <agent-file> [flavor...]` | Print the fully-resolved, canonical form of an agent's configuration (defaults applied, references resolved). When [flavors](../../configuration/flavors/index.md) are given they are applied in order and the `flavors` section is dropped from the output. |
 | `toolsets <agent-file>` | List every toolset each agent in the config exposes, with each tool's name and description. Add `--json` for machine-readable output including each tool's parameters, annotations, and output schema. |
 | `skills <agent-file>` | List the skills discovered for each agent, marking forked skills. Add `--json` for machine-readable output; each skill includes a `path` field when it is backed by a file (omitted for inline skills). |
 | `title <agent-file> <question>` | Generate a session title for `<question>` using the same title-generation path the TUI uses (including any configured `title_model`), without starting a session. See [Session Titles](../sessions/index.md#session-titles). |
@@ -746,6 +746,7 @@ $ docker agent debug <subcommand> [flags]
 ```bash
 # Examples
 $ docker agent debug config agent.yaml
+$ docker agent debug config agent.yaml cheap with-shell
 $ docker agent debug toolsets agent.yaml
 $ docker agent debug toolsets agent.yaml --json
 $ docker agent debug skills agent.yaml
