@@ -2,8 +2,10 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,22 +52,24 @@ func TestDebug_Toolsets_JSON_Todo(t *testing.T) {
 	output := runCLI(t, "debug", "toolsets", "--json", "testdata/todo_tools.yaml")
 
 	var got []struct {
-		Agent string `json:"agent"`
-		Tools []struct {
-			Name        string          `json:"name"`
-			Description string          `json:"description"`
-			Parameters  json.RawMessage `json:"parameters"`
-		} `json:"tools"`
+		Agent string                       `json:"agent"`
+		Tools []map[string]json.RawMessage `json:"tools"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(output), &got))
 	require.Len(t, got, 1)
 	assert.Equal(t, "root", got[0].Agent)
 	require.Len(t, got[0].Tools, 2)
-	assert.Equal(t, "create_todo", got[0].Tools[0].Name)
-	assert.Equal(t, "Create a new todo item with a description", got[0].Tools[0].Description)
-	assert.NotEmpty(t, got[0].Tools[0].Parameters)
-	assert.Equal(t, "list_todos", got[0].Tools[1].Name)
-	assert.Equal(t, "List all current todos with their status", got[0].Tools[1].Description)
+
+	wantKeys := []string{"annotations", "category", "description", "name", "outputSchema", "parameters"}
+	for _, tool := range got[0].Tools {
+		assert.ElementsMatch(t, wantKeys, slices.Collect(maps.Keys(tool)))
+	}
+	assert.JSONEq(t, `"create_todo"`, string(got[0].Tools[0]["name"]))
+	assert.JSONEq(t, `"Create a new todo item with a description"`, string(got[0].Tools[0]["description"]))
+	assert.JSONEq(t, `"todo"`, string(got[0].Tools[0]["category"]))
+	assert.NotEqual(t, "null", string(got[0].Tools[0]["parameters"]))
+	assert.JSONEq(t, `"list_todos"`, string(got[0].Tools[1]["name"]))
+	assert.JSONEq(t, `"List all current todos with their status"`, string(got[0].Tools[1]["description"]))
 }
 
 func TestDebug_Skills_None(t *testing.T) {
