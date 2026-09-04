@@ -157,12 +157,16 @@ type RunOutput struct {
 
 // RunOutputConfig captures the evaluation run configuration.
 type RunOutputConfig struct {
-	Agent            string `json:"agent"`
-	JudgeModel       string `json:"judge_model,omitempty"`
-	Concurrency      int    `json:"concurrency"`
-	EvalsDir         string `json:"evals_dir"`
-	BaseImage        string `json:"base_image,omitempty"`
-	AgentImage       string `json:"agent_image,omitempty"`
+	Agent       string `json:"agent"`
+	JudgeModel  string `json:"judge_model,omitempty"`
+	Concurrency int    `json:"concurrency"`
+	EvalsDir    string `json:"evals_dir"`
+	BaseImage   string `json:"base_image,omitempty"`
+	// AgentImage is the resolved docker-agent image (see ResolvedAgentImage),
+	// not the raw Config.AgentImage: always present, even when empty, so an
+	// explicit --agent-image none (skip injection) is distinguishable in
+	// saved run JSON from a run predating this field.
+	AgentImage       string `json:"agent_image"`
 	ContainerRuntime string `json:"container_runtime,omitempty"`
 }
 
