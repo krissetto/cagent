@@ -167,6 +167,15 @@ func (a urlSource) storeEncryptedConfig(ctx context.Context, enc, encPath string
 	}
 }
 
+// clearEncryptedConfig drops any in-memory encrypted config so that, until the
+// next successful capture, no (potentially stale) value is forwarded to the
+// gateway. The on-disk sidecar is left untouched. Safe to call concurrently.
+func (a urlSource) clearEncryptedConfig() {
+	if a.encryptedConfig != nil {
+		a.encryptedConfig.Store(nil)
+	}
+}
+
 // adoptCachedEncryptedConfig loads the encrypted config cached on disk and, if
 // present, records it in memory so it is forwarded to the Docker models gateway
 // on subsequent model requests. When wantDigest is non-empty (the server sent
@@ -331,9 +340,25 @@ func (a urlSource) read(ctx context.Context, cacheDir, cachePath, etagPath, encP
 			// digest the server sent (when present). If it is missing or stale,
 			// self-heal by forcing a full reload so we get the config again.
 			wantDigest := resp.Header.Get(httpclient.EncryptedConfigDigestHeader)
-			if wantDigest != "" && !forceReload && !a.adoptCachedEncryptedConfig(ctx, encPath, wantDigest) {
-				slog.DebugContext(ctx, "304 received but cached encrypted config is missing or stale; forcing a reload", "url", a.url)
-				return a.read(ctx, cacheDir, cachePath, etagPath, encPath, true)
+			if wantDigest != "" && !a.adoptCachedEncryptedConfig(ctx, encPath, wantDigest) {
+				if !forceReload {
+					slog.DebugContext(ctx, "304 received but cached encrypted config is missing or stale; forcing a reload", "url", a.url)
+					return a.read(ctx, cacheDir, cachePath, etagPath, encPath, true)
+				}
+				// We already forced a reload (Cache-Control: no-cache), yet the
+				// server answered 304 again with a digest we still cannot match
+				// from cache. A forced reload is supposed to bypass caching and
+				// return a fresh 200 carrying the full config, so a second 304 is
+				// a server/protocol violation we cannot recover from here.
+				//
+				// The YAML config itself is valid and cached, so we do NOT fail
+				// the whole config load over it — that would keep the agent from
+				// starting for what is only an encrypted-config-forwarding issue.
+				// Instead we leave the encrypted config unset (nothing stale or
+				// mismatched is forwarded to the gateway; the proxy-side check
+				// fails open for a missing header) and warn loudly.
+				a.clearEncryptedConfig()
+				slog.WarnContext(ctx, "Server returned 304 to a forced reload but the cached encrypted agent config does not match the advertised digest; forwarding no encrypted config for this URL", "url", a.url, "want_digest", wantDigest)
 			}
 			if wantDigest == "" {
 				// No digest advertised: best-effort adopt whatever is cached.

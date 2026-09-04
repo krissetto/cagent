@@ -1014,3 +1014,60 @@ func TestURLSource_SelfHealsOn304DigestMismatch(t *testing.T) {
 		"stale config must be replaced by the forced reload")
 	assert.Equal(t, 1, forced, "digest mismatch must trigger exactly one forced reload")
 }
+
+// TestURLSource_ForcedReloadStill304 verifies the guard against a misbehaving
+// server that answers 304 even to a forced reload (Cache-Control: no-cache),
+// advertising a digest the cache cannot satisfy. This must NOT loop, must NOT
+// error the whole config load (the YAML is valid and cached), and must forward
+// no encrypted config (nothing stale/mismatched leaks to the gateway).
+func TestURLSource_ForcedReloadStill304(t *testing.T) {
+	paths.SetDataDir(t.TempDir())
+	t.Cleanup(func() { paths.SetDataDir("") })
+
+	const staleEnc = "OLD-BLOB"
+	const freshDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	const etag = "sha256:abc"
+	const body = "version: \"2\"\n"
+
+	var total, notModified, forced int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		total++
+		if r.Header.Get("Cache-Control") == "no-cache" {
+			// Misbehaving: 304 to a forced reload, advertising a digest that
+			// never matches the cached config.
+			forced++
+			w.Header().Set(httpclient.EncryptedConfigDigestHeader, freshDigest)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		if r.Header.Get("If-None-Match") == etag {
+			notModified++
+			w.Header().Set(httpclient.EncryptedConfigDigestHeader, freshDigest)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		w.Header().Set(httpclient.EncryptedConfigHeader, staleEnc)
+		w.Header().Set(httpclient.EncryptedConfigDigestHeader, digestOf(staleEnc))
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+
+	// Prime the YAML+ETag+.enc cache with the stale config.
+	src1 := newURLSourceForTest(server.URL, nil)
+	_, err := src1.Read(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, staleEnc, src1.(EncryptedConfigSource).EncryptedConfig())
+
+	// A fresh read now 304s (digest mismatch) -> forces a reload -> the server
+	// 304s AGAIN. The read must still succeed with the valid cached YAML, forward
+	// no encrypted config, and issue exactly one forced reload (no loop).
+	src2 := newURLSourceForTest(server.URL, nil)
+	data, err := src2.Read(t.Context())
+	require.NoError(t, err, "a misbehaving server must not fail the whole config load")
+	assert.Equal(t, body, string(data))
+	assert.Empty(t, src2.(EncryptedConfigSource).EncryptedConfig(),
+		"no encrypted config must be forwarded when a forced reload cannot recover a matching one")
+	assert.Equal(t, 1, notModified, "exactly one conditional 304 before forcing a reload")
+	assert.Equal(t, 1, forced, "the forced reload must be attempted exactly once (no retry loop)")
+}
