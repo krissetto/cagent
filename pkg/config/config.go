@@ -53,7 +53,7 @@ func Load(ctx context.Context, source Source, opts ...LoadOption) (*latest.Confi
 	// Detect the format from the source name extension or, when no hint is
 	// available (OCI artifacts, etc.), from the content itself, then
 	// transparently convert to YAML for the rest of the pipeline.
-	if isHCLSource(source.Name(), data) {
+	if IsHCLSource(source.Name(), data) {
 		data, err = hclconv.ToYAML(data, source.Name())
 		if err != nil {
 			return nil, fmt.Errorf("parsing HCL config file: %w", err)
@@ -400,10 +400,10 @@ func validateForceHandoffs(cfg *latest.Config, allNames map[string]bool) error {
 	return nil
 }
 
-// isHCLSource reports whether the configuration data should be parsed as HCL
+// IsHCLSource reports whether the configuration data should be parsed as HCL
 // rather than YAML. The decision is based first on the source name extension,
 // and then on a content-based heuristic when no extension hint is available.
-func isHCLSource(name string, data []byte) bool {
+func IsHCLSource(name string, data []byte) bool {
 	if strings.EqualFold(filepath.Ext(name), ".hcl") {
 		return true
 	}

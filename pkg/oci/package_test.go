@@ -141,6 +141,63 @@ agents:
 	assert.Equal(t, "You are a self-contained agent.", cfg.Agents.First().Instruction)
 }
 
+func TestPackageFileAsOCIToStore_HCLInlinesLocalFiles(t *testing.T) {
+	t.Parallel()
+	// HCL configs resolve both instruction_file and file() against the local
+	// directory, so they are always pushed as the resolved YAML.
+	dir := t.TempDir()
+	agentFilename := filepath.Join(dir, "agent.hcl")
+	testContent := `agent "root" {
+  model            = "auto"
+  description      = "Root agent"
+  instruction_file = "prompts/root.md"
+  sub_agents       = ["helper"]
+}
+
+agent "helper" {
+  model       = "auto"
+  description = "Helper agent"
+  instruction = file("prompts/helper.md")
+}
+`
+	require.NoError(t, os.WriteFile(agentFilename, []byte(testContent), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "prompts"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompts", "root.md"), []byte("You are the root."), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompts", "helper.md"), []byte("You are the helper."), 0o644))
+
+	store, err := content.NewStore(content.WithBaseDir(t.TempDir()))
+	require.NoError(t, err)
+
+	agentSource, err := config.Resolve(agentFilename, nil)
+	require.NoError(t, err)
+
+	tag := "test-hcl-instruction-file:v1.0.0"
+	digest, err := PackageFileAsOCIToStore(t.Context(), agentSource, tag, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.DeleteArtifact(digest) })
+
+	img, err := store.GetArtifactImage(tag)
+	require.NoError(t, err)
+	layers, err := img.Layers()
+	require.NoError(t, err)
+	require.Len(t, layers, 1)
+	reader, err := layers[0].Uncompressed()
+	require.NoError(t, err)
+	defer reader.Close()
+	data, err := io.ReadAll(reader)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(data), "You are the root.")
+	assert.Contains(t, string(data), "You are the helper.")
+	assert.NotContains(t, string(data), "instruction_file")
+	assert.NotContains(t, string(data), "file(")
+
+	// The pushed artifact is YAML that loads without the original directory.
+	cfg, err := config.Load(t.Context(), config.NewBytesSource("pulled.yaml", data))
+	require.NoError(t, err)
+	assert.Equal(t, "You are the root.", cfg.Agents.First().Instruction)
+}
+
 func TestPackageFileAsOCIToStoreInvalidTag(t *testing.T) {
 	t.Parallel()
 	agentFilename := filepath.Join(t.TempDir(), "test.txt")
