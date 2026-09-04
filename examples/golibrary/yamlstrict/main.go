@@ -64,7 +64,7 @@ func run(ctx context.Context, ref string) error {
 	toolsets := teamloader.NewToolsetRegistry(map[string]teamloader.ToolsetCreator{
 		"api":   api.Creator,
 		"fetch": fetch.Creator,
-		"think": think.Creator,
+		"think": teamloader.Creator(think.CreateToolSet),
 	})
 
 	runConfig := &config.RuntimeConfig{}

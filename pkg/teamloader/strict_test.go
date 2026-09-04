@@ -40,7 +40,7 @@ agents:
 
 func strictTestOpts(extra ...Opt) []Opt {
 	anthropicOnly := provider.NewRegistry(map[string]provider.Factory{"anthropic": provider.Adapt(anthropic.NewClient)})
-	thinkOnly := NewToolsetRegistry(map[string]ToolsetCreator{"think": think.Creator})
+	thinkOnly := NewToolsetRegistry(map[string]ToolsetCreator{"think": Creator(think.CreateToolSet)})
 	return append([]Opt{WithProviderRegistry(anthropicOnly), WithToolsetRegistry(thinkOnly)}, extra...)
 }
 

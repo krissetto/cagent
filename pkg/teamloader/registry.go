@@ -59,3 +59,24 @@ func (r *toolsetRegistry) CreateTool(ctx context.Context, toolset latest.Toolset
 	}
 	return tools.WithName(ts, cmp.Or(toolset.Name, toolset.Type)), nil
 }
+
+// Creator adapts a toolset constructor that needs neither its YAML
+// declaration nor the runtime config into a ToolsetCreator:
+//
+//	teamloader.NewToolsetRegistry(map[string]teamloader.ToolsetCreator{"think": teamloader.Creator(think.CreateToolSet)})
+//
+// Packages whose constructors take more (shell, mcp, filesystem, ...) export
+// a ready-made Creator instead.
+func Creator(create func() (tools.ToolSet, error)) ToolsetCreator {
+	return func(context.Context, latest.Toolset, string, *config.RuntimeConfig, string) (tools.ToolSet, error) {
+		return create()
+	}
+}
+
+// CreatorFromToolset adapts a constructor that only needs the YAML
+// declaration (todo, model_picker, mcp_catalog) into a ToolsetCreator.
+func CreatorFromToolset(create func(latest.Toolset) (tools.ToolSet, error)) ToolsetCreator {
+	return func(_ context.Context, toolset latest.Toolset, _ string, _ *config.RuntimeConfig, _ string) (tools.ToolSet, error) {
+		return create(toolset)
+	}
+}
