@@ -63,6 +63,8 @@ The lean TUI supports **steering** and **follow-ups** while the agent is running
 
 The lean TUI supports a focused set of slash commands: `/new`, `/sessions`, `/compact`, `/model`, `/effort`, `/clear`, `/help`, `/exit` (alias: `/quit`), plus any agent-defined commands. Type `/model` (or `/model <provider/model>`) to switch the active model inline — the command opens a fuzzy-searchable list of available models. Type `/sessions` (or `/sessions <session-id>`) to browse and resume past sessions from the current working directory.
 
+Prefix a message with `!` to run it as a shell command directly, without going through the agent — for example `!git status`. The command runs in your default shell and its output is shown inline in the transcript. Bang commands are disabled in read-only sessions.
+
 ## Slash Commands
 
 Type `/` during a session to see available commands, or press <kbd>Ctrl</kbd>+<kbd>K</kbd> for the command palette:
