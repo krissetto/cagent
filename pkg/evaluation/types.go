@@ -162,6 +162,7 @@ type RunOutputConfig struct {
 	Concurrency      int    `json:"concurrency"`
 	EvalsDir         string `json:"evals_dir"`
 	BaseImage        string `json:"base_image,omitempty"`
+	AgentImage       string `json:"agent_image,omitempty"`
 	ContainerRuntime string `json:"container_runtime,omitempty"`
 }
 
@@ -174,6 +175,7 @@ type Config struct {
 	TTYFd            int      // File descriptor for terminal size queries (e.g., int(os.Stdout.Fd()))
 	Only             []string // Only run evaluations matching these patterns
 	BaseImage        string   // Custom base image for running evaluations
+	AgentImage       string   // docker-agent image injected into eval containers ("" = auto-pin to host CLI version, "none" = skip injection)
 	KeepContainers   bool     // If true, don't remove containers after evaluation (skip --rm)
 	EnvVars          []string // Environment variables to pass: KEY (value from env) or KEY=VALUE (explicit)
 	Repeat           int      // Number of times to repeat each evaluation (default 1)
