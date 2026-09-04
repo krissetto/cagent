@@ -25,11 +25,17 @@ import (
 
 // vectorStoreDB is the internal database interface used by VectorStore.
 type vectorStoreDB interface {
-	AddDocumentWithEmbedding(ctx context.Context, doc database.Document, embedding []float64, embeddingInput string) error
+	// ReplaceFileDocuments atomically replaces a file's indexed state: the
+	// file's existing row and chunks are deleted, a row with the final hash
+	// is inserted, then every chunk in docs is inserted, all in one
+	// transaction. Callers must invoke this only after every model call for
+	// the file (embeddings, embedding inputs) has already succeeded, so a
+	// file is always either fully indexed (old or new version) or absent -
+	// never left half-written by an interruption.
+	ReplaceFileDocuments(ctx context.Context, meta database.FileMetadata, docs []database.Document, embeddings [][]float64, embeddingInputs []string) error
 	SearchSimilarVectors(ctx context.Context, queryEmbedding []float64, limit int) ([]VectorSearchResultData, error)
 	DeleteDocumentsByPath(ctx context.Context, sourcePath string) error
 	GetFileMetadata(ctx context.Context, sourcePath string) (*database.FileMetadata, error)
-	SetFileMetadata(ctx context.Context, metadata database.FileMetadata) error
 	GetAllFileMetadata(ctx context.Context) ([]database.FileMetadata, error)
 	DeleteFileMetadata(ctx context.Context, sourcePath string) error
 	Close() error
@@ -542,6 +548,16 @@ func (s *VectorStore) loadExistingHashes(ctx context.Context) error {
 	defer s.fileHashesMu.Unlock()
 
 	for _, meta := range metadata {
+		if meta.ChunkCount == 0 {
+			// A files row with zero chunks cannot be produced by this version
+			// (atomic ReplaceFileDocuments always writes >=1 chunk, or the file
+			// is absent entirely). It is a leftover from the pre-fix premature-
+			// hash bug (an interruption mid-file left the hash recorded with no
+			// chunks stored) - treat it as not indexed so it gets re-indexed.
+			slog.WarnContext(ctx, "File metadata has zero chunks, treating as not indexed",
+				"path", meta.SourcePath)
+			continue
+		}
 		s.fileHashes[meta.SourcePath] = meta.FileHash
 		slog.DebugContext(ctx, "Loaded file hash from metadata",
 			"path", meta.SourcePath,
@@ -584,10 +600,6 @@ func (s *VectorStore) indexFile(ctx context.Context, filePath string) error {
 		return fmt.Errorf("failed to hash file: %w", err)
 	}
 
-	if err := s.db.DeleteDocumentsByPath(ctx, filePath); err != nil {
-		return fmt.Errorf("failed to delete old documents: %w", err)
-	}
-
 	chunks, err := chunk.ProcessFile(ctx, s.docProcessor, filePath)
 	if err != nil {
 		return fmt.Errorf("failed to process file: %w", err)
@@ -611,6 +623,14 @@ func (s *VectorStore) indexFile(ctx context.Context, filePath string) error {
 
 	if len(validChunks) == 0 {
 		slog.DebugContext(ctx, "No valid chunks in file", "path", filePath)
+		// A file with no chunks has nothing to keep indexed; drop any
+		// previous version so stale chunks don't linger.
+		if err := s.db.DeleteDocumentsByPath(ctx, filePath); err != nil {
+			return fmt.Errorf("failed to delete old documents: %w", err)
+		}
+		s.fileHashesMu.Lock()
+		delete(s.fileHashes, filePath)
+		s.fileHashesMu.Unlock()
 		return nil
 	}
 
@@ -639,40 +659,28 @@ func (s *VectorStore) indexFile(ctx context.Context, filePath string) error {
 		return fmt.Errorf("embedding count mismatch: got %d embeddings for %d chunks", len(embeddings), len(validChunks))
 	}
 
-	// Store all documents
-	storedChunks := 0
+	// All model calls succeeded - persist the new version atomically. Until
+	// this call commits, the previous version (if any) remains intact, so an
+	// interruption here never leaves the file half-written or wrongly marked
+	// as up to date.
+	docs := make([]database.Document, len(validChunks))
 	for i, ch := range validChunks {
-		// Check for context cancellation
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		doc := database.Document{
-			ID:         fmt.Sprintf("%s_%d_%d", filePath, ch.Index, time.Now().UnixNano()),
+		docs[i] = database.Document{
+			ID:         fmt.Sprintf("%s_%d", filePath, ch.Index),
 			SourcePath: filePath,
 			ChunkIndex: ch.Index,
 			Content:    ch.Content,
 			FileHash:   fileHash,
 		}
-
-		// Pass embedding and embedding input separately - the database implementation
-		// decides what to store based on strategy type (chunked vs semantic)
-		if err := s.db.AddDocumentWithEmbedding(ctx, doc, embeddings[i], chunkContents[i]); err != nil {
-			return fmt.Errorf("failed to add document: %w", err)
-		}
-
-		storedChunks++
 	}
 
 	metadata := database.FileMetadata{
 		SourcePath: filePath,
 		FileHash:   fileHash,
-		ChunkCount: storedChunks,
+		ChunkCount: len(docs),
 	}
-	if err := s.db.SetFileMetadata(ctx, metadata); err != nil {
-		return fmt.Errorf("failed to update file metadata: %w", err)
+	if err := s.db.ReplaceFileDocuments(ctx, metadata, docs, embeddings, chunkContents); err != nil {
+		return fmt.Errorf("failed to replace file documents: %w", err)
 	}
 
 	// Update fileHashes map with mutex protection for concurrent indexing
@@ -680,7 +688,7 @@ func (s *VectorStore) indexFile(ctx context.Context, filePath string) error {
 	s.fileHashes[filePath] = fileHash
 	s.fileHashesMu.Unlock()
 
-	slog.DebugContext(ctx, "Indexed file", "path", filePath, "chunks", storedChunks)
+	slog.DebugContext(ctx, "Indexed file", "path", filePath, "chunks", len(docs))
 	return nil
 }
 
