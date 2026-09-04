@@ -3,6 +3,88 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.132.0] - 2026-09-04
+
+This release adds OCI artifact signing/encryption for shared agents, live git branch updates in TUI footers, and a range of bug fixes across the OpenAI provider, runtime streaming, RAG toolsets, and schema handling.
+
+## What's New
+
+- Adds `--key` flag to `docker agent share push` to sign or encrypt agent YAML in OCI artifacts
+- Forwards encrypted agent config to the Docker models gateway at runtime for verification
+- Adds live git branch updates in TUI footers using an event-driven watcher (supports repositories and linked worktrees)
+- Accepts `instruction` as a list of strings in config, allowing flavors to append to a base prompt instead of replacing it wholesale
+- Adds `config.Requires` to audit a config's providers, toolsets, and features; adds `WithStrict` to reject configs using unenabled providers, toolsets, or features
+- Removes the context usage progress bar (`██████░░░░`) from the lean TUI footer
+- Adds non-blocking `StartableToolSet` status check to avoid blocking on long-running toolset starts
+- Adds `EmbeddedSnapshot` and `Fetch` helpers to the modelsdev package
+- Recognizes the `gpt-6` model family via generation-based parsing, enabling correct Responses API, reasoning effort, and token field handling
+
+## Improvements
+
+- Config now hints at the newer version on type errors, not just unknown keys
+- `docker agent share push` now pushes HCL configs as resolved, self-contained YAML (previously broken for HCL agents)
+- Exports per-toolset `Creator` funcs and `provider.Adapt` for hand-picked registries in lean YAML loading
+
+## Bug Fixes
+
+- Fixes TUI stuck on "Working…" after stream ends by delivering `StreamStopped` with a bounded blocking send and synthesizing it when the runtime stream closes without one
+- Fixes `oneOf`/`allOf` and `$defs`/`$ref` not being validated before enabling OpenAI strict mode, which could cause tool schema errors
+- Stops injecting `type:object` onto `anyOf`/`oneOf`/`allOf` nodes; handles Responses API `response.incomplete`/`failed` events
+- Fixes OpenAI provider to degrade gracefully on Chat Completions for `gpt-5.4+` when `tools+effort` is used, and warns on ignored `thinking_budget`
+- Fixes `protect` package to require signatures for asymmetric keys, harden key parsing, parse `authorized_keys` with options, tighten key-kind detection, reject impossible encrypted copies, fail closed on any PEM or OpenSSH marker in a key file, and match OpenSSH key-type markers as plain substrings
+- Fixes pacing of retryable partial-start failures in code-mode composites to prevent burst-retrying on every turn
+- Propagates sustained RAG 5xx/408 indexing failures to the backoff gate (previously only 429 was gated)
+- Fixes stale Fireworks `kimi-k2-instruct` model reference, replacing it with `accounts/fireworks/models/kimi-k3`
+- Fixes config handling of a forced reload that still returns 304
+- Fixes external agents to inherit every loader capability option
+- Fixes strict audit to run before any network or environment access
+- Fixes `provider` to serve OpenAI protocol variants from the `"openai"` factory
+- Fixes config to audit per-toolset and fork-skill model overrides in `Requires`
+- Fixes `tools` to keep config-free toolset packages free of `pkg/config`
+- Logs raw incomplete/unhandled Responses payloads untruncated; logs `response.incomplete` at debug level
+
+## Technical Changes
+
+- Splits agent config sources so embedders link only the source types they use
+- Refactors `teamloader` to probe Docker Model Runner through `dmrmodels` instead of the full provider
+- Makes JavaScript expansion and code mode opt-in in `teamloader`
+- Makes TOON output and deferred tools opt-in in `teamloader`
+- Merges sibling toolsets through `tools.Mergeable` instead of hardwiring LSP in `teamloader`
+- Runs harness agents through a registered driver in `runtime`
+- Adds scheduled models.dev live-catalog drift check in CI
+- Validates `DefaultModels` against the committed models.dev snapshot in tests
+- Makes `TestParseExamples` validate against the committed models.dev snapshot only (not live HTTP)
+### Pull Requests
+
+- [#4073](https://github.com/docker/docker-agent/pull/4073) - feat(tools): non-blocking StartableToolSet status check (#4073)
+- [#4097](https://github.com/docker/docker-agent/pull/4097) - fix(#4097): propagate sustained RAG 5xx/408 indexing failures to backoff gate
+- [#4106](https://github.com/docker/docker-agent/pull/4106) - fix(openai): reject oneOf/allOf and validate $defs/$ref before enabling strict mode (#4106)
+- [#4122](https://github.com/docker/docker-agent/pull/4122) - feat(leantui): support bang commands
+- [#4129](https://github.com/docker/docker-agent/pull/4129) - feat: live-update git branch in TUI footers
+- [#4136](https://github.com/docker/docker-agent/pull/4136) - fix(runtime): deliver StreamStopped with a bounded blocking send
+- [#4140](https://github.com/docker/docker-agent/pull/4140) - feat(shell): name PowerShell substitutes for the POSIX utilities models reach for
+- [#4141](https://github.com/docker/docker-agent/pull/4141) - feat(shell): correct known shell-dialect errors in the tool output
+- [#4143](https://github.com/docker/docker-agent/pull/4143) - docs: update CHANGELOG.md for v1.131.0
+- [#4144](https://github.com/docker/docker-agent/pull/4144) - feat: accept `instruction` as a list, let flavors append to it
+- [#4145](https://github.com/docker/docker-agent/pull/4145) - fix: update stale Fireworks kimi-k2-instruct model reference
+- [#4146](https://github.com/docker/docker-agent/pull/4146) - test(config): validate DefaultModels against the models.dev catalog
+- [#4147](https://github.com/docker/docker-agent/pull/4147) - test: make TestParseExamples validate against the committed models.dev snapshot
+- [#4148](https://github.com/docker/docker-agent/pull/4148) - feat(share): sign or encrypt agent YAML in OCI artifacts with --key
+- [#4149](https://github.com/docker/docker-agent/pull/4149) - feat: lean YAML loading with hand-picked registries and strict mode
+- [#4150](https://github.com/docker/docker-agent/pull/4150) - fix: pace retryable partial-start failures in code-mode composites
+- [#4151](https://github.com/docker/docker-agent/pull/4151) - fix(#4097): propagate sustained RAG 5xx/408 indexing failures to backoff gate
+- [#4152](https://github.com/docker/docker-agent/pull/4152) - fix(share): push HCL configs as resolved, self-contained YAML
+- [#4153](https://github.com/docker/docker-agent/pull/4153) - fix(runtime): deliver StreamStopped with a bounded blocking send
+- [#4154](https://github.com/docker/docker-agent/pull/4154) - fix(app): synthesize StreamStopped when the runtime stream closes without one
+- [#4155](https://github.com/docker/docker-agent/pull/4155) - fix(openai): reject oneOf/allOf and validate $defs/$ref before enabling strict mode (#4106)
+- [#4157](https://github.com/docker/docker-agent/pull/4157) - feat(leantui): remove context usage progress bar
+- [#4159](https://github.com/docker/docker-agent/pull/4159) - feat(tools): non-blocking StartableToolSet status check (#4073)
+- [#4160](https://github.com/docker/docker-agent/pull/4160) - docs: auto-update for merged PRs (2026-09-04)
+- [#4161](https://github.com/docker/docker-agent/pull/4161) - fix(tools,openai): don't inject type:object onto anyOf nodes; handle Responses API response.incomplete/failed
+- [#4163](https://github.com/docker/docker-agent/pull/4163) - feat: forward the encrypted agent config to the Docker models gateway
+- [#4165](https://github.com/docker/docker-agent/pull/4165) - fix(openai): recognise the gpt-6 family (Responses API, reasoning effort, token field)
+
+
 ## [v1.131.0] - 2026-09-03
 
 This release brings significant enhancements to the Lean TUI experience, adds new evaluation and shell tooling capabilities, and improves startup reliability through expanded backoff handling.
@@ -5795,3 +5877,5 @@ This release improves the terminal user interface with better error handling and
 [v1.130.0]: https://github.com/docker/docker-agent/releases/tag/v1.130.0
 
 [v1.131.0]: https://github.com/docker/docker-agent/releases/tag/v1.131.0
+
+[v1.132.0]: https://github.com/docker/docker-agent/releases/tag/v1.132.0
