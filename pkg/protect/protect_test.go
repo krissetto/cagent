@@ -547,3 +547,27 @@ func TestLoadKey(t *testing.T) {
 	_, err = LoadKey(filepath.Join(t.TempDir(), "missing"))
 	require.Error(t, err)
 }
+
+func TestResolveKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, "key")
+	require.NoError(t, os.WriteFile(path, []byte(secret), 0o600))
+
+	fromFile, err := ResolveKey(FilePrefix + path)
+	require.NoError(t, err)
+	inline, err := ResolveKey(secret)
+	require.NoError(t, err)
+	assert.Equal(t, fromFile.Identity(), inline.Identity())
+
+	fromHome, err := ResolveKey(FilePrefix + "~/key")
+	require.NoError(t, err)
+	assert.Equal(t, fromFile.Identity(), fromHome.Identity())
+
+	// A bare path is key material, not a file reference.
+	_, err = ResolveKey(path)
+	require.NoError(t, err)
+
+	_, err = ResolveKey(FilePrefix + filepath.Join(t.TempDir(), "missing"))
+	require.ErrorContains(t, err, "reading key file")
+}
