@@ -783,6 +783,42 @@ func TestStartableToolSet_TryStartSkipsInFlightStart(t *testing.T) {
 	assert.Check(t, is.Equal(inner.calls.Load(), int32(1)))
 }
 
+// TestStartableToolSet_TryState pins the non-blocking status probe used by
+// runtime status/introspection paths that must never block behind a
+// legitimately long-running Start (e.g. RAG indexing a large knowledge
+// base, #4073): unstarted reports (false, false), an in-flight Start
+// reports (false, true) instead of blocking, and the settled state after
+// release reports (true, false).
+func TestStartableToolSet_TryState(t *testing.T) {
+	t.Parallel()
+
+	inner := &blockingToolSet{entered: make(chan struct{}), release: make(chan struct{})}
+	s := tools.NewStartable(inner)
+
+	started, inFlight := s.TryState()
+	assert.Check(t, is.Equal(started, false), "TryState reports unstarted before any Start")
+	assert.Check(t, is.Equal(inFlight, false), "TryState reports not in flight before any Start")
+
+	// Always unblock the wedged Start so no goroutine outlives the test.
+	release := sync.OnceFunc(func() { close(inner.release) })
+	t.Cleanup(release)
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.Start(t.Context()) }()
+	<-inner.entered
+
+	started, inFlight = s.TryState()
+	assert.Check(t, is.Equal(started, false), "TryState must not report started while Start is in flight")
+	assert.Check(t, is.Equal(inFlight, true), "TryState must report in flight without blocking on the wedged Start")
+
+	release()
+	assert.NilError(t, <-startDone)
+
+	started, inFlight = s.TryState()
+	assert.Check(t, is.Equal(started, true), "TryState reports started once settled")
+	assert.Check(t, is.Equal(inFlight, false), "TryState reports not in flight once settled")
+}
+
 // TestStartableToolSet_TryStartRunsStartLogic verifies that when the lock is
 // free, TryStart behaves exactly like Start: a failure records the
 // once-per-streak warning and a subsequent success latches the started state.
@@ -1100,6 +1136,29 @@ func TestStartableToolSet_TryIsStartedReportsReapedStart(t *testing.T) {
 	s.ExportedPublishStopRequest(t.Context())
 
 	assert.Check(t, is.Equal(s.TryIsStarted(), false), "TryIsStarted must not report started after its own release reaped the toolset")
+	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)), "the pending request must stop the toolset on release")
+	assert.Check(t, is.Equal(s.IsStarted(), false))
+}
+
+// TestStartableToolSet_TryState_ReportsReapedStart is the TryState analogue
+// of TestStartableToolSet_TryIsStartedReportsReapedStart above: when a
+// pending shutdown request is consumed as TryState releases the lock, the
+// toolset it just observed started is stopped again, and TryState must
+// report (false, false) — reaped, not in flight — rather than a started
+// toolset that no longer is.
+func TestStartableToolSet_TryState_ReportsReapedStart(t *testing.T) {
+	t.Parallel()
+
+	inner := &blockingToolSet{entered: make(chan struct{}), release: make(chan struct{})}
+	close(inner.release) // Start completes immediately
+	s := tools.NewStartable(inner)
+	assert.NilError(t, s.Start(t.Context()))
+
+	s.ExportedPublishStopRequest(t.Context())
+
+	started, inFlight := s.TryState()
+	assert.Check(t, is.Equal(started, false), "TryState must not report started after its own release reaped the toolset")
+	assert.Check(t, is.Equal(inFlight, false), "a reaped start is settled, not in flight")
 	assert.Check(t, is.Equal(inner.stops.Load(), int32(1)), "the pending request must stop the toolset on release")
 	assert.Check(t, is.Equal(s.IsStarted(), false))
 }
