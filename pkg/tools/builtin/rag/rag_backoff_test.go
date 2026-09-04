@@ -75,40 +75,50 @@ func buildRAGToolSet(t *testing.T, impl strategy.Strategy) *ToolSet {
 // A frozen fake clock (WithStartRetryClock) and identity jitter give exact,
 // deterministic windows without synctest complications from the RAG manager's
 // internal goroutines.
+//
+// Subtests cover 429 (rate limit), 408 (request timeout) and 503 (service
+// unavailable) - the family of statuses that, per issue #4097, must all
+// reach the gate from RAG indexing, not just 429.
 func TestRAGStartableBackoff_StatusErrorEngagesGate(t *testing.T) {
 	t.Parallel()
 
-	counting := &countingStatusErrStrategy{statusCode: 429}
-	toolset := buildRAGToolSet(t, counting)
+	for _, statusCode := range []int{429, 408, 503} {
+		t.Run(fmt.Sprintf("status_%d", statusCode), func(t *testing.T) {
+			t.Parallel()
 
-	// Frozen clock: window = base + 0% jitter = exactly base.
-	// We advance the clock manually to control expiry.
-	now := time.Unix(1_000_000, 0)
-	s := tools.NewStartable(toolset,
-		tools.WithStartRetryJitter(func(d time.Duration) time.Duration { return d }), // identity
-		tools.WithStartRetryClock(func() time.Time { return now }),
-	)
+			counting := &countingStatusErrStrategy{statusCode: statusCode}
+			toolset := buildRAGToolSet(t, counting)
 
-	// Attempt 1: TryStart invokes Initialize and arms the gate.
-	_, err := s.TryStart(t.Context())
-	require.Error(t, err, "expected failure on attempt 1")
-	assert.Equal(t, int32(1), counting.calls.Load(), "Initialize must be called on attempt 1")
+			// Frozen clock: window = base + 0% jitter = exactly base.
+			// We advance the clock manually to control expiry.
+			now := time.Unix(1_000_000, 0)
+			s := tools.NewStartable(toolset,
+				tools.WithStartRetryJitter(func(d time.Duration) time.Duration { return d }), // identity
+				tools.WithStartRetryClock(func() time.Time { return now }),
+			)
 
-	// Immediate TryStart: gate must suppress it (clock not advanced).
-	_, err = s.TryStart(t.Context())
-	require.Error(t, err)
-	assert.Equal(t, int32(1), counting.calls.Load(),
-		"gate must suppress TryStart within the window")
+			// Attempt 1: TryStart invokes Initialize and arms the gate.
+			_, err := s.TryStart(t.Context())
+			require.Error(t, err, "expected failure on attempt 1")
+			assert.Equal(t, int32(1), counting.calls.Load(), "Initialize must be called on attempt 1")
 
-	// Advance clock past base window (base × 1.0 with identity jitter).
-	// Use 6 minutes to exceed any possible jittered window for any attempt.
-	now = now.Add(6 * time.Minute)
+			// Immediate TryStart: gate must suppress it (clock not advanced).
+			_, err = s.TryStart(t.Context())
+			require.Error(t, err)
+			assert.Equal(t, int32(1), counting.calls.Load(),
+				"gate must suppress TryStart within the window")
 
-	// Gate expired: TryStart must invoke Initialize again.
-	_, err = s.TryStart(t.Context())
-	require.Error(t, err, "still failing — expected error")
-	assert.Equal(t, int32(2), counting.calls.Load(),
-		"Initialize must be called again once the backoff window expires")
+			// Advance clock past base window (base x 1.0 with identity jitter).
+			// Use 6 minutes to exceed any possible jittered window for any attempt.
+			now = now.Add(6 * time.Minute)
+
+			// Gate expired: TryStart must invoke Initialize again.
+			_, err = s.TryStart(t.Context())
+			require.Error(t, err, "still failing — expected error")
+			assert.Equal(t, int32(2), counting.calls.Load(),
+				"Initialize must be called again once the backoff window expires")
+		})
+	}
 }
 
 // TestRAGStartableBackoff_PlainErrorNoGate proves that a plain (non-StatusError)
