@@ -3,6 +3,35 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.133.0] - 2026-09-04
+
+This release improves safety classification for background jobs and shell commands, enhances the `--key` option for share commands, and advances the internal config schema to v16.
+
+## What's New
+
+- Adds classification of `run_background_job` commands using the same safety rules as shell commands, so background jobs are now properly evaluated (and prompted or denied) based on their actual command content
+- The `--key` flag for `docker agent share push` and `docker agent share pull` now accepts either inline key material directly or a `file://`-prefixed path, in addition to the previous file path behavior
+
+## Bug Fixes
+
+- Fixes atomic per-file vector store persistence so that file hash updates and chunk deletions no longer occur prematurely during the embedding process
+- Fixes safety classification to resolve `cmd`/`command` arguments the same way the handlers do, ensuring the classified command matches what is actually executed
+
+## Technical Changes
+
+- Removes the deprecated `safer` boolean flag from the shell toolset in config version 15
+- Freezes config schema v15 as an immutable package and advances `latest` to v16
+### Pull Requests
+
+- [#4073](https://github.com/docker/docker-agent/pull/4073) - fix(rag): atomic per-file vector store persistence (#4073)
+- [#4158](https://github.com/docker/docker-agent/pull/4158) - fix(rag): atomic per-file vector store persistence (#4073)
+- [#4166](https://github.com/docker/docker-agent/pull/4166) - feat(safety): classify run_background_job commands like shell
+- [#4167](https://github.com/docker/docker-agent/pull/4167) - docs: update CHANGELOG.md for v1.132.0
+- [#4168](https://github.com/docker/docker-agent/pull/4168) - feat(share): accept inline key or file:// path for --key
+- [#4169](https://github.com/docker/docker-agent/pull/4169) - refactor(config): remove deprecated safer shell flag from v15
+- [#4170](https://github.com/docker/docker-agent/pull/4170) - feat(config): freeze v15 and start v16 as latest
+
+
 ## [v1.132.0] - 2026-09-04
 
 This release adds OCI artifact signing/encryption for shared agents, live git branch updates in TUI footers, and a range of bug fixes across the OpenAI provider, runtime streaming, RAG toolsets, and schema handling.
@@ -5879,3 +5908,5 @@ This release improves the terminal user interface with better error handling and
 [v1.131.0]: https://github.com/docker/docker-agent/releases/tag/v1.131.0
 
 [v1.132.0]: https://github.com/docker/docker-agent/releases/tag/v1.132.0
+
+[v1.133.0]: https://github.com/docker/docker-agent/releases/tag/v1.133.0
