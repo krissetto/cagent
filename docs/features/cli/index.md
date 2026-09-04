@@ -735,8 +735,8 @@ $ docker agent debug <subcommand> [flags]
 | Subcommand | Description |
 | ---------- | ----------- |
 | `config <agent-file>` | Print the fully-resolved, canonical form of an agent's configuration (defaults applied, references resolved). |
-| `toolsets <agent-file>` | List every toolset each agent in the config exposes, with each tool's name and description. |
-| `skills <agent-file>` | List the skills discovered for each agent, marking forked skills. |
+| `toolsets <agent-file>` | List every toolset each agent in the config exposes, with each tool's name and description. Add `--json` for machine-readable output including each tool's parameters, annotations, and output schema. |
+| `skills <agent-file>` | List the skills discovered for each agent, marking forked skills. Add `--json` for machine-readable output; each skill includes a `path` field when it is backed by a file (omitted for inline skills). |
 | `title <agent-file> <question>` | Generate a session title for `<question>` using the same title-generation path the TUI uses (including any configured `title_model`), without starting a session. See [Session Titles](../sessions/index.md#session-titles). |
 | `auth` | Print parsed Docker authentication info from the token in use (source, subject, issuer, expiry, username/email). Add `--json` for machine-readable output. |
 | `oauth list` | List stored MCP OAuth tokens (resource, scope, expiry, redacted access token). Add `--json` for machine-readable output. |
@@ -747,7 +747,9 @@ $ docker agent debug <subcommand> [flags]
 # Examples
 $ docker agent debug config agent.yaml
 $ docker agent debug toolsets agent.yaml
+$ docker agent debug toolsets agent.yaml --json
 $ docker agent debug skills agent.yaml
+$ docker agent debug skills agent.yaml --json
 $ docker agent debug title agent.yaml "How do I configure a fallback model?"
 $ docker agent debug auth --json
 $ docker agent debug oauth list

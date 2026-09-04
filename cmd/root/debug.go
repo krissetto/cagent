@@ -2,6 +2,7 @@ package root
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -22,7 +23,36 @@ import (
 
 type debugFlags struct {
 	modelOverrides []string
+	toolsetsJSON   bool
+	skillsJSON     bool
 	runConfig      config.RuntimeConfig
+}
+
+// Explicit DTOs keep the JSON contract stable and independent of internal types.
+type agentToolsInfo struct {
+	Agent string     `json:"agent"`
+	Tools []toolInfo `json:"tools"`
+}
+
+type toolInfo struct {
+	Name         string                `json:"name"`
+	Category     string                `json:"category"`
+	Description  string                `json:"description"`
+	Parameters   any                   `json:"parameters"`
+	Annotations  tools.ToolAnnotations `json:"annotations"`
+	OutputSchema any                   `json:"outputSchema"`
+}
+
+type agentSkillsInfo struct {
+	Agent  string      `json:"agent"`
+	Skills []skillInfo `json:"skills"`
+}
+
+type skillInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Forked      bool   `json:"forked"`
+	Path        string `json:"path,omitempty"`
 }
 
 func newDebugCmd() *cobra.Command {
@@ -40,18 +70,22 @@ func newDebugCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE:  flags.runDebugConfigCommand,
 	})
-	cmd.AddCommand(&cobra.Command{
+	toolsetsCmd := &cobra.Command{
 		Use:   "toolsets <agent-file>|<registry-ref>",
 		Short: "Debug the toolsets of an agent",
 		Args:  cobra.ExactArgs(1),
 		RunE:  flags.runDebugToolsetsCommand,
-	})
-	cmd.AddCommand(&cobra.Command{
+	}
+	toolsetsCmd.Flags().BoolVar(&flags.toolsetsJSON, "json", false, "Output in JSON format")
+	cmd.AddCommand(toolsetsCmd)
+	skillsCmd := &cobra.Command{
 		Use:   "skills <agent-file>|<registry-ref>",
 		Short: "Debug the skills of an agent",
 		Args:  cobra.ExactArgs(1),
 		RunE:  flags.runDebugSkillsCommand,
-	})
+	}
+	skillsCmd.Flags().BoolVar(&flags.skillsJSON, "json", false, "Output in JSON format")
+	cmd.AddCommand(skillsCmd)
 	titleCmd := &cobra.Command{
 		Use:   "title <agent-file>|<registry-ref> <question>",
 		Short: "Generate a session title from a question",
@@ -120,6 +154,7 @@ func (f *debugFlags) runDebugToolsetsCommand(cmd *cobra.Command, args []string) 
 	defer stopToolSets(ctx, t)
 
 	out := cli.NewPrinter(cmd.OutOrStdout())
+	var infos []agentToolsInfo
 
 	for _, name := range t.AgentNames() {
 		agent, err := t.Agent(name)
@@ -134,18 +169,42 @@ func (f *debugFlags) runDebugToolsetsCommand(cmd *cobra.Command, args []string) 
 			continue
 		}
 
-		if len(agentTools) == 0 {
-			out.Printf("No tools for %s\n", agent.Name())
+		info := agentToolsInfo{Agent: agent.Name(), Tools: make([]toolInfo, 0, len(agentTools))}
+		for _, tool := range agentTools {
+			info.Tools = append(info.Tools, toolInfo{
+				Name:         tool.Name,
+				Category:     tool.Category,
+				Description:  tool.Description,
+				Parameters:   tool.Parameters,
+				Annotations:  tool.Annotations,
+				OutputSchema: tool.OutputSchema,
+			})
+		}
+
+		// Text mode streams per agent so slow toolsets don't hold back earlier results.
+		if f.toolsetsJSON {
+			infos = append(infos, info)
 			continue
 		}
-
-		out.Printf("%d tool(s) for %s:\n", len(agentTools), agent.Name())
-		for _, tool := range agentTools {
-			out.Println(" +", tool.Name, "-", tool.Description)
-		}
+		printAgentTools(out, info)
 	}
 
+	if f.toolsetsJSON {
+		return encodeJSON(cmd, infos)
+	}
 	return nil
+}
+
+func printAgentTools(out *cli.Printer, info agentToolsInfo) {
+	if len(info.Tools) == 0 {
+		out.Printf("No tools for %s\n", info.Agent)
+		return
+	}
+
+	out.Printf("%d tool(s) for %s:\n", len(info.Tools), info.Agent)
+	for _, tool := range info.Tools {
+		out.Println(" +", tool.Name, "-", tool.Description)
+	}
 }
 
 func (f *debugFlags) runDebugSkillsCommand(cmd *cobra.Command, args []string) (commandErr error) {
@@ -163,6 +222,7 @@ func (f *debugFlags) runDebugSkillsCommand(cmd *cobra.Command, args []string) (c
 	defer stopToolSets(ctx, t)
 
 	out := cli.NewPrinter(cmd.OutOrStdout())
+	var infos []agentSkillsInfo
 
 	for _, name := range t.AgentNames() {
 		agent, err := t.Agent(name)
@@ -171,31 +231,57 @@ func (f *debugFlags) runDebugSkillsCommand(cmd *cobra.Command, args []string) (c
 			continue
 		}
 
-		var skillsToolset *skillstool.ToolSet
+		info := agentSkillsInfo{Agent: agent.Name(), Skills: []skillInfo{}}
+		// The loader creates at most one skills toolset per agent.
 		for _, ts := range agent.ToolSets() {
-			if st, ok := tools.As[*skillstool.ToolSet](ts); ok {
-				skillsToolset = st
-				break
+			st, ok := tools.As[*skillstool.ToolSet](ts)
+			if !ok {
+				continue
 			}
+			for _, skill := range st.Skills() {
+				info.Skills = append(info.Skills, skillInfo{
+					Name:        skill.Name,
+					Description: skill.Description,
+					Forked:      skill.IsFork(),
+					Path:        skill.FilePath,
+				})
+			}
+			break
 		}
 
-		if skillsToolset == nil || len(skillsToolset.Skills()) == 0 {
-			out.Printf("No skills for %s\n", agent.Name())
+		if f.skillsJSON {
+			infos = append(infos, info)
 			continue
 		}
-
-		loadedSkills := skillsToolset.Skills()
-		out.Printf("%d skill(s) for %s:\n", len(loadedSkills), agent.Name())
-		for _, skill := range loadedSkills {
-			marker := ""
-			if skill.IsFork() {
-				marker = " [forked]"
-			}
-			out.Println(" +", skill.Name+marker, "-", skill.Description)
-		}
+		printAgentSkills(out, info)
 	}
 
+	if f.skillsJSON {
+		return encodeJSON(cmd, infos)
+	}
 	return nil
+}
+
+func printAgentSkills(out *cli.Printer, info agentSkillsInfo) {
+	if len(info.Skills) == 0 {
+		out.Printf("No skills for %s\n", info.Agent)
+		return
+	}
+
+	out.Printf("%d skill(s) for %s:\n", len(info.Skills), info.Agent)
+	for _, skill := range info.Skills {
+		marker := ""
+		if skill.Forked {
+			marker = " [forked]"
+		}
+		out.Println(" +", skill.Name+marker, "-", skill.Description)
+	}
+}
+
+func encodeJSON(cmd *cobra.Command, v any) error {
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 func (f *debugFlags) runDebugTitleCommand(cmd *cobra.Command, args []string) (commandErr error) {
