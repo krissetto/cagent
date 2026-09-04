@@ -468,6 +468,43 @@ func TestOpenAISupportsExplicitPromptCache(t *testing.T) {
 	}
 }
 
+// TestOpenAIRejectsToolsWithReasoningEffort exercises the minor-version
+// boundary (verified live against api.openai.com) where OpenAI's Chat
+// Completions endpoint starts rejecting an explicit reasoning_effort
+// alongside function tools: below gpt-5.4 the combination works; gpt-5.4
+// and gpt-5.5 reject only an explicit effort; gpt-5.6 and every later
+// generation (including gpt-6+) reject the combination outright.
+func TestOpenAIRejectsToolsWithReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		modelID string
+		want    bool
+	}{
+		{"gpt-5", false},
+		{"gpt-5.1-codex", false},
+		{"gpt-5.2", false},
+		{"o3-mini", false},
+		{"claude-opus-4-7", false},
+		{"gpt-5.4", true},
+		{"gpt-5.4-mini", true},
+		{"gpt-5.5", true},
+		{"gpt-5.6", true},
+		{"gpt-5.6-terra", true},
+		{"gpt-6-astra", true},
+		{"gpt-6", true},
+		{"gpt-7", true},
+		{"openai/gpt-5.4", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.modelID, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, OpenAIRejectsToolsWithReasoningEffort(tt.modelID))
+		})
+	}
+}
+
 func TestAnthropicTopEfforts(t *testing.T) {
 	t.Parallel()
 

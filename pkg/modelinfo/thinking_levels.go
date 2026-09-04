@@ -237,11 +237,39 @@ func OpenAISupportsNoneEffort(modelID string) bool {
 
 // openAIDropsMinimalEffort reports whether an OpenAI model rejects reasoning
 // effort "minimal", unlike [OpenAISupportsNoneEffort] this holds for every
-// gpt-5.6-or-later generation including gpt-6 (verified live: gpt-6-astra
-// 400s on reasoning.effort "minimal" as well as "none") — only the "none"
+// gpt-5.6-or-later generation including gpt-6. Verified live against
+// api.openai.com (2026-09): gpt-5.6/-sol/-terra AND gpt-6-astra all 400 on
+// reasoning.effort "minimal" ("Supported values are: 'none', 'low',
+// 'medium', 'high', 'xhigh', and 'max'" for the gpt-5.6 line — "none" isn't
+// in gpt-6-astra's list, see [OpenAISupportsNoneEffort]) — only the "none"
 // value itself stops being honored past gpt-5.6.
 func openAIDropsMinimalEffort(modelID string) bool {
 	return atLeastGPT(modelID, 5, 6)
+}
+
+// OpenAIRejectsToolsWithReasoningEffort reports whether an OpenAI model
+// rejects an explicit `reasoning_effort` sent alongside function tools on the
+// Chat Completions endpoint (HTTP 400: "Function tools with reasoning_effort
+// are not supported for <model> in /v1/chat/completions. To use function
+// tools, use /v1/responses or set reasoning_effort to 'none'."). Verified
+// live against api.openai.com (2026-09):
+//
+//   - gpt-5, gpt-5.1, gpt-5.2, and the o-series still accept an explicit
+//     effort together with tools on this endpoint.
+//   - gpt-5.4, gpt-5.4-mini, and gpt-5.5 reject an *explicit* effort with
+//     tools, but accept the combination when the field is omitted entirely
+//     (the model falls back to its implicit default effort).
+//   - gpt-5.6 and every later generation (including gpt-6+, via
+//     [atLeastGPT]) reject tools+reasoning on this endpoint outright, even
+//     with the field omitted; only the Responses API supports the
+//     combination for them.
+//
+// The OpenAI client uses this to drop reasoning_effort rather than send a
+// value guaranteed to 400 when a Responses-capable model is forced onto
+// Chat Completions (an explicit api_type or custom-provider override) with
+// tools in the request.
+func OpenAIRejectsToolsWithReasoningEffort(modelID string) bool {
+	return atLeastGPT(modelID, 5, 4)
 }
 
 // OpenAISupportsExplicitPromptCache reports whether an OpenAI model accepts

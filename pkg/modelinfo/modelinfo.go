@@ -106,7 +106,9 @@ func SupportsDeferredTools(provider, modelID string) bool {
 //
 // All reasoning-capable OpenAI models do (gpt-5, gpt-6+, the o-series),
 // except the gpt-5-chat variants which are non-reasoning chat models at the
-// API level.
+// API level. This exclusion is NOT (yet) generation-agnostic: a future
+// "gpt-6-chat"-style non-reasoning id would need its own prefix check added
+// here, since the maj >= 6 branch below returns true unconditionally.
 func UsesReasoningEffort(modelID string) bool {
 	m := normalizeOpenAI(modelID)
 	if strings.HasPrefix(m, "gpt-5-chat") {
@@ -280,14 +282,14 @@ func gptGeneration(modelID string) (major, minor int, ok bool) {
 	case rest[0] != '.':
 		return 0, 0, false
 	}
-	min, mw := leadingInt(rest[1:])
+	mn, mw := leadingInt(rest[1:])
 	if mw == 0 || mw > 2 {
 		return 0, 0, false
 	}
 	if tail := rest[1+mw:]; tail != "" && tail[0] != '-' {
 		return 0, 0, false
 	}
-	return maj, min, true
+	return maj, mn, true
 }
 
 // atLeastGPT reports whether modelID names an OpenAI GPT model at or above
@@ -297,11 +299,11 @@ func gptGeneration(modelID string) (major, minor int, ok bool) {
 // automatically satisfies any gpt-5.x-or-later threshold without a code
 // change; ok=false (non-GPT-5+ ids) reports false.
 func atLeastGPT(modelID string, major, minor int) bool {
-	maj, min, ok := gptGeneration(modelID)
+	maj, mn, ok := gptGeneration(modelID)
 	if !ok {
 		return false
 	}
-	return maj > major || (maj == major && min >= minor)
+	return maj > major || (maj == major && mn >= minor)
 }
 
 // UsesThinkingLevel reports whether a Google Gemini model uses level-based
