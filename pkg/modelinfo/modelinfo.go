@@ -46,8 +46,10 @@ import (
 // the Responses API rather than the legacy Chat Completions API.
 //
 // The Responses API is the forward path for newer OpenAI models: gpt-4.1,
-// the o-series (o1/o3/o4), gpt-5 and Codex variants. Older models stay on
-// Chat Completions for compatibility.
+// the o-series (o1/o3/o4), gpt-5 and later generations (gpt-6+, matched via
+// [gptGeneration] so a naming convention rather than a per-id list picks up
+// new generations), and Codex variants. Older models stay on Chat
+// Completions for compatibility.
 func SupportsResponsesAPI(modelID string) bool {
 	m := normalizeOpenAI(modelID)
 	switch {
@@ -55,6 +57,9 @@ func SupportsResponsesAPI(modelID string) bool {
 		strings.HasPrefix(m, "gpt-5"),
 		strings.HasPrefix(m, "codex"),
 		strings.Contains(m, "-codex"):
+		return true
+	}
+	if maj, _, ok := gptGeneration(m); ok && maj >= 6 {
 		return true
 	}
 	return isOSeries(m)
@@ -66,7 +71,14 @@ func SupportsDeferredTools(provider, modelID string) bool {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	switch provider {
 	case "openai", "chatgpt":
-		switch normalizeOpenAI(modelID) {
+		m := normalizeOpenAI(modelID)
+		// gpt-6 is the next generation of the gpt-5.6 trio, which already
+		// supports deferred tool loading; every future generation inherits
+		// the capability without a per-id allow-list entry.
+		if maj, _, ok := gptGeneration(m); ok && maj >= 6 {
+			return true
+		}
+		switch m {
 		case "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra":
 			return true
 		case "gpt-5.4-pro":
@@ -92,12 +104,18 @@ func SupportsDeferredTools(provider, modelID string) bool {
 // UsesReasoningEffort reports whether an OpenAI model accepts the
 // `reasoning.effort` API parameter.
 //
-// All reasoning-capable OpenAI models do, except the gpt-5-chat variants
-// which are non-reasoning chat models at the API level.
+// All reasoning-capable OpenAI models do (gpt-5, gpt-6+, the o-series),
+// except the gpt-5-chat variants which are non-reasoning chat models at the
+// API level. This exclusion is NOT (yet) generation-agnostic: a future
+// "gpt-6-chat"-style non-reasoning id would need its own prefix check added
+// here, since the maj >= 6 branch below returns true unconditionally.
 func UsesReasoningEffort(modelID string) bool {
 	m := normalizeOpenAI(modelID)
 	if strings.HasPrefix(m, "gpt-5-chat") {
 		return false
+	}
+	if maj, _, ok := gptGeneration(m); ok && maj >= 6 {
+		return true
 	}
 	return isOSeries(m) || strings.HasPrefix(m, "gpt-5")
 }
@@ -230,6 +248,62 @@ func claudeOpusSonnetVersion(m string) (major, minor int, ok bool) {
 		return maj, minor, true
 	}
 	return 0, 0, false
+}
+
+// gptGeneration extracts the major and minor version of a normalized OpenAI
+// GPT model id of the form "gpt-<major>[.<minor>][-suffix]", such as
+// "gpt-6-astra", "gpt-6.1-foo", or "gpt-5.6-terra". A bare major with no dot
+// ("gpt-6") yields minor 0. It reports ok=false for anything that isn't a
+// GPT-5-or-later id: pre-gpt-5 families ("gpt-4.1"), non-GPT ids, and
+// malformed/date-shaped runs (a major or minor wider than two digits, or a
+// suffix glued on without a '-' boundary, e.g. "gpt-5.20260709" or
+// "gpt-6foo").
+//
+// This is the family-agnostic sibling of [gptFiveMinor] in
+// thinking_levels.go: callers that need to compare across GPT generations
+// ("is this gpt-5.6 or later, including gpt-6+") use [atLeastGPT] built on
+// top of this, while gptFiveMinor stays the narrower gpt-5.x-only gate whose
+// callers and tests predate the gpt-6 family and must keep rejecting a bare
+// "gpt-5" (no minor) exactly as before.
+func gptGeneration(modelID string) (major, minor int, ok bool) {
+	m := normalizeOpenAI(modelID)
+	rest, found := strings.CutPrefix(m, "gpt-")
+	if !found {
+		return 0, 0, false
+	}
+	maj, w := leadingInt(rest)
+	if w == 0 || w > 2 || maj < 5 {
+		return 0, 0, false
+	}
+	rest = rest[w:]
+	switch {
+	case rest == "", rest[0] == '-':
+		return maj, 0, true
+	case rest[0] != '.':
+		return 0, 0, false
+	}
+	mn, mw := leadingInt(rest[1:])
+	if mw == 0 || mw > 2 {
+		return 0, 0, false
+	}
+	if tail := rest[1+mw:]; tail != "" && tail[0] != '-' {
+		return 0, 0, false
+	}
+	return maj, mn, true
+}
+
+// atLeastGPT reports whether modelID names an OpenAI GPT model at or above
+// the given generation (major, minor), e.g. atLeastGPT(id, 5, 6) is the
+// gpt-5.6-or-later threshold shared by several capability checks. It uses
+// [gptGeneration], so every later GPT generation (gpt-6, gpt-7, ...)
+// automatically satisfies any gpt-5.x-or-later threshold without a code
+// change; ok=false (non-GPT-5+ ids) reports false.
+func atLeastGPT(modelID string, major, minor int) bool {
+	maj, mn, ok := gptGeneration(modelID)
+	if !ok {
+		return false
+	}
+	return maj > major || (maj == major && mn >= minor)
 }
 
 // UsesThinkingLevel reports whether a Google Gemini model uses level-based

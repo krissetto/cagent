@@ -9,6 +9,78 @@ import (
 	"github.com/docker/docker-agent/pkg/modelsdev"
 )
 
+// TestGPTGeneration exercises gptGeneration's parsing of "gpt-<major>[.<minor>]"
+// ids across generations (gpt-5.x and gpt-6+), including the syntactic
+// boundary rules it shares with gptFiveMinor: a malformed or date-shaped
+// digit run must not parse as a real minor version.
+func TestGPTGeneration(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		model     string
+		wantMajor int
+		wantMinor int
+		wantOK    bool
+	}{
+		{"gpt-6-astra", 6, 0, true},
+		{"gpt-6.1-foo", 6, 1, true},
+		{"gpt-6", 6, 0, true},
+		{"openai/gpt-6-astra", 6, 0, true},
+		{"gpt-5.6-terra", 5, 6, true},
+		{"gpt-5.6", 5, 6, true},
+		{"gpt-5", 5, 0, true},
+		{"GPT-6-ASTRA", 6, 0, true},
+		{"gpt-7.2", 7, 2, true},
+
+		// Malformed / date-shaped / pre-gpt-5.
+		{"gpt-5.20260709", 0, 0, false},
+		{"gpt-6foo", 0, 0, false},
+		{"gpt-4.1", 0, 0, false},
+		{"gpt-5.6.1", 0, 0, false},
+		{"gpt-5.", 0, 0, false},
+		{"o3", 0, 0, false},
+		{"", 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			major, minor, ok := gptGeneration(tc.model)
+			require.Equal(t, tc.wantOK, ok, "ok mismatch")
+			if tc.wantOK {
+				assert.Equal(t, tc.wantMajor, major, "major mismatch")
+				assert.Equal(t, tc.wantMinor, minor, "minor mismatch")
+			}
+		})
+	}
+}
+
+// TestAtLeastGPT exercises the "is this GPT id at or above generation X.Y"
+// helper that every gpt-5.6-or-later threshold in this package is built on.
+func TestAtLeastGPT(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		model        string
+		major, minor int
+		want         bool
+	}{
+		{"gpt-5.6-terra", 5, 6, true},
+		{"gpt-5.5", 5, 6, false},
+		{"gpt-6-astra", 5, 6, true},
+		{"gpt-6-astra", 6, 0, true},
+		{"gpt-7", 5, 6, true},
+		{"gpt-4.1", 5, 6, false},
+		{"claude-sonnet-4-5", 5, 6, false},
+		{"", 5, 6, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, atLeastGPT(tc.model, tc.major, tc.minor))
+		})
+	}
+}
+
 func TestSupportsResponsesAPI(t *testing.T) {
 	t.Parallel()
 
@@ -51,6 +123,12 @@ func TestSupportsResponsesAPI(t *testing.T) {
 		{"openai/gpt-5.6-sol", true},
 		{"OPENAI/gpt-4.1", true},
 		{"openai/gpt-4o", false},
+		// gpt-6 is the next generation of gpt-5.6, matched via gptGeneration
+		// rather than a per-id list.
+		{"gpt-6-astra", true},
+		{"gpt-6.1-foo", true},
+		{"gpt-6", true},
+		{"openai/gpt-6-astra", true},
 		// Unrelated provider-style prefixes must NOT be stripped: they are
 		// the model's actual catalog path, not an OpenAI wrapper.
 		{"ai/qwen3", false},
@@ -81,6 +159,10 @@ func TestSupportsDeferredTools(t *testing.T) {
 		{"openai", "gpt-5.6-luna", true},
 		{"openai", "gpt-5.6-sol", true},
 		{"openai", "gpt-5.6-terra", true},
+		// gpt-6 is the next generation of the gpt-5.6 trio.
+		{"openai", "gpt-6-astra", true},
+		{"openai", "gpt-6.1-foo", true},
+		{"chatgpt", "gpt-6-astra", true},
 		{"chatgpt", "gpt-5.4", true},
 		{"chatgpt", "gpt-5.4-pro", false},
 		{"openai", "gpt-5.3-codex-spark", false},
@@ -135,6 +217,12 @@ func TestUsesReasoningEffort(t *testing.T) {
 		{"gpt-5-mini", true},
 		{"gpt-5-turbo", true},
 		{"GPT-5", true},
+
+		// gpt-6 is the next generation of gpt-5, matched via gptGeneration.
+		{"gpt-6-astra", true},
+		{"gpt-6.1-foo", true},
+		{"gpt-6", true},
+		{"openai/gpt-6-astra", true},
 
 		// Provider-qualified ids (gateways/aggregators) match the bare name.
 		{"openai/gpt-5-nano", true},
@@ -198,6 +286,9 @@ func TestAlwaysReasons(t *testing.T) {
 		{"gpt-4o", false},
 		{"claude-sonnet-4-5", false},
 		{"", false},
+		// gpt-6 can also produce visible output without reasoning, same as
+		// gpt-5: it is not classified as "always reasons".
+		{"gpt-6-astra", false},
 		// Gateway "openai/" qualified ids resolve the same as the bare model.
 		{"openai/o3-mini", true},
 		{"openai/gpt-4o", false},

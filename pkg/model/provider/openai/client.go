@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -44,6 +45,11 @@ type Client struct {
 	// wsPool is initialized in NewClient when transport=websocket is configured.
 	// It maintains a persistent WebSocket connection across requests.
 	wsPool *wsPool
+
+	// warnThinkingBudgetIgnoredOnce dedupes the "thinking_budget has no
+	// effect on this model" diagnostic (see [Client.warnThinkingBudgetIgnored])
+	// so a long-lived client warns at most once instead of on every request.
+	warnThinkingBudgetIgnoredOnce sync.Once
 }
 
 // NewClient creates a new OpenAI client from the provided configuration
@@ -478,32 +484,55 @@ func (c *Client) CreateChatCompletionStream(
 	// noThinkingMinOutputTokens so residual hidden reasoning can't starve
 	// visible output. The nil-guard is intentional: when MaxTokens is unset
 	// the caller has imposed no cap, so there is nothing to floor.
-	if modelinfo.UsesReasoningEffort(c.ModelConfig.Model) {
-		if c.ModelOptions.NoThinking() {
-			reasoningEffort := "low"
-			if sendsRealNoneEffort(&c.ModelConfig, c.ModelOptions.OpenAIVendor()) {
-				reasoningEffort = "none"
-			}
-			params.ReasoningEffort = shared.ReasoningEffort(reasoningEffort)
-			// Hidden reasoning tokens count against the output budget even
-			// with low effort. Enforce a floor so visible text isn't starved.
-			if c.ModelConfig.MaxTokens != nil && *c.ModelConfig.MaxTokens < noThinkingMinOutputTokens {
-				if !modelinfo.SupportsResponsesAPI(c.ModelConfig.Model) {
-					params.MaxTokens = openai.Int(noThinkingMinOutputTokens)
-				} else {
-					params.MaxCompletionTokens = openai.Int(noThinkingMinOutputTokens)
-				}
-			}
-			slog.DebugContext(ctx, "OpenAI request using reasoning effort (NoThinking)", "reasoning_effort", reasoningEffort)
-		} else if c.ModelConfig.ThinkingBudget != nil {
-			effortStr, err := openAIReasoningEffort(c.ModelConfig.ThinkingBudget)
-			if err != nil {
-				slog.ErrorContext(ctx, "OpenAI request using thinking_budget failed", "error", err)
-				return nil, err
-			}
-			params.ReasoningEffort = shared.ReasoningEffort(effortStr)
-			slog.DebugContext(ctx, "OpenAI request using thinking_budget", "reasoning_effort", effortStr)
+	switch {
+	case !modelinfo.UsesReasoningEffort(c.ModelConfig.Model):
+		if c.ModelConfig.ThinkingBudget != nil && !c.ModelConfig.ThinkingBudget.IsDisabled() {
+			c.warnThinkingBudgetIgnored(ctx)
 		}
+	case len(requestTools) > 0 && modelinfo.OpenAIRejectsToolsWithReasoningEffort(c.ModelConfig.Model):
+		// See modelinfo.OpenAIRejectsToolsWithReasoningEffort: gpt-5.4+
+		// (and every gpt-5.6+/gpt-6+ generation) reject an explicit
+		// reasoning_effort alongside function tools on Chat Completions;
+		// the API's own error points at /v1/responses. Reaching this path
+		// at all means the caller forced Chat Completions for a model
+		// that would otherwise auto-select the Responses API (an explicit
+		// api_type or custom-provider override). Dropping the field lets
+		// gpt-5.4/gpt-5.5 succeed with their implicit default effort;
+		// gpt-5.6+/gpt-6+ still 400 on tools with ANY reasoning_effort
+		// there (OpenAI has no combination that works on Chat Completions
+		// for those), but the request degrades instead of silently
+		// sending a value the caller can't see is the cause. Only warn
+		// when a value was actually about to be sent (NoThinking or an
+		// explicit ThinkingBudget); otherwise there is nothing dropped to
+		// report, and warning anyway would be misleading and would repeat
+		// on every turn of a long tool-using conversation.
+		if c.ModelOptions.NoThinking() || c.ModelConfig.ThinkingBudget != nil {
+			slog.WarnContext(ctx, "OpenAI: dropping reasoning_effort for a tools request forced onto Chat Completions; use api_type: openai_responses for tool calling on this model", "model", c.ModelConfig.Model)
+		}
+	case c.ModelOptions.NoThinking():
+		reasoningEffort := "low"
+		if sendsRealNoneEffort(&c.ModelConfig, c.ModelOptions.OpenAIVendor()) {
+			reasoningEffort = "none"
+		}
+		params.ReasoningEffort = shared.ReasoningEffort(reasoningEffort)
+		// Hidden reasoning tokens count against the output budget even
+		// with low effort. Enforce a floor so visible text isn't starved.
+		if c.ModelConfig.MaxTokens != nil && *c.ModelConfig.MaxTokens < noThinkingMinOutputTokens {
+			if !modelinfo.SupportsResponsesAPI(c.ModelConfig.Model) {
+				params.MaxTokens = openai.Int(noThinkingMinOutputTokens)
+			} else {
+				params.MaxCompletionTokens = openai.Int(noThinkingMinOutputTokens)
+			}
+		}
+		slog.DebugContext(ctx, "OpenAI request using reasoning effort (NoThinking)", "reasoning_effort", reasoningEffort)
+	case c.ModelConfig.ThinkingBudget != nil:
+		effortStr, err := openAIReasoningEffort(c.ModelConfig.ThinkingBudget)
+		if err != nil {
+			slog.ErrorContext(ctx, "OpenAI request using thinking_budget failed", "error", err)
+			return nil, err
+		}
+		params.ReasoningEffort = shared.ReasoningEffort(effortStr)
+		slog.DebugContext(ctx, "OpenAI request using thinking_budget", "reasoning_effort", effortStr)
 	}
 
 	// Apply structured output configuration
@@ -542,6 +571,17 @@ func (c *Client) CreateChatCompletionStream(
 
 	slog.DebugContext(ctx, "OpenAI chat completion stream created successfully", "model", c.ModelConfig.Model)
 	return newStreamAdapter(stream, trackUsage), nil
+}
+
+// warnThinkingBudgetIgnored logs, once per client, that a configured and
+// enabled thinking_budget has no effect because this model does not accept
+// a reasoning-effort parameter at all (docker-agent#4162: previously
+// silent — the setting was accepted by config validation but dropped
+// without a trace here).
+func (c *Client) warnThinkingBudgetIgnored(ctx context.Context) {
+	c.warnThinkingBudgetIgnoredOnce.Do(func() {
+		slog.WarnContext(ctx, "OpenAI: thinking_budget is configured but this model does not support a reasoning effort parameter; the setting has no effect", "model", c.ModelConfig.Model)
+	})
 }
 
 func (c *Client) supportsDeferredTools() bool {
@@ -740,6 +780,8 @@ func (c *Client) CreateResponseStream(
 				slog.DebugContext(ctx, "OpenAI responses request using thinking_budget", "reasoning_effort", effortStr)
 			}
 		}
+	} else if c.ModelConfig.ThinkingBudget != nil && !c.ModelConfig.ThinkingBudget.IsDisabled() {
+		c.warnThinkingBudgetIgnored(ctx)
 	}
 
 	// Apply structured output configuration
