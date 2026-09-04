@@ -1698,12 +1698,6 @@ type Toolset struct {
 	// finishes.
 	Recall *bool `json:"recall,omitempty" yaml:"recall,omitempty"`
 
-	// Deprecated: ignored. The runtime now classifies every shell
-	// command natively (pkg/safety) and gates it through the session's
-	// safety mode, so the opt-in is meaningless. Kept so existing
-	// YAMLs with `safer: true` still parse under strict decoding.
-	Safer *bool `json:"safer,omitempty" yaml:"safer,omitempty"`
-
 	// For the `rag` tool
 	RAGConfig *RAGConfig `json:"rag_config,omitempty" yaml:"rag_config,omitempty"`
 
