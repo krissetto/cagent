@@ -396,7 +396,7 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 			"output_tokens", event.Response.Usage.OutputTokens,
 			"reasoning_tokens", event.Response.Usage.OutputTokensDetails.ReasoningTokens,
 		)
-		slog.Debug("Incomplete response payload", "response_raw", truncateForLog(event.Response.RawJSON(), 4000))
+		slog.Debug("Incomplete response payload", "response_raw", event.Response.RawJSON())
 		u := event.Response.Usage
 		if u.TotalTokens > 0 {
 			response.Usage = &chat.Usage{
@@ -423,18 +423,10 @@ func (a *ResponseStreamAdapter) Recv() (chat.MessageStreamResponse, error) {
 
 	default:
 		slog.Info("Unhandled stream event type", "type", event.Type)
-		slog.Debug("Unhandled stream event payload", "type", event.Type, "raw", truncateForLog(event.RawJSON(), 4000))
+		slog.Debug("Unhandled stream event payload", "type", event.Type, "raw", event.RawJSON())
 	}
 
 	return response, nil
-}
-
-// truncateForLog bounds a raw JSON payload for log output.
-func truncateForLog(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "...(truncated)"
 }
 
 // Close closes the stream
