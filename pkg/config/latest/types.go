@@ -249,6 +249,9 @@ func (r RAGToolset) MarshalYAML() (any, error) {
 		if cfg.RespectVCS != nil {
 			result["respect_vcs"] = *cfg.RespectVCS
 		}
+		if cfg.IndexingTimeout != nil {
+			result["indexing_timeout"] = cfg.IndexingTimeout.String()
+		}
 		if len(cfg.Strategies) > 0 {
 			result["strategies"] = cfg.Strategies
 		}
@@ -2124,6 +2127,12 @@ type RAGConfig struct {
 	RespectVCS *bool               `json:"respect_vcs,omitempty"` // Whether to respect VCS ignore files like .gitignore (default: true)
 	Strategies []RAGStrategyConfig `json:"strategies,omitempty"`  // Array of strategy configurations
 	Results    RAGResultsConfig    `json:"results"`
+	// IndexingTimeout bounds a single Initialize run started by the toolset's
+	// Start, detached from the caller's own (much shorter) start-wait budget.
+	// nil means the default (30m); an explicit "0s" means no bound. Completed
+	// files are persisted per file, so an expired run resumes where it left
+	// off on the next start.
+	IndexingTimeout *Duration `json:"indexing_timeout,omitempty"`
 }
 
 // GetRespectVCS returns whether VCS ignore files should be respected, defaulting to true
@@ -2132,6 +2141,18 @@ func (c *RAGConfig) GetRespectVCS() bool {
 		return true
 	}
 	return *c.RespectVCS
+}
+
+// defaultRAGIndexingTimeout is used when IndexingTimeout is unset.
+const defaultRAGIndexingTimeout = 30 * time.Minute
+
+// GetIndexingTimeout returns the configured indexing timeout, defaulting to
+// defaultRAGIndexingTimeout when unset. An explicit "0s" means no bound.
+func (c *RAGConfig) GetIndexingTimeout() time.Duration {
+	if c.IndexingTimeout == nil {
+		return defaultRAGIndexingTimeout
+	}
+	return c.IndexingTimeout.Duration
 }
 
 // RAGStrategyConfig represents a single retrieval strategy configuration

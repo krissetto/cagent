@@ -2869,6 +2869,10 @@
           "description": "Whether to respect VCS ignore files (e.g., .gitignore) when collecting documents for indexing. When true (default), files matching ignore patterns will be excluded. Can be overridden per-strategy.",
           "default": true
         },
+        "indexing_timeout": {
+          "type": "string",
+          "description": "Cap on a single indexing run started by this RAG source, detached from the much shorter 30s toolset-start wait budget: indexing keeps running in the background past that budget and the tool appears once it is ready, resuming from per-file progress on a later start. Go duration format (e.g. '30m', '2h'). Default '30m' when omitted; '0s' means no bound."
+        },
         "strategies": {
           "type": "array",
           "description": "Array of retrieval strategy configurations. Each strategy can have different parameters based on its type.",

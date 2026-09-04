@@ -235,6 +235,59 @@ The gate is a lightweight wall-clock check — it creates no background threads 
 timers. A Stop command or agent shutdown takes effect immediately regardless of
 how much of the backoff window remains.
 
+### Long indexing runs
+
+Starting any toolset — RAG included — is bounded by a 30-second *wait* budget
+(`tools.DefaultStartTimeout`): if a toolset's `Start` has not returned within
+30s, the caller stops waiting and the turn proceeds without that toolset's
+tools, exactly as it would for a wedged MCP server. This budget exists to
+detect toolsets that never come up; it is not a deadline on indexing itself.
+
+A large knowledge base can legitimately take much longer than 30s to index.
+Rather than abort in-flight indexing at the 30s mark — which used to discard
+any embeddings not yet committed for the file being processed — the RAG
+toolset detaches indexing from the caller's wait budget the same way it
+already detaches its file watcher. When the 30s budget expires:
+
+- The current turn proceeds without the RAG tool (the existing "taking too
+  long to start" warning and TUI progress events still apply).
+- Indexing keeps running in the background.
+- Files that finish indexing are persisted atomically per file (a file is
+  always either fully indexed or untouched — see #4073/#4158), so progress
+  is never lost to this budget.
+- A later turn's `Start` call picks the toolset up: if indexing has finished,
+  the tool is available immediately; if it is still running, that turn also
+  proceeds without the tool.
+
+This is a **visible behavior change**: knowledge bases that used to finish
+indexing (and thus offer the tool) on the very first turn, within the old
+30-second window, now do so on whichever turn happens to land after indexing
+completes. If indexing takes under 30s, nothing changes.
+
+`indexing_timeout` bounds indexing itself, independent of the 30s wait
+budget — it exists only so a hung provider connection cannot pin a knowledge
+base's indexing lock forever:
+
+```yaml
+rag:
+  codebase:
+    indexing_timeout: 2h # Go duration; "0s" = unbounded; default 30m
+    docs: [./knowledge-base]
+    strategies:
+      - type: chunked-embeddings
+        embedding_model: openai/text-embedding-3-small
+```
+
+- Default: `30m` when omitted.
+- `0s` means no bound. A negative value is rejected at config validation time.
+- Expiry is a plain timeout, not a provider error: it does **not** arm the
+  backoff gate described above, and the next turn's `Start` resumes indexing
+  immediately rather than waiting out a cooldown. Files already persisted are
+  kept; unfinished files are re-indexed on resume.
+- A 429/408/5xx from the provider *during* a detached indexing run is
+  unaffected by any of this — it still aborts the run and arms the backoff
+  gate exactly as described above.
+
 ### Operational impact
 
 **Before**: a rate-limited knowledge base was re-indexed on every agent turn —
@@ -302,13 +355,14 @@ Look for log tags: `[RAG Manager]`, `[Chunked-Embeddings Strategy]`, `[BM25 Stra
 
 ### Top-Level RAG Fields
 
-| Field         | Type     | Default | Description                                                    |
-| ------------- | -------- | ------- | -------------------------------------------------------------- |
-| `docs`        | []string | —       | Document paths/directories (shared across strategies)          |
-| `description` | string   | —       | Human-readable description of this RAG source                  |
-| `respect_vcs` | boolean  | `true`  | Respect `.gitignore` files when indexing documents             |
-| `strategies`  | []object | —       | Array of retrieval strategy configurations                     |
-| `results`     | object   | —       | Post-processing: fusion, reranking, deduplication, final limit |
+| Field              | Type     | Default | Description                                                                                                                                    |
+| ------------------ | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs`             | []string | —       | Document paths/directories (shared across strategies)                                                                                          |
+| `description`      | string   | —       | Human-readable description of this RAG source                                                                                                  |
+| `respect_vcs`      | boolean  | `true`  | Respect `.gitignore` files when indexing documents                                                                                             |
+| `indexing_timeout` | string   | `30m`   | Cap on a single indexing run, detached from the 30s toolset-start wait budget; `0s` = unbounded. See [Long indexing runs](#long-indexing-runs) |
+| `strategies`       | []object | —       | Array of retrieval strategy configurations                                                                                                     |
+| `results`          | object   | —       | Post-processing: fusion, reranking, deduplication, final limit                                                                                 |
 
 ### Chunked-Embeddings Strategy
 
