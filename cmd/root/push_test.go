@@ -22,6 +22,46 @@ func writeKey(t *testing.T, name string, data []byte) string {
 	return protect.FilePrefix + path
 }
 
+func TestResolveKey_Env(t *testing.T) {
+	secretFile := writeKey(t, "secret", []byte("a symmetric secret long enough"))
+
+	t.Run("unset", func(t *testing.T) {
+		t.Setenv(envEncryptKey, "")
+		key, err := resolveKey("")
+		require.NoError(t, err)
+		assert.Nil(t, key)
+	})
+
+	t.Run("inline env", func(t *testing.T) {
+		t.Setenv(envEncryptKey, "an env secret that is long enough")
+		key, err := resolveKey("")
+		require.NoError(t, err)
+		assert.True(t, key.Symmetric())
+	})
+
+	t.Run("file env", func(t *testing.T) {
+		t.Setenv(envEncryptKey, secretFile)
+		key, err := resolveKey("")
+		require.NoError(t, err)
+		assert.True(t, key.Symmetric())
+	})
+
+	t.Run("flag wins over env", func(t *testing.T) {
+		t.Setenv(envEncryptKey, "an env secret that is long enough")
+		fromFlag, err := resolveKey("a flag secret that is long enough")
+		require.NoError(t, err)
+		fromEnv, err := protect.ParseKey([]byte("an env secret that is long enough"))
+		require.NoError(t, err)
+		assert.NotEqual(t, fromEnv.Identity(), fromFlag.Identity())
+	})
+
+	t.Run("invalid env", func(t *testing.T) {
+		t.Setenv(envEncryptKey, "short")
+		_, err := resolveKey("")
+		require.ErrorIs(t, err, protect.ErrSecretTooShort)
+	})
+}
+
 func TestPushFlags_Protection(t *testing.T) {
 	t.Parallel()
 

@@ -63,7 +63,8 @@ type Key struct {
 	pub crypto.PublicKey
 }
 
-// FilePrefix marks a ResolveKey value as a path to a key file.
+// FilePrefix marks a ResolveKey value as a path to a key file. It is a
+// literal prefix, not a URL scheme: no percent-decoding or authority parsing.
 const FilePrefix = "file://"
 
 // ResolveKey parses a key given on the command line: a value prefixed with

@@ -41,7 +41,7 @@ $ docker agent share pull myorg/agent:tag
 
 `share push --key <key>` protects the agent so that pullers holding the matching key can check it was published by you and has not been altered. The YAML is **always pushed in clear**; only the proof goes into the OCI manifest annotations. `share pull --key <key>` performs the check and refuses the artifact if it fails.
 
-The key is given inline, or as a path prefixed with `file://`. `DOCKER_AGENT_ENCRYPT_KEY` accepts the same forms and is used when `--key` is not set.
+The key is given inline, or as a path prefixed with `file://` (a plain prefix, not a URL: `file://./agent.key`, `file:///etc/agent.key`, `file://~/.ssh/id_ed25519` and `file://C:\keys\agent.key` all work; there is no percent-decoding). Inline material that itself starts with `file://` cannot be passed inline — use the file form instead. `DOCKER_AGENT_ENCRYPT_KEY` accepts the same forms and is used when `--key` is not set.
 
 ```bash
 # Asymmetric: sign with a private key, verify with the public key
