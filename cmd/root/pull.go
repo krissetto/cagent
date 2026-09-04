@@ -10,14 +10,13 @@ import (
 
 	"github.com/docker/docker-agent/pkg/cli"
 	"github.com/docker/docker-agent/pkg/content"
-	"github.com/docker/docker-agent/pkg/protect"
 	"github.com/docker/docker-agent/pkg/remote"
 	"github.com/docker/docker-agent/pkg/telemetry"
 )
 
 type pullFlags struct {
-	force   bool
-	keyFile string
+	force bool
+	key   string
 }
 
 func newPullCmd() *cobra.Command {
@@ -31,15 +30,16 @@ func newPullCmd() *cobra.Command {
 With --key, the pulled agent YAML is verified against the protection recorded
 by 'share push --key': a signature is checked with the same secret or the
 matching public key; an encrypted copy (push --encrypt) is decrypted with the
-same secret or the matching private key and compared to the YAML. With an
-asymmetric key the artifact must carry a signature. The pull fails if the
-artifact is unprotected or the check does not pass.`,
+same secret or the matching private key and compared to the YAML. The key is
+given inline, or as a path prefixed with file:// (e.g. --key file://~/.ssh/id_ed25519.pub).
+With an asymmetric key the artifact must carry a signature. The pull fails if
+the artifact is unprotected or the check does not pass.`,
 		Args: cobra.ExactArgs(1),
 		RunE: flags.runPullCommand,
 	}
 
 	cmd.PersistentFlags().BoolVar(&flags.force, "force", false, "Force pull even if the configuration already exists locally")
-	cmd.Flags().StringVar(&flags.keyFile, "key", "", "Path to a key file (PEM/OpenSSH) or symmetric secret used to verify the agent (or set "+envEncryptKey+" with the secret inline)")
+	cmd.Flags().StringVar(&flags.key, "key", "", "Key used to verify the agent: PEM/OpenSSH key or symmetric secret, inline or as file://<path> (or set "+envEncryptKey+")")
 
 	return cmd
 }
@@ -55,22 +55,14 @@ func (f *pullFlags) runPullCommand(cmd *cobra.Command, args []string) (commandEr
 	registryRef := args[0]
 	slog.DebugContext(ctx, "Starting pull", "registry_ref", registryRef)
 
-	var key *protect.Key
-	if f.keyFile != "" {
-		var err error
-		if key, err = protect.LoadKey(f.keyFile); err != nil {
-			return err
-		}
-	} else if secret := os.Getenv(envEncryptKey); secret != "" {
-		var err error
-		if key, err = protect.ParseKey([]byte(secret)); err != nil {
-			return err
-		}
+	key, err := resolveKey(f.key)
+	if err != nil {
+		return err
 	}
 
 	out.Println("Pulling agent", registryRef)
 
-	_, err := remote.Pull(ctx, registryRef, f.force)
+	_, err = remote.Pull(ctx, registryRef, f.force)
 	if err != nil {
 		return fmt.Errorf("failed to pull artifact: %w", err)
 	}

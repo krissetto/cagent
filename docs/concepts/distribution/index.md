@@ -39,31 +39,36 @@ $ docker agent share pull myorg/agent:tag
 
 ## Signing and Encrypting Agents
 
-`share push --key <file>` protects the agent so that pullers holding the matching key can check it was published by you and has not been altered. The YAML is **always pushed in clear**; only the proof goes into the OCI manifest annotations. `share pull --key <file>` performs the check and refuses the artifact if it fails.
+`share push --key <key>` protects the agent so that pullers holding the matching key can check it was published by you and has not been altered. The YAML is **always pushed in clear**; only the proof goes into the OCI manifest annotations. `share pull --key <key>` performs the check and refuses the artifact if it fails.
+
+The key is given inline, or as a path prefixed with `file://`. `DOCKER_AGENT_ENCRYPT_KEY` accepts the same forms and is used when `--key` is not set.
 
 ```bash
 # Asymmetric: sign with a private key, verify with the public key
-$ docker agent share push ./agent.yaml myorg/agent:v1 --key ~/.ssh/id_ed25519
-$ docker agent share pull myorg/agent:v1 --key ~/.ssh/id_ed25519.pub
+$ docker agent share push ./agent.yaml myorg/agent:v1 --key file://~/.ssh/id_ed25519
+$ docker agent share pull myorg/agent:v1 --key file://~/.ssh/id_ed25519.pub
 
 # Symmetric: same secret on both sides
 $ openssl rand -hex 32 > agent.key
-$ docker agent share push ./agent.yaml myorg/agent:v1 --key agent.key
-$ docker agent share pull myorg/agent:v1 --key agent.key
+$ docker agent share push ./agent.yaml myorg/agent:v1 --key file://agent.key
+$ docker agent share pull myorg/agent:v1 --key file://agent.key
+
+# Symmetric, inline
+$ docker agent share push ./agent.yaml myorg/agent:v1 --key "$(openssl rand -hex 32)"
 ```
 
 ### Key formats
 
-The key kind is detected from the file contents:
+The key kind is detected from its contents:
 
-| File contents                                              | Kind       | Sign | Verify | `--encrypt` |
+| Key contents                                               | Kind       | Sign | Verify | `--encrypt` |
 | ---------------------------------------------------------- | ---------- | ---- | ------ | ----------- |
 | PEM / OpenSSH **Ed25519** private key                      | asymmetric | ✓    | ✓      | ✗           |
 | PEM / OpenSSH **ECDSA** or **RSA** private key             | asymmetric | ✓    | ✓      | ✓           |
 | PEM / OpenSSH public key (`.pub`)                          | asymmetric | ✗    | ✓      | ✗           |
 | Anything else: a raw **secret** of at least 16 bytes       | symmetric  | ✓    | ✓      | ✓           |
 
-Passphrase-protected keys are not supported. Anything containing a PEM boundary (`-----BEGIN`) or an OpenSSH key-type marker (`ssh-`, `ecdsa-sha2-`, `sk-ssh-`, `sk-ecdsa-`) anywhere is treated as a key file and rejected if it does not parse — a broken public key is never silently used as a secret. Symmetric secrets can be guessed offline against the public YAML, so use random material (`openssl rand -hex 32`), not a password.
+Passphrase-protected keys are not supported. Anything containing a PEM boundary (`-----BEGIN`) or an OpenSSH key-type marker (`ssh-`, `ecdsa-sha2-`, `sk-ssh-`, `sk-ecdsa-`) anywhere is treated as a key and rejected if it does not parse — a broken public key is never silently used as a secret. Symmetric secrets can be guessed offline against the public YAML, so use random material (`openssl rand -hex 32`), not a password.
 
 ### Modes
 

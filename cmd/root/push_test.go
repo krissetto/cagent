@@ -19,7 +19,7 @@ func writeKey(t *testing.T, name string, data []byte) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
 	require.NoError(t, os.WriteFile(path, data, 0o600))
-	return path
+	return protect.FilePrefix + path
 }
 
 func TestPushFlags_Protection(t *testing.T) {
@@ -34,7 +34,8 @@ func TestPushFlags_Protection(t *testing.T) {
 
 	secret := writeKey(t, "secret", []byte("a symmetric secret long enough\n"))
 	short := writeKey(t, "short", []byte("short"))
-	edPrivFile := writeKey(t, "ed25519", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER}))
+	edPrivPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
+	edPrivFile := writeKey(t, "ed25519", edPrivPEM)
 	edPubFile := writeKey(t, "ed25519.pub", pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}))
 
 	tests := []struct {
@@ -46,13 +47,16 @@ func TestPushFlags_Protection(t *testing.T) {
 	}{
 		{name: "no key", flags: pushFlags{}},
 		{name: "encrypt without key", flags: pushFlags{encrypt: true}, errMsg: "--encrypt requires --key"},
-		{name: "missing key file", flags: pushFlags{keyFile: filepath.Join(t.TempDir(), "nope")}, errMsg: "reading key file"},
-		{name: "short secret", flags: pushFlags{keyFile: short}, wantErr: protect.ErrSecretTooShort},
-		{name: "secret sign", flags: pushFlags{keyFile: secret}, wantOpt: true},
-		{name: "secret encrypt", flags: pushFlags{keyFile: secret, encrypt: true}, wantOpt: true},
-		{name: "ed25519 sign", flags: pushFlags{keyFile: edPrivFile}, wantOpt: true},
-		{name: "ed25519 cannot encrypt", flags: pushFlags{keyFile: edPrivFile, encrypt: true}, wantErr: protect.ErrCannotEncrypt},
-		{name: "public key cannot sign", flags: pushFlags{keyFile: edPubFile}, wantErr: protect.ErrCannotSign},
+		{name: "missing key file", flags: pushFlags{key: protect.FilePrefix + filepath.Join(t.TempDir(), "nope")}, errMsg: "reading key file"},
+		{name: "short secret", flags: pushFlags{key: short}, wantErr: protect.ErrSecretTooShort},
+		{name: "secret sign", flags: pushFlags{key: secret}, wantOpt: true},
+		{name: "secret encrypt", flags: pushFlags{key: secret, encrypt: true}, wantOpt: true},
+		{name: "inline secret", flags: pushFlags{key: "an inline secret long enough"}, wantOpt: true},
+		{name: "inline short secret", flags: pushFlags{key: "short"}, wantErr: protect.ErrSecretTooShort},
+		{name: "inline pem key", flags: pushFlags{key: string(edPrivPEM)}, wantOpt: true},
+		{name: "ed25519 sign", flags: pushFlags{key: edPrivFile}, wantOpt: true},
+		{name: "ed25519 cannot encrypt", flags: pushFlags{key: edPrivFile, encrypt: true}, wantErr: protect.ErrCannotEncrypt},
+		{name: "public key cannot sign", flags: pushFlags{key: edPubFile}, wantErr: protect.ErrCannotSign},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

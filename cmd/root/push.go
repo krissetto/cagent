@@ -17,7 +17,7 @@ import (
 )
 
 type pushFlags struct {
-	keyFile string
+	key     string
 	encrypt bool
 }
 
@@ -30,10 +30,11 @@ func newPushCmd() *cobra.Command {
 		Long: `Push an agent configuration file to an OCI registry.
 
 With --key, the agent YAML is protected and the proof is stored as manifest
-annotations; the YAML itself is always pushed in clear. The key kind is
-detected from the file: PEM or OpenSSH keys (Ed25519, ECDSA, RSA) are
-asymmetric, anything else is a raw symmetric secret of at least 16 bytes
-(e.g. 'openssl rand -hex 32 > agent.key') that must not contain PEM or
+annotations; the YAML itself is always pushed in clear. The key is given
+inline, or as a path prefixed with file:// (e.g. --key file://~/.ssh/id_ed25519).
+The key kind is detected from its contents: PEM or OpenSSH keys (Ed25519,
+ECDSA, RSA) are asymmetric, anything else is a raw symmetric secret of at
+least 16 bytes (e.g. 'openssl rand -hex 32') that must not contain PEM or
 OpenSSH key markers.
 
   Default (sign):  a signature (private key) or MAC (secret) is recorded.
@@ -49,33 +50,32 @@ OpenSSH key markers.
 		RunE: flags.runPushCommand,
 	}
 
-	cmd.Flags().StringVar(&flags.keyFile, "key", "", "Path to a key file (PEM/OpenSSH) or symmetric secret used to protect the agent (or set "+envEncryptKey+" with the secret inline)")
+	cmd.Flags().StringVar(&flags.key, "key", "", "Key used to protect the agent: PEM/OpenSSH key or symmetric secret, inline or as file://<path> (or set "+envEncryptKey+")")
 	cmd.Flags().BoolVar(&flags.encrypt, "encrypt", false, "Also embed an encrypted copy of the agent in the annotations (requires --key)")
 
 	return cmd
 }
 
-// envEncryptKey is an alternative to --key for callers that prefer not to write
-// the secret to a file: its value is used as the symmetric secret directly
-// (never a file path). The --key flag takes precedence when both are set.
+// envEncryptKey is an alternative to --key. Its value is resolved the same way
+// (inline key, or file://<path>). The --key flag takes precedence when both
+// are set.
 const envEncryptKey = "DOCKER_AGENT_ENCRYPT_KEY"
 
-// resolveKey loads the protection key from the --key flag (a file path) or,
-// when the flag is empty, from the [envEncryptKey] environment variable (an
-// inline symmetric secret). It returns a nil key and nil error when neither is
-// set, so callers can treat "no key" as "no protection".
-func (f *pushFlags) resolveKey() (*protect.Key, error) {
-	if f.keyFile != "" {
-		return protect.LoadKey(f.keyFile)
+// resolveKey loads the protection key from the --key value or, when empty,
+// from [envEncryptKey]. Returns a nil key and nil error when neither is set,
+// so callers can treat "no key" as "no protection".
+func resolveKey(flag string) (*protect.Key, error) {
+	if flag == "" {
+		flag = os.Getenv(envEncryptKey)
 	}
-	if secret := os.Getenv(envEncryptKey); secret != "" {
-		return protect.ParseKey([]byte(secret))
+	if flag == "" {
+		return nil, nil
 	}
-	return nil, nil
+	return protect.ResolveKey(flag)
 }
 
 func (f *pushFlags) protection() (oci.PackageOption, error) {
-	key, err := f.resolveKey()
+	key, err := resolveKey(f.key)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,8 @@ func (f *pushFlags) protection() (oci.PackageOption, error) {
 		mode = protect.ModeEncrypt
 	}
 	if err := key.Supports(mode); err != nil {
-		return nil, fmt.Errorf("%s: %w", f.keyFile, err)
+		// Never echo the key value: it may be an inline secret.
+		return nil, fmt.Errorf("%s: %w", key.Describe(), err)
 	}
 	return oci.WithProtection(key, mode), nil
 }

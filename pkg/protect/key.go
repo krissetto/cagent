@@ -42,6 +42,8 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/ssh"
+
+	pathx "github.com/docker/docker-agent/pkg/path"
 )
 
 // MinSecretLen is the minimum accepted length of a symmetric secret. The
@@ -59,6 +61,23 @@ type Key struct {
 	priv crypto.PrivateKey
 	// pub is always set for asymmetric keys.
 	pub crypto.PublicKey
+}
+
+// FilePrefix marks a ResolveKey value as a path to a key file.
+const FilePrefix = "file://"
+
+// ResolveKey parses a key given on the command line: a value prefixed with
+// FilePrefix names a key file (a leading ~ is expanded, since shells do not
+// expand it mid-word), anything else is the key material itself.
+func ResolveKey(value string) (*Key, error) {
+	if path, ok := strings.CutPrefix(value, FilePrefix); ok {
+		expanded, err := pathx.ExpandHomeDir(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolving key file %s: %w", path, err)
+		}
+		return LoadKey(expanded)
+	}
+	return ParseKey([]byte(value))
 }
 
 // LoadKey reads and parses a key file. See ParseKey.
