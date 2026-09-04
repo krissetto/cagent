@@ -22,9 +22,10 @@ The shell tool automatically detects and names the resolved shell interpreter (e
 For example:
 
 - On Linux with bash: "Executes the given shell command with bash on Linux."
-- On Windows with PowerShell: "Executes the given shell command with powershell on Windows. Use Windows PowerShell 5.1 syntax: chain commands with ";" (not "&&"), and avoid POSIX commands/flags like "ls -la"."
+- On Windows with PowerShell 5.1: "Executes the given shell command with powershell on Windows. Windows PowerShell dialect. Chain commands with ";" (not "&&"; "&&" is a parse error on 5.1). POSIX utilities are not available — use Select-String (not grep), Select-Object -First N (not head), -Last N (not tail), Measure-Object -Line (not wc -l), Get-Content (not cat), Expand-Archive (not gunzip/tar). "ls -la" fails — use "ls" or "Get-ChildItem"."
+- On Windows with cmd.exe: "Executes the given shell command with cmd on Windows. cmd.exe syntax, not POSIX. No POSIX utilities (grep, head, tail, wc, cat), no POSIX flags on built-ins, and variable expansion uses %VAR% (not $VAR)."
 
-This reduces wasted turns where models assume POSIX syntax on Windows or vice versa.
+Each description also points the model at `get_environment_info` for edge cases the static hint does not cover. This reduces wasted turns where models assume POSIX syntax on Windows or vice versa.
 
 ## Configuration
 
