@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/latest"
 	"github.com/docker/docker-agent/pkg/environment"
+	"github.com/docker/docker-agent/pkg/safety"
 	"github.com/docker/docker-agent/pkg/shellpath"
 	"github.com/docker/docker-agent/pkg/tools"
 )
@@ -131,44 +132,51 @@ type RunBackgroundJobRecallArgs struct {
 }
 
 // UnmarshalJSON accepts both "cmd" (canonical) and "command" (common alias),
-// mirroring the shell tool's command parameter.
+// resolved by [safety.CommandArg] over an exact-key map so the executed
+// command is the one the runtime classified (see shell.RunShellArgs).
 func (a *RunBackgroundJobArgs) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Cmd     string `json:"cmd"`
-		Command string `json:"command"`
-		Cwd     string `json:"cwd"`
+		Cwd string `json:"cwd"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	a.Cmd = preferNonBlank(raw.Cmd, raw.Command)
+	cmd, err := commandField(data)
+	if err != nil {
+		return err
+	}
+	a.Cmd = cmd
 	a.Cwd = raw.Cwd
 	return nil
 }
 
 // UnmarshalJSON accepts both "cmd" (canonical) and "command" (common alias),
-// mirroring the shell tool's command parameter.
+// resolved like [RunBackgroundJobArgs].
 func (a *RunBackgroundJobRecallArgs) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Cmd     string `json:"cmd"`
-		Command string `json:"command"`
-		Cwd     string `json:"cwd"`
-		Recall  bool   `json:"recall"`
+		Cwd    string `json:"cwd"`
+		Recall bool   `json:"recall"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	a.Cmd = preferNonBlank(raw.Cmd, raw.Command)
+	cmd, err := commandField(data)
+	if err != nil {
+		return err
+	}
+	a.Cmd = cmd
 	a.Cwd = raw.Cwd
 	a.Recall = raw.Recall
 	return nil
 }
 
-func preferNonBlank(primary, fallback string) string {
-	if strings.TrimSpace(primary) != "" {
-		return primary
+func commandField(data []byte) (string, error) {
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return "", err
 	}
-	return fallback
+	cmd, _ := safety.CommandArg(fields)
+	return cmd, nil
 }
 
 // ViewBackgroundJobArgs contains the parameters for view_background_job.

@@ -948,6 +948,75 @@ func TestDispatcher_DenyRuleBlocksUnderAutonomous(t *testing.T) {
 	assert.Contains(t, em.responses[0].Output, "denied")
 }
 
+// TestDispatcher_CommandRulesSeeTheExecutedCommand pins that permission
+// rules written against the canonical "cmd" key match whatever command
+// the handler will actually run: the "command" alias cannot dodge a
+// deny rule, and a stored "always allow" grant keeps covering alias
+// calls. Both command tools are exercised.
+func TestDispatcher_CommandRulesSeeTheExecutedCommand(t *testing.T) {
+	t.Parallel()
+	a := newAgent()
+
+	for _, toolName := range []string{"shell", "run_background_job"} {
+		t.Run(toolName+" alias cannot dodge a deny rule", func(t *testing.T) {
+			t.Parallel()
+			sess := session.New(session.WithSafetyPolicy(session.SafetyPolicyAutonomous))
+			tool := tools.Tool{
+				Name: toolName,
+				Handler: func(context.Context, tools.ToolCall, tools.Runtime) (*tools.ToolCallResult, error) {
+					panic("must not run")
+				},
+			}
+			d := &toolexec.Dispatcher{
+				AgentFor: func(*session.Session) *agent.Agent { return a },
+				Permissions: staticCheckers(toolexec.NamedChecker{
+					Checker: permissions.NewCheckerFromRules(nil, nil, []string{toolName + ":cmd=sudo *"}),
+					Source:  "permissions configuration",
+					Tier:    toolexec.TierTeam,
+				}),
+			}
+			em := &captureEmitter{}
+
+			d.Process(t.Context(), sess, []tools.ToolCall{{
+				ID:       "s",
+				Function: tools.FunctionCall{Name: toolName, Arguments: `{"command":"sudo rm -rf /"}`},
+			}}, []tools.Tool{tool}, em)
+
+			require.Len(t, em.responses, 1)
+			assert.True(t, em.responses[0].IsError)
+			assert.Contains(t, em.responses[0].Output, "denied")
+		})
+
+		t.Run(toolName+" always-allow grant covers alias calls", func(t *testing.T) {
+			t.Parallel()
+			sess := session.New(session.WithSafetyPolicy(session.SafetyPolicyStrict))
+			sess.Permissions = &session.PermissionsConfig{Allow: []string{toolName + ":cmd=git*"}}
+
+			ran := false
+			tool := tools.Tool{
+				Name: toolName,
+				Handler: func(context.Context, tools.ToolCall, tools.Runtime) (*tools.ToolCallResult, error) {
+					ran = true
+					return tools.ResultSuccess("ok"), nil
+				},
+			}
+			d := &toolexec.Dispatcher{
+				AgentFor:    func(*session.Session) *agent.Agent { return a },
+				Permissions: sessionCheckers,
+			}
+			em := &captureEmitter{}
+
+			d.Process(t.Context(), sess, []tools.ToolCall{{
+				ID:       "s",
+				Function: tools.FunctionCall{Name: toolName, Arguments: `{"command":"git fetch"}`},
+			}}, []tools.Tool{tool}, em)
+
+			assert.True(t, ran, "the grant was built from the executed command and must match it again")
+			assert.Empty(t, em.confirmations)
+		})
+	}
+}
+
 // DestructiveHint on a non-approved tool must surface as
 // blast_radius=high in the confirmation event metadata so the UI can
 // render a warning tier without duplicating the classification logic.

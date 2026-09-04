@@ -524,8 +524,26 @@ func (c *call) permissionDecision() PermissionDecision {
 		c.safetyLabel(),
 		checkers,
 		c.tc.Function.Name,
-		ParseToolInput(c.tc.Function.Arguments),
+		c.permissionArgs(),
 	)
+}
+
+// permissionArgs is the parsed tool input as permission rules see it.
+// For command tools the command the handler will actually run is
+// mirrored under the canonical "cmd" key, so a `shell:cmd=rm*` rule
+// cannot be sidestepped by sending the "command" alias instead.
+func (c *call) permissionArgs() map[string]any {
+	args := ParseToolInput(c.tc.Function.Arguments)
+	if !safety.IsCommandTool(c.tc.Function.Name) {
+		return args
+	}
+	cmd, ok := safety.CommandArg(args)
+	if !ok {
+		return args
+	}
+	normalized := maps.Clone(args)
+	normalized["cmd"] = cmd
+	return normalized
 }
 
 func (c *call) autoApprovalAfterConfirmationWait() (PermissionDecision, bool) {
@@ -574,7 +592,7 @@ func (c *call) sessionPermissionsAllow() bool {
 	if perms == nil {
 		return false
 	}
-	args := ParseToolInput(c.tc.Function.Arguments)
+	args := c.permissionArgs()
 	checker := permissions.NewCheckerFromRules(perms.Allow, perms.Ask, perms.Deny)
 	if checker.CheckWithArgs(c.tc.Function.Name, args) != permissions.Allow {
 		return false

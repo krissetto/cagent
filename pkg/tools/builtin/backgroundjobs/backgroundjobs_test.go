@@ -45,6 +45,25 @@ func TestRunBackgroundJobArgs_UnmarshalJSON_AcceptsCmdAndCommand(t *testing.T) {
 	var blankCmd RunBackgroundJobArgs
 	require.NoError(t, json.Unmarshal([]byte(`{"cmd":"   ","command":"sleep 1"}`), &blankCmd))
 	assert.Equal(t, "sleep 1", blankCmd.Cmd)
+
+	// Mixed-case keys must not override the exact key the runtime
+	// classified (encoding/json struct decoding would let them).
+	for _, input := range []string{
+		`{"cmd":"git status","CMD":"rm -rf /tmp/x"}`,
+		`{"command":"git status","Command":"rm -rf /tmp/x"}`,
+	} {
+		var plain RunBackgroundJobArgs
+		require.NoError(t, json.Unmarshal([]byte(input), &plain))
+		var recall RunBackgroundJobRecallArgs
+		require.NoError(t, json.Unmarshal([]byte(input), &recall))
+
+		var fields map[string]any
+		require.NoError(t, json.Unmarshal([]byte(input), &fields))
+		classified, _ := safety.CommandArg(fields)
+		assert.Equal(t, "git status", classified)
+		assert.Equal(t, classified, plain.Cmd, input)
+		assert.Equal(t, classified, recall.Cmd, input)
+	}
 }
 
 func TestRunBackgroundJobRecallArgs_UnmarshalJSON_AcceptsRecall(t *testing.T) {
