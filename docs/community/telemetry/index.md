@@ -63,7 +63,7 @@ The telemetry system uses structured, type-safe events:
 
 Telemetry is automatically wrapped around all commands. To record additional events, use the context-based API:
 
-```bash
+```go
 // Recommended: context-based telemetry (clean, testable)
 if telemetryClient := telemetry.FromContext(ctx); telemetryClient != nil {
     telemetryClient.RecordToolCall(ctx, "filesystem", "session-id", "agentName", time.Millisecond*500, nil)
@@ -71,7 +71,7 @@ if telemetryClient := telemetry.FromContext(ctx); telemetryClient != nil {
 }
 
 // Or use direct calls
-telemetry.TrackCommand("run", args)
+telemetry.TrackCommand(ctx, "run", args)
 ```
 
 `Track()` prepares the event and sends it asynchronously. `TrackSynchronous()` waits for the HTTP request; command-error tracking uses it before the process exits.
