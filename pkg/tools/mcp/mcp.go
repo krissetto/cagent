@@ -252,7 +252,7 @@ func NewRemoteToolset(name, urlString, transport string, headers map[string]stri
 }
 
 // NewRemoteToolsetWithAllowPrivateIPs creates a new remote MCP toolset and
-// optionally permits OAuth helper requests to dial non-public IP addresses.
+// optionally permits requests to dial non-public IP addresses.
 func NewRemoteToolsetWithAllowPrivateIPs(
 	name, urlString, transport string,
 	headers map[string]string,

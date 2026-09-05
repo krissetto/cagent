@@ -710,7 +710,7 @@ func (t *Toolset) handleEnable(ctx context.Context, args EnableArgs) (*tools.Too
 		// default callback. If a future entry needs custom scopes / a fixed
 		// client_id / a non-default callback, extend Auth in servers.go and
 		// plumb the resulting *RemoteOAuthConfig through here.
-		mcpToolset := mcp.NewRemoteToolset(id, server.URL, server.Transport, nil, nil)
+		mcpToolset := mcp.NewRemoteToolsetWithAllowPrivateIPs(id, server.URL, server.Transport, nil, nil, server.allowPrivateIPs)
 
 		// Re-attach the captured handlers so OAuth flows behave
 		// identically to a YAML-declared mcp.remote toolset. Apply

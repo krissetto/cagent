@@ -96,7 +96,7 @@ func TestRemoteClientCustomHeaders(t *testing.T) {
 		"Authorization": "Bearer custom-token",
 	}
 
-	client := newRemoteClient(server.URL, "sse", expectedHeaders, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient(server.URL, "sse", expectedHeaders, NewInMemoryTokenStore(), nil, true, nil)
 
 	// Try to initialize (which will make the HTTP request)
 	// We don't care if it succeeds or fails, we just need it to make the request
@@ -159,7 +159,7 @@ func TestRemoteClientHeadersWithStreamable(t *testing.T) {
 		"X-Custom-Auth": "custom-auth-value",
 	}
 
-	client := newRemoteClient(server.URL, "streamable", expectedHeaders, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient(server.URL, "streamable", expectedHeaders, NewInMemoryTokenStore(), nil, true, nil)
 
 	// Try to initialize
 	_, _ = client.Initialize(t.Context(), nil)
@@ -199,7 +199,7 @@ func TestRemoteClientNoHeaders(t *testing.T) {
 	defer server.Close()
 
 	// Create remote client without custom headers (nil)
-	client := newRemoteClient(server.URL, "sse", nil, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient(server.URL, "sse", nil, NewInMemoryTokenStore(), nil, true, nil)
 
 	_, _ = client.Initialize(t.Context(), nil)
 
@@ -235,7 +235,7 @@ func TestRemoteClientEmptyHeaders(t *testing.T) {
 	defer server.Close()
 
 	// Create remote client with empty headers map
-	client := newRemoteClient(server.URL, "sse", map[string]string{}, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient(server.URL, "sse", map[string]string{}, NewInMemoryTokenStore(), nil, true, nil)
 
 	_, _ = client.Initialize(t.Context(), nil)
 
@@ -339,7 +339,7 @@ func TestInitialize_SurfacesServerErrorInReturnedError(t *testing.T) {
 	store := NewInMemoryTokenStore()
 	require.NoError(t, store.StoreToken(server.URL, &OAuthToken{AccessToken: "at", TokenType: "Bearer"}))
 
-	client := newRemoteClient(server.URL, "streamable", nil, store, nil, false, nil)
+	client := newRemoteClient(server.URL, "streamable", nil, store, nil, true, nil)
 
 	_, err := client.Initialize(t.Context(), nil)
 	require.Error(t, err, "Initialize should fail against a server that rejects initialize")
@@ -371,7 +371,7 @@ func TestInitialize_NonInteractiveCtxDefersOAuthAndDoesNotBlock(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newRemoteClient(server.URL, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient(server.URL, "streamable", nil, NewInMemoryTokenStore(), nil, true, nil)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
@@ -446,7 +446,7 @@ func TestInitialize_OAuthDefersWhenElicitationBridgeNotReady(t *testing.T) {
 	// flow runs. That path reaches requestElicitation without needing
 	// dynamic client registration, which keeps the test focused on the
 	// bridge-not-ready behaviour.
-	client := newRemoteClient(srv.URL, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient(srv.URL, "streamable", nil, NewInMemoryTokenStore(), nil, true, nil)
 
 	// Plain interactive ctx (no WithoutInteractivePrompts marker). The
 	// elicitation handler is intentionally not wired up.
@@ -496,7 +496,7 @@ func TestCreateHTTPClient_PersistsCookies(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newRemoteClient(server.URL, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient(server.URL, "streamable", nil, NewInMemoryTokenStore(), nil, true, nil)
 	httpClient, _, err := client.createHTTPClient()
 	require.NoError(t, err)
 	require.NotNil(t, httpClient.Jar, "createHTTPClient must attach a cookie jar so sticky sessions stick")
@@ -514,6 +514,44 @@ func TestCreateHTTPClient_PersistsCookies(t *testing.T) {
 	_ = resp2.Body.Close()
 
 	require.Equal(t, int32(2), requestCount.Load(), "handler should have served both requests")
+}
+
+func TestRemoteClientRejectsPrivateIPsByDefault(t *testing.T) {
+	t.Parallel()
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := newRemoteClient(server.URL, "streamable", map[string]string{"X-Test": "value"}, NewInMemoryTokenStore(), nil, false, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, http.NoBody)
+	require.NoError(t, err)
+	resp, err := (&http.Client{Transport: client.headerTransport()}).Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
+	require.Error(t, err)
+	assert.Zero(t, hits.Load())
+}
+
+func TestRemoteClientAllowsPrivateIPsWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := newRemoteClient(server.URL, "streamable", nil, NewInMemoryTokenStore(), nil, true, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, http.NoBody)
+	require.NoError(t, err)
+	resp, err := (&http.Client{Transport: client.headerTransport()}).Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
 func TestNewRemoteToolsetWithAllowPrivateIPsPropagatesToClient(t *testing.T) {
@@ -587,7 +625,7 @@ func TestRemoteClientCallToolAbortsOnContextDeadline(t *testing.T) {
 	httpServer := httptest.NewServer(gomcp.NewStreamableHTTPHandler(func(*http.Request) *gomcp.Server { return server }, nil))
 	defer httpServer.Close()
 
-	client := newRemoteClient(httpServer.URL, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient(httpServer.URL, "streamable", nil, NewInMemoryTokenStore(), nil, true, nil)
 	_, err := client.Initialize(t.Context(), nil)
 	require.NoError(t, err)
 	defer func() { _ = client.Close(context.WithoutCancel(t.Context())) }()
@@ -663,7 +701,7 @@ func TestRemoteClientCallToolMRTRElicitation(t *testing.T) {
 	))
 	defer httpServer.Close()
 
-	client := newRemoteClient(httpServer.URL, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient(httpServer.URL, "streamable", nil, NewInMemoryTokenStore(), nil, true, nil)
 
 	var elicitCalls atomic.Int32
 	elicitMessages := make(chan string, 1)
@@ -797,7 +835,7 @@ func TestRemoteClient_ExpandsEnvHeadersPerRequest(t *testing.T) {
 
 	env := &mutableEnvProvider{vals: map[string]string{"TOKEN": "token-1"}}
 	headers := map[string]string{"X-Env-Token": "${env.TOKEN}"}
-	client := newRemoteClient(srv.URL, "streamable", headers, NewInMemoryTokenStore(), nil, false, env)
+	client := newRemoteClient(srv.URL, "streamable", headers, NewInMemoryTokenStore(), nil, true, env)
 
 	_, err := client.Initialize(t.Context(), nil)
 	require.NoError(t, err)
@@ -843,7 +881,7 @@ func TestRemoteClient_ResolvesUpstreamHeaderPlaceholdersPerRequest(t *testing.T)
 		"Authorization": "${headers.Authorization}",
 		"X-Env-Token":   "${env.TOKEN}",
 	}
-	client := newRemoteClient(srv.URL, "streamable", headers, NewInMemoryTokenStore(), nil, false, env)
+	client := newRemoteClient(srv.URL, "streamable", headers, NewInMemoryTokenStore(), nil, true, env)
 
 	_, err := client.Initialize(t.Context(), nil)
 	require.NoError(t, err)
@@ -891,7 +929,7 @@ func TestRemoteClient_ExpandsMixedEnvAndUpstreamPlaceholdersInOneValue(t *testin
 
 	env := &mutableEnvProvider{vals: map[string]string{"SCHEME": "Env"}}
 	headers := map[string]string{"X-Combined": "${env.SCHEME} ${headers.X-Upstream-Token}"}
-	client := newRemoteClient(srv.URL, "streamable", headers, NewInMemoryTokenStore(), nil, false, env)
+	client := newRemoteClient(srv.URL, "streamable", headers, NewInMemoryTokenStore(), nil, true, env)
 
 	_, err := client.Initialize(t.Context(), nil)
 	require.NoError(t, err)
@@ -1080,7 +1118,7 @@ func TestRemoteToolset_SurvivesSubscriptionsListenRejection(t *testing.T) {
 
 	srv := newGitHubStyleMCPServer(t)
 
-	client := newRemoteClient(srv.URL, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient(srv.URL, "streamable", nil, NewInMemoryTokenStore(), nil, true, nil)
 	ts := &Toolset{
 		name:      "github",
 		mcpClient: client,
@@ -1144,7 +1182,7 @@ func TestEnrichConnectError_RetryableStatusSurfacesAsStatusError(t *testing.T) {
 			store := NewInMemoryTokenStore()
 			require.NoError(t, store.StoreToken(srv.URL, &OAuthToken{AccessToken: "tok", TokenType: "Bearer"}))
 
-			client := newRemoteClient(srv.URL, "streamable", nil, store, nil, false, nil)
+			client := newRemoteClient(srv.URL, "streamable", nil, store, nil, true, nil)
 
 			_, err := client.Initialize(t.Context(), nil)
 			require.Error(t, err)
@@ -1174,7 +1212,7 @@ func TestEnrichConnectError_NonRetryableStatusDoesNotArm(t *testing.T) {
 	store := NewInMemoryTokenStore()
 	require.NoError(t, store.StoreToken(srv.URL, &OAuthToken{AccessToken: "tok", TokenType: "Bearer"}))
 
-	client := newRemoteClient(srv.URL, "streamable", nil, store, nil, false, nil)
+	client := newRemoteClient(srv.URL, "streamable", nil, store, nil, true, nil)
 
 	_, err := client.Initialize(t.Context(), nil)
 	require.Error(t, err)
@@ -1198,7 +1236,7 @@ func TestEnrichConnectError_NoStatusNoStatusError(t *testing.T) {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	client := newRemoteClient("http://"+addr, "streamable", nil, NewInMemoryTokenStore(), nil, false, nil)
+	client := newRemoteClient("http://"+addr, "streamable", nil, NewInMemoryTokenStore(), nil, true, nil)
 
 	_, err = client.Initialize(t.Context(), nil)
 	require.Error(t, err)
@@ -1240,7 +1278,7 @@ func TestEnrichConnectError_EmptyBodyStatusStillArms(t *testing.T) {
 			store := NewInMemoryTokenStore()
 			require.NoError(t, store.StoreToken(srv.URL, &OAuthToken{AccessToken: "tok", TokenType: "Bearer"}))
 
-			client := newRemoteClient(srv.URL, "streamable", nil, store, nil, false, nil)
+			client := newRemoteClient(srv.URL, "streamable", nil, store, nil, true, nil)
 
 			_, err := client.Initialize(t.Context(), nil)
 			require.Error(t, err)
@@ -1271,7 +1309,7 @@ func TestEnrichConnectError_RetryAfterHonoured(t *testing.T) {
 	store := NewInMemoryTokenStore()
 	require.NoError(t, store.StoreToken(srv.URL, &OAuthToken{AccessToken: "tok", TokenType: "Bearer"}))
 
-	client := newRemoteClient(srv.URL, "streamable", nil, store, nil, false, nil)
+	client := newRemoteClient(srv.URL, "streamable", nil, store, nil, true, nil)
 
 	_, err := client.Initialize(t.Context(), nil)
 	require.Error(t, err)
@@ -1297,7 +1335,7 @@ func TestEnrichConnectError_NoRetryAfterHeaderLeavesZero(t *testing.T) {
 	store := NewInMemoryTokenStore()
 	require.NoError(t, store.StoreToken(srv.URL, &OAuthToken{AccessToken: "tok", TokenType: "Bearer"}))
 
-	client := newRemoteClient(srv.URL, "streamable", nil, store, nil, false, nil)
+	client := newRemoteClient(srv.URL, "streamable", nil, store, nil, true, nil)
 
 	_, err := client.Initialize(t.Context(), nil)
 	require.Error(t, err)
@@ -1325,7 +1363,7 @@ func TestBackoffGate_RemoteMCPRetryableStatusPacesReconnect(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	toolset := NewRemoteToolset("test", srv.URL, "streamable", nil, nil)
+	toolset := NewRemoteToolsetWithAllowPrivateIPs("test", srv.URL, "streamable", nil, nil, true)
 
 	now := time.Now()
 	clock := func() time.Time { return now }
@@ -1378,7 +1416,7 @@ func TestBackoffGate_RemoteMCPNonRetryableStatusFailsPromptly(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	toolset := NewRemoteToolset("test", srv.URL, "streamable", nil, nil)
+	toolset := NewRemoteToolsetWithAllowPrivateIPs("test", srv.URL, "streamable", nil, nil, true)
 	s := tools.NewStartable(toolset)
 
 	var prev int32
@@ -1418,7 +1456,7 @@ func TestBackoffGate_RemoteMCPRecoversAfterBackoffWindow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	toolset := NewRemoteToolset("test", srv.URL, "streamable", nil, nil)
+	toolset := NewRemoteToolsetWithAllowPrivateIPs("test", srv.URL, "streamable", nil, nil, true)
 
 	now := time.Now()
 	clock := func() time.Time { return now }
