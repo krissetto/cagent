@@ -148,32 +148,6 @@ For advanced use (custom elicitation, raw event inspection), call `chat.Runtime(
 > elicitations) — both are required interface methods, matching the existing
 > no-op-able pattern already used by `OnToolsChanged`/`OnBackgroundEvent`.
 
-## Optional Provider Build Tags
-
-By default Docker Agent includes all four cloud providers (OpenAI, Anthropic, Google, Amazon Bedrock). When embedding Docker Agent in your own binary you can compile out unneeded providers — together with their transitive SDK dependencies — to reduce binary size.
-
-Each provider is gated by a negative build tag prefixed `docker_agent_` to avoid collisions with your own project's tags:
-
-| Build tag                    | Provider dropped         | Major dependency removed                          |
-| ---------------------------- | ------------------------ | ------------------------------------------------- |
-| `docker_agent_no_openai`     | OpenAI                   | `github.com/openai/openai-go`                     |
-| `docker_agent_no_anthropic`  | Anthropic                | `github.com/anthropics/anthropic-sdk-go` (partial — see note) |
-| `docker_agent_no_google`     | Google / Vertex AI       | `google.golang.org/genai`, Vertex auth stack, and indirectly the Anthropic and OpenAI SDKs via Vertex Model Garden |
-| `docker_agent_no_bedrock`    | Amazon Bedrock           | `github.com/aws/aws-sdk-go-v2` stack (the largest provider dependency tree) |
-
-To build without Bedrock and OpenAI:
-
-```bash
-go build -tags 'docker_agent_no_bedrock docker_agent_no_openai' ./...
-```
-
-Requesting a model whose provider was compiled out fails at construction time with a clear `"not compiled into this build"` error. The `dmr` (Docker Model Runner) provider and the rule-based router are always compiled in.
-
-> [!WARNING]
-> **Anthropic + Google dependency**
->
-> The Google provider's Vertex Model Garden support also imports the Anthropic SDK, so the Anthropic dependency is only fully removed when _both_ `docker_agent_no_anthropic` and `docker_agent_no_google` are set.
-
 ## RAG Toolset (opt-out)
 
 The RAG toolset (`type: rag`) is included in `NewDefaultToolsetRegistry()` (from `pkg/teamloader/toolsets`) and `loaderdefaults.Opts()` (from `pkg/teamloader/defaults`, using the conventional import alias `loaderdefaults`).
