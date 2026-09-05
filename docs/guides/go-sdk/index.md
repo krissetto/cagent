@@ -411,6 +411,8 @@ import (
     "encoding/json"
     "fmt"
 
+    "github.com/docker/docker-agent/pkg/agent"
+    "github.com/docker/docker-agent/pkg/model/provider"
     "github.com/docker/docker-agent/pkg/tools"
 )
 
@@ -421,7 +423,7 @@ type AddNumbersArgs struct {
 }
 
 // Implement the tool handler
-func addNumbers(_ context.Context, toolCall tools.ToolCall) (*tools.ToolCallResult, error) {
+func addNumbers(_ context.Context, toolCall tools.ToolCall, _ tools.Runtime) (*tools.ToolCallResult, error) {
     var args AddNumbersArgs
     if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
         return nil, err
@@ -431,7 +433,7 @@ func addNumbers(_ context.Context, toolCall tools.ToolCall) (*tools.ToolCallResu
     return tools.ResultSuccess(fmt.Sprintf("%d", result)), nil
 }
 
-func main() {
+func createCalculator(llm provider.Provider) *agent.Agent {
     // Create the tool definition
     addTool := tools.Tool{
         Name:        "add",
@@ -442,13 +444,12 @@ func main() {
     }
 
     // Use with an agent
-    calculator := agent.New(
+    return agent.New(
         "root",
         "You are a calculator. Use the add tool for arithmetic.",
         agent.WithModel(llm),
         agent.WithTools(addTool),
     )
-    // ...
 }
 ```
 
