@@ -8,7 +8,7 @@ canonical: https://docs.docker.com/ai/docker-agent/community/telemetry/
 
 _Docker Agent collects usage data to help improve the tool. Telemetry can be disabled at any time._
 
-On first startup, Docker Agent displays a notice about telemetry collection so you're always informed. All events are processed synchronously when recorded.
+On first startup, Docker Agent displays a notice about telemetry collection so you're always informed. Ordinary telemetry events are sent asynchronously; selected error events are sent synchronously before exit.
 
 ## Disabling Telemetry
 
@@ -74,4 +74,4 @@ if telemetryClient := telemetry.FromContext(ctx); telemetryClient != nil {
 telemetry.TrackCommand("run", args)
 ```
 
-Events are processed synchronously when `Track()` is called, sending HTTP requests immediately.
+`Track()` prepares the event and sends it asynchronously. `TrackSynchronous()` waits for the HTTP request; command-error tracking uses it before the process exits.
