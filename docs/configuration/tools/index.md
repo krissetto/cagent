@@ -258,7 +258,8 @@ Any field set on `lifecycle` overrides the profile preset, so you can mix-and-ma
 ```yaml
 toolsets:
   - type: mcp
-    command: ["docker", "mcp", "gateway"]
+    command: docker
+    args: ["mcp", "gateway"]
     lifecycle:
       profile: resilient
       max_restarts: 10        # keep trying longer than the default of 5
