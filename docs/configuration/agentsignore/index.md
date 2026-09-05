@@ -92,7 +92,8 @@ The derived permission rules are best-effort for the same reason: permission pat
 secrets.env
 *.pem
 *.key
-!public.key          # this one is safe to read
+# This one is safe to read
+!public.key
 
 # Credentials directories
 .aws/
