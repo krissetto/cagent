@@ -16,9 +16,11 @@ uses the `docker sandbox` CLI plugin. `--sbx=false` forces the plugin backend.
 The `--sandbox` flag asks the selected backend to create or reuse a VM and
 launches Docker Agent inside it.
 
-All shell, filesystem, and process activity happens inside that VM, so a
-misbehaving agent cannot touch files outside the mounted working directory or
-reach long-lived host state. Docker Agent does not implement the sandbox or
+Agent processes run inside the VM. The working directory is mounted read-write.
+The Docker Agent configuration directory and staged kit are mounted read-only;
+for a local agent config outside the working directory, its parent directory is
+also mounted read-only. An agent config inside the working directory remains on
+the read-write mount. Files exposed through these mounts remain accessible to the agent. Docker Agent does not implement the sandbox or
 start a raw `docker run` container; it orchestrates the selected sandbox CLI.
 
 > [!NOTE]
