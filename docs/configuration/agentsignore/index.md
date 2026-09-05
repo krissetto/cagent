@@ -26,7 +26,7 @@ There is nothing to configure. The file's presence is the opt-in, and it is pick
 
 ## Syntax
 
-The syntax is `.gitignore` syntax — parsed with the same library git uses, so patterns behave identically to `.gitignore` and `.dockerignore`:
+Patterns use go-git's `.gitignore` parser, not Git's own parser or Docker's `.dockerignore` parser. Supported forms include:
 
 | Pattern | Matches |
 | --- | --- |
