@@ -57,7 +57,7 @@ Unlike `.gitignore`, **a git repository is not required** — `.agentsignore` wo
 
 Paths are resolved before matching — symlinks, `./` prefixes and `..` segments are all normalised — so an ignored file cannot be reached by spelling it differently.
 
-The `.agentsignore` file is itself always hidden: it names the very things being kept back, so handing it to the agent would be a map of what to look for.
+When `.agentsignore` contains at least one active pattern, the filesystem toolset also hides the file itself. An empty or comment-only file creates no matcher and is not hidden.
 
 > [!NOTE]
 > `.agentsignore` is independent of the filesystem toolset's [`ignore_vcs`](../tools/index.md) option. Setting `ignore_vcs: false` turns off `.gitignore` filtering but does **not** un-hide `.agentsignore` entries.
