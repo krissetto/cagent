@@ -20,7 +20,7 @@ toolsets:
   - type: a2a
     url: "http://localhost:8082"
     allow_private_ips: true # Only for trusted local or internal agents
-    # Optional: custom tool name (defaults to a sanitized form of the URL / agent card name)
+    # Optional: prefix for each remote skill's tool name
     name: research_agent
     # Optional: custom HTTP headers (typically for auth)
     headers:
@@ -37,7 +37,7 @@ The `url` is the server base URL used to discover `/.well-known/agent-card.json`
 | Property   | Type             | Required | Description                                                                                              |
 | ---------- | ---------------- | -------- | -------------------------------------------------------------------------------------------------------- |
 | `url`      | string           | ✓        | A2A server endpoint URL (must include scheme).                                                           |
-| `name`     | string           | ✗        | Tool name registered for the remote agent. Defaults to a name derived from the server's agent card.     |
+| `name`     | string           | ✗        | Prefix for each remote skill's tool name. Without it, names use the skill ID or name; cards without skills use the agent name.     |
 | `headers`  | map\[string\]string | ✗     | Extra HTTP headers sent with invocation requests, not agent-card discovery (useful for authentication, tenant selection, and tracing). |
 
 `allow_private_ips` is an optional boolean, defaulting to `false`. It permits agent-card and invocation requests to non-public IP addresses; enable it only for trusted internal agents.
