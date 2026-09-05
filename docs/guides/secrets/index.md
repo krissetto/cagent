@@ -228,7 +228,7 @@ You can combine methods. For example, store long-lived provider keys in the Dock
 
 Provider keys live in the secret store and are passed to Docker Agent through the chain above — the agent itself never receives them as input. But the **content of a conversation** can still leak credentials: a user pasting a token, a tool returning a config file with embedded keys, a transcript dumped into a prompt.
 
-For that defense-in-depth case, set `redact_secrets: true` on an agent. It scrubs detected secrets out of:
+Secret redaction is enabled by default as a defense in depth. Set `redact_secrets: false` on an agent to opt out; the explicit `true` below is equivalent to omitting the field. It scrubs detected secrets out of:
 
 - the arguments of every outgoing tool call (before the tool sees them),
 - every outgoing chat message (before the model provider sees them), and
