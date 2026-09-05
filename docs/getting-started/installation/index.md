@@ -91,7 +91,7 @@ For the latest features, or to contribute, build from source:
 
 ### Prerequisites
 
-- [Go 1.26](https://go.dev/dl/) or higher
+- [Go 1.27](https://go.dev/dl/) or higher
 - [Task](https://taskfile.dev/installation/) (build tool)
 - [golangci-lint](https://golangci-lint.run/docs/welcome/install/local/) (for linting)
 
