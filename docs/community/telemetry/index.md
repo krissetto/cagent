@@ -42,10 +42,10 @@ Conversation transcripts and file contents are not collected as separate telemet
 > [!TIP]
 > **See events locally**
 >
-> Use `--debug` to see telemetry events printed to the debug log without sending them anywhere additional.
+> Use `--debug` to see telemetry events in the debug log. Enabled telemetry is still transmitted, using Docker's staging telemetry endpoint in debug mode. Combine it with `TELEMETRY_ENABLED=false` to inspect events without transmitting them.
 
 ```bash
-docker agent run agent.yaml --debug
+TELEMETRY_ENABLED=false docker agent run agent.yaml --debug
 ```
 
 ## Event Types
