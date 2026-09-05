@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/effort"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
@@ -130,6 +132,186 @@ func (f *fakeRuntime) OnBackgroundEvent(func(runtime.Event))                 {}
 func (f *fakeRuntime) OnElicitationRequest(func(runtime.Event))              {}
 func (f *fakeRuntime) Close() error                                          { return nil }
 
+type blockingPromptRuntime struct {
+	fakeRuntime
+
+	started       chan int
+	firstCanceled chan struct{}
+	releaseFirst  chan struct{}
+	calls         atomic.Int32
+	active        atomic.Int32
+	max           atomic.Int32
+}
+
+func (r *blockingPromptRuntime) RunStream(ctx context.Context, _ *session.Session) <-chan runtime.Event {
+	call := int(r.calls.Add(1))
+	current := int(r.active.Add(1))
+	for {
+		old := r.max.Load()
+		if int32(current) <= old || r.max.CompareAndSwap(old, int32(current)) {
+			break
+		}
+	}
+	r.started <- call
+	ch := make(chan runtime.Event)
+	go func() {
+		defer close(ch)
+		defer r.active.Add(-1)
+		<-ctx.Done()
+		if call == 1 && r.releaseFirst != nil {
+			close(r.firstCanceled)
+			<-r.releaseFirst
+		}
+	}()
+	return ch
+}
+
+func newPromptTestAgent(t *testing.T, rt runtime.Runtime) (*Agent, *Session, *peerResponder) {
+	t.Helper()
+	fixture := newRunAgentFixture(t, &fakeRuntime{}, &captureWriter{})
+	fixture.agent.sessions = make(map[string]*Session)
+	sess := &Session{id: testSessionID, sess: session.New(), rt: rt}
+	fixture.agent.sessions[testSessionID] = sess
+	return fixture.agent, sess, fixture.peer
+}
+
+func promptRequest(text string) acpsdk.PromptRequest {
+	return acpsdk.PromptRequest{
+		SessionId: acpsdk.SessionId(testSessionID),
+		Prompt:    []acpsdk.ContentBlock{acpsdk.TextBlock(text)},
+	}
+}
+
+func TestPromptReplacementCancelsQueuedTurnWithoutSideEffects(t *testing.T) {
+	t.Parallel()
+
+	rt := &blockingPromptRuntime{
+		started:       make(chan int, 2),
+		firstCanceled: make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
+	}
+	agent, sess, peer := newPromptTestAgent(t, rt)
+	agent.clientFS.ReadTextFile = true
+	peer.readTextFile = func(req acpsdk.ReadTextFileRequest) acpsdk.ReadTextFileResponse {
+		return acpsdk.ReadTextFileResponse{Content: "resource contents"}
+	}
+
+	firstDone := promptAsync(agent, t.Context(), promptRequest("first"))
+	require.Equal(t, 1, <-rt.started)
+
+	second := promptRequest("second")
+	second.Prompt = []acpsdk.ContentBlock{{ResourceLink: &acpsdk.ContentBlockResourceLink{
+		Type: "resource_link", Name: "second.txt", Uri: "second.txt",
+	}}}
+	secondDone := promptAsync(agent, t.Context(), second)
+	<-rt.firstCanceled
+
+	thirdDone := promptAsync(agent, t.Context(), promptRequest("third"))
+	secondResult := <-secondDone
+	require.NoError(t, secondResult.err)
+	assert.Equal(t, acpsdk.StopReasonCancelled, secondResult.response.StopReason)
+
+	assert.Equal(t, int32(1), rt.calls.Load())
+	assert.Empty(t, peer.recordedReadRequests())
+	assert.Equal(t, []string{"first"}, sessionUserMessages(sess.sess))
+
+	close(rt.releaseFirst)
+	firstResult := <-firstDone
+	require.NoError(t, firstResult.err)
+	assert.Equal(t, acpsdk.StopReasonCancelled, firstResult.response.StopReason)
+	require.Equal(t, 2, <-rt.started)
+
+	require.NoError(t, agent.Cancel(t.Context(), acpsdk.CancelNotification{SessionId: testSessionID}))
+	thirdResult := <-thirdDone
+	require.NoError(t, thirdResult.err)
+	assert.Equal(t, acpsdk.StopReasonCancelled, thirdResult.response.StopReason)
+	assert.Equal(t, int32(1), rt.max.Load())
+	assert.Equal(t, []string{"first", "third"}, sessionUserMessages(sess.sess))
+}
+
+func TestPromptRejectsCanceledContextBeforeAdmission(t *testing.T) {
+	t.Parallel()
+
+	rt := &blockingPromptRuntime{started: make(chan int, 1)}
+	agent, sess, _ := newPromptTestAgent(t, rt)
+
+	firstDone := promptAsync(agent, t.Context(), promptRequest("first"))
+	<-rt.started
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	result := <-promptAsync(agent, ctx, promptRequest("canceled"))
+	require.NoError(t, result.err)
+	assert.Equal(t, acpsdk.StopReasonCancelled, result.response.StopReason)
+	assert.Equal(t, int32(1), rt.calls.Load())
+	assert.Equal(t, []string{"first"}, sessionUserMessages(sess.sess))
+
+	select {
+	case result := <-firstDone:
+		t.Fatalf("canceled prompt superseded the active turn: %+v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	require.NoError(t, agent.Cancel(t.Context(), acpsdk.CancelNotification{SessionId: testSessionID}))
+	firstResult := <-firstDone
+	require.NoError(t, firstResult.err)
+	assert.Equal(t, acpsdk.StopReasonCancelled, firstResult.response.StopReason)
+}
+
+func TestCloseSessionCancelsActiveAndQueuedPrompts(t *testing.T) {
+	t.Parallel()
+
+	rt := &blockingPromptRuntime{
+		started:       make(chan int, 1),
+		firstCanceled: make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
+	}
+	agent, sess, _ := newPromptTestAgent(t, rt)
+
+	firstDone := promptAsync(agent, t.Context(), promptRequest("first"))
+	<-rt.started
+	secondDone := promptAsync(agent, t.Context(), promptRequest("second"))
+	<-rt.firstCanceled
+
+	_, err := agent.CloseSession(t.Context(), acpsdk.CloseSessionRequest{SessionId: testSessionID})
+	require.NoError(t, err)
+	secondResult := <-secondDone
+	require.ErrorContains(t, secondResult.err, "not found")
+	assert.Empty(t, secondResult.response.StopReason)
+	assert.Equal(t, int32(1), rt.calls.Load())
+	assert.Equal(t, []string{"first"}, sessionUserMessages(sess.sess))
+
+	close(rt.releaseFirst)
+	firstResult := <-firstDone
+	require.NoError(t, firstResult.err)
+	assert.Equal(t, acpsdk.StopReasonCancelled, firstResult.response.StopReason)
+	assert.Empty(t, agent.sessions)
+}
+
+type promptResult struct {
+	response acpsdk.PromptResponse
+	err      error
+}
+
+func promptAsync(agent *Agent, ctx context.Context, req acpsdk.PromptRequest) <-chan promptResult {
+	done := make(chan promptResult, 1)
+	go func() {
+		response, err := agent.Prompt(ctx, req)
+		done <- promptResult{response: response, err: err}
+	}()
+	return done
+}
+
+func sessionUserMessages(sess *session.Session) []string {
+	var messages []string
+	for _, item := range sess.GetAllMessages() {
+		if item.Message.Role == chat.MessageRoleUser {
+			messages = append(messages, item.Message.Content)
+		}
+	}
+	return messages
+}
+
 // captureWriter is a goroutine-safe sink for the connection's outbound
 // line-delimited JSON-RPC messages. failOn, when set, is called with the
 // 1-based write index and can inject write failures.
@@ -166,20 +348,18 @@ func (w *captureWriter) lines() []string {
 }
 
 // peerResponder plays the ACP client side of the connection's outbound
-// stream. Notifications pass through to the capture writer unchanged, while
-// session/request_permission requests are decoded, recorded, and answered on
-// the peer pipe with a JSON-RPC response echoing the request ID. respond
-// picks the result the client answers with, letting tests choose the
-// permission outcome; any other request fails the test immediately instead
-// of deadlocking the sender.
+// stream. Notifications pass through to the capture writer; supported requests
+// are decoded, recorded, and answered on the peer pipe.
 type peerResponder struct {
-	t       *testing.T
-	out     io.Writer // outbound notifications, usually a captureWriter
-	peer    io.Writer // write half of the connection's inbound peer pipe
-	respond func(req acpsdk.RequestPermissionRequest) any
+	t            *testing.T
+	out          io.Writer // outbound notifications, usually a captureWriter
+	peer         io.Writer // write half of the connection's inbound peer pipe
+	respond      func(req acpsdk.RequestPermissionRequest) any
+	readTextFile func(req acpsdk.ReadTextFileRequest) acpsdk.ReadTextFileResponse
 
-	mu       sync.Mutex
-	requests []acpsdk.RequestPermissionRequest
+	mu           sync.Mutex
+	requests     []acpsdk.RequestPermissionRequest
+	readRequests []acpsdk.ReadTextFileRequest
 }
 
 // Write receives exactly one line-delimited JSON-RPC message per call: the
@@ -197,6 +377,21 @@ func (p *peerResponder) Write(b []byte) (int, error) {
 	}
 	if len(msg.ID) == 0 {
 		return p.out.Write(b)
+	}
+	if msg.Method == acpsdk.ClientMethodFsReadTextFile && p.readTextFile != nil {
+		var req acpsdk.ReadTextFileRequest
+		if err := json.Unmarshal(msg.Params, &req); err != nil {
+			p.t.Errorf("peer failed to decode %s params: %v", msg.Method, err)
+			return 0, err
+		}
+		p.mu.Lock()
+		p.readRequests = append(p.readRequests, req)
+		p.mu.Unlock()
+		if err := p.reply(msg.ID, p.readTextFile(req)); err != nil {
+			p.t.Errorf("peer failed to answer %s: %v", msg.Method, err)
+			return 0, err
+		}
+		return len(b), nil
 	}
 	if msg.Method != "session/request_permission" || p.respond == nil {
 		err := fmt.Errorf("peer cannot answer JSON-RPC request %q (id %s)", msg.Method, msg.ID)
@@ -244,6 +439,12 @@ func (p *peerResponder) recordedRequests() []acpsdk.RequestPermissionRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return slices.Clone(p.requests)
+}
+
+func (p *peerResponder) recordedReadRequests() []acpsdk.ReadTextFileRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.readRequests)
 }
 
 // permissionSelected is the JSON-RPC result for a user picking optionID.
