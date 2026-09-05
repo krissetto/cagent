@@ -453,7 +453,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Install docker-agent
-          curl -fsSL https://get.docker-agent.dev | sh
+          curl -fL "https://github.com/docker/docker-agent/releases/latest/download/docker-agent-linux-amd64" -o docker-agent
+          chmod +x docker-agent
+          mkdir -p ~/.docker/cli-plugins
+          mv docker-agent ~/.docker/cli-plugins/
 
           # Run the review
           docker agent run --exec reviewer.yaml --yolo \
