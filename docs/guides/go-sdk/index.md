@@ -503,8 +503,9 @@ package main
 
 import (
     "github.com/docker/docker-agent/pkg/agent"
+    "github.com/docker/docker-agent/pkg/model/provider"
     "github.com/docker/docker-agent/pkg/team"
-    "github.com/docker/docker-agent/pkg/tools/builtin"
+    "github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
 )
 
 func createTeam(llm provider.Provider) *team.Team {
@@ -523,7 +524,7 @@ func createTeam(llm provider.Provider) *team.Team {
         agent.WithModel(llm),
         agent.WithDescription("Team coordinator"),
         agent.WithSubAgents(researcher),
-        agent.WithToolSets(builtin.NewTransferTaskTool()),
+        agent.WithToolSets(transfertask.New()),
     )
 
     return team.New(team.WithAgents(coordinator, researcher))
