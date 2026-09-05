@@ -1,12 +1,12 @@
 ---
 title: "Telemetry"
-description: "Docker Agent collects anonymous usage data to help improve the tool. Telemetry can be disabled at any time."
+description: "Docker Agent collects usage data to help improve the tool. Telemetry can be disabled at any time."
 keywords: docker agent, ai agents, community, telemetry
 weight: 30
 canonical: https://docs.docker.com/ai/docker-agent/community/telemetry/
 ---
 
-_Docker Agent collects anonymous usage data to help improve the tool. Telemetry can be disabled at any time._
+_Docker Agent collects usage data to help improve the tool. Telemetry can be disabled at any time._
 
 On first startup, Docker Agent displays a notice about telemetry collection so you're always informed. All events are processed synchronously when recorded.
 
@@ -27,19 +27,17 @@ $ export TELEMETRY_ENABLED=false
 
 ## What's Collected ✅
 
-- Command names and success/failure status
+- Command names, positional arguments, and success/failure status
 - Agent names and model types
 - Tool names and whether calls succeed or fail
 - Token counts (input/output totals) and estimated costs
 - Session metadata (durations, error counts)
 
-## What's NOT Collected ❌
+## Sensitive Data
 
-- User input or prompts
-- Agent responses or generated content
-- File contents
-- API keys or credentials
-- Personally identifying information (PII)
+Command events include positional arguments. For `run` and `exec`, these can include prompts, file paths, and registry references. Error events also include error text. Do not assume telemetry is free of secrets or personally identifying information: either can appear in arguments or errors.
+
+Conversation transcripts and file contents are not collected as separate telemetry fields, but text included in command arguments or errors can still be transmitted. Set `TELEMETRY_ENABLED=false` before running commands that may contain sensitive data.
 
 > [!TIP]
 > **See events locally**
