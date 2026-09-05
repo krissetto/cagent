@@ -1055,6 +1055,120 @@ func TestUserMessageOrdinalToItemIndex(t *testing.T) {
 	require.ErrorIs(t, err, ErrForkOutOfRange)
 }
 
+func TestUpdateSessionPermissionsUsesActiveSession(t *testing.T) {
+	t.Parallel()
+
+	stores := []struct {
+		name string
+		new  func(*testing.T) session.Store
+	}{
+		{
+			name: "in-memory",
+			new: func(*testing.T) session.Store {
+				return session.NewInMemorySessionStore()
+			},
+		},
+		{
+			name: "sqlite",
+			new: func(t *testing.T) session.Store {
+				t.Helper()
+				store, err := sqlitestore.New(t.Context(), filepath.Join(t.TempDir(), "sessions.db"))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = store.Close() })
+				return store
+			},
+		},
+	}
+
+	for _, tc := range stores {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := tc.new(t)
+			stored := session.New(session.WithTitle("stored"), session.WithPermissions(&session.PermissionsConfig{Allow: []string{"old"}}))
+			require.NoError(t, store.AddSession(t.Context(), stored))
+			require.NoError(t, store.UpdateSession(t.Context(), stored))
+
+			live := stored
+			live.SetTitle("live")
+			sm := NewSessionManager(t.Context(), config.Sources{}, store, 0, &config.RuntimeConfig{})
+			sm.runtimeSessions.Store(live.ID, &activeRuntimes{runtime: &fakeRuntime{}, session: live})
+
+			perms := &session.PermissionsConfig{Allow: []string{"new"}, Deny: []string{"dangerous"}}
+			require.NoError(t, sm.UpdateSessionPermissions(t.Context(), live.ID, perms))
+			perms.Allow[0] = "mutated-by-caller"
+
+			assert.Equal(t, []string{"new"}, live.ClonePermissions().Allow)
+			got, err := sm.GetSession(t.Context(), live.ID)
+			require.NoError(t, err)
+			assert.Equal(t, "live", got.TitleSnapshot(), "active state must win over the stale store clone")
+			assert.Equal(t, []string{"new"}, got.ClonePermissions().Allow)
+
+			// A later runtime save must retain the policy update.
+			live.SetTitle("saved later")
+			require.NoError(t, store.UpdateSession(t.Context(), live))
+			reloaded, err := store.GetSession(t.Context(), live.ID)
+			require.NoError(t, err)
+			assert.Equal(t, "saved later", reloaded.TitleSnapshot())
+			assert.Equal(t, []string{"new"}, reloaded.ClonePermissions().Allow)
+			assert.Equal(t, []string{"dangerous"}, reloaded.ClonePermissions().Deny)
+		})
+	}
+}
+
+func TestUpdateSessionPermissionsConcurrentReads(t *testing.T) {
+	t.Parallel()
+
+	store := session.NewInMemorySessionStore()
+	live := session.New()
+	require.NoError(t, store.AddSession(t.Context(), live))
+	require.NoError(t, store.UpdateSession(t.Context(), live))
+
+	sm := NewSessionManager(t.Context(), config.Sources{}, store, 0, &config.RuntimeConfig{})
+	sm.runtimeSessions.Store(live.ID, &activeRuntimes{runtime: &fakeRuntime{}, session: live})
+
+	const iterations = 100
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			if err := sm.UpdateSessionPermissions(t.Context(), live.ID, &session.PermissionsConfig{
+				Allow: []string{strconv.Itoa(i)},
+			}); err != nil {
+				errs <- err
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range iterations {
+			got, err := sm.GetSession(t.Context(), live.ID)
+			if err != nil {
+				errs <- err
+				return
+			}
+			_ = got.ClonePermissions()
+
+			snapshot, err := sm.GetSessionSnapshot(t.Context(), live.ID)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if snapshot.Permissions != nil {
+				_ = snapshot.Permissions.Allow
+			}
+		}
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+}
+
 // TestAddMessage_SQLitePersistedToolResultCappedOnReload pins the read-time
 // backstop for the generic API path: SessionManager.AddMessage persists a
 // tool result through the store without Session.AddMessage's ingest-time

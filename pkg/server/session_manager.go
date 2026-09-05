@@ -435,11 +435,10 @@ func (sm *SessionManager) AttachRuntime(ctx context.Context, sessionID string, r
 
 // GetSession retrieves a session by ID.
 func (sm *SessionManager) GetSession(ctx context.Context, id string) (*session.Session, error) {
-	sess, err := sm.sessionStore.GetSession(ctx, id)
-	if err != nil {
-		return nil, err
+	if rs, ok := sm.runtimeSessions.Load(id); ok && rs.session != nil {
+		return rs.session.Clone(), nil
 	}
-	return sess, nil
+	return sm.sessionStore.GetSession(ctx, id)
 }
 
 // WaitSessionAttached blocks until a runtime is attached for sessionID (i.e.
@@ -546,7 +545,7 @@ func (sm *SessionManager) GetSessionSnapshot(ctx context.Context, id string) (*a
 		Messages:      sess.GetAllMessages(),
 		ToolsApproved: sess.ToolsApproved,
 		SafetyPolicy:  sess.SafetyPolicy,
-		Permissions:   sess.Permissions,
+		Permissions:   sess.ClonePermissions(),
 		InputTokens:   inputTokens,
 		OutputTokens:  outputTokens,
 		Streaming:     streaming,
@@ -1388,13 +1387,17 @@ func (sm *SessionManager) SetSessionSafetyPolicy(ctx context.Context, sessionID 
 func (sm *SessionManager) UpdateSessionPermissions(ctx context.Context, sessionID string, perms *session.PermissionsConfig) error {
 	sm.mux.Lock()
 	defer sm.mux.Unlock()
+
+	if rt, ok := sm.runtimeSessions.Load(sessionID); ok && rt.session != nil {
+		rt.session.SetPermissions(perms)
+		return sm.sessionStore.UpdateSession(ctx, rt.session)
+	}
+
 	sess, err := sm.sessionStore.GetSession(ctx, sessionID)
 	if err != nil {
 		return err
 	}
-
-	sess.Permissions = perms
-
+	sess.SetPermissions(perms)
 	return sm.sessionStore.UpdateSession(ctx, sess)
 }
 
@@ -2094,7 +2097,7 @@ func (sm *SessionManager) SetSessionAgentModel(ctx context.Context, sessionID, m
 		// reset a strict/balanced session to the legacy default on reload.
 		SafetyPolicy:            sess.SafetyPolicy,
 		ToolsApproved:           sess.ToolsApproved,
-		Permissions:             sess.Permissions,
+		Permissions:             sess.ClonePermissions(),
 		Attributes:              sess.AttributesSnapshot(),
 		MaxIterations:           sess.MaxIterations,
 		MaxConsecutiveToolCalls: sess.MaxConsecutiveToolCalls,
@@ -2259,7 +2262,7 @@ func (sm *SessionManager) ExportSessionForRecovery(ctx context.Context, sessionI
 		"output_tokens":  outputTokens,
 		"working_dir":    sess.WorkingDir,
 		"tools_approved": sess.ToolsApproved,
-		"permissions":    sess.Permissions,
+		"permissions":    sess.ClonePermissions(),
 	}
 	// Recorded errors are session items, not messages, so GetAllMessages
 	// drops them. Export them separately: recovery exports feed diagnostics,

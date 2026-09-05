@@ -1795,7 +1795,7 @@ func (s *Session) ClonePermissions() *PermissionsConfig {
 func (s *Session) SetPermissions(perms *PermissionsConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Permissions = perms
+	s.Permissions = perms.Clone()
 }
 
 // SetToolsApproved is the legacy --yolo toggle. Prefer
