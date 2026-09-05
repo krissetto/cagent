@@ -123,6 +123,8 @@
           url: /tools/lsp/
         - title: OpenAPI
           url: /tools/openapi/
+        - title: Webhook
+          url: /tools/webhook/
         - title: API
           url: /tools/api/
 
