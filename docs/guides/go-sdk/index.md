@@ -537,8 +537,15 @@ Use Docker Agent's built-in tools:
 
 ```go
 import (
+    "os"
+
+    "github.com/docker/docker-agent/pkg/agent"
     "github.com/docker/docker-agent/pkg/config"
-    "github.com/docker/docker-agent/pkg/tools/builtin"
+    "github.com/docker/docker-agent/pkg/model/provider"
+    "github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
+    "github.com/docker/docker-agent/pkg/tools/builtin/shell"
+    "github.com/docker/docker-agent/pkg/tools/builtin/think"
+    "github.com/docker/docker-agent/pkg/tools/builtin/todo"
 )
 
 func createAgentWithBuiltinTools(llm provider.Provider) *agent.Agent {
@@ -555,13 +562,13 @@ func createAgentWithBuiltinTools(llm provider.Provider) *agent.Agent {
         agent.WithModel(llm),
         agent.WithToolSets(
             // Shell tool for running commands
-            builtin.NewShellTool(os.Environ(), rtConfig),
+            shell.New(os.Environ(), rtConfig),
             // Filesystem tools
-            builtin.NewFilesystemTool(rtConfig.Config.WorkingDir),
+            filesystem.New(rtConfig.Config.WorkingDir),
             // Think tool for reasoning
-            builtin.NewThinkTool(),
+            think.New(),
             // Todo tool for task tracking
-            builtin.NewTodoTool(),
+            todo.New(),
         ),
     )
 }
