@@ -17,8 +17,9 @@ Docker Agent needs API keys to talk to model providers (OpenAI, Anthropic, etc.)
 | 1 | [Environment variables](#environment-variables) | `export OPENAI_API_KEY=sk-...` |
 | 2 | [Docker Compose secrets](#docker-compose-secrets) | Files in `/run/secrets/` |
 | 3 | [Docker Agent env file](#docker-agent-env-file) | `~/.config/cagent/.env`, written by `docker agent setup` |
-| 4 | [Credential helper](#credential-helper) | Custom command declared in `~/.config/cagent/config.yaml` under `credential_helper:` |
-| 5 | [Docker Desktop](#docker-desktop) | Secrets stored by the Docker Desktop backend (no setup on a Desktop install) |
+| 4 | [ChatGPT login](../../providers/chatgpt/index.md) | `CHATGPT_OAUTH_TOKEN` from the account login created by `docker agent setup` |
+| 5 | [Credential helper](#credential-helper) | Custom command declared in `~/.config/cagent/config.yaml` under `credential_helper:` |
+| 6 | [Docker Desktop](#docker-desktop) | Secrets stored by the Docker Desktop backend (no setup on a Desktop install) |
 
 The first provider that has a value wins. You can mix and match — for example, use environment variables for one key and the Docker Agent env file for another.
 
