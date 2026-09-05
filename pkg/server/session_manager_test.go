@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -25,6 +26,8 @@ import (
 	"github.com/docker/docker-agent/pkg/concurrent"
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/types"
+	"github.com/docker/docker-agent/pkg/model/provider/base"
+	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/runtime"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/session/sqlitestore"
@@ -82,6 +85,38 @@ func (f *fakeRuntime) OnElicitationRequest(func(runtime.Event)) {}
 
 func (f *fakeRuntime) CurrentAgentName(context.Context) string { return "root" }
 
+// delayedTitleProvider lets a RunSession title request finish after the
+// runtime stream has already closed.
+type delayedTitleProvider struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *delayedTitleProvider) ID() modelsdev.ID { return modelsdev.NewID("test", "title") }
+
+func (p *delayedTitleProvider) CreateChatCompletionStream(context.Context, []chat.Message, []tools.Tool) (chat.MessageStream, error) {
+	close(p.started)
+	return &delayedTitleStream{release: p.release}, nil
+}
+
+func (p *delayedTitleProvider) BaseConfig() base.Config { return base.Config{} }
+
+type delayedTitleStream struct {
+	release  chan struct{}
+	received bool
+}
+
+func (s *delayedTitleStream) Recv() (chat.MessageStreamResponse, error) {
+	if s.received {
+		return chat.MessageStreamResponse{}, io.EOF
+	}
+	<-s.release
+	s.received = true
+	return chat.MessageStreamResponse{Choices: []chat.MessageStreamChoice{{Delta: chat.MessageDelta{Content: "Delayed title"}}}}, nil
+}
+
+func (s *delayedTitleStream) Close() {}
+
 // SupportsModelSwitching reports false by default. Tests that exercise
 // the /models endpoints embed fakeRuntime and override this.
 func (f *fakeRuntime) SupportsModelSwitching() bool { return false }
@@ -134,6 +169,34 @@ func TestAttachRuntime_RegistersRuntimeForExternalDriver(t *testing.T) {
 
 	// Steer routes through the attached runtime, not a freshly built one.
 	require.NoError(t, sm.SteerSession(ctx, sess.ID, []api.Message{{Content: "hi"}}))
+}
+
+func TestRunSession_TitleCanFinishAfterRuntimeStream(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sess := session.New()
+	sm := newTestSessionManager(t, sess, &fakeRuntime{})
+	provider := &delayedTitleProvider{started: make(chan struct{}), release: make(chan struct{})}
+	runtimeSession, ok := sm.runtimeSessions.Load(sess.ID)
+	require.True(t, ok)
+	runtimeSession.titleGen = sessiontitle.New(provider)
+
+	events, err := sm.RunSession(ctx, sess.ID, "agent", "root", []api.Message{{Content: "hello"}}, "")
+	require.NoError(t, err)
+
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("title generation did not start")
+	}
+	for range events {
+	}
+
+	close(provider.release)
+	require.Eventually(t, func() bool {
+		return sess.TitleSnapshot() == "Delayed title"
+	}, 2*time.Second, 10*time.Millisecond)
 }
 
 // TestRunSession_ConcurrentRequestReturnsErrSessionBusy verifies that a

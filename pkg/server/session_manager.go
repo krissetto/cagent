@@ -1039,9 +1039,14 @@ func (sm *SessionManager) RunSession(ctx context.Context, sessionID, agentFilena
 		defer cancel()
 		defer runtimeSession.streaming.Unlock()
 
-		// Start title generation in parallel if needed
+		var titleEvents <-chan runtime.Event
 		if needsTitle {
-			go sm.generateTitle(ctx, sess, titleGen, userMessages, streamChan)
+			ch := make(chan runtime.Event, 1)
+			titleEvents = ch
+			go func() {
+				defer close(ch)
+				sm.generateTitle(ctx, sess, titleGen, userMessages, ch)
+			}()
 		} else if titleToEmit != "" {
 			// Re-emit the existing title so late-joining SSE consumers
 			// and boards can pick it up without an extra API call.
@@ -1049,11 +1054,33 @@ func (sm *SessionManager) RunSession(ctx context.Context, sessionID, agentFilena
 		}
 
 		stream := runtimeSession.runtime.RunStream(streamCtx, sess)
-		for event := range stream {
-			if streamCtx.Err() != nil {
-				return
+		for stream != nil {
+			select {
+			case event, ok := <-titleEvents:
+				titleEvents = nil
+				if ok {
+					streamChan <- event
+				}
+			case event, ok := <-stream:
+				if !ok {
+					stream = nil
+					continue
+				}
+				if streamCtx.Err() != nil {
+					return
+				}
+				streamChan <- event
 			}
-			streamChan <- event
+		}
+
+		// Forward a title that completed alongside the runtime without waiting
+		// for a slow title provider before finalizing the stream.
+		select {
+		case event, ok := <-titleEvents:
+			if ok {
+				streamChan <- event
+			}
+		default:
 		}
 
 		if err := sm.sessionStore.UpdateSession(ctx, sess); err != nil {
