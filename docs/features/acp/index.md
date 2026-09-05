@@ -58,7 +58,7 @@ Host Application
 
 - **Stdio transport** — No network ports needed; ideal for subprocess integration
 - **Session persistence** — SQLite-backed sessions survive process restarts
-- **Full agent support** — All Docker Agent features work: tools, multi-agent, model fallbacks
+- **Agent runtime support** — Supports configured tools, multi-agent delegation, and model fallbacks. Client-supplied MCP servers and audio prompts are not supported; use `session/resume`, not `session/load`, for persisted sessions.
 - **Multi-agent configs** — Team configurations with sub-agents work transparently
 - **Filesystem operations** — Agents can read/write files relative to the host's working directory
 
