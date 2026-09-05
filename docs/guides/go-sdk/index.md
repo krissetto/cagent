@@ -378,7 +378,7 @@ func run(ctx context.Context) error {
 
     // Create team and runtime
     t := team.New(team.WithAgents(assistant))
-    rt, err := runtime.New(t)
+    rt, err := runtime.New(ctx, t)
     if err != nil {
         return err
     }
