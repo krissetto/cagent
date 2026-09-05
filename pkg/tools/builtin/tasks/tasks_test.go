@@ -2,8 +2,10 @@ package tasks
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,6 +31,36 @@ func TestTasksTool_DisplayNames(t *testing.T) {
 		assert.NotEmpty(t, tl.DisplayName())
 		assert.NotEqual(t, tl.Name, tl.DisplayName())
 	}
+}
+
+func TestTasksTool_ConcurrentInstancesKeepEveryCreate(t *testing.T) {
+	t.Parallel()
+
+	const count = 40
+	storagePath := filepath.Join(t.TempDir(), "tasks.json")
+	type createResult struct {
+		result *tools.ToolCallResult
+		err    error
+	}
+	results := make(chan createResult, count)
+	var wg sync.WaitGroup
+	for i := range count {
+		wg.Go(func() {
+			result, err := New(storagePath).createTask(t.Context(), CreateTaskArgs{
+				Title: fmt.Sprintf("Task %d", i),
+			})
+			results <- createResult{result: result, err: err}
+		})
+	}
+	wg.Wait()
+	close(results)
+
+	for got := range results {
+		require.NoError(t, got.err)
+		require.False(t, got.result.IsError, got.result.Output)
+	}
+	store := New(storagePath).load()
+	require.Len(t, store.Tasks, count)
 }
 
 func TestTasksTool_CreateTask(t *testing.T) {

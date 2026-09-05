@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -14,8 +15,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/docker/docker-agent/pkg/atomicfile"
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/latest"
+	"github.com/docker/docker-agent/pkg/memory/database"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/toolsetpath"
 )
@@ -94,6 +97,7 @@ type ToolSet struct {
 	mu       sync.Mutex
 	filePath string
 	basePath string
+	fileLock *database.FileLock
 }
 
 var (
@@ -123,6 +127,7 @@ func New(storagePath string) *ToolSet {
 	return &ToolSet{
 		filePath: storagePath,
 		basePath: filepath.Dir(storagePath),
+		fileLock: database.NewFileLock(storagePath + ".lock"),
 	}
 }
 
@@ -157,7 +162,16 @@ func (t *ToolSet) save(store taskStore) error {
 	if err != nil {
 		return fmt.Errorf("marshaling task store: %w", err)
 	}
-	return os.WriteFile(t.filePath, data, 0o600)
+	return atomicfile.Write(t.filePath, bytes.NewReader(data), 0o600)
+}
+
+func (t *ToolSet) lock(ctx context.Context) (func(), error) {
+	if err := t.fileLock.Lock(ctx); err != nil {
+		return nil, fmt.Errorf("locking task store: %w", err)
+	}
+	return func() {
+		_ = t.fileLock.Unlock()
+	}, nil
 }
 
 func effectiveStatus(task Task, tasks map[string]Task) TaskStatus {
@@ -283,7 +297,7 @@ type RemoveDependencyArgs struct {
 
 // Tool handlers
 
-func (t *ToolSet) createTask(_ context.Context, params CreateTaskArgs) (*tools.ToolCallResult, error) {
+func (t *ToolSet) createTask(ctx context.Context, params CreateTaskArgs) (*tools.ToolCallResult, error) {
 	desc, err := t.resolveDescription(params.Description, params.Path)
 	if err != nil {
 		return tools.ResultError(err.Error()), nil
@@ -298,6 +312,11 @@ func (t *ToolSet) createTask(_ context.Context, params CreateTaskArgs) (*tools.T
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	release, err := t.lock(ctx)
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
+	defer release()
 
 	store := t.load()
 	id := uuid.New().String()
@@ -347,9 +366,14 @@ func (t *ToolSet) getTask(_ context.Context, params GetTaskArgs) (*tools.ToolCal
 	return taskWithEffectiveResult(task, store.Tasks), nil
 }
 
-func (t *ToolSet) updateTask(_ context.Context, params UpdateTaskArgs) (*tools.ToolCallResult, error) {
+func (t *ToolSet) updateTask(ctx context.Context, params UpdateTaskArgs) (*tools.ToolCallResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	release, err := t.lock(ctx)
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
+	defer release()
 
 	store := t.load()
 	task, ok := store.Tasks[params.ID]
@@ -401,9 +425,14 @@ func (t *ToolSet) updateTask(_ context.Context, params UpdateTaskArgs) (*tools.T
 	return taskResult(task), nil
 }
 
-func (t *ToolSet) deleteTask(_ context.Context, params DeleteTaskArgs) (*tools.ToolCallResult, error) {
+func (t *ToolSet) deleteTask(ctx context.Context, params DeleteTaskArgs) (*tools.ToolCallResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	release, err := t.lock(ctx)
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
+	defer release()
 
 	store := t.load()
 	if _, ok := store.Tasks[params.ID]; !ok {
@@ -490,9 +519,14 @@ func (t *ToolSet) nextTask(_ context.Context, _ tools.ToolCall, _ tools.Runtime)
 	return tools.ResultSuccess("No actionable tasks. Everything is either done or blocked."), nil
 }
 
-func (t *ToolSet) addDependency(_ context.Context, params AddDependencyArgs) (*tools.ToolCallResult, error) {
+func (t *ToolSet) addDependency(ctx context.Context, params AddDependencyArgs) (*tools.ToolCallResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	release, err := t.lock(ctx)
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
+	defer release()
 
 	store := t.load()
 	task, ok := store.Tasks[params.TaskID]
@@ -522,9 +556,14 @@ func (t *ToolSet) addDependency(_ context.Context, params AddDependencyArgs) (*t
 	return taskResult(task), nil
 }
 
-func (t *ToolSet) removeDependency(_ context.Context, params RemoveDependencyArgs) (*tools.ToolCallResult, error) {
+func (t *ToolSet) removeDependency(ctx context.Context, params RemoveDependencyArgs) (*tools.ToolCallResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	release, err := t.lock(ctx)
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
+	defer release()
 
 	store := t.load()
 	task, ok := store.Tasks[params.TaskID]
