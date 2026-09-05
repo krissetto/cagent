@@ -79,7 +79,7 @@ The pull side never needs to choose: the annotations describe what was recorded,
 
 ### Verifying when running
 
-Programs embedding Docker Agent can pass `config.WithVerificationKey(key)` to `config.Resolve` / `config.NewOCISource` so an OCI-sourced agent is verified on every read.
+Programs embedding Docker Agent can pass `ocisource.WithVerificationKey(key)` to `sources.Resolve` or `ocisource.New` so an OCI-sourced agent is verified on every read. Import `pkg/config/sources` and `pkg/config/ocisource` from `github.com/docker/docker-agent`.
 
 ### Limitations
 
