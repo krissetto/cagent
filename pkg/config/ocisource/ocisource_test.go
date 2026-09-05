@@ -42,19 +42,21 @@ func TestOCISource_DigestReference_ServesFromCache(t *testing.T) {
 		"io.docker.agent.version": "test",
 	}).(v1.Image)
 
-	ref := "test-digest-cache/agent:latest"
-	digest, err := store.StoreArtifact(img, ref)
+	ref := "registry.example.com/test-digest-cache/agent:latest"
+	storeKey, err := remote.FullyQualifiedReference(ref)
+	require.NoError(t, err)
+	digest, err := store.StoreArtifact(img, storeKey)
 	require.NoError(t, err)
 
 	// Build a digest reference using the stored digest.
-	digestRef := "test-digest-cache/agent@" + digest
+	digestRef := "registry.example.com/test-digest-cache/agent@" + digest
 
 	// Read via ociSource. Since the reference is pinned by digest and is
 	// present in the local store, this must succeed without any network call.
 	// We override the default store directory via an env-based approach;
 	// instead, we directly exercise the cache-hit logic by verifying the
 	// store lookup works with the normalized key.
-	storeKey, err := remote.NormalizeReference(digestRef)
+	storeKey, err = remote.FullyQualifiedReference(digestRef)
 	require.NoError(t, err)
 
 	// Verify the store can resolve the digest key directly.
@@ -69,8 +71,16 @@ func TestOCISource_DigestReference_ServesFromCache(t *testing.T) {
 
 // storeTestArtifact writes an agent YAML artifact into the default content
 // store (rooted at $HOME, which the caller must point at a temp dir) under
-// the given tag reference.
-func storeTestArtifact(t *testing.T, ref string, data []byte) string {
+// the normalized registry-scoped key for ref.
+func storeTestArtifact(t *testing.T, ref string, data []byte) {
+	t.Helper()
+
+	storeKey, err := remote.FullyQualifiedReference(ref)
+	require.NoError(t, err)
+	storeTestArtifactWithKey(t, storeKey, data)
+}
+
+func storeTestArtifactWithKey(t *testing.T, storeKey string, data []byte) {
 	t.Helper()
 
 	store, err := content.NewStore()
@@ -83,9 +93,8 @@ func storeTestArtifact(t *testing.T, ref string, data []byte) string {
 		"io.docker.agent.version": "test",
 	}).(v1.Image)
 
-	digest, err := store.StoreArtifact(img, ref)
+	_, err = store.StoreArtifact(img, storeKey)
 	require.NoError(t, err)
-	return digest
 }
 
 // stubOCIPull replaces the registry pull with fn for the test's duration.
@@ -185,7 +194,8 @@ func TestOCISource_Read_CacheIsScopedToRegistry(t *testing.T) {
 	// Same repository and tag on two different registries: distinct trust
 	// boundaries, so each must do its own pull instead of sharing an entry.
 	testData := []byte("version: v1\nname: scoped-agent")
-	storeTestArtifact(t, "test-scoped/agent:latest", testData)
+	storeTestArtifact(t, "registry-a.example.com/test-scoped/agent:latest", testData)
+	storeTestArtifact(t, "registry-b.example.com/test-scoped/agent:latest", testData)
 
 	var pulls atomic.Int32
 	stubOCIPull(t, func(context.Context, string, bool) (string, error) {
@@ -198,6 +208,35 @@ func TestOCISource_Read_CacheIsScopedToRegistry(t *testing.T) {
 	_, err = New("registry-b.example.com/test-scoped/agent:latest").Read(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), pulls.Load(), "refs differing only by registry must not share a cache entry")
+}
+
+// Not parallel: stubs the package-level pullOCIArtifact and re-homes the
+// default content store via t.Setenv.
+func TestOCISource_Read_FallbackIsScopedToRegistry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	resetOCIMemoizer(t)
+
+	refA := "registry-a.example.com/test-fallback/agent:latest"
+	refB := "registry-b.example.com/test-fallback/agent:latest"
+	storeTestArtifact(t, refA, []byte("version: v1\nname: registry-a"))
+	storeTestArtifact(t, refB, []byte("version: v1\nname: registry-b"))
+	stubOCIPull(t, func(context.Context, string, bool) (string, error) {
+		return "", errors.New("registry unreachable")
+	})
+
+	data, err := New(refA).Read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []byte("version: v1\nname: registry-a"), data)
+	data, err = New(refB).Read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []byte("version: v1\nname: registry-b"), data)
+
+	store, err := content.NewStore()
+	require.NoError(t, err)
+	_, err = store.GetArtifact("test-fallback/agent:latest")
+	require.ErrorIs(t, err, content.ErrStoreCorrupted, "registry-less legacy keys must not be populated or used as fallback")
 }
 
 // Not parallel: stubs the package-level pullOCIArtifact and re-homes the
@@ -256,16 +295,18 @@ func storeProtectedTestArtifact(t *testing.T, ref string, data []byte, key *prot
 func storeTestArtifactWithAnnotations(t *testing.T, ref string, data []byte, annotations map[string]string) {
 	t.Helper()
 
-	store, err := content.NewStore()
+	annotations["io.docker.agent.version"] = "test"
+	storeKey, err := remote.FullyQualifiedReference(ref)
 	require.NoError(t, err)
 
-	annotations["io.docker.agent.version"] = "test"
+	store, err := content.NewStore()
+	require.NoError(t, err)
 	layer := static.NewLayer(data, "application/yaml")
 	img, err := mutate.AppendLayers(empty.Image, layer)
 	require.NoError(t, err)
 	img = mutate.Annotations(img, annotations).(v1.Image)
 
-	_, err = store.StoreArtifact(img, ref)
+	_, err = store.StoreArtifact(img, storeKey)
 	require.NoError(t, err)
 }
 
