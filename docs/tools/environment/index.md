@@ -13,7 +13,7 @@ _Report the OS and resolved shell so the model can pick the right syntax._
 
 The environment tool exposes a single read-only call — `get_environment_info` — that returns the operating system and the resolved shell that will run shell-tool commands, e.g. `{"os":"Windows","shell":"powershell"}`.
 
-It takes no arguments, has no side effects, and reads only `runtime.GOOS` and the shell binary that the shell tool has already resolved. Because it carries the `ReadOnlyHint` annotation, the safety layer auto-approves it in every mode — the same treatment as `git status`, `list_directory`, and other pure-info tools.
+It takes no arguments, has no side effects, and reads only `runtime.GOOS` and the shell binary that the shell tool has already resolved. Its `ReadOnlyHint` annotation classifies it as safe. Balanced, restricted, and autonomous modes auto-approve it unless a permission rule or preempting hook intervenes. The legacy default auto-approves it only after ordinary pre-tool hooks run. Strict mode does not auto-approve it merely because it is read-only; see [Permissions](../../configuration/permissions/index.md).
 
 ## When to use
 
