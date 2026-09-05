@@ -118,9 +118,9 @@ runtime:
     - registry.npmjs.org
 ```
 
-Each entry is a hostname with an optional `:port` suffix. Commas and
-whitespace are rejected to keep a single entry from smuggling several
-rules into the policy engine. The runner prints the resulting allowlist
+Each entry is a hostname with an optional `:port` suffix. Entries containing commas or
+whitespace are ignored with a warning, preventing a single entry from
+smuggling several rules into the policy engine. The runner prints the resulting allowlist
 before launch so you can audit exactly which hosts the run opens up.
 
 ### Persist your own allowlist
