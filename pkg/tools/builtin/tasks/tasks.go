@@ -16,7 +16,6 @@ import (
 
 	"github.com/docker/docker-agent/pkg/config"
 	"github.com/docker/docker-agent/pkg/config/latest"
-	"github.com/docker/docker-agent/pkg/path"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/toolsetpath"
 )
@@ -201,13 +200,22 @@ func now() string {
 
 func (t *ToolSet) resolveDescription(description, filePath string) (string, error) {
 	if filePath != "" {
-		validatedPath, err := path.ValidatePathInDirectory(filePath, t.basePath)
+		root, err := os.OpenRoot(t.basePath)
 		if err != nil {
-			return "", fmt.Errorf("invalid file path: %w", err)
+			return "", fmt.Errorf("opening task directory: %w", err)
 		}
-		data, err := os.ReadFile(validatedPath)
+		defer root.Close()
+
+		name := filePath
+		if filepath.IsAbs(name) {
+			name, err = filepath.Rel(t.basePath, name)
+			if err != nil {
+				return "", fmt.Errorf("invalid file path: %w", err)
+			}
+		}
+		data, err := root.ReadFile(name)
 		if err != nil {
-			return "", fmt.Errorf("reading file %s: %w", validatedPath, err)
+			return "", fmt.Errorf("reading file %s: %w", filePath, err)
 		}
 		return string(data), nil
 	}

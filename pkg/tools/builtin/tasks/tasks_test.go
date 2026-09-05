@@ -122,19 +122,42 @@ func TestTasksTool_CreateTask_FromFile(t *testing.T) {
 	t.Parallel()
 	tool := newTestTasksTool(t)
 
-	mdFile := filepath.Join(tool.basePath, "desc.md")
+	require.NoError(t, os.Mkdir(filepath.Join(tool.basePath, "docs"), 0o755))
+	mdFile := filepath.Join(tool.basePath, "docs", "desc.md")
 	require.NoError(t, os.WriteFile(mdFile, []byte("# Description\nFrom file"), 0o644))
+	require.NoError(t, os.Symlink(filepath.Join("docs", "desc.md"), filepath.Join(tool.basePath, "desc-link.md")))
 
-	result, err := tool.createTask(t.Context(), CreateTaskArgs{
-		Title: "File task",
-		Path:  mdFile,
-	})
+	for _, path := range []string{mdFile, filepath.Join("docs", "desc.md"), "desc-link.md"} {
+		result, err := tool.createTask(t.Context(), CreateTaskArgs{
+			Title: "File task",
+			Path:  path,
+		})
+		require.NoError(t, err)
+		require.False(t, result.IsError, "%s: %s", path, result.Output)
+
+		var task Task
+		require.NoError(t, json.Unmarshal([]byte(result.Output), &task))
+		require.Equal(t, "# Description\nFrom file", task.Description)
+	}
+}
+
+func TestTasksTool_CreateTask_RejectsDescriptionOutsideBasePath(t *testing.T) {
+	t.Parallel()
+	tool := newTestTasksTool(t)
+
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "outside.md")
+	require.NoError(t, os.WriteFile(outside, []byte("secret"), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(tool.basePath, "outside-link.md")))
+
+	relOutside, err := filepath.Rel(tool.basePath, outside)
 	require.NoError(t, err)
-	assert.False(t, result.IsError)
-
-	var task Task
-	require.NoError(t, json.Unmarshal([]byte(result.Output), &task))
-	assert.Equal(t, "# Description\nFrom file", task.Description)
+	for _, path := range []string{outside, relOutside, "outside-link.md"} {
+		result, err := tool.createTask(t.Context(), CreateTaskArgs{Title: "File task", Path: path})
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+		require.NotContains(t, result.Output, "secret")
+	}
 }
 
 func TestTasksTool_GetTask(t *testing.T) {
