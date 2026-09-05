@@ -53,7 +53,7 @@ This helps agents distinguish between an empty directory and a tool failure, avo
 
 ## edit_file Validation
 
-The `edit_file` tool applies a sequence of find-and-replace edits to a file in memory, then writes the result back atomically. Each edit must provide a non-empty `oldText` value:
+The `edit_file` tool applies a sequence of find-and-replace edits to a file in memory, then writes the result once after every edit validates. Each edit must provide a non-empty `oldText` value:
 
 - **Valid**: `{"oldText": "line one", "newText": "LINE ONE"}`
 - **Invalid**: `{"oldText": "", "newText": "INJECTED"}` — rejected with error
