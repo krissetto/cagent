@@ -50,6 +50,8 @@ const (
 	// that survives indefinitely while logging, they should redirect its output
 	// (e.g. `myserver > log.txt 2>&1 &`).
 	waitDelayAfterJobExit = 1 * time.Second
+	gracefulStopTimeout   = 500 * time.Millisecond
+	forcedStopTimeout     = 2 * time.Second
 )
 
 // ToolSet manages long-running shell commands.
@@ -82,19 +84,21 @@ const (
 )
 
 type backgroundJob struct {
-	id           string
-	cmd          string
-	cwd          string
-	process      *os.Process
-	processGroup *processGroup
-	outputMu     sync.RWMutex
-	output       *bytes.Buffer
-	startTime    time.Time
-	status       atomic.Int32
-	exitCode     int
-	err          error
-	done         chan struct{}
-	rt           tools.Runtime
+	id            string
+	cmd           string
+	cwd           string
+	process       *os.Process
+	processGroup  *processGroup
+	outputMu      sync.RWMutex
+	output        *bytes.Buffer
+	startTime     time.Time
+	status        atomic.Int32
+	exitCode      int
+	err           error
+	done          chan struct{}
+	stopRequested atomic.Bool
+	stopMu        sync.Mutex
+	rt            tools.Runtime
 }
 
 // limitedWriter wraps a buffer and stops writing after maxSize bytes. It uses
@@ -314,10 +318,10 @@ func (h *backgroundJobsHandler) monitorJob(ctx context.Context, job *backgroundJ
 		}
 	}
 
-	if !job.status.CompareAndSwap(statusRunning, newStatus) {
-		job.outputMu.Unlock()
-		return
+	if job.stopRequested.Load() {
+		newStatus = statusStopped
 	}
+	job.status.Store(newStatus)
 
 	status := job.status.Load()
 	exitCode := job.exitCode
@@ -436,16 +440,47 @@ func (h *backgroundJobsHandler) StopBackgroundJob(_ context.Context, params Stop
 		return tools.ResultError("Job not found: " + params.JobID), nil
 	}
 
-	if !job.status.CompareAndSwap(statusRunning, statusStopped) {
-		currentStatus := job.status.Load()
-		return tools.ResultError(fmt.Sprintf("Job %s is not running (current status: %s)", params.JobID, statusToString(currentStatus))), nil
+	if err := stopBackgroundJob(job); err != nil {
+		return tools.ResultError("Error: " + err.Error()), nil
 	}
-
-	if err := kill(job.process, job.processGroup); err != nil {
-		return tools.ResultError(fmt.Sprintf("Job %s marked as stopped, but error killing process: %s", params.JobID, err)), nil
-	}
-
 	return tools.ResultSuccess(fmt.Sprintf("Job %s stopped successfully", params.JobID)), nil
+}
+
+func stopBackgroundJob(job *backgroundJob) error {
+	job.stopMu.Lock()
+	defer job.stopMu.Unlock()
+	if job.status.Load() != statusRunning {
+		return fmt.Errorf("job %s is not running (current status: %s)", job.id, statusToString(job.status.Load()))
+	}
+
+	if err := terminateProcess(job.process, job.processGroup, false); err != nil {
+		if job.status.Load() == statusRunning {
+			return fmt.Errorf("error stopping job %s: %w", job.id, err)
+		}
+		return nil
+	}
+	job.stopRequested.Store(true)
+	if !waitForJob(job.done, gracefulStopTimeout) {
+		if err := terminateProcess(job.process, job.processGroup, true); err != nil && job.status.Load() == statusRunning {
+			return fmt.Errorf("error force-stopping job %s: %w", job.id, err)
+		}
+		if !waitForJob(job.done, forcedStopTimeout) {
+			return fmt.Errorf("timed out waiting for job %s to stop", job.id)
+		}
+	}
+
+	return nil
+}
+
+func waitForJob(done <-chan struct{}, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func formatBackgroundJobRecall(job *backgroundJob, status int32, exitCode int, output string) string {
@@ -468,7 +503,7 @@ func reapSpawnedChild(cmd *exec.Cmd, pg *processGroup) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	_ = kill(cmd.Process, pg)
+	_ = terminateProcess(cmd.Process, pg, false)
 
 	done := make(chan struct{})
 	go func() {
@@ -478,7 +513,7 @@ func reapSpawnedChild(cmd *exec.Cmd, pg *processGroup) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		_ = cmd.Process.Kill()
+		_ = terminateProcess(cmd.Process, pg, true)
 		<-done
 	}
 }
@@ -625,11 +660,26 @@ func (t *ToolSet) Start(context.Context) error {
 }
 
 func (t *ToolSet) Stop(context.Context) error {
+	var wg sync.WaitGroup
+	errs := make(chan error)
 	t.handler.jobs.Range(func(_ string, job *backgroundJob) bool {
-		if job.status.CompareAndSwap(statusRunning, statusStopped) {
-			_ = kill(job.process, job.processGroup)
+		if job.status.Load() == statusRunning {
+			wg.Go(func() {
+				if err := stopBackgroundJob(job); err != nil {
+					errs <- err
+				}
+			})
 		}
 		return true
 	})
-	return nil
+	go func() {
+		wg.Wait()
+		close(errs)
+	}()
+
+	var stopErr error
+	for err := range errs {
+		stopErr = errors.Join(stopErr, err)
+	}
+	return stopErr
 }
