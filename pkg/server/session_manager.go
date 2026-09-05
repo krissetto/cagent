@@ -1050,7 +1050,9 @@ func (sm *SessionManager) RunSession(ctx context.Context, sessionID, agentFilena
 		} else if titleToEmit != "" {
 			// Re-emit the existing title so late-joining SSE consumers
 			// and boards can pick it up without an extra API call.
-			streamChan <- runtime.SessionTitle(sess.ID, titleToEmit)
+			if !sendStreamEvent(streamCtx, streamChan, runtime.SessionTitle(sess.ID, titleToEmit)) {
+				return
+			}
 		}
 
 		stream := runtimeSession.runtime.RunStream(streamCtx, sess)
@@ -1058,18 +1060,17 @@ func (sm *SessionManager) RunSession(ctx context.Context, sessionID, agentFilena
 			select {
 			case event, ok := <-titleEvents:
 				titleEvents = nil
-				if ok {
-					streamChan <- event
+				if ok && !sendStreamEvent(streamCtx, streamChan, event) {
+					return
 				}
 			case event, ok := <-stream:
 				if !ok {
 					stream = nil
 					continue
 				}
-				if streamCtx.Err() != nil {
+				if streamCtx.Err() != nil || !sendStreamEvent(streamCtx, streamChan, event) {
 					return
 				}
-				streamChan <- event
 			}
 		}
 
@@ -1077,8 +1078,8 @@ func (sm *SessionManager) RunSession(ctx context.Context, sessionID, agentFilena
 		// for a slow title provider before finalizing the stream.
 		select {
 		case event, ok := <-titleEvents:
-			if ok {
-				streamChan <- event
+			if ok && !sendStreamEvent(streamCtx, streamChan, event) {
+				return
 			}
 		default:
 		}
@@ -1089,6 +1090,15 @@ func (sm *SessionManager) RunSession(ctx context.Context, sessionID, agentFilena
 	}()
 
 	return streamChan, nil
+}
+
+func sendStreamEvent(ctx context.Context, events chan<- runtime.Event, event runtime.Event) bool {
+	select {
+	case events <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // ResumeSession resumes a paused session with an optional rejection reason or tool name.

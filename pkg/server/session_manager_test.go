@@ -199,6 +199,53 @@ func TestRunSession_TitleCanFinishAfterRuntimeStream(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 }
 
+func TestRunSession_CancellationUnblocksExistingTitle(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	sess := session.New(session.WithTitle("Existing title"))
+	sm := newTestSessionManager(t, sess, &fakeRuntime{})
+
+	events, err := sm.RunSession(ctx, sess.ID, "agent", "root", []api.Message{{Content: "hello"}}, "")
+	require.NoError(t, err)
+	assertSessionStreamingEventuallyUnlocked(t, sm, sess.ID)
+	for range events {
+	}
+}
+
+func TestSendStreamEvent_CancellationUnblocks(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan bool)
+	go func() {
+		result <- sendStreamEvent(ctx, make(chan runtime.Event), runtime.SessionTitle("session", "title"))
+	}()
+	cancel()
+
+	select {
+	case sent := <-result:
+		require.False(t, sent)
+	case <-time.After(2 * time.Second):
+		t.Fatal("event send did not stop after cancellation")
+	}
+}
+
+func assertSessionStreamingEventuallyUnlocked(t *testing.T, sm *SessionManager, sessionID string) {
+	t.Helper()
+
+	runtimeSession, ok := sm.runtimeSessions.Load(sessionID)
+	require.True(t, ok)
+	require.Eventually(t, func() bool {
+		if !runtimeSession.streaming.TryLock() {
+			return false
+		}
+		runtimeSession.streaming.Unlock()
+		return true
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
 // TestRunSession_ConcurrentRequestReturnsErrSessionBusy verifies that a
 // second RunSession call on a session that is already streaming returns
 // ErrSessionBusy instead of silently interleaving messages.
