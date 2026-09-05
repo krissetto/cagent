@@ -109,11 +109,11 @@ type Store interface {
 	// Returns the ID of the created message item.
 	AddMessage(ctx context.Context, sessionID string, msg *Message) (int64, error)
 
-	// UpdateMessage updates an existing message by its ID.
+	// UpdateMessage updates a message belonging to sessionID by its ID.
 	// This is called on each streaming delta to keep the persisted message
 	// in sync with the in-progress content, and once more with the final
 	// payload when the message completes.
-	UpdateMessage(ctx context.Context, messageID int64, msg *Message) error
+	UpdateMessage(ctx context.Context, sessionID string, messageID int64, msg *Message) error
 
 	// AddSubSession creates a sub-session and links it to the parent.
 	// The sub-session is stored as a separate session row with parent_id set.
@@ -325,32 +325,31 @@ func (s *InMemorySessionStore) AddMessage(_ context.Context, sessionID string, m
 	return id, nil
 }
 
-// UpdateMessage updates an existing message by its ID.
-func (s *InMemorySessionStore) UpdateMessage(_ context.Context, messageID int64, msg *Message) error {
+// UpdateMessage updates a message belonging to sessionID by its ID.
+func (s *InMemorySessionStore) UpdateMessage(_ context.Context, sessionID string, messageID int64, msg *Message) error {
+	if sessionID == "" {
+		return ErrEmptyID
+	}
+	session, exists := s.sessions.Load(sessionID)
+	if !exists {
+		return ErrNotFound
+	}
+
 	// Create a deep copy of the message to avoid mutating the caller's pointer,
 	// which may be shared with another Session object.
 	updated := cloneMessage(msg)
 	updated.ID = messageID
 
-	// For in-memory store, we need to find the message across all sessions
-	var found bool
-	s.sessions.Range(func(_ string, session *Session) bool {
-		session.mu.Lock()
-		defer session.mu.Unlock()
-		for i := range session.Messages {
-			if session.Messages[i].Message == nil || session.Messages[i].Message.ID != messageID {
-				continue
-			}
-			session.Messages[i].Message = updated
-			found = true
-			return false
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	for i := range session.Messages {
+		if session.Messages[i].Message == nil || session.Messages[i].Message.ID != messageID {
+			continue
 		}
-		return true
-	})
-	if !found {
-		return ErrNotFound
+		session.Messages[i].Message = updated
+		return nil
 	}
-	return nil
+	return ErrNotFound
 }
 
 // AddSubSession creates a sub-session and links it to the parent.
@@ -1172,16 +1171,19 @@ func (s *SQLiteSessionStore) AddMessage(ctx context.Context, sessionID string, m
 	return id, nil
 }
 
-// UpdateMessage updates an existing message by its ID.
-func (s *SQLiteSessionStore) UpdateMessage(ctx context.Context, messageID int64, msg *Message) error {
+// UpdateMessage updates a message belonging to sessionID by its ID.
+func (s *SQLiteSessionStore) UpdateMessage(ctx context.Context, sessionID string, messageID int64, msg *Message) error {
+	if sessionID == "" {
+		return ErrEmptyID
+	}
 	msgJSON, err := json.Marshal(msg.Message)
 	if err != nil {
 		return fmt.Errorf("marshaling message: %w", err)
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE session_items SET message_json = ?, implicit = ? WHERE id = ?`,
-		string(msgJSON), msg.Implicit, messageID)
+		`UPDATE session_items SET message_json = ?, implicit = ? WHERE session_id = ? AND id = ?`,
+		string(msgJSON), msg.Implicit, sessionID, messageID)
 	if err != nil {
 		return fmt.Errorf("updating message: %w", err)
 	}

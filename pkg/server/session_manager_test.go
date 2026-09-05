@@ -345,6 +345,37 @@ func TestAddMessage_RejectsWhileSessionStreaming(t *testing.T) {
 	require.NoError(t, sm.AddMessage(ctx, sess.ID, session.UserMessage("accepted")))
 }
 
+func TestUpdateMessageRejectsWrongSessionAndMalformedID(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := session.NewInMemorySessionStore()
+	owner := session.New()
+	other := session.New()
+	require.NoError(t, store.AddSession(ctx, owner))
+	require.NoError(t, store.AddSession(ctx, other))
+	messageID, err := store.AddMessage(ctx, owner.ID, session.UserMessage("original"))
+	require.NoError(t, err)
+
+	sm := NewSessionManager(ctx, config.Sources{}, store, 0, &config.RuntimeConfig{})
+	guard := sm.AttachRuntime(ctx, owner.ID, &fakeRuntime{}, owner)
+	guard.Lock()
+	defer guard.Unlock()
+
+	err = sm.UpdateMessage(ctx, other.ID, strconv.FormatInt(messageID, 10), session.UserMessage("wrong session"))
+	require.ErrorIs(t, err, session.ErrNotFound)
+	err = sm.UpdateMessage(ctx, owner.ID, strconv.FormatInt(messageID, 10), session.UserMessage("busy bypass"))
+	require.ErrorIs(t, err, ErrSessionBusy)
+	err = sm.UpdateMessage(ctx, other.ID, strconv.FormatInt(messageID, 10)+"junk", session.UserMessage("malformed"))
+	require.ErrorContains(t, err, "invalid message ID")
+
+	stored, err := store.GetSession(ctx, owner.ID)
+	require.NoError(t, err)
+	messages := stored.GetAllMessages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, "original", messages[0].Message.Content)
+}
+
 // TestUpdateMessage_RejectsWhileSessionStreaming mirrors
 // TestAddMessage_RejectsWhileSessionStreaming for UpdateMessage.
 func TestUpdateMessage_RejectsWhileSessionStreaming(t *testing.T) {
@@ -444,10 +475,10 @@ func (s *blockingStore) AddMessage(ctx context.Context, sessionID string, msg *s
 	return s.Store.AddMessage(ctx, sessionID, msg)
 }
 
-func (s *blockingStore) UpdateMessage(ctx context.Context, messageID int64, msg *session.Message) error {
+func (s *blockingStore) UpdateMessage(ctx context.Context, sessionID string, messageID int64, msg *session.Message) error {
 	close(s.entered)
 	<-s.release
-	return s.Store.UpdateMessage(ctx, messageID, msg)
+	return s.Store.UpdateMessage(ctx, sessionID, messageID, msg)
 }
 
 // assertAttachedGuardBlockedDuringMutation drives the reviewer's

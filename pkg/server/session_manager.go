@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1935,14 +1936,12 @@ func (sm *SessionManager) UpdateMessage(ctx context.Context, sessionID, msgID st
 		defer rt.streaming.Unlock()
 	}
 
-	// Parse msgID as int64
-	var msgPos int64
-	_, err := fmt.Sscanf(msgID, "%d", &msgPos)
+	msgPos, err := strconv.ParseInt(msgID, 10, 64)
 	if err != nil {
-		return fmt.Errorf("invalid message ID: %w", err)
+		return fmt.Errorf("invalid message ID %q: %w", msgID, err)
 	}
 
-	return sm.sessionStore.UpdateMessage(ctx, msgPos, msg)
+	return sm.sessionStore.UpdateMessage(ctx, sessionID, msgPos, msg)
 }
 
 // AddSummary adds a summary to a session.
