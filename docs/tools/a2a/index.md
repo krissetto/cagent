@@ -28,7 +28,7 @@ toolsets:
       X-Tenant: "acme"
 ```
 
-The `Authorization` header shown above authenticates to endpoints served with `docker agent serve a2a --auth-token`.
+Configured headers authenticate invocation requests, but are not sent while fetching the agent card. The current tool therefore cannot discover a server protected by `docker agent serve a2a --auth-token`, which also protects the agent-card endpoint.
 
 The `url` is the server base URL used to discover `/.well-known/agent-card.json`. Local and private-IP servers require `allow_private_ips: true`.
 
@@ -38,7 +38,7 @@ The `url` is the server base URL used to discover `/.well-known/agent-card.json`
 | ---------- | ---------------- | -------- | -------------------------------------------------------------------------------------------------------- |
 | `url`      | string           | ✓        | A2A server endpoint URL (must include scheme).                                                           |
 | `name`     | string           | ✗        | Tool name registered for the remote agent. Defaults to a name derived from the server's agent card.     |
-| `headers`  | map\[string\]string | ✗     | Extra HTTP headers sent with every request (useful for `Authorization`, tenant selection, tracing, \u2026). |
+| `headers`  | map\[string\]string | ✗     | Extra HTTP headers sent with invocation requests, not agent-card discovery (useful for authentication, tenant selection, and tracing). |
 
 `allow_private_ips` is an optional boolean, defaulting to `false`. It permits agent-card and invocation requests to non-public IP addresses; enable it only for trusted internal agents.
 
