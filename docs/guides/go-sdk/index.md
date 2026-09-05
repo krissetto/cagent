@@ -62,11 +62,13 @@ import (
     dagentcfg "github.com/docker/docker-agent/pkg/config"
     dagentruntime "github.com/docker/docker-agent/pkg/runtime"
     "github.com/docker/docker-agent/pkg/embeddedchat"
+    "github.com/docker/docker-agent/pkg/embeddedchat/defaults"
 )
 
 chat, err := embeddedchat.New(ctx, embeddedchat.Config{
     // AgentSource can be a file path, raw YAML bytes, or an OCI reference.
     AgentSource: dagentcfg.NewBytesSource("agent", []byte(agentYAML)),
+    LoadOpts: defaults.Opts(),
 })
 if err != nil {
     return err
