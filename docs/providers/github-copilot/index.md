@@ -151,7 +151,7 @@ models:
 
 GitHub Copilot is implemented as a built-in alias in Docker Agent:
 
-- **API type:** OpenAI-compatible (Chat Completions)
+- **API type:** OpenAI-compatible; automatically selects Chat Completions or Responses by model
 - **Base URL:** `https://api.githubcopilot.com`
 - **Token variable:** `GITHUB_TOKEN`
 - **Default headers:** `Copilot-Integration-Id: copilot-developer-cli`
