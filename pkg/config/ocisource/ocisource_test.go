@@ -20,11 +20,32 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/configsize"
 	"github.com/docker/docker-agent/pkg/content"
 	"github.com/docker/docker-agent/pkg/memoize"
 	"github.com/docker/docker-agent/pkg/protect"
 	"github.com/docker/docker-agent/pkg/remote"
 )
+
+func TestOCISource_Read_OversizedArtifactIsNotRedownloaded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	resetOCIMemoizer(t)
+
+	const ref = "test-oversized/agent:latest"
+	storeTestArtifact(t, ref, make([]byte, configsize.MaxBytes+1))
+	var pulls atomic.Int32
+	stubOCIPull(t, func(context.Context, string, bool) (string, error) {
+		pulls.Add(1)
+		return "", nil
+	})
+
+	_, err := New(ref).Read(t.Context())
+	require.ErrorIs(t, err, configsize.ErrTooLarge)
+	require.NotErrorIs(t, err, content.ErrStoreCorrupted)
+	assert.Equal(t, int32(1), pulls.Load(), "an oversized valid artifact must not trigger a forced re-pull")
+}
 
 func TestOCISource_DigestReference_ServesFromCache(t *testing.T) {
 	t.Parallel()
