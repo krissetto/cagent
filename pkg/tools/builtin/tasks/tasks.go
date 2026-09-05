@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,19 +140,22 @@ Persistent task management with priorities (critical > high > medium > low), sta
 A task is automatically blocked if any dependency is not done. Use next_task to get the highest-priority actionable task.`
 }
 
-func (t *ToolSet) load() taskStore {
+func (t *ToolSet) load() (taskStore, error) {
 	data, err := os.ReadFile(t.filePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return taskStore{Tasks: make(map[string]Task)}, nil
+	}
 	if err != nil {
-		return taskStore{Tasks: make(map[string]Task)}
+		return taskStore{}, fmt.Errorf("reading task store: %w", err)
 	}
 	var store taskStore
 	if err := json.Unmarshal(data, &store); err != nil {
-		return taskStore{Tasks: make(map[string]Task)}
+		return taskStore{}, fmt.Errorf("parsing task store: %w", err)
 	}
 	if store.Tasks == nil {
 		store.Tasks = make(map[string]Task)
 	}
-	return store
+	return store, nil
 }
 
 func (t *ToolSet) save(store taskStore) error {
@@ -318,7 +322,10 @@ func (t *ToolSet) createTask(ctx context.Context, params CreateTaskArgs) (*tools
 	}
 	defer release()
 
-	store := t.load()
+	store, err := t.load()
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
 	id := uuid.New().String()
 
 	deps := params.Dependencies
@@ -357,7 +364,10 @@ func (t *ToolSet) getTask(_ context.Context, params GetTaskArgs) (*tools.ToolCal
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	store := t.load()
+	store, err := t.load()
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
 	task, ok := store.Tasks[params.ID]
 	if !ok {
 		return tools.ResultError("task not found: " + params.ID), nil
@@ -375,7 +385,10 @@ func (t *ToolSet) updateTask(ctx context.Context, params UpdateTaskArgs) (*tools
 	}
 	defer release()
 
-	store := t.load()
+	store, err := t.load()
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
 	task, ok := store.Tasks[params.ID]
 	if !ok {
 		return tools.ResultError("task not found: " + params.ID), nil
@@ -434,7 +447,10 @@ func (t *ToolSet) deleteTask(ctx context.Context, params DeleteTaskArgs) (*tools
 	}
 	defer release()
 
-	store := t.load()
+	store, err := t.load()
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
 	if _, ok := store.Tasks[params.ID]; !ok {
 		return tools.ResultError("task not found: " + params.ID), nil
 	}
@@ -463,7 +479,10 @@ func (t *ToolSet) listTasks(_ context.Context, params ListTasksArgs) (*tools.Too
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	store := t.load()
+	store, err := t.load()
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
 	var tasks []taskWithEffective
 	for _, task := range store.Tasks {
 		tasks = append(tasks, taskWithEffective{
@@ -500,7 +519,10 @@ func (t *ToolSet) nextTask(_ context.Context, _ tools.ToolCall, _ tools.Runtime)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	store := t.load()
+	store, err := t.load()
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
 	var tasks []taskWithEffective
 	for _, task := range store.Tasks {
 		tasks = append(tasks, taskWithEffective{
@@ -528,7 +550,10 @@ func (t *ToolSet) addDependency(ctx context.Context, params AddDependencyArgs) (
 	}
 	defer release()
 
-	store := t.load()
+	store, err := t.load()
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
 	task, ok := store.Tasks[params.TaskID]
 	if !ok {
 		return tools.ResultError("task not found: " + params.TaskID), nil
@@ -565,7 +590,10 @@ func (t *ToolSet) removeDependency(ctx context.Context, params RemoveDependencyA
 	}
 	defer release()
 
-	store := t.load()
+	store, err := t.load()
+	if err != nil {
+		return tools.ResultError(err.Error()), nil
+	}
 	task, ok := store.Tasks[params.TaskID]
 	if !ok {
 		return tools.ResultError("task not found: " + params.TaskID), nil

@@ -59,8 +59,61 @@ func TestTasksTool_ConcurrentInstancesKeepEveryCreate(t *testing.T) {
 		require.NoError(t, got.err)
 		require.False(t, got.result.IsError, got.result.Output)
 	}
-	store := New(storagePath).load()
+	store, err := New(storagePath).load()
+	require.NoError(t, err)
 	require.Len(t, store.Tasks, count)
+}
+
+func TestTasksTool_MissingStoreStartsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tool := newTestTasksTool(t)
+	store, err := tool.load()
+	require.NoError(t, err)
+	assert.Empty(t, store.Tasks)
+
+	result, err := tool.createTask(t.Context(), CreateTaskArgs{Title: "First"})
+	require.NoError(t, err)
+	require.False(t, result.IsError, result.Output)
+}
+
+func TestTasksTool_MalformedStoreIsPreserved(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		run  func(*ToolSet) (*tools.ToolCallResult, error)
+	}{
+		{
+			name: "create",
+			run: func(tool *ToolSet) (*tools.ToolCallResult, error) {
+				return tool.createTask(t.Context(), CreateTaskArgs{Title: "New"})
+			},
+		},
+		{
+			name: "update",
+			run: func(tool *ToolSet) (*tools.ToolCallResult, error) {
+				return tool.updateTask(t.Context(), UpdateTaskArgs{ID: "existing", Title: "Changed"})
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			tool := newTestTasksTool(t)
+			original := []byte(`{"tasks":`)
+			require.NoError(t, os.WriteFile(tool.filePath, original, 0o600))
+
+			result, err := test.run(tool)
+			require.NoError(t, err)
+			require.True(t, result.IsError)
+			assert.Contains(t, result.Output, "parsing task store")
+
+			got, err := os.ReadFile(tool.filePath)
+			require.NoError(t, err)
+			assert.Equal(t, original, got)
+		})
+	}
 }
 
 func TestTasksTool_CreateTask(t *testing.T) {
