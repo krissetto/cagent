@@ -63,6 +63,8 @@
           url: /tools/file/
         - title: Filesystem
           url: /tools/filesystem/
+        - title: Git
+          url: /tools/git/
         - title: Shell
           url: /tools/shell/
         - title: Script
