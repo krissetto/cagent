@@ -17,9 +17,9 @@ A configuration must define at least one agent under `agents`.
 ```yaml
 agents:
   agent_name:
-    model: string # Required: model reference
-    description: string # Required: what this agent does
-    instruction: string | [list] # Required (unless instruction_file): system prompt; a list is joined by blank lines
+    model: string # Required unless harness is set: model reference
+    description: string # Optional: what this agent does
+    instruction: string | [list] # Optional: system prompt, mutually exclusive with instruction_file; a list is joined by blank lines
     instruction_file: string | [list] # Optional: load the system prompt from one or more files relative to this config (mutually exclusive with instruction)
     sub_agents: [list] # Optional: local or external sub-agent references
     toolsets: [list] # Optional: tool configurations (use `type: rag` for RAG sources)
@@ -86,9 +86,9 @@ agents:
 
 | Property                    | Type    | Required | Description                                                                                                                                                                   |
 | --------------------------- | ------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model`                     | string  | ✓        | Model reference. Either inline (`openai/gpt-5`) or a named model from the `models` section.                                                                              |
-| `description`               | string  | ✓        | Brief description of the agent's purpose. Used by coordinators to decide delegation.                                                                                          |
-| `instruction`               | string \| array  | ✓        | System prompt that defines the agent's behavior, personality, and constraints. Accepts a single string or a list of strings; list items are concatenated in order, separated by a blank line (handy for a shared preamble, or for flavors to append to with `instruction+`). Required unless `instruction_file` is set.                                                      |
+| `model`                     | string  | unless `harness` is set        | Model reference. Either inline (`openai/gpt-5`) or a named model from the `models` section.                                                                              |
+| `description`               | string  | ✗        | Brief description of the agent's purpose. Used by coordinators to decide delegation.                                                                                          |
+| `instruction`               | string \| array  | ✗        | System prompt that defines the agent's behavior, personality, and constraints. Accepts a single string or a list of strings; list items are concatenated in order, separated by a blank line (handy for a shared preamble, or for flavors to append to with `instruction+`).                                                      |
 | `instruction_file`          | string \| array  | ✗        | Path(s) to a file or files (relative to the config file's directory) whose contents become the agent's instruction, loaded at startup. Accepts a single path or a list; multiple files are concatenated in order, separated by a blank line. Mutually exclusive with `instruction`. Each path must be a local relative path inside the config directory (absolute paths and `..` traversal are rejected). Only supported for local file-based configs, not OCI/URL sources. See [External Instruction Files](#external-instruction-files) below. |
 | `sub_agents`                | array   | ✗        | List of agent names or external OCI references this agent can delegate to. Supports local agents, registry references (e.g., `myorg/agent:tag`), and named references (`name:reference`). Automatically enables the `transfer_task` tool. Pin external OCI references to a digest (`name@sha256:…`) to skip the per-run registry lookup that tag references incur. See [External Sub-Agents](../../concepts/multi-agent/index.md#external-sub-agents-from-registries). |
 | `toolsets`                  | array   | ✗        | List of tool configurations. See [Tool Config](../tools/index.md).                                                                                                        |
