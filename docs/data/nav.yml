@@ -67,6 +67,8 @@
           url: /tools/git/
         - title: Shell
           url: /tools/shell/
+        - title: Environment
+          url: /tools/environment/
         - title: Script
           url: /tools/script/
         - title: Open URL
