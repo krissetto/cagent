@@ -15,7 +15,7 @@ The filesystem tool gives agents the ability to explore codebases, read and edit
 
 ### Path resolution
 
-Paths are resolved relative to the **working directory** (the directory where the agent session started, or the directory specified with `--workdir`):
+Paths are resolved relative to the **working directory** (the directory where the agent session started, or the directory specified with `--working-dir`):
 
 - **Relative paths** (e.g., `src/main.go`, `../README.md`) are joined with the working directory.
 - **Absolute paths** must match the host operating system:
