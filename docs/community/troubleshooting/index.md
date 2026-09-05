@@ -141,7 +141,7 @@ Each model provider requires its own API key as an environment variable:
 | MiniMax       | `MINIMAX_API_KEY`                                   |
 | Requesty      | `REQUESTY_API_KEY`                                  |
 | OpenRouter    | `OPENROUTER_API_KEY`                                |
-| GitHub Copilot | `GITHUB_TOKEN` (PAT with `copilot` scope)          |
+| GitHub Copilot | `GITHUB_TOKEN` or `GH_TOKEN` (PAT with `copilot` scope)          |
 | Azure OpenAI  | `AZURE_API_KEY` (override with `token_key`)         |
 | AWS Bedrock   | `AWS_BEARER_TOKEN_BEDROCK` or AWS credentials chain |
 

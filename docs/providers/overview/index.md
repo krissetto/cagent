@@ -62,7 +62,7 @@ Docker Agent also includes built-in aliases for these providers:
 | OpenRouter     | `openrouter`     | `OPENROUTER_API_KEY`                |
 | Azure OpenAI   | `azure`          | `AZURE_API_KEY` + `base_url`        |
 | [Ollama](../local/index.md) | `ollama` | None (local; optional `base_url`) |
-| GitHub Copilot | `github-copilot` | `GITHUB_TOKEN` (PAT with `copilot` scope) |
+| GitHub Copilot | `github-copilot` | `GITHUB_TOKEN` or `GH_TOKEN` (PAT with `copilot` scope) |
 
 ```bash
 # Use built-in providers inline

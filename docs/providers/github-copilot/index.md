@@ -18,7 +18,7 @@ subscription can reuse their entitlement from Docker Agent.
 ## Prerequisites
 
 - An active **GitHub Copilot** subscription (Individual, Business, or Enterprise).
-- A **personal access token** with the `copilot` scope, exported as `GITHUB_TOKEN`.
+- A **personal access token** with the `copilot` scope, exported as `GITHUB_TOKEN` or `GH_TOKEN`. If both are set, `GITHUB_TOKEN` takes precedence.
 
 ```bash
 export GITHUB_TOKEN="ghp_..."
@@ -153,7 +153,7 @@ GitHub Copilot is implemented as a built-in alias in Docker Agent:
 
 - **API type:** OpenAI-compatible; automatically selects Chat Completions or Responses by model
 - **Base URL:** `https://api.githubcopilot.com`
-- **Token variable:** `GITHUB_TOKEN`
+- **Token variables:** `GITHUB_TOKEN`, falling back to `GH_TOKEN`
 - **Default headers:** `Copilot-Integration-Id: copilot-developer-cli`
 
 This means the same client as OpenAI is used, so every OpenAI feature
