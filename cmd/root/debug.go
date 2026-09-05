@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/goccy/go-yaml"
 	"github.com/spf13/cobra"
@@ -65,10 +66,13 @@ func newDebugCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(&cobra.Command{
-		Use:   "config <agent-file>|<registry-ref>",
+		Use:   "config <agent-file>|<registry-ref> [flavor...]",
 		Short: "Print the canonical form of an agent's configuration file",
-		Args:  cobra.ExactArgs(1),
-		RunE:  flags.runDebugConfigCommand,
+		Long: "Print the canonical form of an agent's configuration file.\n\n" +
+			"When flavors are given (positionally or with --flavor), they are applied in order and the\n" +
+			"resolved config is printed without its 'flavors' section, since the patches are already baked in.",
+		Args: cobra.MinimumNArgs(1),
+		RunE: flags.runDebugConfigCommand,
 	})
 	toolsetsCmd := &cobra.Command{
 		Use:   "toolsets <agent-file>|<registry-ref>",
@@ -131,9 +135,16 @@ func (f *debugFlags) runDebugConfigCommand(cmd *cobra.Command, args []string) (c
 		return err
 	}
 
-	cfg, err := config.Load(cmd.Context(), agentSource, config.WithFlavors(f.runConfig.Flavors...))
+	flavors := append(slices.Clone(f.runConfig.Flavors), args[1:]...)
+	cfg, err := config.Load(cmd.Context(), agentSource, config.WithFlavors(flavors...))
 	if err != nil {
 		return err
+	}
+
+	// Once resolved, re-applying a flavor to the output would double-apply
+	// `+`/`-` patches, so the section is dropped.
+	if len(flavors) > 0 {
+		cfg.Flavors = nil
 	}
 
 	return yaml.NewEncoder(cmd.OutOrStdout()).Encode(cfg)

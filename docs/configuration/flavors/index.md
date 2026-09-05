@@ -166,12 +166,16 @@ flavors:
 
 ## Inspecting the Result
 
-`docker agent debug config` prints the config exactly as the runtime sees it,
-flavors applied:
+`docker agent debug config` prints the config exactly as the runtime sees it.
+Pass flavors after the config to print the resolved config, with the patches
+applied and the `flavors` section dropped:
 
 ```bash
-$ docker agent debug config agent.yaml --flavor cheap --flavor with-shell
+$ docker agent debug config agent.yaml cheap with-shell
 ```
+
+The repeatable `--flavor` flag works too, and combines with positional
+flavors (flag values are applied first).
 
 ## HCL
 
