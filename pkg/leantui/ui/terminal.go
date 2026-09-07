@@ -145,6 +145,11 @@ func (t *Terminal) Writer() *bufio.Writer {
 	return t.writer
 }
 
+func (t *Terminal) SetClipboard(text string) {
+	t.writeString(ansi.SetSystemClipboard(text))
+	t.flush()
+}
+
 func (t *Terminal) writeString(s string) {
 	_, _ = t.writer.WriteString(s)
 }

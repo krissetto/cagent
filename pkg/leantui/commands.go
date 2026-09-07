@@ -10,6 +10,7 @@ func builtinCommands() []ui.Command {
 		{Name: "compact", Desc: "Summarize and compact the conversation", Kind: ui.CmdBuiltin},
 		{Name: "model", Desc: "Change the model for the current agent", Kind: ui.CmdBuiltin},
 		{Name: "effort", Desc: "Set the model's reasoning effort (usage: /effort <level>)", Kind: ui.CmdBuiltin},
+		{Name: "copy", Desc: "Copy the last assistant response", Kind: ui.CmdBuiltin},
 		{Name: "clear", Desc: "Clear the screen", Kind: ui.CmdBuiltin},
 		{Name: "help", Desc: "Show keyboard shortcuts and commands", Kind: ui.CmdBuiltin},
 		{Name: "exit", Desc: "Exit", Kind: ui.CmdBuiltin},

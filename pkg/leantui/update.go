@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/effort"
@@ -276,6 +277,9 @@ func (m *model) handleSlash(ctx context.Context, text string, mode busySubmitMod
 	case "clear":
 		m.clearScreen()
 		return true
+	case "copy":
+		m.copyLastResponse()
+		return true
 	case "help":
 		m.commitHelp()
 		return true
@@ -312,6 +316,25 @@ func (m *model) handleSlash(ctx context.Context, text string, mode busySubmitMod
 
 	return false
 }
+
+func (m *model) copyLastResponse() {
+	if m.app == nil || m.app.Session() == nil {
+		m.addNotice("", "No active session.", ui.StMuted())
+		return
+	}
+	lastResponse := m.app.Session().GetLastAssistantMessageContent()
+	if lastResponse == "" {
+		m.addNotice("", "No assistant response to copy.", ui.StMuted())
+		return
+	}
+	if m.term != nil {
+		m.term.SetClipboard(lastResponse)
+	}
+	_ = writeClipboard(lastResponse)
+	m.addNotice("", "Last response copied to clipboard.", ui.StMuted())
+}
+
+var writeClipboard = clipboard.WriteAll
 
 func (m *model) handleSessionsCommand(ctx context.Context, sessionID string) {
 	if m.busy {
@@ -739,6 +762,7 @@ func (m *model) commitHelp() {
 			ui.StMuted().Render("  /compact   summarize and compact the conversation"),
 			ui.StMuted().Render("  /model     change the model for the current agent"),
 			ui.StMuted().Render("  /effort    set the model's reasoning effort (e.g. /effort high)"),
+			ui.StMuted().Render("  /copy      copy the last assistant response"),
 			ui.StMuted().Render("  /clear     clear the screen"),
 			ui.StMuted().Render("  /help      show this help"),
 			ui.StMuted().Render("  /exit      quit"),

@@ -533,3 +533,45 @@ func TestSteeredUserEventConfirmsPendingAfterAssistant(t *testing.T) {
 	assert.NotEqual(t, -1, steerAt)
 	assert.Less(t, assistantAt, steerAt)
 }
+
+func TestCopyCommandCopiesLastAssistantResponse(t *testing.T) {
+	sess := session.New()
+	sess.AddMessage(session.UserMessage("question"))
+	sess.AddMessage(session.NewAgentMessage("coder", &chat.Message{
+		Role:    chat.MessageRoleAssistant,
+		Content: "the last response",
+	}))
+	m := bareModel(80)
+	m.app = app.New(t.Context(), &cycleThinkingRuntime{}, sess)
+
+	originalWriteClipboard := writeClipboard
+	t.Cleanup(func() { writeClipboard = originalWriteClipboard })
+	var copied string
+	writeClipboard = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	assert.True(t, m.handleSlash(t.Context(), "/copy", busySubmitSteer))
+	assert.Equal(t, "the last response", copied)
+	transcript := strings.Join(m.screen.Transcript.Lines(80, 0, false, m.sessionState, nil), "\n")
+	assert.Contains(t, transcript, "Last response copied to clipboard.")
+}
+
+func TestCopyCommandReportsMissingAssistantResponse(t *testing.T) {
+	m := bareModel(80)
+	m.app = app.New(t.Context(), &cycleThinkingRuntime{}, session.New())
+
+	originalWriteClipboard := writeClipboard
+	t.Cleanup(func() { writeClipboard = originalWriteClipboard })
+	called := false
+	writeClipboard = func(string) error {
+		called = true
+		return nil
+	}
+
+	assert.True(t, m.handleSlash(t.Context(), "/copy", busySubmitSteer))
+	assert.False(t, called)
+	transcript := strings.Join(m.screen.Transcript.Lines(80, 0, false, m.sessionState, nil), "\n")
+	assert.Contains(t, transcript, "No assistant response to copy.")
+}
