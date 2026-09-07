@@ -3,6 +3,45 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.134.0] - 2026-09-07
+
+This release adds machine-readable output to debug commands, improves RAG indexing reliability, fixes config handling for removed fields, and includes a large batch of documentation corrections.
+
+## What's New
+
+- Adds `--json` flag to `debug toolsets` and `debug skills` subcommands for machine-readable output
+- Accepts positional flavor names on `debug config` (e.g., `docker agent debug config examples/flavors.yaml cheap with-shell`)
+- Decouples RAG indexing from the caller timeout via a new `indexing_timeout` config option, preventing large knowledge base indexing from being discarded when the 30s startup budget is exceeded
+- Pins the injected docker-agent image to the host CLI version by default in `docker agent eval`
+
+## Bug Fixes
+
+- Fixes config upgrade hinting at removed fields (e.g., `safer`) instead of silently re-adding them
+- Always records the resolved agent image in saved eval run JSON
+- Bounds the SSRF pre-check DNS lookup in `desktopAwareTransport` to 2 seconds to prevent hangs on corporate networks
+- Replaces removed `github-copilot/gpt-4.1` model with `gpt-5.5` in the models snapshot
+
+## Technical Changes
+
+- Freezes config schema v15 as an immutable package and advances `latest` to v16
+- Refreshes the embedded models.dev catalog snapshot (129 models added, 67 removed, ~322 updated)
+- Corrects 53 documentation inaccuracies across 34 files covering SDK examples, CLI flags, telemetry, permissions, and integrations
+### Pull Requests
+
+- [#4073](https://github.com/docker/docker-agent/pull/4073) - Merge pull request #4172 from docker/feat/4073-rag-indexing-timeout
+- [#4170](https://github.com/docker/docker-agent/pull/4170) - feat(config): freeze v15 and start v16 as latest
+- [#4171](https://github.com/docker/docker-agent/pull/4171) - docs: update CHANGELOG.md for v1.133.0
+- [#4172](https://github.com/docker/docker-agent/pull/4172) - feat(rag): decouple indexing from caller timeout via indexing_timeout config (#4073)
+- [#4173](https://github.com/docker/docker-agent/pull/4173) - feat(debug): add --json flag to debug toolsets and skills
+- [#4174](https://github.com/docker/docker-agent/pull/4174) - feat(debug): accept positional flavors on `debug config`
+- [#4176](https://github.com/docker/docker-agent/pull/4176) - feat(eval): pin injected docker-agent image to host CLI version by default
+- [#4177](https://github.com/docker/docker-agent/pull/4177) - fix(config): hint at removed fields instead of re-adding them
+- [#4178](https://github.com/docker/docker-agent/pull/4178) - docs: auto-update for merged PRs (2026-09-05)
+- [#4183](https://github.com/docker/docker-agent/pull/4183) - chore: refresh models.dev snapshot (+129 -67 ~322)
+- [#4184](https://github.com/docker/docker-agent/pull/4184) - docs: fix inaccuracies across SDK examples, CLI flags, telemetry, permissions, and integrations
+- [#4186](https://github.com/docker/docker-agent/pull/4186) - fix(http): bound the SSRF pre-check DNS lookup in desktopAwareTransport
+
+
 ## [v1.133.0] - 2026-09-04
 
 This release improves safety classification for background jobs and shell commands, enhances the `--key` option for share commands, and advances the internal config schema to v16.
@@ -5914,3 +5953,5 @@ This release improves the terminal user interface with better error handling and
 [v1.132.0]: https://github.com/docker/docker-agent/releases/tag/v1.132.0
 
 [v1.133.0]: https://github.com/docker/docker-agent/releases/tag/v1.133.0
+
+[v1.134.0]: https://github.com/docker/docker-agent/releases/tag/v1.134.0
