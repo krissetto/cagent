@@ -126,7 +126,12 @@ func (f *pushFlags) runPushCommand(cmd *cobra.Command, args []string) (commandEr
 		return fmt.Errorf("resolving agent file: %w", err)
 	}
 
-	_, err = oci.PackageFileAsOCIToStore(ctx, agentSource, tag, store, packageOpts...)
+	storeKey, err := remote.FullyQualifiedReference(tag)
+	if err != nil {
+		return fmt.Errorf("normalizing registry reference: %w", err)
+	}
+
+	_, err = oci.PackageFileAsOCIToStore(ctx, agentSource, storeKey, store, packageOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to build artifact: %w", err)
 	}

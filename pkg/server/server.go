@@ -328,7 +328,7 @@ func (s *Server) forkSession(c echo.Context) error {
 		InputTokens:   forked.InputTokens,
 		OutputTokens:  forked.OutputTokens,
 		WorkingDir:    forked.WorkingDir,
-		Permissions:   forked.Permissions,
+		Permissions:   forked.ClonePermissions(),
 	})
 }
 
@@ -350,7 +350,7 @@ func (s *Server) getSession(c echo.Context) error {
 		InputTokens:   inputTokens,
 		OutputTokens:  outputTokens,
 		WorkingDir:    sess.WorkingDir,
-		Permissions:   sess.Permissions,
+		Permissions:   sess.ClonePermissions(),
 	})
 }
 

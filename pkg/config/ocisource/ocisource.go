@@ -140,10 +140,9 @@ func (a ociSource) read(ctx context.Context) (data []byte, degraded bool, err er
 		return nil, false, fmt.Errorf("failed to create content store: %w", err)
 	}
 
-	// Normalize the reference so that equivalent forms (e.g.
-	// "myorg/review-pr" and "index.docker.io/myorg/review-pr:latest")
-	// resolve to the same store key that remote.Pull uses.
-	storeKey, err := remote.NormalizeReference(a.reference)
+	// Normalize the reference so equivalent shorthand forms resolve to the
+	// same registry-scoped store key that remote.Pull uses.
+	storeKey, err := remote.FullyQualifiedReference(a.reference)
 	if err != nil {
 		return nil, false, fmt.Errorf("normalizing OCI reference %s: %w", a.reference, err)
 	}

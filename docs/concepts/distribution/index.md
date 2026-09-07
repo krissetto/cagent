@@ -181,3 +181,5 @@ $ docker agent run http://127.0.0.1:8080/agent.yaml
 ```
 
 This is useful for iterating on agent configs served from a local dev server before pushing to a registry. Both `localhost` and `127.0.0.1` addresses are supported with plain `http://` URLs.
+
+Agent configurations loaded from HTTP(S) URLs or OCI artifacts are limited to 32 MiB after decompression.

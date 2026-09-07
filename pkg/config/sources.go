@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -17,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/docker/docker-agent/pkg/configsize"
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/httpclient"
 	"github.com/docker/docker-agent/pkg/paths"
@@ -320,22 +320,20 @@ func (a urlSource) read(ctx context.Context, cacheDir, cachePath, etagPath, encP
 	resp, err := client.Do(req)
 	if err != nil {
 		// Network error - try to use cached version
-		if cachedData, cacheErr := os.ReadFile(cachePath); cacheErr == nil {
+		if cachedData, cacheErr := readCachedConfig(cachePath); cacheErr == nil {
 			slog.DebugContext(ctx, "Network error fetching URL, using cached version", "url", a.url, "error", err)
 			a.adoptCachedEncryptedConfig(ctx, encPath, "")
 			return cachedData, nil
+		} else if errors.Is(cacheErr, configsize.ErrTooLarge) {
+			return nil, fmt.Errorf("reading cached configuration for %s: %w", a.url, cacheErr)
 		}
 		return nil, fmt.Errorf("%w: fetching %s: %w", ErrSourceFetchFailed, a.url, err)
 	}
 	defer resp.Body.Close()
 
-	// Capture the full encrypted agent config header. It is present on a 200
-	// (and persisted to encPath); a 304 carries only the digest, handled below.
-	a.captureEncryptedConfig(ctx, resp, encPath)
-
 	// 304 Not Modified - return cached content
 	if resp.StatusCode == http.StatusNotModified {
-		if cachedData, cacheErr := os.ReadFile(cachePath); cacheErr == nil {
+		if cachedData, cacheErr := readCachedConfig(cachePath); cacheErr == nil {
 			// Recover the encrypted config from disk, verifying it against the
 			// digest the server sent (when present). If it is missing or stale,
 			// self-heal by forcing a full reload so we get the config again.
@@ -366,24 +364,35 @@ func (a urlSource) read(ctx context.Context, cacheDir, cachePath, etagPath, encP
 			}
 			slog.DebugContext(ctx, "URL not modified, using cached version", "url", a.url)
 			return cachedData, nil
+		} else if errors.Is(cacheErr, configsize.ErrTooLarge) {
+			return nil, fmt.Errorf("reading cached configuration for %s: %w", a.url, cacheErr)
 		}
 		// Cache file missing despite 304, fall through to fetch again
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		// HTTP error - try to use cached version
-		if cachedData, cacheErr := os.ReadFile(cachePath); cacheErr == nil {
+		if cachedData, cacheErr := readCachedConfig(cachePath); cacheErr == nil {
 			slog.DebugContext(ctx, "HTTP error fetching URL, using cached version", "url", a.url, "status", resp.Status)
 			a.adoptCachedEncryptedConfig(ctx, encPath, "")
 			return cachedData, nil
+		} else if errors.Is(cacheErr, configsize.ErrTooLarge) {
+			return nil, fmt.Errorf("reading cached configuration for %s: %w", a.url, cacheErr)
 		}
 		return nil, fmt.Errorf("%w: fetching %s: %s", ErrSourceFetchFailed, a.url, resp.Status)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := configsize.Read(resp.Body)
 	if err != nil {
+		if errors.Is(err, configsize.ErrTooLarge) {
+			return nil, fmt.Errorf("fetching %s: %w", a.url, err)
+		}
 		return nil, fmt.Errorf("%w: reading response body: %w", ErrSourceFetchFailed, err)
 	}
+
+	// Cache the response and any associated encrypted config only after the
+	// complete body passes the size limit.
+	a.captureEncryptedConfig(ctx, resp, encPath)
 
 	// Cache the response
 	if err := os.MkdirAll(cacheDir, 0o700); err == nil {
@@ -403,6 +412,15 @@ func (a urlSource) read(ctx context.Context, cacheDir, cachePath, etagPath, encP
 	}
 
 	return data, nil
+}
+
+func readCachedConfig(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	data, readErr := configsize.Read(file)
+	return data, errors.Join(readErr, file.Close())
 }
 
 // githubHosts lists the hostnames that support GitHub token authentication.

@@ -370,12 +370,11 @@ type Session struct {
 	Attributes map[string]string `json:"attributes,omitempty"`
 
 	// AgentModelOverrides stores per-agent model overrides for this session.
-	// Key is the agent name, value is the model reference (e.g., "openai/gpt-4o" or a named model from config).
-	// When a session is loaded, these overrides are reapplied to the runtime.
+	// Shared-session callers must use the model-state accessors below.
 	AgentModelOverrides map[string]string `json:"agent_model_overrides,omitempty"`
 
 	// CustomModelsUsed tracks custom models (provider/model format) used during this session.
-	// These are shown in the model picker for easy re-selection.
+	// Shared-session callers must use the model-state accessors below.
 	CustomModelsUsed []string `json:"custom_models_used,omitempty"`
 
 	// AttachedFiles records absolute paths of files the user attached to this
@@ -1783,6 +1782,46 @@ func (s *Session) GetSafetyPolicy() SafetyPolicy {
 	return policy
 }
 
+// ModelStateSnapshot returns independent copies of the session's model state.
+func (s *Session) ModelStateSnapshot() (map[string]string, []string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneStringMap(s.AgentModelOverrides), cloneStringSlice(s.CustomModelsUsed)
+}
+
+// AgentModelOverride returns the override for agentName, if present.
+func (s *Session) AgentModelOverride(agentName string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	modelRef, ok := s.AgentModelOverrides[agentName]
+	return modelRef, ok
+}
+
+// SetAgentModelOverride updates an override and custom-model history atomically.
+func (s *Session) SetAgentModelOverride(agentName, modelRef string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if modelRef == "" {
+		delete(s.AgentModelOverrides, agentName)
+		return
+	}
+	if s.AgentModelOverrides == nil {
+		s.AgentModelOverrides = make(map[string]string)
+	}
+	s.AgentModelOverrides[agentName] = modelRef
+	if strings.Contains(modelRef, "/") && !slices.Contains(s.CustomModelsUsed, modelRef) {
+		s.CustomModelsUsed = append(s.CustomModelsUsed, modelRef)
+	}
+}
+
+// ReplaceModelState atomically restores model state from independent copies.
+func (s *Session) ReplaceModelState(overrides map[string]string, customModels []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.AgentModelOverrides = cloneStringMap(overrides)
+	s.CustomModelsUsed = cloneStringSlice(customModels)
+}
+
 // ClonePermissions returns a deep copy of the session's PermissionsConfig.
 // This is safe to call concurrently with session mutations.
 func (s *Session) ClonePermissions() *PermissionsConfig {
@@ -1795,7 +1834,7 @@ func (s *Session) ClonePermissions() *PermissionsConfig {
 func (s *Session) SetPermissions(perms *PermissionsConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Permissions = perms
+	s.Permissions = perms.Clone()
 }
 
 // SetToolsApproved is the legacy --yolo toggle. Prefer

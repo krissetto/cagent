@@ -71,13 +71,17 @@ func (f *pullFlags) runPullCommand(cmd *cobra.Command, args []string) (commandEr
 	if err != nil {
 		return fmt.Errorf("failed to open content store: %w", err)
 	}
-	yamlFile, err := store.GetArtifact(registryRef)
+	storeKey, err := remote.FullyQualifiedReference(registryRef)
+	if err != nil {
+		return fmt.Errorf("failed to normalize registry reference: %w", err)
+	}
+	yamlFile, err := store.GetArtifact(storeKey)
 	if err != nil {
 		return fmt.Errorf("failed to get agent yaml: %w", err)
 	}
 
 	if key != nil {
-		metadata, err := store.GetArtifactMetadata(registryRef)
+		metadata, err := store.GetArtifactMetadata(storeKey)
 		if err != nil {
 			return fmt.Errorf("failed to get artifact metadata: %w", err)
 		}

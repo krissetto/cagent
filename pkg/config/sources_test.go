@@ -1,10 +1,13 @@
 package config
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/docker/docker-agent/pkg/configsize"
 	"github.com/docker/docker-agent/pkg/environment"
 	"github.com/docker/docker-agent/pkg/httpclient"
 	"github.com/docker/docker-agent/pkg/paths"
@@ -46,6 +50,120 @@ func TestURLSource_Read(t *testing.T) {
 	data, err := source.Read(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, "test content", string(data))
+}
+
+func TestURLSource_Read_SizeLimit(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		size          int64
+		contentLength bool
+		wantError     bool
+	}{
+		{name: "exact boundary", size: configsize.MaxBytes, contentLength: true},
+		{name: "over boundary", size: configsize.MaxBytes + 1, contentLength: true, wantError: true},
+		{name: "unknown length over boundary", size: configsize.MaxBytes + 1, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			paths.SetDataDir(t.TempDir())
+			t.Cleanup(func() { paths.SetDataDir("") })
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if test.contentLength {
+					w.Header().Set("Content-Length", strconv.FormatInt(test.size, 10))
+				}
+				w.Header().Set(httpclient.EncryptedConfigHeader, "must-not-be-cached")
+				_, _ = io.CopyN(w, zeroReader{}, test.size)
+			}))
+			t.Cleanup(server.Close)
+
+			source := newURLSourceForTest(server.URL, nil)
+			data, err := source.Read(t.Context())
+			if test.wantError {
+				require.ErrorIs(t, err, configsize.ErrTooLarge)
+				require.NotErrorIs(t, err, ErrSourceFetchFailed)
+				cachePath := filepath.Join(getURLCacheDir(), hashURL(server.URL))
+				_, cacheErr := os.Stat(cachePath)
+				require.ErrorIs(t, cacheErr, os.ErrNotExist)
+				_, encErr := os.Stat(cachePath + ".enc")
+				require.ErrorIs(t, encErr, os.ErrNotExist)
+				assert.Empty(t, source.(EncryptedConfigSource).EncryptedConfig())
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, data, int(test.size))
+		})
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func TestURLSource_Read_CacheSizeLimit(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		response  string
+		size      int64
+		wantError bool
+	}{
+		{name: "304 exact boundary", response: "304", size: configsize.MaxBytes},
+		{name: "304 over boundary", response: "304", size: configsize.MaxBytes + 1, wantError: true},
+		{name: "network over boundary", response: "network", size: configsize.MaxBytes + 1, wantError: true},
+		{name: "HTTP error over boundary", response: "HTTP error", size: configsize.MaxBytes + 1, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			paths.SetDataDir(t.TempDir())
+			t.Cleanup(func() { paths.SetDataDir("") })
+
+			var server *httptest.Server
+			switch test.response {
+			case "304":
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusNotModified)
+				}))
+			case "network":
+				server = httptest.NewServer(http.NotFoundHandler())
+				server.Close()
+			case "HTTP error":
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusInternalServerError)
+				}))
+			default:
+				t.Fatalf("unknown response %q", test.response)
+			}
+			if test.response != "network" {
+				t.Cleanup(server.Close)
+			}
+
+			cachePath := filepath.Join(getURLCacheDir(), hashURL(server.URL))
+			require.NoError(t, os.MkdirAll(filepath.Dir(cachePath), 0o700))
+			require.NoError(t, writeZeroFile(cachePath, test.size))
+
+			data, err := newURLSourceForTest(server.URL, nil).Read(t.Context())
+			if test.wantError {
+				require.ErrorIs(t, err, configsize.ErrTooLarge)
+				require.NotErrorIs(t, err, ErrSourceFetchFailed)
+				info, statErr := os.Stat(cachePath)
+				require.NoError(t, statErr)
+				assert.Equal(t, test.size, info.Size(), "rejected cache bytes must be preserved")
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, data, int(test.size))
+		})
+	}
+}
+
+func writeZeroFile(path string, size int64) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.CopyN(file, zeroReader{}, size)
+	return errors.Join(copyErr, file.Close())
 }
 
 func TestURLSource_Read_HTTPError(t *testing.T) {

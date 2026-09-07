@@ -330,7 +330,7 @@ func (c *remoteMCPClient) expandHeaders(ctx context.Context, headers map[string]
 }
 
 func (c *remoteMCPClient) headerTransport() http.RoundTripper {
-	base := http.DefaultTransport
+	base := httpclient.TransportForAllowPrivateIPs(c.allowPrivateIPs)
 	origin := c.url
 	if path, ok := unixSocketPath(c.url); ok {
 		t := http.DefaultTransport.(*http.Transport).Clone()

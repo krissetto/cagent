@@ -279,6 +279,83 @@ func TestBackgroundJobsTool_WaitBackgroundJob_Stopped(t *testing.T) {
 		"stopped jobs should not show an exit code")
 }
 
+func TestBackgroundJobsTool_StopEscalatesWhenSIGTERMIgnored(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX signals; skipped on Windows")
+	}
+
+	tool := newTestTool(t)
+	t.Cleanup(func() { _ = tool.Stop(t.Context()) })
+	_, err := tool.handler.RunBackgroundJob(t.Context(), RunBackgroundJobArgs{
+		Cmd: `trap '' TERM; echo ready; while :; do sleep 1; done`,
+	}, tools.NopRuntime{})
+	require.NoError(t, err)
+
+	var job *backgroundJob
+	tool.handler.jobs.Range(func(_ string, candidate *backgroundJob) bool {
+		job = candidate
+		return false
+	})
+	require.NotNil(t, job)
+	require.Eventually(t, func() bool {
+		job.outputMu.RLock()
+		defer job.outputMu.RUnlock()
+		return strings.Contains(job.output.String(), "ready")
+	}, time.Second, 10*time.Millisecond)
+
+	started := time.Now()
+	result, err := tool.handler.StopBackgroundJob(t.Context(), StopBackgroundJobArgs{JobID: job.id})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Less(t, time.Since(started), 5*time.Second)
+	select {
+	case <-job.done:
+	case <-time.After(time.Second):
+		t.Fatal("process survived stop escalation")
+	}
+	assert.Equal(t, statusStopped, job.status.Load())
+
+	result, err = tool.handler.StopBackgroundJob(t.Context(), StopBackgroundJobArgs{JobID: job.id})
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Output, "not running")
+}
+
+func TestBackgroundJobsTool_StopWaitsForRealExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX signals; skipped on Windows")
+	}
+
+	tool := newTestTool(t)
+	t.Cleanup(func() { _ = tool.Stop(t.Context()) })
+	_, err := tool.handler.RunBackgroundJob(t.Context(), RunBackgroundJobArgs{
+		Cmd: `trap 'sleep 0.1; exit 0' TERM; echo ready; while :; do sleep 1; done`,
+	}, tools.NopRuntime{})
+	require.NoError(t, err)
+
+	var job *backgroundJob
+	tool.handler.jobs.Range(func(_ string, candidate *backgroundJob) bool {
+		job = candidate
+		return false
+	})
+	require.NotNil(t, job)
+	require.Eventually(t, func() bool {
+		job.outputMu.RLock()
+		defer job.outputMu.RUnlock()
+		return strings.Contains(job.output.String(), "ready")
+	}, time.Second, 10*time.Millisecond)
+
+	result, err := tool.handler.StopBackgroundJob(t.Context(), StopBackgroundJobArgs{JobID: job.id})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	select {
+	case <-job.done:
+	default:
+		t.Fatal("stop returned before the command exited")
+	}
+	assert.Equal(t, statusStopped, job.status.Load())
+}
+
 func TestBackgroundJobsTool_RunBackgroundJob(t *testing.T) {
 	t.Parallel()
 	tool := newTestTool(t)
