@@ -18,8 +18,9 @@ The A2A tool connects to a remote agent exposed over the A2A (Agent-to-Agent) pr
 ```yaml
 toolsets:
   - type: a2a
-    url: "http://localhost:8080/a2a"
-    # Optional: custom tool name (defaults to a sanitized form of the URL / agent card name)
+    url: "http://localhost:8082"
+    allow_private_ips: true # Only for trusted local or internal agents
+    # Optional: prefix for each remote skill's tool name
     name: research_agent
     # Optional: custom HTTP headers (typically for auth)
     headers:
@@ -27,15 +28,19 @@ toolsets:
       X-Tenant: "acme"
 ```
 
-The `Authorization` header shown above authenticates to endpoints served with `docker agent serve a2a --auth-token`.
+Configured headers authenticate invocation requests, but are not sent while fetching the agent card. The current tool therefore cannot discover a server protected by `docker agent serve a2a --auth-token`, which also protects the agent-card endpoint.
+
+The `url` is the server base URL used to discover `/.well-known/agent-card.json`. Local and private-IP servers require `allow_private_ips: true`.
 
 ## Properties
 
 | Property   | Type             | Required | Description                                                                                              |
 | ---------- | ---------------- | -------- | -------------------------------------------------------------------------------------------------------- |
 | `url`      | string           | ✓        | A2A server endpoint URL (must include scheme).                                                           |
-| `name`     | string           | ✗        | Tool name registered for the remote agent. Defaults to a name derived from the server's agent card.     |
-| `headers`  | map\[string\]string | ✗     | Extra HTTP headers sent with every request (useful for `Authorization`, tenant selection, tracing, \u2026). |
+| `name`     | string           | ✗        | Prefix for each remote skill's tool name. Without it, names use the skill ID or name; cards without skills use the agent name.     |
+| `headers`  | map\[string\]string | ✗     | Extra HTTP headers sent with invocation requests, not agent-card discovery (useful for authentication, tenant selection, and tracing). |
+
+`allow_private_ips` is an optional boolean, defaulting to `false`. It permits agent-card and invocation requests to non-public IP addresses; enable it only for trusted internal agents.
 
 When Docker Desktop is running, eligible requests use its PAC adapter before environment proxy settings. Set `DOCKER_AGENT_DISABLE_DESKTOP_PROXY=1` (or `true`, `yes`, or `on`) to restore standard `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` routing; `NO_PROXY` does not bypass Docker Desktop PAC selection. Docker Agent does not evaluate PAC files or URLs directly—see [Docker Desktop proxy](../fetch/index.md#docker-desktop-proxy).
 

@@ -62,11 +62,13 @@ import (
     dagentcfg "github.com/docker/docker-agent/pkg/config"
     dagentruntime "github.com/docker/docker-agent/pkg/runtime"
     "github.com/docker/docker-agent/pkg/embeddedchat"
+    "github.com/docker/docker-agent/pkg/embeddedchat/defaults"
 )
 
 chat, err := embeddedchat.New(ctx, embeddedchat.Config{
     // AgentSource can be a file path, raw YAML bytes, or an OCI reference.
     AgentSource: dagentcfg.NewBytesSource("agent", []byte(agentYAML)),
+    LoadOpts: defaults.Opts(),
 })
 if err != nil {
     return err
@@ -145,32 +147,6 @@ For advanced use (custom elicitation, raw event inspection), call `chat.Runtime(
 > func(runtime.Event))` method (a no-op is fine if your runtime never raises
 > elicitations) — both are required interface methods, matching the existing
 > no-op-able pattern already used by `OnToolsChanged`/`OnBackgroundEvent`.
-
-## Optional Provider Build Tags
-
-By default Docker Agent includes all four cloud providers (OpenAI, Anthropic, Google, Amazon Bedrock). When embedding Docker Agent in your own binary you can compile out unneeded providers — together with their transitive SDK dependencies — to reduce binary size.
-
-Each provider is gated by a negative build tag prefixed `docker_agent_` to avoid collisions with your own project's tags:
-
-| Build tag                    | Provider dropped         | Major dependency removed                          |
-| ---------------------------- | ------------------------ | ------------------------------------------------- |
-| `docker_agent_no_openai`     | OpenAI                   | `github.com/openai/openai-go`                     |
-| `docker_agent_no_anthropic`  | Anthropic                | `github.com/anthropics/anthropic-sdk-go` (partial — see note) |
-| `docker_agent_no_google`     | Google / Vertex AI       | `google.golang.org/genai`, Vertex auth stack, and indirectly the Anthropic and OpenAI SDKs via Vertex Model Garden |
-| `docker_agent_no_bedrock`    | Amazon Bedrock           | `github.com/aws/aws-sdk-go-v2` stack (the largest provider dependency tree) |
-
-To build without Bedrock and OpenAI:
-
-```bash
-go build -tags 'docker_agent_no_bedrock docker_agent_no_openai' ./...
-```
-
-Requesting a model whose provider was compiled out fails at construction time with a clear `"not compiled into this build"` error. The `dmr` (Docker Model Runner) provider and the rule-based router are always compiled in.
-
-> [!WARNING]
-> **Anthropic + Google dependency**
->
-> The Google provider's Vertex Model Garden support also imports the Anthropic SDK, so the Anthropic dependency is only fully removed when _both_ `docker_agent_no_anthropic` and `docker_agent_no_google` are set.
 
 ## RAG Toolset (opt-out)
 
@@ -376,7 +352,7 @@ func run(ctx context.Context) error {
 
     // Create team and runtime
     t := team.New(team.WithAgents(assistant))
-    rt, err := runtime.New(t)
+    rt, err := runtime.New(ctx, t)
     if err != nil {
         return err
     }
@@ -409,6 +385,8 @@ import (
     "encoding/json"
     "fmt"
 
+    "github.com/docker/docker-agent/pkg/agent"
+    "github.com/docker/docker-agent/pkg/model/provider"
     "github.com/docker/docker-agent/pkg/tools"
 )
 
@@ -419,7 +397,7 @@ type AddNumbersArgs struct {
 }
 
 // Implement the tool handler
-func addNumbers(_ context.Context, toolCall tools.ToolCall) (*tools.ToolCallResult, error) {
+func addNumbers(_ context.Context, toolCall tools.ToolCall, _ tools.Runtime) (*tools.ToolCallResult, error) {
     var args AddNumbersArgs
     if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
         return nil, err
@@ -429,7 +407,7 @@ func addNumbers(_ context.Context, toolCall tools.ToolCall) (*tools.ToolCallResu
     return tools.ResultSuccess(fmt.Sprintf("%d", result)), nil
 }
 
-func main() {
+func createCalculator(llm provider.Provider) *agent.Agent {
     // Create the tool definition
     addTool := tools.Tool{
         Name:        "add",
@@ -440,13 +418,12 @@ func main() {
     }
 
     // Use with an agent
-    calculator := agent.New(
+    return agent.New(
         "root",
         "You are a calculator. Use the add tool for arithmetic.",
         agent.WithModel(llm),
         agent.WithTools(addTool),
     )
-    // ...
 }
 ```
 
@@ -500,8 +477,9 @@ package main
 
 import (
     "github.com/docker/docker-agent/pkg/agent"
+    "github.com/docker/docker-agent/pkg/model/provider"
     "github.com/docker/docker-agent/pkg/team"
-    "github.com/docker/docker-agent/pkg/tools/builtin"
+    "github.com/docker/docker-agent/pkg/tools/builtin/transfertask"
 )
 
 func createTeam(llm provider.Provider) *team.Team {
@@ -520,7 +498,7 @@ func createTeam(llm provider.Provider) *team.Team {
         agent.WithModel(llm),
         agent.WithDescription("Team coordinator"),
         agent.WithSubAgents(researcher),
-        agent.WithToolSets(builtin.NewTransferTaskTool()),
+        agent.WithToolSets(transfertask.New()),
     )
 
     return team.New(team.WithAgents(coordinator, researcher))
@@ -533,8 +511,15 @@ Use Docker Agent's built-in tools:
 
 ```go
 import (
+    "os"
+
+    "github.com/docker/docker-agent/pkg/agent"
     "github.com/docker/docker-agent/pkg/config"
-    "github.com/docker/docker-agent/pkg/tools/builtin"
+    "github.com/docker/docker-agent/pkg/model/provider"
+    "github.com/docker/docker-agent/pkg/tools/builtin/filesystem"
+    "github.com/docker/docker-agent/pkg/tools/builtin/shell"
+    "github.com/docker/docker-agent/pkg/tools/builtin/think"
+    "github.com/docker/docker-agent/pkg/tools/builtin/todo"
 )
 
 func createAgentWithBuiltinTools(llm provider.Provider) *agent.Agent {
@@ -551,13 +536,13 @@ func createAgentWithBuiltinTools(llm provider.Provider) *agent.Agent {
         agent.WithModel(llm),
         agent.WithToolSets(
             // Shell tool for running commands
-            builtin.NewShellTool(os.Environ(), rtConfig),
+            shell.New(os.Environ(), rtConfig),
             // Filesystem tools
-            builtin.NewFilesystemTool(rtConfig.Config.WorkingDir),
+            filesystem.New(rtConfig.Config.WorkingDir),
             // Think tool for reasoning
-            builtin.NewThinkTool(),
+            think.New(),
             // Todo tool for task tracking
-            builtin.NewTodoTool(),
+            todo.New(),
         ),
     )
 }

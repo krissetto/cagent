@@ -66,7 +66,7 @@ identity_token:
   response_field: value
 ```
 
-`auth:` is mutually exclusive with `--gateway`. Token-refresh failures are
+`auth:` is mutually exclusive with `--models-gateway`. Token-refresh failures are
 surfaced through the normal error path with a clear `anthropic workload
 identity federation: failed to refresh identity token from <kind> source
 (federation_rule=fdrl_…): ...` message in the TUI.

@@ -20,8 +20,9 @@ Don't have a config file? Docker Agent can automatically detect your available A
 # Automatically uses the best available provider
 $ docker agent run
 
-# Provider priority: Anthropic → OpenAI → Google → Mistral → Amazon Bedrock → DMR
 ```
+
+Use `docker agent doctor` to see which provider `auto` selects from your available credentials and local models.
 
 The special `auto` model value also works in configs:
 
@@ -452,7 +453,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Install docker-agent
-          curl -fsSL https://get.docker-agent.dev | sh
+          curl -fL "https://github.com/docker/docker-agent/releases/latest/download/docker-agent-linux-amd64" -o docker-agent
+          chmod +x docker-agent
+          mkdir -p ~/.docker/cli-plugins
+          mv docker-agent ~/.docker/cli-plugins/
 
           # Run the review
           docker agent run --exec reviewer.yaml --yolo \

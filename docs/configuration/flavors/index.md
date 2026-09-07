@@ -200,5 +200,5 @@ flavors "with-shell" {
   Appending to a string with `+` (e.g. `instruction+`) requires version 15.
 - Patches apply before validation, so a flavored config is validated exactly
   like a hand-written one.
-- `docker agent push` publishes the raw document, `flavors` section included,
+- `docker agent share push` publishes the raw document, `flavors` section included,
   so consumers of a pushed agent can enable its flavors too.

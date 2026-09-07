@@ -106,7 +106,7 @@ permissions:
     - "read_*" # Glob patterns
     - "shell:cmd=ls*" # With argument matching
 
-  # Always ask before running these tools, even if an allow pattern would match
+  # Ask when no deny or allow pattern matches (subject to the safety mode)
   ask:
     - "shell:cmd=git push*"
     - "write_file:path=/home/user/important/*"
@@ -118,7 +118,7 @@ permissions:
     - "dangerous_tool"
 ```
 
-The three lists are evaluated in order `deny` → `allow` → `ask`, so an `ask:` entry lets you add a confirmation layer on top of an otherwise-allowed tool.
+The three lists are evaluated in order `deny` → `allow` → `ask`. An `ask:` entry does not override a matching allow rule; narrow or remove the allow rule where confirmation is required. Team-level asks also yield to the active safety mode as described above.
 
 ## Global Permissions
 
@@ -145,9 +145,9 @@ When both global and agent-level permissions are present, they are merged into a
 
 - **Deny patterns from either source block the tool.** A global deny cannot be overridden by an agent-level allow, and vice versa.
 - **Allow patterns from either source auto-approve the tool** (as long as no deny pattern matches).
-- **Ask patterns from either source force confirmation** (as long as no deny or allow pattern matches).
+- **Ask patterns from either source are considered only when no deny or allow pattern matches.** They prompt in strict or legacy mode, but yield when the active mode is `balanced`, `restricted`, or `autonomous`.
 
-The evaluation order remains the same after merging: **Deny > Allow > Ask > default Ask**.
+The evaluation order remains the same after merging: **Deny > Allow > Ask > safety-mode fallback**.
 
 > [!TIP]
 > **Example: Global deny + agent allow**

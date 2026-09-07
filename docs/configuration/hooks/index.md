@@ -228,7 +228,7 @@ Built-ins are typically zero-config and faster than equivalent shell hooks becau
 > [!NOTE]
 > **Auto-injected built-ins**
 >
-> The agent flags `add_date: true`, `add_environment_info: true`, `add_prompt_files: [...]`, and `redact_secrets: true` are shorthands that auto-register the matching built-in hook. You don't need to repeat them under `hooks:` — set the flag _or_ the hook entry(ies), not both. `redact_secrets: true` auto-registers the same builtin on all three of `pre_tool_use`, `before_llm_call`, and `tool_response_transform`; you can also wire any subset of them by hand for finer-grained control (per-tool matchers, ordering with other rewriters, …).
+> The agent flags `add_date: true`, `add_environment_info: true`, `add_prompt_files: [...]`, and `redact_secrets: true` are shorthands that auto-register the matching built-in hook. You don't need to repeat them under `hooks:` — set the flag _or_ the hook entry(ies), not both. `redact_secrets: true` auto-registers the same builtin on all three of `pre_tool_use`, `before_llm_call`, and `tool_response_transform`; you can also wire any subset of them by hand for finer-grained control (per-tool matchers, ordering with other rewriters, …). Secret redaction is enabled even when `redact_secrets` is omitted; set it to `false` before configuring only selected redaction hooks manually.
 >
 > `limit_large_tool_results` is injected unconditionally by the runtime — it is always active and cannot be removed from config.
 

@@ -258,7 +258,8 @@ Any field set on `lifecycle` overrides the profile preset, so you can mix-and-ma
 ```yaml
 toolsets:
   - type: mcp
-    command: ["docker", "mcp", "gateway"]
+    command: docker
+    args: ["mcp", "gateway"]
     lifecycle:
       profile: resilient
       max_restarts: 10        # keep trying longer than the default of 5
@@ -300,7 +301,7 @@ See [`examples/lifecycle.yaml`](https://github.com/docker/docker-agent/blob/main
 
 ## TOON-Encoded Tool Outputs
 
-Many MCP servers return verbose JSON responses that consume a lot of context budget. The `toon` field on a toolset transparently re-encodes matching tools' JSON output as [TOON](https://github.com/alpkeskin/gotoon) — a compact, model-friendly key/value format — before the result is shown to the model.
+Many MCP servers return verbose JSON responses that consume a lot of context budget. The `toon` field on a toolset transparently re-encodes matching tools' top-level JSON object output as [TOON](https://github.com/alpkeskin/gotoon) — a compact, model-friendly key/value format — before the result is shown to the model.
 
 ```yaml
 toolsets:
@@ -314,14 +315,14 @@ toolsets:
 
 | Property | Type   | Description |
 | -------- | ------ | ----------- |
-| `toon`   | string | Comma-delimited list of regular expressions matching tool names whose JSON output should be re-encoded as TOON. Non-JSON outputs and non-matching tools are passed through untouched. |
+| `toon`   | string | Comma-delimited regular expressions matching tool names whose top-level JSON object output should be re-encoded as TOON. Top-level arrays, non-null scalars, invalid JSON, and non-matching outputs pass through unchanged. A matching tool returning JSON `null` currently produces empty output. |
 
 When a tool's output is not valid JSON, it is returned unchanged — TOON encoding is best-effort and never breaks tools that emit plain text.
 
 > [!NOTE]
 > **When to use TOON**
 >
-> TOON typically yields 30-60% smaller payloads than equivalent JSON for MCP tools that return arrays of records (issue lists, search results, file listings, …). It works best when the schema is regular; one-off responses with deeply nested or heterogeneous shapes may benefit less.
+> TOON can reduce payload size for MCP tools returning JSON objects, including objects containing arrays of records. Top-level arrays currently pass through unchanged. It works best when the schema is regular; one-off responses with deeply nested or heterogeneous shapes may benefit less.
 
 ## Per-Toolset Model Routing
 

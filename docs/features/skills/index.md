@@ -23,8 +23,6 @@ agents:
     model: openai/gpt-4o
     instruction: You are a helpful assistant.
     skills: true
-    toolsets:
-      - type: filesystem # required for reading skill files
 ```
 
 > [!TIP]

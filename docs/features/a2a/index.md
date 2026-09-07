@@ -88,7 +88,7 @@ migration catalogue entry.
 
 ## Features
 
-- **Auto port selection** — Picks an available port if not specified
+- **Configurable listener** — Listens on `127.0.0.1:8082` by default; use `--listen` to choose another address or port
 - **Agent card** — Provides standard A2A agent metadata
 - **Full Docker Agent features** — Supports all tools, models, and gateway features
 - **Multiple sources** — Load agents from files or OCI registries

@@ -34,6 +34,8 @@
       url: /configuration/models/
     - title: Tool Config
       url: /configuration/tools/
+    - title: Budget
+      url: /configuration/budget/
     - title: Custom Commands
       url: /configuration/commands/
     - title: Hooks
@@ -61,8 +63,12 @@
           url: /tools/file/
         - title: Filesystem
           url: /tools/filesystem/
+        - title: Git
+          url: /tools/git/
         - title: Shell
           url: /tools/shell/
+        - title: Environment
+          url: /tools/environment/
         - title: Script
           url: /tools/script/
         - title: Open URL
@@ -117,6 +123,8 @@
           url: /tools/lsp/
         - title: OpenAPI
           url: /tools/openapi/
+        - title: Webhook
+          url: /tools/webhook/
         - title: API
           url: /tools/api/
 
